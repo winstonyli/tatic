@@ -65,7 +65,7 @@ use super::*;
 // concrete path through the tree per call, denoting whatever it finds
 // along the way), so neither of those needed widening.
 //
-// `build_universal` also covers a *closure-typed parameter*, threaded
+// `prove_tail_recursive_universal` also covers a *closure-typed parameter*, threaded
 // through the recursion unchanged or called via ordinary `App` (`Clo_k`,
 // see `ClosurePostulates::clo_ty`, is a literal `Int -> .. -> Int` kernel
 // Pi type, not an opaque postulate, so calling one needs no axiom at all)
@@ -81,7 +81,7 @@ use super::*;
 // *created* closure (`denote_closure` handles `Term::Abs`/`Term::Rec` via
 // `ClosureCombinators` in every self-call mode), not just a bare parameter
 // reference, and an `If` choosing between two `Clo`-typed values is in scope
-// too (`ite_clo_ref`) -- see `build_universal`'s own doc comment below
+// too (`ite_clo_ref`) -- see `prove_tail_recursive_universal`'s own doc comment below
 // for the one thing still out of scope here (a captured free variable).
 // `params_and_close_typed`'s scope locals are `Free`s (`RELATED_WORK.md`
 // §70), never pushed onto `globals`; a lazily-memoized postulate
@@ -110,24 +110,19 @@ use super::*;
 // directly, not nested inside any self-call's own argument list.
 // `register`/`call_ref`/`pap_ref`, and transitively `mk_env_ref`/`env_ty`
 // for a capturing one, are all lazily memoized; `denote_closure`'s first
-// real call in either mode (from inside a temporary scope) may trigger any of them for the first time. Also honestly scoped: `eval_and_prove`/
-// `build_ev_witness` (the *instance*, per-call specialization) remain
-// untouched and still reject `App`/`Abs` outright, so a concrete instance
-// proof for either shape still declines -- `kernel_verified` doesn't
-// depend on that (see `jit.rs`'s own docs), so this doesn't weaken what
-// actually gets verified, only what gets additional, call-specific
-// evidence.
+// real call in either mode (from inside a temporary scope) may trigger any of them for the first time. (The concrete-witness instance prover that once
+// rejected `App`/`Abs` here, `prove_tail_recursive_instance`, was deleted
+// 2026-10-26, "CU3"; `prove_closure_expr_instance` follows the trace instead.)
 
 /// `f` applied to each of `args` in order (left to right).
 pub(super) fn apply_n(f: Expr, args: impl IntoIterator<Item = Expr>) -> Expr {
     args.into_iter().fold(f, kernel::app)
 }
 
-/// `Ev(params, v) : Sort(0)` -- `ev_pos`'s postulate (see `build_universal`)
+/// `Ev(params, v) : Sort(0)` -- `ev_pos`'s postulate (see `prove_tail_recursive_universal`)
 /// applied to `params` then `v`, via `arith.p.get`. A free function (not
-/// just `build_universal`'s own local closure) so `build_ev_witness`'s
-/// branching-leaf recasting can build the same `Ev(...)` application it
-/// does, rather than reimplementing it.
+/// just `prove_tail_recursive_universal`'s own local closure) so the helpers
+/// in `hardening.rs` can build the same `Ev(...)` application.
 pub(super) fn ev_of(arith: &ArithPostulates, ev_pos: usize, params: &[Expr], v: Expr) -> Expr {
     apply_n(arith.p.get(ev_pos), params.iter().cloned().chain([v]))
 }

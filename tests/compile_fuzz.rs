@@ -299,7 +299,7 @@ fn gen_non_tail_recursive_with(rng: &mut Rng, s: &mut TermStore, payload: impl F
 /// `prove_tail_recursive_universal` (see `jit::tests::
 /// a_closure_typed_loop_carried_parameter_compiles_and_is_kernel_verified`'s
 /// own docs for why), so fuzzing the wrapped term alone would never
-/// actually exercise `build_universal`'s closure-typed-parameter pipeline
+/// actually exercise `prove_tail_recursive_universal`'s closure-typed-parameter pipeline
 /// at all -- `it` is checked directly against
 /// `prove_tail_recursive_universal` instead, below.
 fn gen_closure_typed_recursive(rng: &mut Rng, s: &mut TermStore) -> (Hash, usize, Hash) {

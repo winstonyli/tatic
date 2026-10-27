@@ -242,7 +242,7 @@ fn tail_recursive_gcd_gets_a_universal_proof() {
 /// closure-typed parameter `n` times, starting at `x`", tail-recursive,
 /// threading `g` (a `Clo_1`-typed parameter, called via ordinary `App`
 /// each iteration) through the recursion unchanged -- the fragment
-/// `build_universal`'s own `param_types` extension covers: a
+/// `prove_tail_recursive_universal`'s own `param_types` extension covers: a
 /// closure-typed *parameter*, never a closure *created* inside the
 /// body. `n`=Var(2), `g`=Var(1), `x`=Var(0) inside the body (innermost
 /// parameter bound first, same convention `gcd`'s own builder above
@@ -320,867 +320,15 @@ fn a_closure_created_and_called_inside_a_self_call_argument_gets_a_universal_pro
     kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
         .expect("the recorded theorem should independently re-typecheck");
 
-    // Instance specialization (the weaker, sample-oriented proof --
-    // `kernel_verified` never depended on it, see `jit.rs`'s own docs)
-    // now succeeds here too: `eval_and_prove`'s own `call_eq_ref`
-    // computation-rule axiom (see its docs) covers exactly this shape
-    // -- a self-call argument that creates and calls a *capturing*
-    // literal lambda (`root`'s own single capture, `acc`, resolved
-    // against the outer, all-`Int` frame) whose body is a single
-    // `Prim` node.
+    // The per-execution proof (`kernel_verified` never depended on it, see `jit.rs`'s own docs)
+    // covers this shape too: a self-call argument that creates and calls a *capturing* literal
+    // lambda (`root`'s own single capture, `acc`) whose body is a single `Prim` node.
     assert_eq!(eval::apply_term(&s, h, &[5, 0]).unwrap(), 15, "interpreter sanity check: 5+4+3+2+1");
-    let instance = prove_tail_recursive_instance(&s, h, &[5, 0])
-        .expect("a self-call argument creating and calling a capturing closure should now get a concrete instance");
-    kernel::check_in(&instance.globals, &Ctx::new(), &instance.proof, &kernel::id(instance.int_ty, instance.lhs, instance.rhs))
-        .expect("the recorded instance proof should independently re-typecheck");
+    let instance = prove_closure_expr_instance(&s, h, &[5, 0])
+        .expect("a self-call argument creating and calling a capturing closure should get a concrete instance");
+    check_instance_proof(&instance);
 
     assert!(compile::try_compile(&s, h).is_some());
-}
-
-#[test]
-fn eval_and_prove_call_respects_call_refs_own_argument_order_for_a_non_symmetric_root() {
-    // A wrong argument order in `call_eq_ref`'s own axiom construction
-    // (or in `eval_and_prove_call`'s own instantiation of it) would
-    // still typecheck -- every position here is `Int`, so a swapped
-    // axiom is just a *different*, still well-typed, universally
-    // quantified fact -- so only comparing the *concrete value*
-    // against an independent interpretation (not `kernel::check`
-    // alone) can catch it. `x - y` is non-commutative, so swapping
-    // `x`/`y` gives a visibly wrong answer rather than one that
-    // happens to coincide. This calls the private `eval_and_prove`
-    // directly (this module's own test submodule can) rather than
-    // going through a full self-recursive scaffold, since the bug
-    // this guards is local to `eval_and_prove_call` itself.
-    let mut s = TermStore::new();
-    let x = s.var(1); // first-applied
-    let y = s.var(0); // last-applied
-    let diff = s.prim(PrimOp::Sub, x, y);
-    let inner = s.abs(diff);
-    let root = s.abs(inner);
-    let five = s.lit(5);
-    let three = s.lit(3);
-    let applied_to_x = s.app(root, five);
-    let h = s.app(applied_to_x, three);
-
-    assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), 2, "interpreter sanity check: 5 - 3 = 2");
-
-    let mut combinators = ClosureCombinators::new(&s);
-    combinators.cp.arith.lit(5);
-    combinators.cp.arith.lit(3);
-    let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
-        .expect("a non-capturing literal-lambda self-call-argument should get a concrete witness");
-    assert_eq!(result, 2, "eval_and_prove_call must not swap call_ref's own argument order");
-    combinators.cp.arith.p.check(
-        &proof,
-        &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(2)),
-    )
-    .expect("the recorded witness should independently re-typecheck");
-}
-
-#[test]
-fn eval_and_prove_call_over_gets_a_concrete_instance_for_the_canonical_if_between_closures_shape() {
-    // f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(a,b,c) --
-    // the exact same canonical over-application shape as
-    // `an_over_applied_literal_lambda_returning_a_closure_gets_a_closure_proof`,
-    // now also checked for a concrete instance (both branches of the
-    // `If`), via `clo_eq_ref`/`ite_clo_eq_ref`/`apply_clo_eq_ref`.
-    let mut s = TermStore::new();
-    let c1 = s.var(0);
-    let b1 = s.var(1);
-    let a1 = s.var(2);
-    let ab1 = s.prim(PrimOp::Add, a1, b1);
-    let abc1 = s.prim(PrimOp::Add, ab1, c1);
-    let closure1 = s.abs(abc1);
-
-    let c2 = s.var(0);
-    let b2 = s.var(1);
-    let a2 = s.var(2);
-    let amb2 = s.prim(PrimOp::Sub, a2, b2);
-    let ambc2 = s.prim(PrimOp::Add, amb2, c2);
-    let closure2 = s.abs(ambc2);
-
-    let a_body = s.var(1);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_body);
-    let f_body = s.if_(cond, closure1, closure2);
-    let f_inner = s.abs(f_body);
-    let f = s.abs(f_inner);
-
-    for (a_val, b_val, c_val, expected) in [(10, 3, 100, 113), (-5, 3, 100, 92)] {
-        let a_lit = s.lit(a_val);
-        let b_lit = s.lit(b_val);
-        let c_lit = s.lit(c_val);
-        let fa = s.app(f, a_lit);
-        let fab = s.app(fa, b_lit);
-        let h = s.app(fab, c_lit);
-
-        assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), expected, "interpreter sanity check");
-
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(a_val);
-        combinators.cp.arith.lit(b_val);
-        combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
-            .expect("an over-applied literal lambda returning an If-chosen closure should get a concrete witness");
-        assert_eq!(result, expected);
-        combinators.cp.arith.p.check(
-            &proof,
-            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
-        )
-        .expect("the recorded witness should independently re-typecheck");
-    }
-}
-
-#[test]
-fn eval_and_prove_call_over_respects_the_over_applied_calls_own_argument_order_for_a_non_symmetric_root() {
-    // f = \a. if 0<a then (\c d. c-d) else (\c d. d-c); f(a,c,d) -- k=2
-    // extra arguments, non-commutative in each branch. `k=1` (the
-    // canonical shape above) has no argument order to get wrong at
-    // all, so this is the one that actually exercises
-    // `apply_clo_eq_ref`'s own descending `p_{k-1}..p_0`
-    // instantiation, the same reason the `call_eq_ref` pass's own
-    // regression test used a 2-arg root.
-    let mut s = TermStore::new();
-    let d1 = s.var(0);
-    let c1 = s.var(1);
-    let cd1 = s.prim(PrimOp::Sub, c1, d1);
-    let closure1_inner = s.abs(cd1);
-    let closure1 = s.abs(closure1_inner); // \c d. c - d
-
-    let c2 = s.var(1);
-    let d2 = s.var(0);
-    let dc2 = s.prim(PrimOp::Sub, d2, c2);
-    let closure2_inner = s.abs(dc2);
-    let closure2 = s.abs(closure2_inner); // \c d. d - c
-
-    let a_body = s.var(0);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_body);
-    let f_body = s.if_(cond, closure1, closure2);
-    let f = s.abs(f_body); // \a. if 0<a then closure1 else closure2
-
-    for (a_val, c_val, d_val, expected) in [(5, 10, 3, 7), (-5, 10, 3, -7)] {
-        let a_lit = s.lit(a_val);
-        let c_lit = s.lit(c_val);
-        let d_lit = s.lit(d_val);
-        let fa = s.app(f, a_lit);
-        let fac = s.app(fa, c_lit);
-        let h = s.app(fac, d_lit);
-
-        assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), expected, "interpreter sanity check");
-
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(a_val);
-        combinators.cp.arith.lit(c_val);
-        combinators.cp.arith.lit(d_val);
-        let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
-            .expect("a non-symmetric over-applied closure call should get a concrete witness");
-        assert_eq!(result, expected, "eval_and_prove_call_over must not swap the over-applied call's own argument order");
-        combinators.cp.arith.p.check(
-            &proof,
-            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
-        )
-        .expect("the recorded witness should independently re-typecheck");
-    }
-}
-
-#[test]
-fn a_call_shaped_if_tree_leaf_whose_own_target_is_itself_a_further_if_tree_gets_a_concrete_instance() {
-    // g = \x. if 0<x then (\c. x+c) else (\c. x-c) -- arity 1, an
-    // ordinary IfTree-shaped closure (ClosureRhsShape::IfTree, two
-    // bare Abs leaves).
-    //
-    // root = \a b. if 0<a then g(b) else (\c. b*2+c) -- arity 2. The
-    // `then` branch, `g(b)`, is a saturated call to `g`
-    // (ClosureIfTreeLeafShape::Call), whose own resolution recurses
-    // into `g`'s own shape via `resolve_closure_shape_to_leaf` -- here
-    // testing whether that recursion already handles `g_shape` itself
-    // being `IfTree` (not just `Abs`/`Pap`/a further `Call`), since
-    // `resolve_closure_shape_to_leaf` dispatches generically on
-    // whatever shape it's handed, without a hardcoded assumption about
-    // what produced it.
-    let mut s = TermStore::new();
-    let c1 = s.var(0);
-    let x1 = s.var(1);
-    let x_plus_c = s.prim(PrimOp::Add, x1, c1);
-    let g_then = s.abs(x_plus_c);
-
-    let c2 = s.var(0);
-    let x2 = s.var(1);
-    let x_minus_c = s.prim(PrimOp::Sub, x2, c2);
-    let g_else = s.abs(x_minus_c);
-
-    let x_cond = s.var(0);
-    let zero1 = s.lit(0);
-    let g_cond = s.prim(PrimOp::Lt, zero1, x_cond);
-    let g_body = s.if_(g_cond, g_then, g_else);
-    let g = s.abs(g_body); // \x. if 0<x then (\c.x+c) else (\c.x-c)
-
-    let b_ref = s.var(0);
-    let then_branch = s.app(g, b_ref); // g(b) -- Call-shaped leaf
-
-    let c_r = s.var(0);
-    let b_shifted = s.var(1);
-    let two = s.lit(2);
-    let b2 = s.prim(PrimOp::Mul, b_shifted, two);
-    let b2_plus_c = s.prim(PrimOp::Add, b2, c_r);
-    let else_branch = s.abs(b2_plus_c); // \c. b*2+c -- bare Abs leaf, captures b
-
-    let a_ref = s.var(1);
-    let zero2 = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero2, a_ref);
-    let root_body = s.if_(cond, then_branch, else_branch);
-    let root_b_binder = s.abs(root_body);
-    let root = s.abs(root_b_binder); // \a b. if 0<a then g(b) else (\c. b*2+c)
-
-    // Hand-verified against the reference interpreter before trusting
-    // the term shape: a=5,b=3,c=7 (0<a, then 0<b: g's own `then`
-    // taken) -> g(3) = \c.3+c, called at 7 -> 10; a=5,b=-3,c=7 (0<a,
-    // then b<=0: g's own `else` taken) -> g(-3) = \c.-3-c, called at
-    // 7 -> -10 (asymmetric from the first case, catching a
-    // g-internal-branch mixup); a=-5,b=3,c=7 (a<=0: root's own
-    // `else`, g never even resolved) -> 3*2+7 = 13.
-    for (a_val, b_val, c_val, expected) in [(5, 3, 7, 10), (5, -3, 7, -10), (-5, 3, 7, 13)] {
-        let a_lit = s.lit(a_val);
-        let b_lit = s.lit(b_val);
-        let c_lit = s.lit(c_val);
-        let root_a = s.app(root, a_lit);
-        let root_ab = s.app(root_a, b_lit);
-        let h_term = s.app(root_ab, c_lit);
-        assert_eq!(
-            eval::apply_term(&s, h_term, &[]).unwrap(),
-            expected,
-            "a={a_val} b={b_val} c={c_val}: interpreter sanity check"
-        );
-
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(a_val);
-        combinators.cp.arith.lit(b_val);
-        combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).unwrap_or_else(|| {
-            panic!("a={a_val} b={b_val} c={c_val}: a Call-shaped leaf targeting a further IfTree should get a concrete instance")
-        });
-        assert_eq!(
-            result, expected,
-            "a={a_val} b={b_val} c={c_val}: should agree with the reference interpreter, not just typecheck"
-        );
-        combinators.cp.arith.p.check(
-            &proof,
-            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
-        )
-        .unwrap_or_else(|e| panic!("a={a_val} b={b_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
-    }
-}
-
-#[test]
-fn eval_and_prove_call_over_resolves_an_inner_closures_own_captures_against_roots_frame_not_double_shifted() {
-    // f = \a. if 0<a then (\c. a+w+c) else (\c. a-w-c), where `w` is
-    // captured by `f` itself from an outer frame -- `t`/`e` (the two
-    // inner closures) each *also* capture something from `f`'s own
-    // frame (`a`, f's own param, *and* `w`, f's own capture, at
-    // different absolute positions). An off-by-`root_arity` double
-    // shift when indexing `t`/`e`'s own captures into `params_full`
-    // (mistakenly adding `f`'s own arity on top of the relative index
-    // `compile::free_vars` already gives, by analogy with how `f`'s
-    // *own* captures genuinely do need that shift) would read the
-    // wrong slot and produce a visibly wrong value here, not a
-    // rejection -- `eval::apply_term` is the independent check.
-    let mut s = TermStore::new();
-    let c1 = s.var(0); // t's own param
-    let a1 = s.var(1); // f's own param, one level deeper than in f's own body
-    let w1 = s.var(2); // f's own capture, one level deeper than in f's own body
-    let aw1 = s.prim(PrimOp::Add, a1, w1);
-    let awc1 = s.prim(PrimOp::Add, aw1, c1);
-    let closure_t = s.abs(awc1); // \c. a + w + c
-
-    let c2 = s.var(0);
-    let a2 = s.var(1);
-    let w2 = s.var(2);
-    let aw2 = s.prim(PrimOp::Sub, a2, w2);
-    let awc2 = s.prim(PrimOp::Sub, aw2, c2);
-    let closure_e = s.abs(awc2); // \c. a - w - c
-
-    let a_body = s.var(0);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_body);
-    let f_body = s.if_(cond, closure_t, closure_e);
-    let f = s.abs(f_body); // \a. if 0<a then closure_t else closure_e -- captures `w`
-
-    for (w_val, a_val, c_val, expected) in [(100, 10, 5, 115), (100, -10, 5, -115)] {
-        let a_lit = s.lit(a_val);
-        let c_lit = s.lit(c_val);
-        let fa = s.app(f, a_lit);
-        let h = s.app(fa, c_lit); // h's own only free variable is `w`, at Var(0)
-        let h_closed = s.abs(h); // eval::apply_term expects a function value, not a bare free variable
-
-        assert_eq!(eval::apply_term(&s, h_closed, &[w_val]).unwrap(), expected, "interpreter sanity check");
-
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(w_val);
-        let w_lit = combinators.cp.arith.lit_ref(w_val);
-        let w_param = w_lit;
-        let w_fact = kernel::refl(w_lit);
-        combinators.cp.arith.lit(a_val);
-        combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[w_param], concrete: &[w_val], facts: &[w_fact] })
-            .expect("an inner closure capturing both root's own param and root's own capture should get a concrete witness");
-        assert_eq!(result, expected, "eval_and_prove_call_over must resolve an inner closure's own captures against root's frame directly, not double-shifted by root's own arity");
-        combinators.cp.arith.p.check(
-            &proof,
-            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
-        )
-        .expect("the recorded witness should independently re-typecheck");
-    }
-}
-
-#[test]
-fn a_pap_producing_root_gets_a_concrete_instance_for_eval_and_prove_call_over() {
-    // g = \x y. x*10 + y (arity 2, deliberately asymmetric so an
-    // index-order bug between x/y would change the result, not just
-    // its symmetry); f = \a. g(a) -- f's own saturated call is a
-    // *partial application* of g (root_arity=1, k=1, per
-    // `return_type_of`'s own `Ordering::Less` branch), not an `If`
-    // between two closures -- `clo_eq_ref_pap` (not
-    // `clo_eq_ref_if_between`) covers this shape now. `f(a)(c)` is
-    // over-application: `f`'s own saturated call denotes `g` partially
-    // applied to `a`, then the extra argument `c` completes it, so the
-    // whole term should agree with calling `g(a, c)` directly.
-    let mut s = TermStore::new();
-    let x = s.var(1);
-    let y = s.var(0);
-    let ten = s.lit(10);
-    let x10 = s.prim(PrimOp::Mul, x, ten);
-    let xy = s.prim(PrimOp::Add, x10, y);
-    let g_inner = s.abs(xy);
-    let g = s.abs(g_inner);
-
-    let a_ref = s.var(0);
-    let f_body = s.app(g, a_ref);
-    let f = s.abs(f_body); // \a. g(a) -- a PAP of g, arity 1
-
-    let a_lit = s.lit(5);
-    let c_lit = s.lit(3);
-    let fa = s.app(f, a_lit);
-    let h = s.app(fa, c_lit);
-
-    // Hand-verified against the reference interpreter before trusting
-    // the term shape, per this project's own established discipline:
-    // g(5, 3) = 5*10 + 3 = 53 (an index swap would instead give
-    // g(3, 5) = 3*10 + 5 = 35, a different number, so this is a real
-    // regression guard, not just a symmetry check).
-    assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), 53);
-
-    let mut combinators = ClosureCombinators::new(&s);
-    combinators.cp.arith.lit(5);
-    combinators.cp.arith.lit(3);
-    let (result, denoted, proof) =
-        eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).expect("a PAP-producing root's over-application should get a concrete instance");
-    assert_eq!(result, 53, "should agree with the reference interpreter, not just typecheck");
-    let int_ty = combinators.cp.arith.int_ty();
-    combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
-        .expect("the recorded proof should independently re-typecheck");
-}
-
-#[test]
-fn a_further_indirectly_called_combinator_gets_a_concrete_instance_for_eval_and_prove_call_over() {
-    // h = \p q. p*10 + q (arity 2, asymmetric coefficients so an
-    // index-order bug changes the result, not just its symmetry);
-    // middle = \b. h(b) -- a PAP of h (arity 1, `middle`'s own
-    // saturated call returns `Clo_1`); root = \x y. middle(y) -- arity
-    // 2, `x` a decoy left unused so a `root`-level saturating-args
-    // order bug (e.g. `build_clo_call_bridge`'s own inner-frame
-    // construction) swaps in `x`'s own value where `y`'s belongs,
-    // catchably -- calls `middle` *saturated* (middle's own arity is
-    // 1, matching `args.len()`), so this is `ClosureRhsShape::Call`,
-    // not `Pap`: `root`'s own body doesn't itself hold the literal
-    // lambda that will eventually be called, only a further,
-    // statically-known indirection to one (`middle`, itself
-    // Clo-returning) -- the "further nested-call-producing root"
-    // shape. `root(x)(y)(c)` is over-application: `root`'s own
-    // saturated call denotes `middle`'s own saturated call (itself a
-    // further `Clo_1`), and *that* denotes `h` partially applied to
-    // `y`; the extra argument `c` completes it, so the whole term
-    // should agree with `h(y, c)` directly (never `x`).
-    let mut s = TermStore::new();
-    let p = s.var(1);
-    let q = s.var(0);
-    let ten = s.lit(10);
-    let p10 = s.prim(PrimOp::Mul, p, ten);
-    let pq = s.prim(PrimOp::Add, p10, q);
-    let h_inner = s.abs(pq);
-    let h = s.abs(h_inner); // \p q. p*10 + q
-
-    let b_ref = s.var(0);
-    let middle_body = s.app(h, b_ref);
-    let middle = s.abs(middle_body); // \b. h(b) -- a PAP of h, arity 1
-
-    let y_ref = s.var(0);
-    let root_body = s.app(middle, y_ref);
-    let root_y_binder = s.abs(root_body);
-    let root = s.abs(root_y_binder); // \x y. middle(y) -- a saturated call to middle, arity 2
-
-    let x_lit = s.lit(100); // decoy: must never influence the result
-    let y_lit = s.lit(7);
-    let c_lit = s.lit(2);
-    let root_x = s.app(root, x_lit);
-    let root_xy = s.app(root_x, y_lit);
-    let h_term = s.app(root_xy, c_lit);
-
-    // Hand-verified against the reference interpreter before trusting
-    // the term shape, per this project's own established discipline:
-    // h(7, 2) = 7*10 + 2 = 72 (an index swap would instead give
-    // h(2, 7) = 27, or pick up the decoy `x` for a very different
-    // number like h(100, 2) = 1002).
-    assert_eq!(eval::apply_term(&s, h_term, &[]).unwrap(), 72);
-
-    let mut combinators = ClosureCombinators::new(&s);
-    combinators.cp.arith.lit(100);
-    combinators.cp.arith.lit(7);
-    combinators.cp.arith.lit(2);
-    let (result, denoted, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
-        .expect("a further indirectly-called combinator's over-application should get a concrete instance");
-    assert_eq!(result, 72, "should agree with the reference interpreter, not just typecheck");
-    let int_ty = combinators.cp.arith.int_ty();
-    combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
-        .expect("the recorded proof should independently re-typecheck");
-}
-
-#[test]
-fn two_levels_of_further_indirection_still_get_a_concrete_instance() {
-    // h = \p q. p - q (arity 2, asymmetric so an operand-order bug
-    // changes the result); middle = \b. h(b) -- a PAP of h, arity 1;
-    // outer = \a. middle(a) -- `Call`, one level of indirection (as
-    // the test above); root = \a. outer(a) -- *another* saturated
-    // call to a further Clo-returning combinator, since
-    // `combinator_return_type(outer)` itself recurses through
-    // `outer`'s own `Call` shape to find `Some(1)` -- a *second*
-    // `Call` layer, confirming `resolve_closure_shape_to_leaf`'s own
-    // recursion isn't hardcoded to depth 1. `root(a)(c)` should agree
-    // with `h(a, c)` directly, chaining through `outer` and `middle`
-    // both.
-    let mut s = TermStore::new();
-    let p = s.var(1);
-    let q = s.var(0);
-    let pq = s.prim(PrimOp::Sub, p, q);
-    let h_inner = s.abs(pq);
-    let h = s.abs(h_inner); // \p q. p - q
-
-    let b_ref = s.var(0);
-    let middle_body = s.app(h, b_ref);
-    let middle = s.abs(middle_body); // \b. h(b)
-
-    let a_ref1 = s.var(0);
-    let outer_body = s.app(middle, a_ref1);
-    let outer = s.abs(outer_body); // \a. middle(a)
-
-    let a_ref2 = s.var(0);
-    let root_body = s.app(outer, a_ref2);
-    let root = s.abs(root_body); // \a. outer(a)
-
-    let a_lit = s.lit(11);
-    let c_lit = s.lit(4);
-    let root_a = s.app(root, a_lit);
-    let h_term = s.app(root_a, c_lit);
-
-    // Hand-verified against the reference interpreter first: h(11,4)
-    // = 11-4 = 7 (the operand-swapped h(4,11) = -7 would be a clearly
-    // different, wrong number).
-    assert_eq!(eval::apply_term(&s, h_term, &[]).unwrap(), 7);
-
-    let mut combinators = ClosureCombinators::new(&s);
-    combinators.cp.arith.lit(11);
-    combinators.cp.arith.lit(4);
-    let (result, denoted, proof) =
-        eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).expect("two levels of further indirection should still get a concrete instance");
-    assert_eq!(result, 7, "should agree with the reference interpreter, not just typecheck");
-    let int_ty = combinators.cp.arith.int_ty();
-    combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
-        .expect("the recorded proof should independently re-typecheck");
-}
-
-#[test]
-fn a_pap_producing_root_with_two_supplied_args_and_a_capturing_g_gets_a_concrete_instance() {
-    // g = \p q r. p*100 + q*10 + r + captured_y (arity 3), where
-    // `captured_y` is a *capture*, not one of g's own params --
-    // relative to g's own 3-ary scope that's `Var(3)` (one beyond p/q/r,
-    // `p`=Var(2)/`q`=Var(1)/`r`=Var(0) innermost-last), which resolves
-    // (per `free_vars`' own "no additional shift" convention for a
-    // lambda referenced directly, with no binders of its own in
-    // between) to `f`'s own `y` -- `g_x` sits immediately inside `f`'s
-    // body, introducing no binders of its own before that point.
-    // Fully asymmetric coefficients so any swap among the *two* args
-    // `f` itself supplies (p, q), the one extra arg (r), or the
-    // captured value (`y`, doubly used: both a supplied arg *and* a
-    // capture) changes the result.
-    //
-    // f = \x y. g(x, y) -- a PAP of g supplying 2 of its 3 remaining
-    // params (s=2, k=1), specifically exercising the *ordering among
-    // the supplied args themselves* (the single-supplied-arg test
-    // above can't distinguish this, since reversing one element is a
-    // no-op) together with `g`'s own capture.
-    let mut s = TermStore::new();
-    let p = s.var(2);
-    let q = s.var(1);
-    let r = s.var(0);
-    let captured_y = s.var(3);
-    let hundred = s.lit(100);
-    let ten = s.lit(10);
-    let p100 = s.prim(PrimOp::Mul, p, hundred);
-    let q10 = s.prim(PrimOp::Mul, q, ten);
-    let sum1 = s.prim(PrimOp::Add, p100, q10);
-    let sum2 = s.prim(PrimOp::Add, sum1, r);
-    let sum3 = s.prim(PrimOp::Add, sum2, captured_y);
-    let g_r = s.abs(sum3);
-    let g_q = s.abs(g_r);
-    let g_p = s.abs(g_q); // g = \p q r. p*100+q*10+r+captured_y, capturing Var(3) relative to its own arity-3 scope
-
-    let f_x = s.var(1);
-    let f_y = s.var(0);
-    let f_body = s.app2(g_p, f_x, f_y); // g(x, y) -- a 2-of-3 partial application of g
-    let f_y_binder = s.abs(f_body);
-    let f = s.abs(f_y_binder); // f = \x y. g(x, y), arity 2
-
-    let x_lit = s.lit(5);
-    let y_lit = s.lit(7);
-    let r_lit = s.lit(3);
-    let f_at_x = s.app(f, x_lit);
-    let f_at_x_y = s.app(f_at_x, y_lit);
-    let h = s.app(f_at_x_y, r_lit); // ((f(x))(y))(r) -- f(x,y)'s own saturated call is the PAP, r is the over-application
-
-    // Hand-verified: g(p=5,q=7,r=3,captured_y=7) = 5*100+7*10+3+7 = 580.
-    // Swapping p/q would instead give 7*100+5*10+3+7 = 760.
-    assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), 580);
-
-    let mut combinators = ClosureCombinators::new(&s);
-    for lit in [5, 7, 3] {
-        combinators.cp.arith.lit(lit);
-    }
-    let (result, denoted, proof) =
-        eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).expect("a capturing PAP-producing root's over-application should get a concrete instance");
-    assert_eq!(result, 580, "should agree with the reference interpreter, not just typecheck");
-    let int_ty = combinators.cp.arith.int_ty();
-    combinators.cp.arith.p.check(&proof, &kernel::id(int_ty, denoted, combinators.cp.arith.lit_ref(result)))
-        .expect("the recorded proof should independently re-typecheck");
-}
-
-#[test]
-fn a_further_nested_if_inside_a_branch_gets_a_concrete_instance_for_eval_and_prove_call_over() {
-    // f = \a. if 0<a then (if a>10 then (\c. c) else (\c. c+1)) else (\c. c-1)
-    // -- `t` is itself a further `If`, not a bare `Term::Abs` -- a
-    // depth-2 decision tree, not the depth-1 `clo_eq_ref_if_between`
-    // (now `clo_eq_ref_if_tree`) originally supported. Three leaves,
-    // exercising all of them: the identity closure (`a>10`), `c+1`
-    // (`0<a<=10`), and `c-1` (`a<=0`).
-    let mut s = TermStore::new();
-    let c1 = s.var(0);
-    let one = s.lit(1);
-    let c_plus_1 = s.prim(PrimOp::Add, c1, one);
-    let inner_then = s.abs(c_plus_1);
-    let c2 = s.var(0);
-    let inner_else = s.abs(c2);
-    let a_body1 = s.var(0);
-    let ten = s.lit(10);
-    let inner_cond = s.prim(PrimOp::Lt, ten, a_body1);
-    let t = s.if_(inner_cond, inner_else, inner_then); // if a>10 then (\c.c) else (\c.c+1)
-
-    let c3 = s.var(0);
-    let one2 = s.lit(1);
-    let c_minus_1 = s.prim(PrimOp::Sub, c3, one2);
-    let e = s.abs(c_minus_1);
-
-    let a_body2 = s.var(0);
-    let zero = s.lit(0);
-    let outer_cond = s.prim(PrimOp::Lt, zero, a_body2);
-    let f_body = s.if_(outer_cond, t, e);
-    let f = s.abs(f_body);
-
-    // Hand-verified against the reference interpreter before trusting
-    // the term shape: a=5 (0<a, a<=10) -> c+1 = 4; a=20 (0<a, a>10) ->
-    // c = 3; a=-5 (a<=0) -> c-1 = 2.
-    for (a_val, c_val, expected) in [(5, 3, 4), (20, 3, 3), (-5, 3, 2)] {
-        let a_lit = s.lit(a_val);
-        let c_lit = s.lit(c_val);
-        let fa = s.app(f, a_lit);
-        let h = s.app(fa, c_lit);
-        assert_eq!(eval::apply_term(&s, h, &[]).unwrap(), expected, "a={a_val} c={c_val}: interpreter sanity check");
-
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(a_val);
-        combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
-            .unwrap_or_else(|| panic!("a={a_val} c={c_val}: a further-nested If inside a branch should get a concrete instance"));
-        assert_eq!(result, expected, "a={a_val} c={c_val}: should agree with the reference interpreter, not just typecheck");
-        combinators.cp.arith.p.check(
-            &proof,
-            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
-        )
-        .unwrap_or_else(|e| panic!("a={a_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
-    }
-}
-
-#[test]
-fn an_if_tree_leaf_that_is_itself_a_partial_application_gets_a_concrete_instance() {
-    // h = \p q r. p*100 + q*10 + r (arity 3, fully asymmetric
-    // coefficients so any permutation of the three args changes the
-    // result, not just its symmetry); root = \a b1 b2. if 0<a then
-    // h(b1,b2) else (\c. c-1) -- arity 3, the `then` branch
-    // (`h(b1,b2)`) is a *partial application* of a further literal
-    // lambda h (two of its three args supplied), not a bare
-    // `Term::Abs` -- previously out of scope
-    // (`closure_if_tree_leaves_are_abs`'s own restriction), now
-    // `ClosureIfTreeLeafShape::Pap`. `root(a,b1,b2)(c)` is
-    // over-application (k=1): when `0<a`, the whole term should
-    // agree with `h(b1, b2, c)` directly (asymmetric enough that a
-    // supplied-args order bug in `chosen_arg_prefix`'s own handling
-    // would give a different, wrong number, not just fail to
-    // typecheck); otherwise with `c-1` (the `else` branch, still a
-    // bare `Abs` leaf, exercising both shapes in the same tree).
-    let mut s = TermStore::new();
-    let p = s.var(2);
-    let q = s.var(1);
-    let r = s.var(0);
-    let hundred = s.lit(100);
-    let ten = s.lit(10);
-    let p100 = s.prim(PrimOp::Mul, p, hundred);
-    let q10 = s.prim(PrimOp::Mul, q, ten);
-    let p100q10 = s.prim(PrimOp::Add, p100, q10);
-    let pqr = s.prim(PrimOp::Add, p100q10, r);
-    let h_inner2 = s.abs(pqr);
-    let h_inner1 = s.abs(h_inner2);
-    let h = s.abs(h_inner1); // \p q r. p*100 + q*10 + r
-
-    let b1_ref = s.var(1);
-    let b2_ref = s.var(0);
-    let h_b1 = s.app(h, b1_ref);
-    let then_branch = s.app(h_b1, b2_ref); // h(b1, b2) -- a Pap of h, arity 1
-
-    let c1 = s.var(0);
-    let one = s.lit(1);
-    let c_minus_1 = s.prim(PrimOp::Sub, c1, one);
-    let else_branch = s.abs(c_minus_1); // \c. c-1 -- a bare Abs leaf
-
-    let a_ref = s.var(2);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_ref);
-    let root_body = s.if_(cond, then_branch, else_branch);
-    let root_b2_binder = s.abs(root_body);
-    let root_b1_binder = s.abs(root_b2_binder);
-    let root = s.abs(root_b1_binder); // \a b1 b2. if 0<a then h(b1,b2) else (\c.c-1)
-
-    // Hand-verified against the reference interpreter before trusting
-    // the term shape: a=5 (0<a) with b1=3,b2=7,c=2 ->
-    // h(3,7,2) = 3*100+7*10+2 = 372 (h(7,3,2) = 732 would be a clearly
-    // different, wrong number, catching a supplied-args order bug);
-    // a=-5 (a<=0) with b1=3,b2=7 (unused, decoys),c=2 -> c-1=1.
-    for (a_val, b1_val, b2_val, c_val, expected) in [(5, 3, 7, 2, 372), (-5, 3, 7, 2, 1)] {
-        let a_lit = s.lit(a_val);
-        let b1_lit = s.lit(b1_val);
-        let b2_lit = s.lit(b2_val);
-        let c_lit = s.lit(c_val);
-        let root_a = s.app(root, a_lit);
-        let root_ab1 = s.app(root_a, b1_lit);
-        let root_ab1b2 = s.app(root_ab1, b2_lit);
-        let h_term = s.app(root_ab1b2, c_lit);
-        assert_eq!(
-            eval::apply_term(&s, h_term, &[]).unwrap(),
-            expected,
-            "a={a_val} b1={b1_val} b2={b2_val} c={c_val}: interpreter sanity check"
-        );
-
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(a_val);
-        combinators.cp.arith.lit(b1_val);
-        combinators.cp.arith.lit(b2_val);
-        combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).unwrap_or_else(|| {
-            panic!("a={a_val} b1={b1_val} b2={b2_val} c={c_val}: a Pap-shaped IfTree leaf should get a concrete instance")
-        });
-        assert_eq!(
-            result, expected,
-            "a={a_val} b1={b1_val} b2={b2_val} c={c_val}: should agree with the reference interpreter, not just typecheck"
-        );
-        combinators.cp.arith.p.check(
-            &proof,
-            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
-        )
-        .unwrap_or_else(|e| panic!("a={a_val} b1={b1_val} b2={b2_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
-    }
-}
-
-#[test]
-fn an_if_tree_leaf_reached_only_through_a_further_saturated_call_gets_a_concrete_instance() {
-    // h = \p q. p*10+q (arity 2); middle = \x. h(x) -- arity 1, its own
-    // body a *partial* application of h (one of two args supplied), so
-    // `combinator_return_type(middle) == Some(1)`: middle's own
-    // *saturated* call is itself Clo_1-typed.
-    //
-    // root = \a b. if 0<a then middle(b) else (\y. y-1) -- arity 2. The
-    // `then` branch, `middle(b)`, is a *saturated* call to middle
-    // (args.len() == middle's own arity, 1) whose own saturated call is
-    // Clo_1-typed -- `ClosureIfTreeLeafShape::Call`, previously "a
-    // further, natural generalization, not attempted here". The `else`
-    // branch is a bare Abs leaf, exercising both shapes in the same
-    // tree exactly like the Pap-leaf test above does. `root(a,b)(c)` is
-    // over-application (k=1): when `0<a`, resolving the Call-shaped
-    // leaf must recurse into `middle`'s own further resolution (a
-    // Pap of h) to reach h itself, mirroring the root-level `Call`
-    // arm's own indirection-following exactly, just one level deeper
-    // inside an `If`.
-    let mut s = TermStore::new();
-    let p = s.var(1);
-    let q = s.var(0);
-    let ten = s.lit(10);
-    let p10 = s.prim(PrimOp::Mul, p, ten);
-    let pq = s.prim(PrimOp::Add, p10, q);
-    let h_inner = s.abs(pq);
-    let h = s.abs(h_inner); // \p q. p*10+q
-
-    let x = s.var(0);
-    let h_x = s.app(h, x);
-    let middle = s.abs(h_x); // \x. h(x) -- Pap of h, arity 1
-
-    let b_ref = s.var(0);
-    let then_branch = s.app(middle, b_ref); // middle(b) -- saturated call to middle
-
-    let y = s.var(0);
-    let one = s.lit(1);
-    let y_minus_1 = s.prim(PrimOp::Sub, y, one);
-    let else_branch = s.abs(y_minus_1); // \y. y-1 -- bare Abs leaf
-
-    let a_ref = s.var(1);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_ref);
-    let root_body = s.if_(cond, then_branch, else_branch);
-    let root_b_binder = s.abs(root_body);
-    let root = s.abs(root_b_binder); // \a b. if 0<a then middle(b) else (\y.y-1)
-
-    // Hand-verified against the reference interpreter before trusting
-    // the term shape: a=5 (0<a) with b=3,c=7 -> middle(3)(7) = h(3)(7)
-    // = 3*10+7 = 37 (b and c at asymmetric weights, so a supplied-arg
-    // ordering bug in the Call-leaf's own further resolution would give
-    // a different, wrong number); a=-5 (a<=0) with b=3 (unused decoy),
-    // c=7 -> c-1 = 6.
-    for (a_val, b_val, c_val, expected) in [(5, 3, 7, 37), (-5, 3, 7, 6)] {
-        let a_lit = s.lit(a_val);
-        let b_lit = s.lit(b_val);
-        let c_lit = s.lit(c_val);
-        let root_a = s.app(root, a_lit);
-        let root_ab = s.app(root_a, b_lit);
-        let h_term = s.app(root_ab, c_lit);
-        assert_eq!(
-            eval::apply_term(&s, h_term, &[]).unwrap(),
-            expected,
-            "a={a_val} b={b_val} c={c_val}: interpreter sanity check"
-        );
-
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(a_val);
-        combinators.cp.arith.lit(b_val);
-        combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).unwrap_or_else(|| {
-            panic!("a={a_val} b={b_val} c={c_val}: a Call-shaped IfTree leaf should get a concrete instance")
-        });
-        assert_eq!(
-            result, expected,
-            "a={a_val} b={b_val} c={c_val}: should agree with the reference interpreter, not just typecheck"
-        );
-        combinators.cp.arith.p.check(
-            &proof,
-            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
-        )
-        .unwrap_or_else(|e| panic!("a={a_val} b={b_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
-    }
-}
-
-#[test]
-fn a_self_recursive_root_whose_body_never_actually_self_calls_gets_a_concrete_instance() {
-    // rec helper a = if 0<a then (\c. c+a) else (\c. c-a) -- arity 1,
-    // wrapped in `Term::Rec` (syntactically self-recursive), but its
-    // own body never actually references the self-binder anywhere.
-    // Previously declined outright by `clo_eq_ref`'s own blanket
-    // `if is_rec { return None; }` check regardless of whether `body`
-    // genuinely used the self-reference; now `compile::free_vars`'s
-    // own `is_rec`-aware capture computation is threaded through
-    // instead, and a term like this one -- which never actually needs
-    // it -- gets a concrete instance same as a non-recursive root
-    // would. `helper(a)(c)` is over-application (k=1): the whole term
-    // should agree with `a+c` (0<a) or `c-a` (a<=0) directly.
-    let mut s = TermStore::new();
-    let a_ref1 = s.var(0);
-    let c1 = s.var(0);
-    let a_shifted1 = s.var(1);
-    let c_plus_a = s.prim(PrimOp::Add, c1, a_shifted1);
-    let then_branch = s.abs(c_plus_a); // \c. c+a
-
-    let c2 = s.var(0);
-    let a_shifted2 = s.var(1);
-    let c_minus_a = s.prim(PrimOp::Sub, c2, a_shifted2);
-    let else_branch = s.abs(c_minus_a); // \c. c-a
-
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_ref1);
-    let helper_body = s.if_(cond, then_branch, else_branch);
-    let helper_abs = s.abs(helper_body); // \a. if 0<a then (\c.c+a) else (\c.c-a)
-    let helper = s.rec(helper_abs); // rec-wrapped, never actually self-calling
-
-    // Hand-verified against the reference interpreter before trusting
-    // the term shape: a=5 (0<a) with c=3 -> c+a=8; a=-5 (a<=0) with
-    // c=10 -> c-a=15 -- distinct numbers, so picking the wrong branch
-    // would be caught, not masked by a coincidental match.
-    for (a_val, c_val, expected) in [(5, 3, 8), (-5, 10, 15)] {
-        let a_lit = s.lit(a_val);
-        let c_lit = s.lit(c_val);
-        let helper_a = s.app(helper, a_lit);
-        let h_term = s.app(helper_a, c_lit);
-        assert_eq!(eval::apply_term(&s, h_term, &[]).unwrap(), expected, "a={a_val} c={c_val}: interpreter sanity check");
-
-        let mut combinators = ClosureCombinators::new(&s);
-        combinators.cp.arith.lit(a_val);
-        combinators.cp.arith.lit(c_val);
-        let (result, denotation, proof) = eval_and_prove(h_term, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] })
-            .unwrap_or_else(|| panic!("a={a_val} c={c_val}: a self-recursive root that never self-calls should get a concrete instance"));
-        assert_eq!(result, expected, "a={a_val} c={c_val}: should agree with the reference interpreter, not just typecheck");
-        combinators.cp.arith.p.check(
-            &proof,
-            &kernel::id(combinators.cp.arith.int_ty(), denotation, combinators.cp.arith.lit_ref(expected)),
-        )
-        .unwrap_or_else(|e| panic!("a={a_val} c={c_val}: the recorded witness should independently re-typecheck: {e}"));
-    }
-}
-
-#[test]
-fn an_over_application_with_the_wrong_number_of_extra_args_is_out_of_scope() {
-    // f = \a. if 0<a then (\c d. c-d) else (\c d. d-c) -- k=2, but
-    // called with only 1 extra argument (a partial dispatch against
-    // the chosen closure) -- `AppShape::LitLambdaOver`'s own
-    // `args.len() != root_arity + k` guard should reject this.
-    let mut s = TermStore::new();
-    let d1 = s.var(0);
-    let c1 = s.var(1);
-    let cd1 = s.prim(PrimOp::Sub, c1, d1);
-    let closure1_inner = s.abs(cd1);
-    let closure1 = s.abs(closure1_inner);
-    let c2 = s.var(1);
-    let d2 = s.var(0);
-    let dc2 = s.prim(PrimOp::Sub, d2, c2);
-    let closure2_inner = s.abs(dc2);
-    let closure2 = s.abs(closure2_inner);
-    let a_body = s.var(0);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_body);
-    let f_body = s.if_(cond, closure1, closure2);
-    let f = s.abs(f_body);
-
-    let a_lit = s.lit(5);
-    let c_lit = s.lit(10);
-    let fa = s.app(f, a_lit);
-    let h = s.app(fa, c_lit); // only 1 extra arg, k=2 expected
-
-    let mut combinators = ClosureCombinators::new(&s);
-    assert!(
-        eval_and_prove(h, &mut combinators, Frame { params: &[], concrete: &[], facts: &[] }).is_none(),
-        "an under-applied over-application should stay out of scope, not panic"
-    );
 }
 
 #[test]
@@ -1525,9 +673,8 @@ fn a_self_call_inside_a_nested_if_branch_gets_a_universal_proof_and_a_correct_in
     // f(4)=4+f(3)=12, f(5)=5+(f(4)+1)=18.
     assert_eq!(eval::apply_term(&s, g, &[5]).unwrap(), 18, "interpreter sanity check");
 
-    let instance = prove_tail_recursive_instance(&s, g, &[5]).expect("f(5) should get an instance");
-    kernel::check_in(&instance.globals, &Ctx::new(), &instance.proof, &kernel::id(instance.int_ty, instance.lhs, instance.rhs))
-        .expect("the recorded instance proof should independently re-typecheck");
+    let instance = prove_closure_expr_instance(&s, g, &[5]).expect("f(5) should get an instance");
+    check_instance_proof(&instance);
 }
 
 #[test]
@@ -1693,192 +840,64 @@ fn a_long_running_trace_declines_instead_of_overflowing_the_stack() {
     assert!(prove_closure_expr_instance(&s, h, &[10, 0]).is_some());
 }
 
-#[test]
-fn tail_recursive_gcd_gets_a_kernel_checked_instance_proof() {
-    let mut s = TermStore::new();
-    let g = gcd(&mut s);
-
-    for (a, b) in [(48, 18), (270, 192), (17, 5), (0, 7)] {
-        let proof = prove_tail_recursive_instance(&s, g, &[a, b])
-            .unwrap_or_else(|| panic!("gcd({a},{b}) should get a kernel-checked instance"));
-        assert_eq!(proof.arity, 2);
-        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty, proof.lhs, proof.rhs))
-            .expect("the recorded instance proof should independently re-typecheck");
-    }
+/// `rec f n = if n < 2 then n else f(n-1) + f(n-2)` -- two self-calls in the recursive leaf.
+fn fib(s: &mut TermStore) -> Hash {
+    let n = s.var(0);
+    let f = s.var(1);
+    let two = s.lit(2);
+    let cond = s.prim(PrimOp::Lt, n, two);
+    let one = s.lit(1);
+    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
+    let n_minus_2 = s.prim(PrimOp::Sub, n, two);
+    let call1 = s.app(f, n_minus_1);
+    let call2 = s.app(f, n_minus_2);
+    let else_branch = s.prim(PrimOp::Add, call1, call2);
+    let body = s.if_(cond, n, else_branch);
+    let abs = s.abs(body);
+    s.rec(abs)
 }
 
 #[test]
-fn non_tail_recursion_gets_a_kernel_checked_instance_proof() {
-    // rec f n = if n <= 1 then 1 else n * f(n - 1)
+fn non_tail_recursion_gets_a_per_instance_proof() {
     let mut s = TermStore::new();
-    let n = s.var(0);
-    let fv = s.var(1);
-    let one = s.lit(1);
-    let cond = s.prim(PrimOp::Le, n, one);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let rec_call = s.app(fv, n_minus_1);
-    let else_branch = s.prim(PrimOp::Mul, n, rec_call);
-    let body = s.if_(cond, one, else_branch);
-    let abs = s.abs(body);
-    let fact = s.rec(abs);
-
+    let fact = fact(&mut s);
     for n in [0, 1, 5, 10] {
-        let proof = prove_tail_recursive_instance(&s, fact, &[n])
-            .unwrap_or_else(|| panic!("factorial({n}) should get a kernel-checked instance"));
+        let proof = prove_closure_expr_instance(&s, fact, &[n]).unwrap_or_else(|| panic!("factorial({n}) should get a per-instance proof"));
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty, proof.lhs, proof.rhs))
-            .expect("the recorded instance proof should independently re-typecheck");
+        check_instance_proof(&proof);
     }
 }
 
 #[test]
-fn fibonacci_branching_leaves_get_kernel_checked_instances() {
-    // rec f n = if n < 2 then n else f(n-1) + f(n-2) -- two self-calls
-    // in the recursive leaf. Once genuinely out of scope (see
-    // build_ev_witness's own docs for the fix: a `memo` DP cache plus a
-    // congruence-based recast of each cached witness to the calling
-    // leaf's own denoted call arguments) -- covers any number of
-    // self-calls per leaf now, not just at most one.
+fn fibonacci_branching_leaves_get_per_instance_proofs() {
     let mut s = TermStore::new();
-    let n = s.var(0);
-    let f = s.var(1);
-    let two = s.lit(2);
-    let cond = s.prim(PrimOp::Lt, n, two);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let n_minus_2 = s.prim(PrimOp::Sub, n, two);
-    let call1 = s.app(f, n_minus_1);
-    let call2 = s.app(f, n_minus_2);
-    let else_branch = s.prim(PrimOp::Add, call1, call2);
-    let body = s.if_(cond, n, else_branch);
-    let abs = s.abs(body);
-    let fib = s.rec(abs);
-
-    for n in [1, 2, 8] {
-        let proof = prove_tail_recursive_instance(&s, fib, &[n]).unwrap_or_else(|| panic!("fib({n}) should get an instance"));
+    let fib = fib(&mut s);
+    // The proof follows the whole call tree, so it grows with it (171 nodes at fib(8), 446 at fib(10)) and the step
+    // budget declines from fib(11); the deleted memoized witness stayed linear and reached fib(16).
+    for n in [1, 2, 8, 10] {
+        let proof = prove_closure_expr_instance(&s, fib, &[n]).unwrap_or_else(|| panic!("fib({n}) should get a per-instance proof"));
         assert_eq!(proof.arity, 1);
-        kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty, proof.lhs, proof.rhs))
-            .expect("the recorded instance proof should independently re-typecheck");
+        check_instance_proof(&proof);
     }
-}
-
-/// `fib(n)`'s witness reuses each smaller call's witness from
-/// `build_ev_witness`'s memo. With postulates as constants (rather than
-/// `Var`s that shift under a growing context) the DAG grows linearly:
-/// the spike measured 5,445 nodes at `fib(8)` and 10,501 at `fib(16)`
-/// (`RELATED_WORK.md` §69).
-#[test]
-fn a_fibonacci_instance_proof_shares_its_repeated_witnesses() {
-    let mut s = TermStore::new();
-    let n = s.var(0);
-    let f = s.var(1);
-    let two = s.lit(2);
-    let cond = s.prim(PrimOp::Lt, n, two);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let n_minus_2 = s.prim(PrimOp::Sub, n, two);
-    let call1 = s.app(f, n_minus_1);
-    let call2 = s.app(f, n_minus_2);
-    let else_branch = s.prim(PrimOp::Add, call1, call2);
-    let body = s.if_(cond, n, else_branch);
-    let abs = s.abs(body);
-    let fib = s.rec(abs);
-
-    let size = |n: i64| kernel::term_sizes(&prove_tail_recursive_instance(&s, fib, &[n]).unwrap().proof).0;
-    let (small, large) = (size(8), size(16));
-    assert!(2 * large < 5 * small, "fib(8): {small} nodes, fib(16): {large}");
-}
-
-/// `fib(16)`'s instance proof, built and re-checked. With postulates
-/// as constants it's a linear DAG (§69); before, it was 227k nodes and
-/// seconds of work.
-#[test]
-fn fib16_instance_proof_builds_and_checks_quickly() {
-    // same fib TermStore setup as fib16_instance_proof_cost
-    let mut s = TermStore::new();
-    let n = s.var(0);
-    let f = s.var(1);
-    let two = s.lit(2);
-    let cond = s.prim(PrimOp::Lt, n, two);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let n_minus_2 = s.prim(PrimOp::Sub, n, two);
-    let call1 = s.app(f, n_minus_1);
-    let call2 = s.app(f, n_minus_2);
-    let else_branch = s.prim(PrimOp::Add, call1, call2);
-    let body = s.if_(cond, n, else_branch);
-    let abs = s.abs(body);
-    let fib = s.rec(abs);
-
-    let t = std::time::Instant::now();
-    let proof = prove_tail_recursive_instance(&s, fib, &[16]).unwrap();
-    kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty, proof.lhs, proof.rhs))
-        .expect("fib(16)'s instance proof re-checks");
-    let took = t.elapsed();
-    assert!(took < std::time::Duration::from_secs(3), "took {took:?}");
-}
-
-/// `fib(16)`'s instance proof: its DAG size, and the time to build it
-/// and to check it again. The headline number for the §64 stages.
-/// Ignored, since it takes seconds. Run with
-/// `cargo test --release --lib fib16_instance_proof_cost -- --ignored --nocapture`.
-#[test]
-#[ignore]
-fn fib16_instance_proof_cost() {
-    let mut s = TermStore::new();
-    let n = s.var(0);
-    let f = s.var(1);
-    let two = s.lit(2);
-    let cond = s.prim(PrimOp::Lt, n, two);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let n_minus_2 = s.prim(PrimOp::Sub, n, two);
-    let call1 = s.app(f, n_minus_1);
-    let call2 = s.app(f, n_minus_2);
-    let else_branch = s.prim(PrimOp::Add, call1, call2);
-    let body = s.if_(cond, n, else_branch);
-    let abs = s.abs(body);
-    let fib = s.rec(abs);
-
-    let t = std::time::Instant::now();
-    let proof = prove_tail_recursive_instance(&s, fib, &[16]).unwrap();
-    let build = t.elapsed();
-    let t = std::time::Instant::now();
-    kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.int_ty, proof.lhs, proof.rhs))
-        .expect("fib(16)'s instance proof re-checks");
-    println!("fib16 dag={} build={build:?} check={:?}", kernel::term_sizes(&proof.proof).0, t.elapsed());
 }
 
 #[test]
 fn one_functions_instance_proof_is_rejected_against_anothers_type() {
-    // Same adversarial shape as
-    // one_functions_theorem_proof_is_rejected_against_anothers_type,
-    // one level down: an instance proof built for one function must
-    // not typecheck against another's (unrelated Ev/combine layout,
-    // different concrete call).
+    // Same adversarial shape as one_functions_theorem_proof_is_rejected_against_anothers_type,
+    // one level down: a per-instance proof built for one call must not typecheck against another's
+    // (different function, different denotation).
     let mut s = TermStore::new();
     let g = gcd(&mut s);
-    let gcd_proof = prove_tail_recursive_instance(&s, g, &[48, 18]).expect("gcd instance proof");
-
-    let mut s2 = TermStore::new();
-    let n = s2.var(0);
-    let fv = s2.var(1);
-    let one = s2.lit(1);
-    let cond = s2.prim(PrimOp::Le, n, one);
-    let n_minus_1 = s2.prim(PrimOp::Sub, n, one);
-    let rec_call = s2.app(fv, n_minus_1);
-    let else_branch = s2.prim(PrimOp::Mul, n, rec_call);
-    let body = s2.if_(cond, one, else_branch);
-    let abs = s2.abs(body);
-    let fact = s2.rec(abs);
-    let fact_proof = prove_tail_recursive_instance(&s2, fact, &[5]).expect("factorial instance proof");
+    let gcd_proof = prove_closure_expr_instance(&s, g, &[48, 18]).expect("gcd instance proof");
+    let fact = fact(&mut s);
+    let fact_proof = prove_closure_expr_instance(&s, fact, &[5]).expect("factorial instance proof");
 
     assert!(
         kernel::check_in(
             &gcd_proof.globals,
             &Ctx::new(),
             &gcd_proof.proof,
-            &kernel::id(fact_proof.int_ty, fact_proof.lhs, fact_proof.rhs),
+            &kernel::id(fact_proof.result_ty, fact_proof.denotation, fact_proof.denotation),
         )
         .is_err(),
         "gcd's instance proof should be rejected against factorial's instance type"
@@ -2137,7 +1156,7 @@ fn recursion_combined_with_closures_is_out_of_scope() {
     // and a_directly_called_self_recursive_combinator_gets_a_closure_proof
     // below for that, now-covered, case): prove_closure_expr's own
     // top-level check still requires `h` itself to be non-recursive,
-    // since it's `build_universal`'s job, not this fragment's, to
+    // since it's `prove_tail_recursive_universal`'s job, not this fragment's, to
     // prove what a self-recursive function's *own* body computes.
     let mut s = TermStore::new();
     let t = twice(&mut s);
@@ -2691,7 +1710,7 @@ fn a_closure_created_in_a_self_call_argument_capturing_a_closure_typed_loop_para
     // rejected (or silently misclassified) for an unrelated reason.
     //
     // Exercises `denote_closure`'s own value-leaf registration
-    // with a `Clo`-typed capture, inside `build_universal`'s full
+    // with a `Clo`-typed capture, inside `prove_tail_recursive_universal`'s full
     // induction pipeline (not just the non-recursive `prove_closure_expr`
     // fragment `a_capture_of_a_closure_typed_value_gets_a_closure_proof`
     // above checks).
@@ -3590,5 +2609,225 @@ fn branching_non_tail_self_calls_carrying_an_inconsistently_classified_closure_p
         // from the term itself, so this is a real cross-check.
         let expected = [1i64, 2, 3, 5, 8][n_val as usize];
         assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), expected, "n={n_val}: sanity check against the interpreter");
+    }
+}
+
+// --- over-applied closures, applied to literal arguments -----------------------
+//
+// Calls whose saturated result is itself a closure (chosen by an `If`, a partial application, or a further call) and is
+// then applied to more arguments, with every argument a literal. These are the shapes the deleted per-call witness
+// engine (`eval_and_prove`, 2026-10-26 "CU3") had a special case for; `prove_closure_expr` covers each one with no
+// shape-specific code, and `prove_closure_expr_instance` declines them (its trace-following inliner handles closures
+// reached through a parameter, not a closed over-application). The arithmetic is asymmetric so an argument-order
+// mix-up changes the value the interpreter check pins.
+
+/// `h(args)` evaluates to `expected` in the interpreter, and `prove_closure_expr` proves `h` for every input, with a
+/// proof that re-checks from scratch.
+fn check_closed_closure_proof(s: &TermStore, h: Hash, args: &[i64], expected: i64) {
+    assert_eq!(eval::apply_term(s, h, args).unwrap(), expected, "{args:?}: interpreter sanity check");
+    let proof = prove_closure_expr(s, h).unwrap_or_else(|| panic!("{args:?}: should get a closure proof"));
+    kernel::check_in(&proof.globals, &Ctx::new(), &proof.proof, &kernel::id(proof.result_ty, proof.denotation, proof.denotation))
+        .expect("the recorded proof should independently re-typecheck");
+}
+
+#[test]
+fn an_over_applied_if_between_two_non_symmetric_closures_gets_a_closure_proof() {
+    // f = \a. if 0<a then (\c d. c-d) else (\c d. d-c); f(a, c, d)
+    let mut s = TermStore::new();
+    let (d1, c1) = (s.var(0), s.var(1));
+    let cd = s.prim(PrimOp::Sub, c1, d1);
+    let inner1 = s.abs(cd);
+    let closure1 = s.abs(inner1);
+    let (c2, d2) = (s.var(1), s.var(0));
+    let dc = s.prim(PrimOp::Sub, d2, c2);
+    let inner2 = s.abs(dc);
+    let closure2 = s.abs(inner2);
+    let a = s.var(0);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, a);
+    let body = s.if_(cond, closure1, closure2);
+    let f = s.abs(body);
+
+    for (a_val, c_val, d_val, expected) in [(5, 10, 3, 7), (-5, 10, 3, -7)] {
+        let (a_lit, c_lit, d_lit) = (s.lit(a_val), s.lit(c_val), s.lit(d_val));
+        let fa = s.app(f, a_lit);
+        let fac = s.app(fa, c_lit);
+        let h = s.app(fac, d_lit);
+        check_closed_closure_proof(&s, h, &[], expected);
+    }
+}
+
+#[test]
+fn an_inner_closures_captures_resolve_against_its_roots_own_frame_in_a_closure_proof() {
+    // f = \a. if 0<a then (\c. a+w+c) else (\c. a-w-c), `w` captured from the outer frame; \w. f(a)(c)
+    let mut s = TermStore::new();
+    let (c1, a1, w1) = (s.var(0), s.var(1), s.var(2));
+    let aw1 = s.prim(PrimOp::Add, a1, w1);
+    let awc1 = s.prim(PrimOp::Add, aw1, c1);
+    let closure_t = s.abs(awc1);
+    let (c2, a2, w2) = (s.var(0), s.var(1), s.var(2));
+    let aw2 = s.prim(PrimOp::Sub, a2, w2);
+    let awc2 = s.prim(PrimOp::Sub, aw2, c2);
+    let closure_e = s.abs(awc2);
+    let a = s.var(0);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, a);
+    let f_body = s.if_(cond, closure_t, closure_e);
+    let f = s.abs(f_body);
+
+    for (w_val, a_val, c_val, expected) in [(100, 10, 5, 115), (100, -10, 5, -115)] {
+        let (a_lit, c_lit) = (s.lit(a_val), s.lit(c_val));
+        let fa = s.app(f, a_lit);
+        let call = s.app(fa, c_lit);
+        let h = s.abs(call);
+        check_closed_closure_proof(&s, h, &[w_val], expected);
+    }
+}
+
+#[test]
+fn an_over_applied_partial_application_root_gets_a_closure_proof() {
+    // g = \x y. x*10 + y; f = \a. g(a); f(5)(3) = g(5, 3) = 53
+    let mut s = TermStore::new();
+    let (x, y, ten) = (s.var(1), s.var(0), s.lit(10));
+    let x10 = s.prim(PrimOp::Mul, x, ten);
+    let xy = s.prim(PrimOp::Add, x10, y);
+    let g_inner = s.abs(xy);
+    let g = s.abs(g_inner);
+    let a = s.var(0);
+    let f_body = s.app(g, a);
+    let f = s.abs(f_body);
+    let (five, three) = (s.lit(5), s.lit(3));
+    let fa = s.app(f, five);
+    let h = s.app(fa, three);
+    check_closed_closure_proof(&s, h, &[], 53);
+
+    // The same through two more levels of saturated calls that each return a closure: root = \a. outer(a),
+    // outer = \a. middle(a), middle = \b. h(b), h = \p q. p-q; root(11)(4) = h(11, 4) = 7.
+    let (p, q) = (s.var(1), s.var(0));
+    let pq = s.prim(PrimOp::Sub, p, q);
+    let h_inner = s.abs(pq);
+    let h_fn = s.abs(h_inner);
+    let b = s.var(0);
+    let middle_body = s.app(h_fn, b);
+    let middle = s.abs(middle_body);
+    let a1 = s.var(0);
+    let outer_body = s.app(middle, a1);
+    let outer = s.abs(outer_body);
+    let a2 = s.var(0);
+    let root_body = s.app(outer, a2);
+    let root = s.abs(root_body);
+    let (eleven, four) = (s.lit(11), s.lit(4));
+    let root_a = s.app(root, eleven);
+    let h_term = s.app(root_a, four);
+    check_closed_closure_proof(&s, h_term, &[], 7);
+}
+
+#[test]
+fn an_over_applied_partial_application_root_with_two_supplied_args_and_a_capture_gets_a_closure_proof() {
+    // g = \p q r. p*100 + q*10 + r + y, capturing f's `y`; f = \x y. g(x, y); f(5)(7)(3) = 580
+    let mut s = TermStore::new();
+    let (p, q, r, captured_y) = (s.var(2), s.var(1), s.var(0), s.var(3));
+    let (hundred, ten) = (s.lit(100), s.lit(10));
+    let p100 = s.prim(PrimOp::Mul, p, hundred);
+    let q10 = s.prim(PrimOp::Mul, q, ten);
+    let sum1 = s.prim(PrimOp::Add, p100, q10);
+    let sum2 = s.prim(PrimOp::Add, sum1, r);
+    let sum3 = s.prim(PrimOp::Add, sum2, captured_y);
+    let g_r = s.abs(sum3);
+    let g_q = s.abs(g_r);
+    let g = s.abs(g_q);
+    let (f_x, f_y) = (s.var(1), s.var(0));
+    let f_body = s.app2(g, f_x, f_y);
+    let f_inner = s.abs(f_body);
+    let f = s.abs(f_inner);
+    let (x_lit, y_lit, r_lit) = (s.lit(5), s.lit(7), s.lit(3));
+    let fx = s.app(f, x_lit);
+    let fxy = s.app(fx, y_lit);
+    let h = s.app(fxy, r_lit);
+    check_closed_closure_proof(&s, h, &[], 580);
+}
+
+#[test]
+fn a_closure_reached_only_through_a_further_saturated_call_gets_a_closure_proof() {
+    // h = \p q. p*10+q; middle = \x. h(x); root = \a b. if 0<a then middle(b) else (\y. y-1); root(a)(b)(c)
+    let mut s = TermStore::new();
+    let (p, q, ten) = (s.var(1), s.var(0), s.lit(10));
+    let p10 = s.prim(PrimOp::Mul, p, ten);
+    let pq = s.prim(PrimOp::Add, p10, q);
+    let h_inner = s.abs(pq);
+    let h_fn = s.abs(h_inner);
+    let x = s.var(0);
+    let h_x = s.app(h_fn, x);
+    let middle = s.abs(h_x);
+    let b = s.var(0);
+    let then_branch = s.app(middle, b);
+    let (y, one) = (s.var(0), s.lit(1));
+    let y_minus_1 = s.prim(PrimOp::Sub, y, one);
+    let else_branch = s.abs(y_minus_1);
+    let a = s.var(1);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, a);
+    let root_body = s.if_(cond, then_branch, else_branch);
+    let root_b = s.abs(root_body);
+    let root = s.abs(root_b);
+
+    for (a_val, b_val, c_val, expected) in [(5, 3, 7, 37), (-5, 3, 7, 6)] {
+        let (a_lit, b_lit, c_lit) = (s.lit(a_val), s.lit(b_val), s.lit(c_val));
+        let root_a = s.app(root, a_lit);
+        let root_ab = s.app(root_a, b_lit);
+        let h = s.app(root_ab, c_lit);
+        check_closed_closure_proof(&s, h, &[], expected);
+    }
+}
+
+#[test]
+fn a_self_recursive_root_whose_body_never_self_calls_gets_a_closure_proof() {
+    // rec helper a = if 0<a then (\c. c+a) else (\c. c-a): Rec-wrapped, never self-calling; helper(a)(c)
+    let mut s = TermStore::new();
+    let (c1, a_shifted1, a_ref) = (s.var(0), s.var(1), s.var(0));
+    let c_plus_a = s.prim(PrimOp::Add, c1, a_shifted1);
+    let then_branch = s.abs(c_plus_a);
+    let (c2, a_shifted2) = (s.var(0), s.var(1));
+    let c_minus_a = s.prim(PrimOp::Sub, c2, a_shifted2);
+    let else_branch = s.abs(c_minus_a);
+    let zero = s.lit(0);
+    let cond = s.prim(PrimOp::Lt, zero, a_ref);
+    let helper_body = s.if_(cond, then_branch, else_branch);
+    let helper_abs = s.abs(helper_body);
+    let helper = s.rec(helper_abs);
+
+    for (a_val, c_val, expected) in [(5, 3, 8), (-5, 10, 15)] {
+        let (a_lit, c_lit) = (s.lit(a_val), s.lit(c_val));
+        let helper_a = s.app(helper, a_lit);
+        let h = s.app(helper_a, c_lit);
+        check_closed_closure_proof(&s, h, &[], expected);
+    }
+}
+
+#[test]
+fn a_nested_if_choosing_among_three_closures_gets_a_closure_proof() {
+    // f = \a. if 0<a then (if 10<a then (\c. c) else (\c. c+1)) else (\c. c-1); f(a)(c)
+    let mut s = TermStore::new();
+    let (c1, one) = (s.var(0), s.lit(1));
+    let c_plus_1 = s.prim(PrimOp::Add, c1, one);
+    let inner_then = s.abs(c_plus_1);
+    let c2 = s.var(0);
+    let inner_else = s.abs(c2);
+    let (a1, ten) = (s.var(0), s.lit(10));
+    let inner_cond = s.prim(PrimOp::Lt, ten, a1);
+    let t = s.if_(inner_cond, inner_else, inner_then);
+    let (c3, one2) = (s.var(0), s.lit(1));
+    let c_minus_1 = s.prim(PrimOp::Sub, c3, one2);
+    let e = s.abs(c_minus_1);
+    let (a2, zero) = (s.var(0), s.lit(0));
+    let outer_cond = s.prim(PrimOp::Lt, zero, a2);
+    let f_body = s.if_(outer_cond, t, e);
+    let f = s.abs(f_body);
+
+    for (a_val, c_val, expected) in [(5, 3, 4), (20, 3, 3), (-5, 3, 2)] {
+        let (a_lit, c_lit) = (s.lit(a_val), s.lit(c_val));
+        let fa = s.app(f, a_lit);
+        let h = s.app(fa, c_lit);
+        check_closed_closure_proof(&s, h, &[], expected);
     }
 }

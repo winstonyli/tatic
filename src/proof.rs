@@ -164,11 +164,6 @@ pub struct ArithPostulates {
     op_pos: [usize; 8],
     ite_pos: usize,
     literal_pos: HashMap<i64, usize>,
-    /// Memoized per `(op, x, y)` -- see `assume_prim_fact`.
-    fact_pos: HashMap<(u8, i64, i64), usize>,
-    /// Memoized per `(c, t, e)` -- see `assume_ite_fact`, `assume_prim_fact`'s
-    /// counterpart for a nested `If` inside a leaf.
-    ite_fact_pos: HashMap<(i64, i64, i64), usize>,
 }
 
 impl ArithPostulates {
@@ -215,8 +210,6 @@ impl ArithPostulates {
             op_pos,
             ite_pos,
             literal_pos: HashMap::new(),
-            fact_pos: HashMap::new(),
-            ite_fact_pos: HashMap::new(),
         }
     }
 
@@ -250,58 +243,6 @@ impl ArithPostulates {
             .literal_pos
             .get(&n)
             .expect("literal not pre-postulated -- collect_literals missed one");
-        self.p.get(pos)
-    }
-
-    /// Postulates (memoized per `(op, x, y)`) that concretely evaluating
-    /// `op` at literals `x`, `y` yields the same result
-    /// `apply_prim_concrete` -- the function `eval_concrete` itself uses --
-    /// computes. This is the concrete counterpart of postulating `Int`'s
-    /// operators abstractly in the first place: a postulated operator has
-    /// no computation rule the kernel could use to *derive* this, so
-    /// building a witness for one specific call has to assume each
-    /// concrete fact it actually needs, one axiom per distinct fact,
-    /// grounded in the same arithmetic function this whole project already
-    /// treats as ground truth (see `eval_and_prove`).
-    fn assume_prim_fact(&mut self, op: PrimOp, x: i64, y: i64) -> Expr {
-        let key = (op as u8, x, y);
-        if let Some(&pos) = self.fact_pos.get(&key) {
-            return self.p.get(pos);
-        }
-        let result = apply_prim_concrete(op, x, y);
-        self.lit(x);
-        self.lit(y);
-        self.lit(result);
-        let lhs = kernel::app2(self.op_ref(op), self.lit_ref(x), self.lit_ref(y));
-        let rhs = self.lit_ref(result);
-        let ty = kernel::id(self.int_ty(), lhs, rhs);
-        let pos = self.p.push(ty);
-        self.fact_pos.insert(key, pos);
-        self.p.get(pos)
-    }
-
-    /// `assume_prim_fact`'s counterpart for `ite_ref`: postulates (memoized
-    /// per `(c, t, e)`) that concretely evaluating a nested `If` at literals
-    /// `c`/`t`/`e` yields `eval_concrete`'s own `If` result (`t` if `c != 0`
-    /// else `e`) -- needed once a leaf may itself contain a further nested
-    /// `If` (see the module docs), since `eval_and_prove` then has to
-    /// discharge `app3(ite_ref, ..)` concretely the same way it already
-    /// does for a `Prim` application.
-    fn assume_ite_fact(&mut self, c: i64, t: i64, e: i64) -> Expr {
-        let key = (c, t, e);
-        if let Some(&pos) = self.ite_fact_pos.get(&key) {
-            return self.p.get(pos);
-        }
-        let result = if c != 0 { t } else { e };
-        self.lit(c);
-        self.lit(t);
-        self.lit(e);
-        self.lit(result);
-        let lhs = kernel::app3(self.ite_ref(), self.lit_ref(c), self.lit_ref(t), self.lit_ref(e));
-        let rhs = self.lit_ref(result);
-        let ty = kernel::id(self.int_ty(), lhs, rhs);
-        let pos = self.p.push(ty);
-        self.ite_fact_pos.insert(key, pos);
         self.p.get(pos)
     }
 }
@@ -412,15 +353,6 @@ fn denote_in(
     Some(d)
 }
 
-/// One call frame's parameters, as the instance provers thread them: each parameter's kernel term, its concrete value
-/// and the fact that ties the two together.
-#[derive(Clone, Copy)]
-pub(super) struct Frame<'f> {
-    pub(super) params: &'f [Expr],
-    pub(super) concrete: &'f [i64],
-    pub(super) facts: &'f [Expr],
-}
-
 /// A kernel-checked witness that a term's compiled and interpreted
 /// readings agree: either for *every* input (`prove_pure_expr`, the
 /// straight-line fragment) or for one specific call
@@ -505,9 +437,6 @@ pub use universal::*;
 mod hardening;
 #[allow(unused_imports)]
 pub use hardening::*;
-mod instance;
-#[allow(unused_imports)]
-pub use instance::*;
 mod closures;
 #[allow(unused_imports)]
 pub use closures::*;

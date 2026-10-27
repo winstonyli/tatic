@@ -490,11 +490,9 @@ pub fn branching_non_tail_closure_carrying_recursion(s: &mut TermStore) -> Hash 
 }
 
 /// `f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(10, 3, 100)` --
-/// the canonical over-application shape `eval_and_prove_call_over`'s own
-/// `clo_eq_ref_if_between`/`ite_clo_eq_ref`/`apply_clo_eq_ref` cover:
-/// `f`'s own saturated call denotes a further `Clo_1`, chosen by an `If`
-/// between two literal lambdas, then the extra argument dispatches
-/// against it.
+/// the canonical over-application shape: `f`'s own saturated call denotes a
+/// further `Clo_1`, chosen by an `If` between two literal lambdas, then the
+/// extra argument dispatches against it.
 pub fn over_application_if_between_closures(s: &mut TermStore) -> Hash {
     let c1 = s.var(0);
     let b1 = s.var(1);
@@ -526,10 +524,9 @@ pub fn over_application_if_between_closures(s: &mut TermStore) -> Hash {
 }
 
 /// `g = \x y. x*10 + y; f = \a. g(a); f(5)(3)` -- the PAP-producing-root
-/// over-application shape `eval_and_prove_call_over`'s own
-/// `clo_eq_ref_pap`/`apply_pap_eq_ref` cover: `f`'s own saturated call
-/// denotes a partial application of `g`, no branching at all, then the
-/// extra argument completes `g`'s own call directly.
+/// over-application shape: `f`'s own saturated call denotes a partial
+/// application of `g`, no branching at all, then the extra argument
+/// completes `g`'s own call directly.
 pub fn over_application_pap_producing_root(s: &mut TermStore) -> Hash {
     let x = s.var(1);
     let y = s.var(0);
@@ -553,16 +550,9 @@ pub fn over_application_pap_producing_root(s: &mut TermStore) -> Hash {
 /// `over_app_id(a, x) = (\a b. if 0<a then (\c.c) else (\c.c))(a, a, x)`
 /// -- deliberately trivial arithmetically (both `If`-branches are the
 /// identity, so this always reduces to `x`, and the whole loop always
-/// counts down to `0` from `n=8`), but exercises
-/// `eval_and_prove_call_over`'s own `clo_eq_ref_if_between`/
-/// `ite_clo_eq_ref`/`apply_clo_eq_ref` once per iteration, the same way a
-/// real self-call argument built from an over-application would --
-/// `build_ev_witness`'s own per-argument `eval_and_prove` call is what
-/// this benchmark isolates the cost of, in the actual calling context
-/// that machinery is built for (there's no standalone public entry point
-/// for `eval_and_prove_call_over` on its own -- it's only ever reached
-/// through a recursive instance proof's own leaf/self-call-argument
-/// handling).
+/// counts down to `0` from `n=8`), but puts an `If`-between-closures
+/// over-application in the self-call argument, once per iteration, the
+/// way a real self-call argument built from an over-application would.
 pub fn tail_recursive_loop_with_if_between_closures_self_call_arg(s: &mut TermStore) -> Hash {
     let c1 = s.var(0);
     let id1 = s.abs(c1);
@@ -594,9 +584,9 @@ pub fn tail_recursive_loop_with_if_between_closures_self_call_arg(s: &mut TermSt
 /// `rec f n = if n <= 0 then n else f(over_app_pap_id(n-1))`, where
 /// `over_app_pap_id(x) = (\a. (\p q. q)(a))(0)(x)` -- `g = \p q. q`
 /// (arity 2), partially applied to a constant, so this always reduces to
-/// `x` too, exercising `eval_and_prove_call_over`'s own
-/// `clo_eq_ref_pap`/`apply_pap_eq_ref` once per iteration instead of the
-/// `If`-between-closures pair above -- see that function's own docs.
+/// `x` too, putting a PAP-producing-root over-application in the self-call
+/// argument once per iteration instead of the `If`-between-closures one
+/// above -- see that function's own docs.
 pub fn tail_recursive_loop_with_pap_producing_root_self_call_arg(s: &mut TermStore) -> Hash {
     let q = s.var(0);
     let g_inner = s.abs(q);

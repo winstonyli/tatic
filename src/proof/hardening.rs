@@ -8,11 +8,10 @@ use super::*;
 //
 // This helper turns any such mistake into an immediate, precisely located
 // panic instead: called once at the *return point* of any function that
-// composes sub-`Expr`s from more than one recursive call (`denote_closure`,
-// `eval_and_prove`, `build_ev_witness`), it confirms the value this call is
+// composes sub-`Expr`s from more than one recursive call (`denote_closure`),
+// it confirms the value this call is
 // about to hand back has the *exact* type expected -- known statically at
-// each call site (`Int`, `Clo`, or, for `build_ev_witness`, `Ev(params, v)`
-// itself, now that `ev_pos` is available to build it) -- before it can be
+// each call site (`Int` or `Clo`) -- before it can be
 // embedded, unchecked, into a caller's own larger expression. Checking once
 // per call,
 // at return, is enough to localize a bug to the exact (innermost) call that
@@ -36,9 +35,7 @@ pub(super) fn debug_assert_has_type(p: &Postulates, e: &Expr, expected: &Expr, l
     }
 }
 
-/// `combine`'s value at `params`/`ihs` (both hoisted to a free function --
-/// not just a closure local to `prove_tail_recursive_universal` -- so
-/// `build_ev_witness` can reuse it too).
+/// `combine`'s value at `params`/`ihs`.
 pub(super) fn combine_of(combine: &Expr, params: &[Expr], ihs: &[Expr]) -> Expr {
     apply_n(*combine, params.iter().cloned().chain(ihs.iter().cloned()))
 }
@@ -428,40 +425,15 @@ pub(super) fn denote_closure(
     }
 }
 
-/// Binds `n` fresh `Int`-typed parameters in a new scope, lets `build`
-/// bind more of its own and construct a body term, then closes
-/// *everything* bound since entry (the `n` params plus anything `build`
-/// itself bound, e.g. `v` or `e`) into nested binders around that body,
-/// rolling them back afterward. Pass `kernel::Binder::Pi` to build a
-/// *type* (quantifying over these params) or `kernel::Binder::Lam` to build a *value* of that
-/// type (e.g. a motive or a proof to pass as an argument) -- getting this
-/// wrong is a real, easy-to-make mistake (a `Pi` where a `Lam` was
-/// needed), not a hypothetical one.
-pub(super) fn params_and_close(
-    arith: &mut ArithPostulates,
-    n: usize,
-    binder: kernel::Binder,
-    build: impl FnOnce(&mut ArithPostulates, &[Expr]) -> Option<Expr>,
-) -> Option<Expr> {
-    let s = arith.p.open();
-    let params: Vec<Expr> = (0..n)
-        .map(|_| {
-            let ty = arith.int_ty();
-            arith.p.bind(ty)
-        })
-        .collect();
-    match build(arith, &params) {
-        Some(b) => Some(arith.p.close(s, binder, b)),
-        None => {
-            arith.p.abandon(s);
-            None
-        }
-    }
-}
-
-/// Like [`params_and_close`], but for `build_universal`'s own closure-aware
-/// pipeline: binds one fresh parameter per entry of `param_types`, typed
-/// `Clo_k` or `Int` to match, so `build`'s own params may be mixed-typed.
+/// Binds one fresh parameter per entry of `param_types` in a new scope, typed
+/// `Clo_k` or `Int` to match, lets `build` bind more of its own and construct
+/// a body term, then closes *everything* bound since entry (the params plus
+/// anything `build` itself bound, e.g. `v` or `e`) into nested binders around
+/// that body, rolling them back afterward. Pass `kernel::Binder::Pi` to build
+/// a *type* (quantifying over these params) or `kernel::Binder::Lam` to build
+/// a *value* of that type (e.g. a motive or a proof to pass as an argument) --
+/// getting this wrong is a real, easy-to-make mistake (a `Pi` where a `Lam`
+/// was needed), not a hypothetical one.
 pub(super) fn params_and_close_typed(
     arith: &mut ClosureCombinators<'_>,
     param_types: &[Option<usize>],
@@ -499,37 +471,20 @@ pub struct UniversalTailProof {
     pub theorem_proof: Expr,
 }
 
-/// Everything `prove_tail_recursive_universal`'s theorem was built from,
-/// kept around (instead of dropped) so `prove_tail_recursive_instance` can
-/// reuse it to build a concrete `Ev`-witness afterward, without redoing any
-/// of the theorem's own construction. Witness-building pushes further
-/// postulates onto `arith.p.globals` (fresh literal constants,
-/// `assume_prim_fact` axioms) after this scaffold is built.
-pub(super) struct UniversalScaffold<'a> {
-    pub(super) combinators: ClosureCombinators<'a>,
-    pub(super) arity: usize,
-    /// `param_types[i]` is `Some(k)` for a `Var(i)` parameter that's a
-    /// `Clo`, always called with `k` arguments (the same convention
-    /// `denote_closure`'s own `param_types` uses -- see its docs), `None`
-    /// for a plain `Int` parameter. Never itself involving a captured
-    /// free variable or a literal-lambda call (see `build_universal`'s own
-    /// docs for the scope this narrows to) -- only ever consulted to
-    /// decide whether `instance_from_scaffold` can even attempt a concrete
-    /// instance (it can't, for any `Some(_)` entry -- see its own docs).
-    pub(super) param_types: Vec<Option<usize>>,
-    pub(super) self_call: SelfCall,
-    pub(super) leaves: Vec<Leaf>,
-    pub(super) combines: Vec<Expr>,
-    pub(super) ev_leaf_positions: Vec<usize>,
-    /// `Ev`'s own postulate position (see `build_universal`) -- needed by
-    /// `build_ev_witness`'s branching-leaf recasting, which builds `Ev(...)`
-    /// applications directly rather than through a leaf-specific constructor.
-    pub(super) ev_pos: usize,
-    pub(super) theorem_ty: Expr,
-    pub(super) theorem_proof: Expr,
-}
-
-pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalScaffold<'_>> {
+/// Attempts to build a [`UniversalTailProof`] for `h`. Returns `None` for
+/// anything outside the covered fragment: not `Rec`-wrapped, zero arity, a
+/// body that doesn't classify as a [`DecisionTree`] (every `If` on the way
+/// to a leaf must be a direct comparison), or one with no self-call
+/// anywhere in it. A closure-typed *parameter*, threaded through the
+/// recursion or called via ordinary application (`Clo_k` is a literal
+/// Pi type, not an opaque postulate -- see `ClosurePostulates::clo_ty`),
+/// is covered; so is a closure
+/// genuinely created and (fully or partially) called anywhere in the body
+/// -- a self-call argument (`f(n-1, (\y. acc+y)(n))`) or a leaf's own
+/// top-level expression (`(\y. n+y)(5) + f(n-1)`) alike (see module
+/// docs). A leaf may itself contain a further nested `If`, purely
+/// arithmetic or choosing between two `Clo`-typed values.
+pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
     let (arity, body, is_rec) = compile::peel(store, h)?;
     if !is_rec || arity == 0 {
         return None;
@@ -745,7 +700,7 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
         });
         // `params_and_close_typed` already rolls back its own (inner) scope
         // on `None`; a `?` here would still skip past this loop straight
-        // out of `build_universal`, leaving `p_scope` (and `P`) open.
+        // out of `prove_tail_recursive_universal`, leaving `p_scope` (and `P`) open.
         let ty = match ty {
             Some(ty) => ty,
             None => {
@@ -912,41 +867,5 @@ pub(super) fn build_universal(store: &TermStore, h: Hash) -> Option<UniversalSca
 
     arith.p.check(&theorem_proof, &theorem_ty).ok()?;
 
-    Some(UniversalScaffold {
-        theorem_ty,
-        theorem_proof,
-        arity,
-        param_types,
-        self_call,
-        leaves,
-        combines,
-        ev_leaf_positions,
-        ev_pos,
-        combinators: arith,
-    })
-}
-
-/// Attempts to build a [`UniversalTailProof`] for `h`. Returns `None` for
-/// anything outside the covered fragment: not `Rec`-wrapped, zero arity, a
-/// body that doesn't classify as a [`DecisionTree`] (every `If` on the way
-/// to a leaf must be a direct comparison), or one with no self-call
-/// anywhere in it. A closure-typed *parameter*, threaded through the
-/// recursion or called via ordinary application (`Clo_k` is a literal
-/// Pi type, not an opaque postulate -- see `ClosurePostulates::clo_ty`),
-/// is covered; so is a closure
-/// genuinely created and (fully or partially) called anywhere in the body
-/// -- a self-call argument (`f(n-1, (\y. acc+y)(n))`) or a leaf's own
-/// top-level expression (`(\y. n+y)(5) + f(n-1)`) alike (see module
-/// docs). A leaf may itself contain a further nested `If`, purely
-/// arithmetic or choosing between two `Clo`-typed values.
-pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
-    let scaffold = build_universal(store, h)?;
-    let theorem_ty = scaffold.theorem_ty;
-    let theorem_proof = scaffold.theorem_proof;
-    Some(UniversalTailProof {
-        globals: scaffold.combinators.cp.arith.p.globals,
-        arity: scaffold.arity,
-        theorem_ty,
-        theorem_proof,
-    })
+    Some(UniversalTailProof { globals: arith.cp.arith.p.globals, arity, theorem_ty, theorem_proof })
 }

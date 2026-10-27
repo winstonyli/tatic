@@ -7,12 +7,8 @@
 
 use criterion::{criterion_group, criterion_main, black_box, Criterion};
 
-use tatic::proof::{
-    prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_instance,
-    prove_tail_recursive_universal,
-};
+use tatic::proof::{prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_universal};
 use tatic::term::TermStore;
-use tatic::eval;
 
 #[path = "common.rs"]
 mod common;
@@ -92,7 +88,7 @@ fn per_execution_scaling_vs_universal(c: &mut Criterion) {
 
 /// Cost of `prove_closure_expr` itself, across the closures fragment's own
 /// shapes -- unlike the arithmetic-only groups above, none of these
-/// involve `build_universal`'s induction machinery at all (the top-level
+/// involve `prove_tail_recursive_universal`'s induction machinery at all (the top-level
 /// term must be non-recursive for this fragment), so this isolates
 /// `denote_closure`'s own cost: registering/calling a combinator,
 /// building an `Env_n` value, and the PAP wrapper postulate, each
@@ -130,7 +126,7 @@ fn closures_fragment_proof(c: &mut Criterion) {
 
 /// `prove_tail_recursive_universal`'s own cost against a closure-typed
 /// loop-carried parameter (`iterate`'s shape) -- unlike the group above,
-/// this *does* go through `build_universal`'s full induction pipeline
+/// this *does* go through `prove_tail_recursive_universal`'s full induction pipeline
 /// (`denote_closure_typed`/`prime_closure_postulates`, not just
 /// `denote_closure`), so it belongs alongside `universal_proof`'s own
 /// arithmetic-only leaf-count comparison, not the closures-fragment group.
@@ -172,95 +168,6 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
     group.finish();
 }
 
-/// Cost of `eval_and_prove_call_over`'s own two over-application shapes
-/// (`clo_eq_ref_if_between`/`ite_clo_eq_ref`/`apply_clo_eq_ref`, and
-/// `clo_eq_ref_pap`/`apply_pap_eq_ref`), which has no standalone public
-/// entry point of its own -- it's only ever reached through a recursive
-/// instance proof's own self-call-argument handling
-/// (`build_ev_witness`'s per-argument `eval_and_prove` call), so this
-/// exercises it the same way any real usage would: a small tail-recursive
-/// loop whose self-call argument is, each of 4 iterations, an
-/// over-application expression rebuilding the very same `n - 1` a plain
-/// `Prim::Sub` would -- deliberately trivial arithmetically (both shapes'
-/// own `common::` doc comments explain why), so this measures
-/// proof-construction cost, not the cost of the arithmetic it happens to
-/// compute.
-///
-/// `prove_tail_recursive_instance` (the only public entry point) always
-/// pays `build_universal`'s own one-time scaffold cost too, not just the
-/// per-iteration instance work -- this is *not* a clean isolation of
-/// `eval_and_prove_call_over` alone. Comparing against
-/// `universal_proof_one_time_by_leaf_count` (a comparably-shaped
-/// tail-recursive loop's `build_universal` cost alone, ~10-20ms) puts a
-/// number on it: this benchmark's own measured cost (~90-130ms for 4
-/// iterations, both shapes) is 5-10x that baseline, so most of it -- not
-/// all -- is genuinely attributable to the 4 over-application instances.
-///
-/// **Investigated, not just left as a discovered fact** (see
-/// `RELATED_WORK.md`'s own write-up): a callgrind profile found ~40% of
-/// all instructions in `<DefaultHasher as Hasher>::write`/`hash_one`,
-/// traced to `proof.rs`'s own `ClosurePostulates` memoization tables
-/// (`HashMap<Hash, _>`, `Hash` = a 32-byte BLAKE3 digest, already
-/// uniformly random) and `kernel.rs`'s own `ReductionCache`/
-/// `ShiftCacheMap` (since removed, `RELATED_WORK.md` §54), all built on `std::collections::HashMap`'s default,
-/// cryptographically-oriented SipHash -- re-hashing an already-random
-/// digest, or hashing on every one of `shift`'s own extremely frequent
-/// calls, for no benefit. `compile.rs`/`jit.rs`/`term.rs` were already
-/// fine: they import `hashbrown::HashMap` directly, whose own default
-/// (`hashbrown`'s `default-hasher` feature, already enabled via this
-/// project's existing `hashbrown` dependency) is `foldhash`, not
-/// SipHash. First attempt (a hand-rolled `FxHash`-style passthrough
-/// hasher) was a false fix -- correct in principle, but applied blind:
-/// it was a lateral move on the already-`foldhash` files and only
-/// partially addressed `proof.rs`, so it barely moved the wall-clock
-/// number (0-8.5%). The real fix, once traced to the actual `std`-vs-
-/// `hashbrown` split: just import `hashbrown::HashMap` in `proof.rs`/
-/// `kernel.rs` too, getting the same well-vetted `foldhash` the rest of
-/// the crate already had, no custom hasher code needed at all. Confirmed
-/// by re-profiling: `DefaultHasher`/SipHash disappeared from the hot
-/// path entirely, total instruction count dropped ~44% (1.04B → 584M),
-/// and wall-clock improved ~24-26% here, both statistically significant.
-/// `with_shift_cache` (since removed) was tried too and made this measurably *worse* --
-/// this workload's own redundancy shape (a genuinely growing
-/// `trans_proof` chain, not the same subterm reshifted repeatedly across
-/// callers) doesn't match what that cache targets.
-///
-/// The real remaining answer: this cost is super-linear in iteration
-/// count by construction, not a hidden bug. A direct scaling check
-/// (1, 2, 4, 8, 16, 32 iterations, measured before the hasher fix above
-/// -- the fix changes the constant factor, not this shape) found
-/// 69.6ms/102ms/204ms/441ms/985ms/2672ms -- doubling the iteration count
-/// costs progressively more each time (1.5x, 2.0x, 2.2x, 2.2x, 2.7x),
-/// consistent with `trans_proof`'s own cumulative composition: each new
-/// step's proof necessarily references the *entire* accumulated chain so
-/// far, the same reason repeatedly appending to a growing structure by
-/// copy is inherently superlinear. `gcd_per_execution_proof_single_call`'s
-/// own ~24us (measured as the relational prover it replaced) is not
-/// a fair comparison against this -- it proves one gcd execution,
-/// never unrolling a growing chain, while this benchmark measures a
-/// fully-unrolled *instance* proof's own amortized per-iteration cost,
-/// a structurally different (and inherently more expensive) proof
-/// strategy, not evidence that closures specifically are slow.
-fn over_application_instance_proof(c: &mut Criterion) {
-    let mut group = c.benchmark_group("over_application_instance_proof");
-
-    let mut store = TermStore::new();
-    let h = common::tail_recursive_loop_with_if_between_closures_self_call_arg(&mut store);
-    assert_eq!(eval::apply_term(&store, h, &[4]).unwrap(), 0, "sanity check against the interpreter");
-    group.bench_function("if_between_closures_self_call_arg", |b| {
-        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_instance(&store, black_box(h), &[4]).unwrap()); }))
-    });
-
-    let mut store2 = TermStore::new();
-    let h2 = common::tail_recursive_loop_with_pap_producing_root_self_call_arg(&mut store2);
-    assert_eq!(eval::apply_term(&store2, h2, &[4]).unwrap(), 0, "sanity check against the interpreter");
-    group.bench_function("pap_producing_root_self_call_arg", |b| {
-        b.iter(|| tatic::kernel::scoped(|| { black_box(prove_tail_recursive_instance(&store2, black_box(h2), &[4]).unwrap()); }))
-    });
-
-    group.finish();
-}
-
 criterion_group!(
     benches,
     straight_line_proof,
@@ -269,7 +176,6 @@ criterion_group!(
     per_execution_scaling_vs_universal,
     closures_fragment_proof,
     closure_typed_recursion_universal_proof,
-    over_application_instance_proof,
     non_tail_closure_recursion_instance_proof
 );
 criterion_main!(benches);

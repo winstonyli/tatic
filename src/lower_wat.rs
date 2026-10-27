@@ -1014,8 +1014,8 @@ mod tests {
     /// capture and each argument so a swapped argument order or a
     /// captured value mixed up with an accumulated argument produces a
     /// visibly wrong number rather than an accidental pass -- the same
-    /// discipline `eval_and_prove_call_over`'s own regression tests use
-    /// for the analogous hazard in `proof.rs`.
+    /// discipline the over-application proof tests in `proof/tests.rs` use
+    /// for the analogous hazard.
     #[test]
     fn curried_stage_chain_handles_a_capturing_three_ary_combinator_without_mixing_up_slots() {
         let mut w = String::new();

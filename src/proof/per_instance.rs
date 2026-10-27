@@ -39,10 +39,9 @@ use super::*;
 /// A closure value's own concrete identity, known at proof-construction
 /// time for one specific instance: which literal lambda it is, and the
 /// frame its own free variables (captures) resolve against. The second
-/// part is the same two-frame discipline `eval_and_prove_call_over`/
-/// `eval_and_prove_direct_call` already established for the `Int`-only
-/// family (a closure's own captures always resolve against wherever it
-/// was *created*, never wherever it's later called) -- without it, a
+/// part is a two-frame discipline (a closure's own captures always
+/// resolve against wherever it was *created*, never wherever it's later
+/// called) -- without it, a
 /// captured value read once a closure crosses a call boundary (a
 /// parameter substituted in from an enclosing application) would resolve
 /// against the wrong scope entirely.
