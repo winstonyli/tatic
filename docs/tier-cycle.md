@@ -4628,6 +4628,25 @@ function of its key, so each worker can take the whole filtered seed, evaluate a
 memo for a union merge. It needs the memo's `Rc`s made `Arc` (or copied per worker) for about 3.4 s of a ~100 s sweep
 (PARKED.md, "The miner's serial main thread").
 
+*Where the streams sweep's time goes (2026-10-26, profiles `2026-10-26-cu14-base-prof` and `2026-10-26-cu14-d3-prof`,
+`docs/runs/2026-10-26/scripts/streams_prof.sh`, frames named by `prof_named.py`).* The first whole-sweep profiles since
+2026-10-23, both of c7377b9 with debug info, salt 1. At the base: building the 2-growth law sequence
+(`stream_sequence`) is 31.8% inclusive, and nearly all of that is its `stream_laws` filter's `verdict` (26.8%);
+`prove_eq` is 53.9% (its join, `join_eq`, 36.0%; the per-position step `eq_pos` 17.5%); the kernel's checks 4.4%;
+`interp` alone is 25.7% self time. At 4950 large extras (the deep-extras patch of "At every size, and at three times
+the count", 11 min) the join search dominates: `score_laws` 84.5% inclusive, `join_search` 67.2% (`join_walk` 60.0%),
+with `stream_sequence` 11.9%, `verdict` 9.7% and `eq_pos` 8.6%. Both `verdict` and `eq_pos` spent their time in one loop:
+every input tuple at widths 1-5, two recursive `interp`s and an allocation per tuple.
+
+*One exhaustive check for both (2026-10-26, 14a21d4).* `bitwise_holds` (`tests/church_bv/rewrite.rs`) replaces that
+loop in both places: per width it builds every input once (`ValueMemo::exhaustive`, one byte per value) and compares
+the two terms' whole value vectors (`first_difference`); a test pins it to the per-tuple answer on every add-free pair
+of the generator's terms (`bitwise_holds_is_the_per_tuple_check`). Gate `2026-10-26-cu15-ab` against R (salts 1-3,
+untimed, JOBS=3): rules the same in 9 of 9 loops, M 477, held-out 6400 and every band equal; work counts walk equal,
+match +19 k of 4.77 G, op +115, and `interp` 75.8 G to 0 (all of it was these checks); job CPU 978 to 553 s
+(338 to 218, 346 to 203, 293 to 132 per salt). The base profile's `verdict` share was nearly all this loop, so the
+next lever on the sequence (cleanup plan CU17, building only the prefix that is read) is re-measured from a new profile.
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)
