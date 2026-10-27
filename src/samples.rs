@@ -1,44 +1,47 @@
 //! Sample terms, written as source (`syntax`): the benchmarks' terms, the
 //! demo's, and the corpus that unit tests and `tests/golden_wat.rs` run
 //! over. One copy, so a bench, a test and the demo that name the same term
-//! build the same hash.
+//! build the same hash. After `corpus()`, the shapes that unit tests in
+//! several files share, outside the corpus.
 
 use crate::syntax;
 use crate::term::{Hash, TermStore};
 
-fn parse(s: &mut TermStore, src: &str) -> Hash {
+/// Parses `src`, a closed term, into `s`. Panics naming `src` if it doesn't parse: a sample or a test's term that
+/// doesn't parse is a bug in that term.
+pub fn source(s: &mut TermStore, src: &str) -> Hash {
     syntax::parse(s, src).unwrap_or_else(|e| panic!("sample `{src}` should parse: {e}"))
 }
 
 /// Not tail-recursive (the self-call sits under `*`).
 pub fn factorial(s: &mut TermStore) -> Hash {
-    parse(s, "rec f n = if n <= 1 then 1 else n * f (n - 1)")
+    source(s, "rec f n = if n <= 1 then 1 else n * f (n - 1)")
 }
 
 /// A term with the identity and strength-reduction patterns the
 /// lemma-database rules target (`x + 0`, `x * 2^k`), so a rewrite has
 /// something to win on (bit-vector design doc, section 14).
 pub fn redundant_arithmetic_recursion(s: &mut TermStore) -> Hash {
-    parse(s, "rec f n = if n <= 0 then 0 else n * 8 + 0 + f (n - 1)")
+    source(s, "rec f n = if n <= 0 then 0 else n * 8 + 0 + f (n - 1)")
 }
 
 /// Naive, exponential; not tail-recursive, so `compile.rs` emits a plain
 /// `call`, not a loop.
 pub fn fib(s: &mut TermStore) -> Hash {
-    parse(s, "rec f n = if n < 2 then n else f (n - 1) + f (n - 2)")
+    source(s, "rec f n = if n < 2 then n else f (n - 1) + f (n - 2)")
 }
 
 /// Tail-recursive, 2-ary: `compile.rs` turns the self-call into a
 /// `loop`/`br`.
 pub fn gcd(s: &mut TermStore) -> Hash {
-    parse(s, "rec f a b = if b == 0 then a else f b (a % b)")
+    source(s, "rec f a b = if b == 0 then a else f b (a % b)")
 }
 
 /// Deeper than `gcd`: two base leaves and one tail leaf reached via a
 /// depth-2 path, exercising `prove_tail_recursive_universal`'s per-leaf
 /// `Ev` construction instead of the single-base/single-tail special case.
 pub fn gcd_with_two_base_cases(s: &mut TermStore) -> Hash {
-    parse(s, "rec f a b = if a == 0 then b else if b == 0 then a else f b (a % b)")
+    source(s, "rec f a b = if a == 0 then b else if b == 0 then a else f b (a % b)")
 }
 
 /// Tail-recursive, but each iteration creates *and immediately calls* a
@@ -54,7 +57,7 @@ pub fn gcd_with_two_base_cases(s: &mut TermStore) -> Hash {
 /// before the term ever reaches the IR builder (`RELATED_WORK.md` §37);
 /// this bench measures both changes together, through the JIT.
 pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
-    parse(s, r"rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)")
+    source(s, r"rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)")
 }
 
 /// `add = \x y. x + y`, `caller = \g z. g z`: tail-recursive, and each
@@ -74,7 +77,7 @@ pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
 /// application's environment or dispatches through `caller` at all
 /// (`RELATED_WORK.md` §37).
 pub fn partial_application_loop(s: &mut TermStore) -> Hash {
-    parse(s, r"rec f n acc = if n <= 0 then acc else f (n - 1) ((\g z. g z) ((\x y. x + y) acc) n)")
+    source(s, r"rec f n acc = if n <= 0 then acc else f (n - 1) ((\g z. g z) ((\x y. x + y) acc) n)")
 }
 
 /// `iterate` with `inc` baked in as the initial `g` and `n`/`x` baked in
@@ -87,7 +90,7 @@ pub fn partial_application_loop(s: &mut TermStore) -> Hash {
 /// why 20,000); `inconsistent_arity_loop_carried_parameter_loop`'s group
 /// runs it shorter, as that group's baseline (see there for why).
 pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) -> Hash {
-    parse(s, &format!(r"(rec f n g x = if n <= 0 then x else f (n - 1) g (g x)) ({iters}) (\y. y + 1) 0"))
+    source(s, &format!(r"(rec f n g x = if n <= 0 then x else f (n - 1) g (g x)) ({iters}) (\y. y + 1) 0"))
 }
 
 /// Identical to `closure_typed_loop_carried_parameter_loop` -- same loop,
@@ -102,7 +105,7 @@ pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) 
 /// what a single, syntactically-present-but-never-taken inconsistent call
 /// site costs an otherwise fast-path loop.
 pub fn inconsistent_arity_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) -> Hash {
-    parse(
+    source(
         s,
         &format!(
             r"(rec f n g x = if 1 < 0 then g x 999 else if n <= 0 then x else f (n - 1) g (g x)) ({iters}) (\y. y + 1) 0"
@@ -112,43 +115,43 @@ pub fn inconsistent_arity_loop_carried_parameter_loop(s: &mut TermStore, iters: 
 
 /// Straight-line, no recursion.
 pub fn straight_line(s: &mut TermStore) -> Hash {
-    parse(s, r"\a b. if a < b then a * 2 else b + 1")
+    source(s, r"\a b. if a < b then a * 2 else b + 1")
 }
 
 /// Both `f` and `x` are its own parameters, no captures.
 pub fn twice(s: &mut TermStore) -> Hash {
-    parse(s, r"\f x. f (f x)")
+    source(s, r"\f x. f (f x)")
 }
 
 pub fn inc(s: &mut TermStore) -> Hash {
-    parse(s, r"\y. y + 1")
+    source(s, r"\y. y + 1")
 }
 
 /// `twice inc 5`: non-capturing closures, no recursion (arity 0). The
 /// higher-order demo term `main.rs` uses, and the baseline the other
 /// closures-fragment shapes below are measured against.
 pub fn twice_inc_5(s: &mut TermStore) -> Hash {
-    parse(s, r"(\f x. f (f x)) (\y. y + 1) 5")
+    source(s, r"(\f x. f (f x)) (\y. y + 1) 5")
 }
 
 /// A capturing closure, created and directly called
 /// (`mk_clo_h`/`Env_n`/`build_env_expr`), unlike `twice_inc_5`'s
 /// non-capturing one (`combinator_value`).
 pub fn a_capturing_closure_call(s: &mut TermStore) -> Hash {
-    parse(s, r"\x. (\y. x + y) 5")
+    source(s, r"\x. (\y. x + y) 5")
 }
 
 /// Partial application of a non-capturing literal lambda (`pap_ref`'s
 /// simplest case).
 pub fn a_pap_non_capturing(s: &mut TermStore) -> Hash {
-    parse(s, r"(\g. g 4) ((\x y. x + y) 3)")
+    source(s, r"(\g. g 4) ((\x y. x + y) 3)")
 }
 
 /// Partial application of a *capturing* literal lambda (`\x y. x + y + z`
 /// captures `z` and is under-applied by one argument), exercising
 /// `pap_ref`'s leading-`Env_n` path on top of the plain PAP case above.
 pub fn a_pap_capturing(s: &mut TermStore) -> Hash {
-    parse(s, r"\z. (\g2. g2 4) ((\x y. x + y + z) 3)")
+    source(s, r"\z. (\g2. g2 4) ((\x y. x + y + z) 3)")
 }
 
 /// Iterate a closure-typed parameter `n` times, starting at `x`:
@@ -159,7 +162,7 @@ pub fn a_pap_capturing(s: &mut TermStore) -> Hash {
 /// built for *execution*: the universal proof's cost depends only on the
 /// function's own leaf/call structure, never on a concrete argument.
 pub fn iterate(s: &mut TermStore) -> Hash {
-    parse(s, "rec f n g x = if n <= 0 then x else f (n - 1) g (g x)")
+    source(s, "rec f n g x = if n <= 0 then x else f (n - 1) g (g x)")
 }
 
 /// The same shape as `proof::tests`'
@@ -169,7 +172,7 @@ pub fn iterate(s: &mut TermStore) -> Hash {
 /// `DynBudget::recursion_depth`'s bound (`50`), giving this a real, if
 /// modest, non-tail recursion depth without risking a decline.
 pub fn non_tail_closure_carrying_recursion(s: &mut TermStore) -> Hash {
-    parse(s, r"(rec f n g x = if n <= 0 then x else 1 + f (n - 1) g (g x)) 20 (\y. y + 1) 0")
+    source(s, r"(rec f n g x = if n <= 0 then x else 1 + f (n - 1) g (g x)) 20 (\y. y + 1) 0")
 }
 
 /// The same shape as `proof::tests`'
@@ -181,21 +184,21 @@ pub fn non_tail_closure_carrying_recursion(s: &mut TermStore) -> Hash {
 /// tree, not its depth -- `n = 6` keeps that total (`2 * fib(n+1) - 1 =
 /// 25`) under the shared bound of `50`.
 pub fn branching_non_tail_closure_carrying_recursion(s: &mut TermStore) -> Hash {
-    parse(s, r"(rec f n g = if n <= 1 then g n else f (n - 1) g + f (n - 2) g) 6 (\y. y + 1)")
+    source(s, r"(rec f n g = if n <= 1 then g n else f (n - 1) g + f (n - 2) g) 6 (\y. y + 1)")
 }
 
 /// The canonical over-application shape: `f`'s own saturated call denotes
 /// a further `Clo_1`, chosen by an `If` between two literal lambdas, then
 /// the extra argument dispatches against it.
 pub fn over_application_if_between_closures(s: &mut TermStore) -> Hash {
-    parse(s, r"(\a b. if 0 < a then (\c. a + b + c) else (\c. a - b + c)) 10 3 100")
+    source(s, r"(\a b. if 0 < a then (\c. a + b + c) else (\c. a - b + c)) 10 3 100")
 }
 
 /// The PAP-producing-root over-application shape: `f = \a. g a` denotes a
 /// partial application of `g = \x y. x * 10 + y`, no branching at all,
 /// then the extra argument completes `g`'s own call directly.
 pub fn over_application_pap_producing_root(s: &mut TermStore) -> Hash {
-    parse(s, r"(\a. (\x y. x * 10 + y) a) 5 3")
+    source(s, r"(\a. (\x y. x * 10 + y) a) 5 3")
 }
 
 /// Arithmetically trivial (both `If` branches are the identity, so the
@@ -204,14 +207,14 @@ pub fn over_application_pap_producing_root(s: &mut TermStore) -> Hash {
 /// argument, once per iteration, the way a real self-call argument built
 /// from an over-application would.
 pub fn tail_recursive_loop_with_if_between_closures_self_call_arg(s: &mut TermStore) -> Hash {
-    parse(s, r"rec f n = if n <= 0 then n else f ((\a b. if 0 < a then (\c. c) else (\c. c)) n n (n - 1))")
+    source(s, r"rec f n = if n <= 0 then n else f ((\a b. if 0 < a then (\c. c) else (\c. c)) n n (n - 1))")
 }
 
 /// As `tail_recursive_loop_with_if_between_closures_self_call_arg`, with
 /// a PAP-producing-root over-application (`(\a. (\p q. q) a) 0 x`, which
 /// is `x`) in the self-call argument instead.
 pub fn tail_recursive_loop_with_pap_producing_root_self_call_arg(s: &mut TermStore) -> Hash {
-    parse(s, r"rec f n = if n <= 0 then n else f ((\a. (\p q. q) a) 0 (n - 1))")
+    source(s, r"rec f n = if n <= 0 then n else f ((\a. (\p q. q) a) 0 (n - 1))")
 }
 
 /// Every sample above, each in its own store; the two counted loops at
@@ -250,4 +253,80 @@ pub fn corpus() -> Vec<(&'static str, TermStore, Hash)> {
             (name, s, h)
         })
         .collect()
+}
+
+// Shapes that unit tests in two or three files share. Deliberately not in
+// `corpus()`: the goldens, the rule census and the corpus-wide tests read
+// the corpus, and these terms are only test inputs.
+
+/// `f` called at two arities, and nothing more: no single type fits it.
+pub fn inconsistent_arity_parameter(s: &mut TermStore) -> Hash {
+    source(s, r"\f. f 1 + f 1 2")
+}
+
+/// A parameter called at two arities, given a 2-ary literal; the live call
+/// (`f 1 2`) saturates it.
+pub fn inconsistent_arity_saturating_instance(s: &mut TermStore) -> Hash {
+    source(s, r"(\f. if 0 < 1 then f 1 2 else f 1) (\a b. a + b)")
+}
+
+/// As `inconsistent_arity_saturating_instance`, but the live call is `f 1`
+/// and the literal is 1-ary.
+pub fn inconsistent_arity_under_applying_instance(s: &mut TermStore) -> Hash {
+    source(s, r"(\f. if 1 < 0 then f 1 2 else f 1) (\a. a + 100)")
+}
+
+/// As `inconsistent_arity_saturating_instance`, with the literal capturing
+/// the outer parameter `k`.
+pub fn inconsistent_arity_capturing_instance(s: &mut TermStore) -> Hash {
+    source(s, r"\k. (\f. if 0 < 1 then f 1 2 else f 1) (\a b. k + a + b)")
+}
+
+/// As `inconsistent_arity_saturating_instance`, with the literal chosen at
+/// run time by an `if` on the outer parameter.
+pub fn inconsistent_arity_runtime_chosen_instance(s: &mut TermStore) -> Hash {
+    source(s, r"\pick. (\f. if 0 < 1 then f 1 2 else f 1) (if 0 < pick then (\a b. a + b) else (\a b. a - b))")
+}
+
+/// `iterate` with one dead call site (`g x 999`, behind `1 < 0`) that
+/// makes `g` inconsistently classified. Bare; applied, it is
+/// `inconsistent_arity_loop_carried_parameter_loop`.
+pub fn inconsistent_arity_iterate(s: &mut TermStore) -> Hash {
+    source(s, "rec f n g x = if 1 < 0 then g x 999 else if n <= 0 then x else f (n - 1) g (g x)")
+}
+
+/// A loop that creates, in its self-call argument, a closure capturing its
+/// closure-typed loop parameter `g`.
+pub fn iterate_creating_a_closure_over_g(s: &mut TermStore) -> Hash {
+    source(s, r"rec f n g x = if n <= 0 then x else f (n - 1) g (g x + (\y. g y + 1) x)")
+}
+
+/// `factorial` bound by `let` and called at 10: a self-recursive
+/// combinator used as a value.
+pub fn let_bound_factorial_10(s: &mut TermStore) -> Hash {
+    source(s, "let fact = rec f n = if n <= 1 then 1 else n * f (n - 1) in fact 10")
+}
+
+/// A literal lambda whose body picks between two closures over `x`, applied
+/// to `x`, its result passed to `\g. g 5`.
+pub fn calls_a_capturing_closure_picked_by_if(s: &mut TermStore) -> Hash {
+    source(s, r"\x. (\g. g 5) ((\x. if 0 < x then (\y. x + y) else (\y. x - y)) x)")
+}
+
+/// A self-recursive combinator partially applied (one argument of two) and
+/// completed through `\g. g 1`.
+pub fn a_pap_of_a_self_recursive_combinator(s: &mut TermStore) -> Hash {
+    source(s, r"(\g. g 1) ((rec f n acc = if n <= 0 then acc else f (n - 1) (n * acc)) 3)")
+}
+
+/// As `a_pap_of_a_self_recursive_combinator`, with the combinator capturing
+/// the outer parameter `z`.
+pub fn a_pap_of_a_capturing_self_recursive_combinator(s: &mut TermStore) -> Hash {
+    source(s, r"\z. (\g. g 1) ((rec f n acc = if n <= 0 then acc else f (n - 1) (n * acc + z)) 3)")
+}
+
+/// `over_application_if_between_closures` with its three arguments as
+/// parameters.
+pub fn over_application_if_between_closures_of_params(s: &mut TermStore) -> Hash {
+    source(s, r"\p q r. (\a b. if 0 < a then (\c. a + b + c) else (\c. a - b + c)) p q r")
 }

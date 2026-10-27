@@ -1,6 +1,11 @@
 use super::*;
 use crate::eval::apply_term;
-use crate::samples::{factorial, gcd, inc, twice};
+use crate::samples::{
+    a_pap_capturing, a_pap_non_capturing, calls_a_capturing_closure_picked_by_if, capturing_closure_loop, factorial, gcd,
+    inconsistent_arity_capturing_instance, inconsistent_arity_parameter, inconsistent_arity_runtime_chosen_instance,
+    inconsistent_arity_saturating_instance, inconsistent_arity_under_applying_instance, let_bound_factorial_10, twice,
+    twice_inc_5,
+};
 use crate::term::PrimOp;
 
 fn instantiate(wat: &str) -> (wasmtime::Store<()>, wasmtime::Instance) {
@@ -67,16 +72,13 @@ fn twice_alone_compiles_with_a_closure_parameter() {
 
 #[test]
 fn applying_twice_to_a_literal_inc_compiles_and_matches_interpreter() {
-    // (twice inc) 5 -- the higher-order demo term main.rs uses.
+    // The higher-order demo term main.rs uses.
     // `twice` and `inc` both become combinators in a shared function
     // table; the whole (closed, zero-arity) expression compiles to a
     // niladic function that calls `twice` directly (statically known)
     // and, inside `twice`, calls `inc` indirectly through the table.
     let mut s = TermStore::new();
-    let t = twice(&mut s);
-    let i = inc(&mut s);
-    let five = s.lit(5);
-    let applied = s.app2(t, i, five);
+    let applied = twice_inc_5(&mut s);
 
     let frag = try_compile(&s, applied).expect("should be compilable");
     assert_eq!(frag.arity, 0);
@@ -89,45 +91,18 @@ fn applying_twice_to_a_literal_inc_compiles_and_matches_interpreter() {
     assert_eq!(compiled, interpreted);
 }
 
-/// `\g. g 5` -- calls its own closure-typed parameter.
-fn calls_its_closure_arg_with_5(s: &mut TermStore) -> Hash {
-    let g = s.var(0);
-    let five = s.lit(5);
-    let call = s.app(g, five);
-    s.abs(call)
-}
-
 #[test]
 fn a_capturing_closure_compiles_and_matches_interpreter() {
-    // \x. (\g. g 5) (if 0 < x then (\y. x + y) else (\y. x - y)) --
-    // both inner lambdas reference `x`, bound by the *outer* function
-    // (`picker`), not their own parameter range: creating whichever
+    // Both inner lambdas reference `x`, bound by the *outer* function
+    // (the picker), not their own parameter range: creating whichever
     // one the `if` picks allocates a fresh, heap-allocated
     // environment capturing `x` (`push_closure_env`); passing the
-    // result into `inner`'s `g` parameter and calling it there
+    // result into the `g` parameter of `\g. g 5` and calling it there
     // exercises the packed env+table-index representation and
     // unpacking it back out at a `call_indirect` site, all in one
     // compiled fragment.
     let mut s = TermStore::new();
-    let x = s.var(0);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, x);
-    let y_pos = s.var(0);
-    let x_pos = s.var(1);
-    let plus = s.prim(PrimOp::Add, x_pos, y_pos);
-    let then_closure = s.abs(plus);
-    let y_neg = s.var(0);
-    let x_neg = s.var(1);
-    let minus = s.prim(PrimOp::Sub, x_neg, y_neg);
-    let else_closure = s.abs(minus);
-    let body = s.if_(cond, then_closure, else_closure);
-    let picker = s.abs(body);
-
-    let inn = calls_its_closure_arg_with_5(&mut s);
-    let x2 = s.var(0);
-    let picked = s.app(picker, x2);
-    let called = s.app(inn, picked);
-    let f = s.abs(called);
+    let f = calls_a_capturing_closure_picked_by_if(&mut s);
 
     let frag = try_compile(&s, f).expect("a capturing closure should compile");
     assert_eq!(frag.arity, 1);
@@ -145,8 +120,7 @@ fn a_capturing_closure_compiles_and_matches_interpreter() {
 
 #[test]
 fn self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles() {
-    // rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)
-    // -- a tail loop where *each iteration* creates and immediately
+    // A tail loop where *each iteration* creates and immediately
     // calls a fresh closure capturing the current `acc`: exercises
     // the capture staying correctly untouched across the tail loop's own
     // `br $L` (the closure creation/call happens compiling one of the
@@ -154,24 +128,7 @@ fn self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles() 
     // closure is called directly, so it is lambda lifted and receives
     // `acc` as a parameter (`lower_wat::direct_only`).
     let mut s = TermStore::new();
-    let y = s.var(0);
-    let acc_captured = s.var(1);
-    let sum = s.prim(PrimOp::Add, acc_captured, y);
-    let closure = s.abs(sum);
-    let n_ref = s.var(1);
-    let new_acc = s.app(closure, n_ref);
-    let n = s.var(1);
-    let acc = s.var(0);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let f = s.var(2);
-    let rec_call = s.app2(f, n_minus_1, new_acc);
-    let body = s.if_(cond, acc, rec_call);
-    let inner = s.abs(body);
-    let abs = s.abs(inner);
-    let term = s.rec(abs);
+    let term = capturing_closure_loop(&mut s);
 
     let frag = try_compile(&s, term).expect("should compile");
     assert_eq!(frag.arity, 2);
@@ -361,7 +318,7 @@ fn calling_a_closure_reached_through_a_captured_free_variable_compiles() {
 
 #[test]
 fn inconsistent_call_arity_for_a_parameter_now_compiles_via_curried_dispatch() {
-    // \f. f(1) + f(1, 2) -- `f`, a *parameter*, called with
+    // `f`, a *parameter*, called with
     // inconsistent arities (1 then 2) at different call sites.
     // Unlike a literal lambda (see
     // `partial_application_of_a_literal_lambda_compiles` below),
@@ -375,14 +332,7 @@ fn inconsistent_call_arity_for_a_parameter_now_compiles_via_curried_dispatch() {
     // below for the fully closed, runnable version of this same
     // shape.
     let mut s = TermStore::new();
-    let f1 = s.var(0);
-    let one = s.lit(1);
-    let call1 = s.app(f1, one);
-    let f2 = s.var(0);
-    let two = s.lit(2);
-    let call2 = s.app2(f2, one, two);
-    let body = s.prim(PrimOp::Add, call1, call2);
-    let g = s.abs(body);
+    let g = inconsistent_arity_parameter(&mut s);
 
     let frag = try_compile(&s, g).expect("an inconsistently-called parameter should now compile");
     assert!(frag.wat.contains("call_indirect (type $ty1)"), "should dispatch through the curried fallback:\n{}", frag.wat);
@@ -492,28 +442,9 @@ fn a_combinator_never_reached_as_a_bare_value_gets_no_stage_chain_even_when_the_
 /// (and the interpreter's own `If` evaluation) already has.
 #[test]
 fn an_inconsistently_called_parameter_matching_its_own_saturating_arity_agrees_with_the_interpreter() {
-    // (\f. if 0<1 then f(1,2) else f(1)) (\a b. a+b) -- f's own real
-    // arity (2) matches the *taken* branch's own call exactly.
+    // f's own real arity (2) matches the *taken* branch's own call exactly.
     let mut s = TermStore::new();
-    let a = s.var(1);
-    let b = s.var(0);
-    let add = s.prim(PrimOp::Add, a, b);
-    let inner = s.abs(add); // \b. a+b
-    let f_lit = s.abs(inner); // \a b. a+b
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let zero = s.lit(0);
-    let one_c = s.lit(1);
-    let cond = s.prim(PrimOp::Lt, zero, one_c);
-    let inner_body = s.if_(cond, call_2, call_1);
-    let f_abs = s.abs(inner_body);
-    let top = s.app(f_abs, f_lit);
+    let top = inconsistent_arity_saturating_instance(&mut s);
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
     assert!(frag.wat.contains("call_indirect (type $ty1)"), "should dispatch through the curried fallback:\n{}", frag.wat);
@@ -526,30 +457,12 @@ fn an_inconsistently_called_parameter_matching_its_own_saturating_arity_agrees_w
 
 #[test]
 fn an_inconsistently_called_parameter_matching_its_own_under_applying_arity_agrees_with_the_interpreter() {
-    // (\f. if 1<0 then f(1,2) else f(1)) (\a. a+100) -- the *other*
-    // shape: f's own real arity (1) matches the taken branch (the
-    // `else`, this time -- the condition is always false), and the
-    // never-taken `f(1,2)` would over-apply f(1)'s own plain `Int`
-    // result, which is never actually evaluated.
+    // The *other* shape: f's own real arity (1) matches the taken
+    // branch (the `else`, this time -- the condition is always false),
+    // and the never-taken `f 1 2` would over-apply f 1's own plain
+    // `Int` result, which is never actually evaluated.
     let mut s = TermStore::new();
-    let a = s.var(0);
-    let hundred = s.lit(100);
-    let a_plus_100 = s.prim(PrimOp::Add, a, hundred);
-    let f_lit = s.abs(a_plus_100); // \a. a+100
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let one_c = s.lit(1);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, one_c, zero); // always false
-    let inner_body = s.if_(cond, call_2, call_1);
-    let f_abs = s.abs(inner_body);
-    let top = s.app(f_abs, f_lit);
+    let top = inconsistent_arity_under_applying_instance(&mut s);
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
     let (mut store, instance) = instantiate(&frag.wat);
@@ -561,36 +474,14 @@ fn an_inconsistently_called_parameter_matching_its_own_under_applying_arity_agre
 
 #[test]
 fn a_capturing_closure_reached_through_an_inconsistently_called_parameter_agrees_with_the_interpreter() {
-    // \k. (\f. if 0<1 then f(1,2) else f(1)) (\a b. k+a+b) -- f's own
-    // captured value (`k`, from the enclosing scope) has to survive
+    // f's own captured value (`k`, from the enclosing scope) has to survive
     // being packed as a `stage_0`-addressed value and read back
     // through a curried dispatch step, not just an ordinary one.
     // Checked at two different `k` values so a stale/wrong capture
     // offset would show up as a k-independent (wrong) result, not
     // just a rejection.
     let mut s = TermStore::new();
-    let k = s.var(2);
-    let a = s.var(1);
-    let b = s.var(0);
-    let k_plus_a = s.prim(PrimOp::Add, k, a);
-    let sum = s.prim(PrimOp::Add, k_plus_a, b);
-    let inner = s.abs(sum); // \b. k+a+b
-    let f_lit = s.abs(inner); // \a b. k+a+b (captures k)
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let zero = s.lit(0);
-    let one_c = s.lit(1);
-    let cond = s.prim(PrimOp::Lt, zero, one_c);
-    let inner_body = s.if_(cond, call_2, call_1);
-    let f_abs = s.abs(inner_body);
-    let app = s.app(f_abs, f_lit);
-    let top = s.abs(app); // \k. (\f. ..) f_lit
+    let top = inconsistent_arity_capturing_instance(&mut s);
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
     assert!(frag.wat.contains("call $alloc"), "creating the capturing closure should need the allocator");
@@ -605,8 +496,7 @@ fn a_capturing_closure_reached_through_an_inconsistently_called_parameter_agrees
 
 #[test]
 fn a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_once_dispatched_generically() {
-    // \pick. (\f. if 0<1 then f(1,2) else f(1)) (if 0<pick then add
-    // else sub) -- the sharpest regression guard against silently
+    // The sharpest regression guard against silently
     // reverting to a mechanism that only covers a *traced*, single
     // literal root: `f`'s own concrete identity here isn't known
     // until runtime at all, chosen by an ordinary `If` between two
@@ -615,37 +505,7 @@ fn a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_o
     // never have covered (see `RELATED_WORK.md`'s own discussion of
     // why that narrower alternative was rejected).
     let mut s = TermStore::new();
-    let a1 = s.var(1);
-    let b1 = s.var(0);
-    let add_body = s.prim(PrimOp::Add, a1, b1);
-    let add_inner = s.abs(add_body);
-    let add_lit = s.abs(add_inner); // \a b. a+b
-
-    let a2 = s.var(1);
-    let b2 = s.var(0);
-    let sub_body = s.prim(PrimOp::Sub, a2, b2);
-    let sub_inner = s.abs(sub_body);
-    let sub_lit = s.abs(sub_inner); // \a b. a-b
-
-    let pick = s.var(0);
-    let zero_p = s.lit(0);
-    let pick_cond = s.prim(PrimOp::Lt, zero_p, pick);
-    let f_value = s.if_(pick_cond, add_lit, sub_lit);
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let zero_c = s.lit(0);
-    let one_c = s.lit(1);
-    let cond = s.prim(PrimOp::Lt, zero_c, one_c);
-    let inner_body = s.if_(cond, call_2, call_1);
-    let f_abs = s.abs(inner_body);
-    let app = s.app(f_abs, f_value);
-    let top = s.abs(app); // \pick. (\f. ..) (if 0<pick then add else sub)
+    let top = inconsistent_arity_runtime_chosen_instance(&mut s);
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
     let (mut store, instance) = instantiate(&frag.wat);
@@ -662,9 +522,8 @@ fn a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_o
 
 #[test]
 fn partial_application_of_a_literal_lambda_compiles() {
-    // add = \x y. x + y; partial = add(3) (under-applied by one
-    // argument); caller = \g. g(4); top = caller(partial) -- `add(3)`
-    // used as a value (an argument to `caller`, not immediately
+    // `(\x y. x + y) 3`, under-applied by one argument, used as a
+    // value (an argument to `\g. g 4`, not immediately
     // re-applied at the same App-chain, so `unwind_app_spine` can't
     // collapse it into a single 2-ary call the way curried
     // application normally would -- see
@@ -672,24 +531,10 @@ fn partial_application_of_a_literal_lambda_compiles() {
     // is a genuine under-application: exercises the compile-time
     // desugaring into a synthesized wrapper (`register_partial_app`),
     // creating one closure value that, once called with the
-    // remaining argument through `caller`'s own `call_indirect`,
+    // remaining argument through the caller's own `call_indirect`,
     // completes the call.
     let mut s = TermStore::new();
-    let x = s.var(1);
-    let y = s.var(0);
-    let sum = s.prim(PrimOp::Add, x, y);
-    let inner_add = s.abs(sum);
-    let add = s.abs(inner_add);
-
-    let three = s.lit(3);
-    let partial = s.app(add, three);
-
-    let g = s.var(0);
-    let four = s.lit(4);
-    let call_g = s.app(g, four);
-    let caller = s.abs(call_g);
-
-    let top = s.app(caller, partial);
+    let top = a_pap_non_capturing(&mut s);
 
     let frag = try_compile(&s, top).expect("a partially applied literal lambda should compile");
     assert_eq!(frag.arity, 0);
@@ -704,33 +549,16 @@ fn partial_application_of_a_literal_lambda_compiles() {
 
 #[test]
 fn partial_application_of_a_capturing_literal_lambda_compiles() {
-    // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- the literal
+    // The literal
     // lambda being partially applied (`\x y. x + y + z`) itself
-    // captures `z`, from `g`'s own scope -- exercises the trickiest
+    // captures `z`, from the enclosing function's own scope -- exercises the trickiest
     // part of `Lowering::pap_env`: the wrapper's own environment needs
     // both the already-supplied argument (`3`) *and* a copy of
     // `root`'s own environment (holding `z`), computed at the
     // partial-application site and forwarded to `root`'s own call
     // once the wrapper is completed.
     let mut s = TermStore::new();
-    let y = s.var(0);
-    let x = s.var(1);
-    let z_captured = s.var(2);
-    let xy = s.prim(PrimOp::Add, x, y);
-    let xyz = s.prim(PrimOp::Add, xy, z_captured);
-    let inner = s.abs(xyz);
-    let capturing_add = s.abs(inner);
-
-    let three = s.lit(3);
-    let partial = s.app(capturing_add, three);
-
-    let g2 = s.var(0);
-    let four = s.lit(4);
-    let call_g2 = s.app(g2, four);
-    let caller = s.abs(call_g2);
-
-    let called = s.app(caller, partial);
-    let g = s.abs(called);
+    let g = a_pap_capturing(&mut s);
 
     let frag = try_compile(&s, g).expect("a partially applied capturing lambda should compile");
     assert_eq!(frag.arity, 1);
@@ -1020,8 +848,8 @@ fn an_unbound_variable_is_rejected_not_a_panic() {
 
 #[test]
 fn a_let_bound_self_recursive_function_compiles_and_matches_interpreter() {
-    // (\g. g 10) (rec f n = if n <= 1 then 1 else n * f (n - 1)) --
-    // what `let fact = rec f n = .. in fact 10` desugars to: a named
+    // `let fact = rec f n = .. in fact 10` desugars to
+    // `(\g. g 10) (rec f n = ..)`: a named
     // recursive function passed through the *same* "combinator"
     // machinery a plain lambda value already uses (registered,
     // called via a shared table index), not a special case.
@@ -1030,12 +858,7 @@ fn a_let_bound_self_recursive_function_compiles_and_matches_interpreter() {
     // here -- `Rec` was never actually "handled above" the way its
     // own comment claimed, only `Abs` was.
     let mut s = TermStore::new();
-    let fact = factorial(&mut s);
-    let inner_var = s.var(0);
-    let ten = s.lit(10);
-    let call = s.app(inner_var, ten);
-    let wrapper = s.abs(call);
-    let applied = s.app(wrapper, fact);
+    let applied = let_bound_factorial_10(&mut s);
 
     let frag = try_compile(&s, applied)
         .expect("a let-bound self-recursive function, called through the table, should compile");

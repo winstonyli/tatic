@@ -176,7 +176,7 @@ pub fn apply_term(store: &TermStore, h: Hash, args: &[i64]) -> Result<i64, EvalE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::samples::factorial;
+    use crate::samples::{capturing_closure_loop, factorial, twice_inc_5};
     use crate::term::PrimOp;
 
     #[test]
@@ -222,52 +222,17 @@ mod tests {
 
     #[test]
     fn deep_tail_recursion_creating_and_calling_a_fresh_closure_each_iteration_does_not_overflow() {
-        // rec f n acc = if n <= 0 then acc else f(n-1, (\y. acc+y)(n)) --
-        // same shape as samples::capturing_closure_loop /
-        // compile::tests::self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles,
-        // exercising the trampoline's App/Closure-application path (not
+        // Exercises the trampoline's App/Closure-application path (not
         // just If's own tail branch) at depth.
         let mut s = TermStore::new();
-        let y = s.var(0);
-        let acc_captured = s.var(1);
-        let sum = s.prim(PrimOp::Add, acc_captured, y);
-        let closure = s.abs(sum);
-        let n_ref = s.var(1);
-        let new_acc = s.app(closure, n_ref);
-        let n = s.var(1);
-        let acc = s.var(0);
-        let zero = s.lit(0);
-        let cond = s.prim(PrimOp::Le, n, zero);
-        let one = s.lit(1);
-        let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-        let f = s.var(2);
-        let rec_call = s.app2(f, n_minus_1, new_acc);
-        let body = s.if_(cond, acc, rec_call);
-        let inner = s.abs(body);
-        let abs = s.abs(inner);
-        let h = s.rec(abs);
-
+        let h = capturing_closure_loop(&mut s);
         assert_eq!(apply_term(&s, h, &[100_000, 0]).unwrap(), 100_000 * 100_001 / 2);
     }
 
     #[test]
     fn higher_order_terms_still_work() {
-        // twice = \f. \x. f (f x); inc = \y. y + 1; (twice inc) 5 == 7
         let mut s = TermStore::new();
-        let f = s.var(1);
-        let x = s.var(0);
-        let fx = s.app(f, x);
-        let ffx = s.app(f, fx);
-        let inner = s.abs(ffx);
-        let twice = s.abs(inner);
-
-        let y = s.var(0);
-        let one = s.lit(1);
-        let y_plus_1 = s.prim(PrimOp::Add, y, one);
-        let inc = s.abs(y_plus_1);
-
-        let five = s.lit(5);
-        let applied = s.app2(twice, inc, five);
+        let applied = twice_inc_5(&mut s);
         assert_eq!(apply_term(&s, applied, &[]).unwrap(), 7);
     }
 

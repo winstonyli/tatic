@@ -1,7 +1,16 @@
 use super::*;
 use crate::eval;
 use crate::kernel::Ctx;
-use crate::samples::{capturing_closure_loop, factorial, fib, gcd, inc, iterate, twice};
+use crate::samples::{
+    a_capturing_closure_call, a_pap_capturing, a_pap_non_capturing, a_pap_of_a_capturing_self_recursive_combinator,
+    a_pap_of_a_self_recursive_combinator, calls_a_capturing_closure_picked_by_if, capturing_closure_loop, factorial,
+    fib, gcd, gcd_with_two_base_cases, inc, inconsistent_arity_capturing_instance, inconsistent_arity_iterate,
+    inconsistent_arity_loop_carried_parameter_loop, inconsistent_arity_parameter,
+    inconsistent_arity_runtime_chosen_instance, inconsistent_arity_saturating_instance,
+    inconsistent_arity_under_applying_instance, iterate, iterate_creating_a_closure_over_g, let_bound_factorial_10,
+    over_application_if_between_closures_of_params, over_application_pap_producing_root, source, straight_line, twice,
+    twice_inc_5,
+};
 use crate::term::TermStore;
 
 #[test]
@@ -41,18 +50,8 @@ fn a_shared_subterm_is_denoted_once() {
 
 #[test]
 fn straight_line_term_gets_a_kernel_checked_proof() {
-    // \a b. if a < b then a * 2 else b + 1
     let mut s = TermStore::new();
-    let a = s.var(1);
-    let b = s.var(0);
-    let cond = s.prim(PrimOp::Lt, a, b);
-    let two = s.lit(2);
-    let then_branch = s.prim(PrimOp::Mul, a, two);
-    let one = s.lit(1);
-    let else_branch = s.prim(PrimOp::Add, b, one);
-    let body = s.if_(cond, then_branch, else_branch);
-    let inner = s.abs(body);
-    let f = s.abs(inner);
+    let f = straight_line(&mut s);
 
     let proof = prove_pure_expr(&s, f).expect("straight-line term should be provable");
     assert_eq!(proof.arity, 2);
@@ -163,31 +162,15 @@ fn a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates() {
 
 #[test]
 fn recursive_term_is_out_of_scope() {
-    // rec f n = if n <= 1 then 1 else n * f(n - 1)
     let mut s = TermStore::new();
-    let n = s.var(0);
-    let fv = s.var(1);
-    let one = s.lit(1);
-    let cond = s.prim(PrimOp::Le, n, one);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let rec_call = s.app(fv, n_minus_1);
-    let else_branch = s.prim(PrimOp::Mul, n, rec_call);
-    let body = s.if_(cond, one, else_branch);
-    let abs = s.abs(body);
-    let fact = s.rec(abs);
-
+    let fact = factorial(&mut s);
     assert!(prove_pure_expr(&s, fact).is_none());
 }
 
 #[test]
 fn genuinely_higher_order_term_is_out_of_scope() {
     let mut s = TermStore::new();
-    let f = s.var(1);
-    let x = s.var(0);
-    let fx = s.app(f, x);
-    let ffx = s.app(f, fx);
-    let inner = s.abs(ffx);
-    let twice = s.abs(inner);
+    let twice = twice(&mut s);
     assert!(prove_pure_expr(&s, twice).is_none());
 }
 
@@ -397,16 +380,7 @@ fn one_functions_theorem_proof_is_rejected_against_anothers_type() {
     let gcd_proof = prove_tail_recursive_universal(&s, g).expect("gcd should get a universal proof");
 
     let mut s2 = TermStore::new();
-    let n = s2.var(0);
-    let fv = s2.var(1);
-    let one = s2.lit(1);
-    let cond = s2.prim(PrimOp::Le, n, one);
-    let n_minus_1 = s2.prim(PrimOp::Sub, n, one);
-    let rec_call = s2.app(fv, n_minus_1);
-    let else_branch = s2.prim(PrimOp::Mul, n, rec_call);
-    let body = s2.if_(cond, one, else_branch);
-    let abs = s2.abs(body);
-    let fact = s2.rec(abs);
+    let fact = factorial(&mut s2);
     let fact_proof = prove_tail_recursive_universal(&s2, fact).expect("factorial should get a universal proof");
 
     // gcd's proof, checked in gcd's own ctx (a proof is only
@@ -446,27 +420,14 @@ fn tail_recursive_countdown_gets_a_universal_proof_with_base_in_the_else_branch(
 
 #[test]
 fn tail_recursive_gcd_with_two_base_cases_gets_a_universal_proof() {
-    // rec f a b = if a == 0 then b else if b == 0 then a else f(b, a mod b)
-    // -- deeper than a single `If`: two base leaves (`b` at path
-    // [a==0], `a` at path [a!=0, b==0]) and one tail leaf (`f(b, a mod
-    // b)` at path [a!=0, b!=0]), exercising the widened
+    // Deeper than a single `If`: two base leaves (`b` at path
+    // [a==0], `a` at path [a!=0, b==0]) and one tail leaf (`f b (a % b)`
+    // at path [a!=0, b!=0]), exercising the widened
     // `prove_tail_recursive_universal` (one `Ev` constructor per leaf,
     // each gated by its own *conjunction* of path premises, not a
     // single top-level condition).
     let mut s = TermStore::new();
-    let b = s.var(0);
-    let a = s.var(1);
-    let f = s.var(2);
-    let zero = s.lit(0);
-    let cond_a = s.prim(PrimOp::Eq, a, zero);
-    let cond_b = s.prim(PrimOp::Eq, b, zero);
-    let a_mod_b = s.prim(PrimOp::Mod, a, b);
-    let rec_call = s.app2(f, b, a_mod_b);
-    let inner_if = s.if_(cond_b, a, rec_call);
-    let body = s.if_(cond_a, b, inner_if);
-    let inner = s.abs(body);
-    let abs = s.abs(inner);
-    let g = s.rec(abs);
+    let g = gcd_with_two_base_cases(&mut s);
 
     let proof =
         prove_tail_recursive_universal(&s, g).expect("gcd with two base cases should get a universal proof");
@@ -477,22 +438,13 @@ fn tail_recursive_gcd_with_two_base_cases_gets_a_universal_proof() {
 
 #[test]
 fn non_tail_recursion_gets_a_universal_proof_now() {
-    // rec f n = if n <= 1 then 1 else n * f(n - 1) -- factorial: the
+    // Factorial: the
     // self-call is nested inside a multiplication, not tail position.
     // Generalizing Ev/ev_rec/loop_val to leaves with an arbitrary
     // self-call count, recombined via kernel::cong_n, covers this too
     // (this was the whole point of widening past tail recursion).
     let mut s = TermStore::new();
-    let n = s.var(0);
-    let fv = s.var(1);
-    let one = s.lit(1);
-    let cond = s.prim(PrimOp::Le, n, one);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let rec_call = s.app(fv, n_minus_1);
-    let else_branch = s.prim(PrimOp::Mul, n, rec_call);
-    let body = s.if_(cond, one, else_branch);
-    let abs = s.abs(body);
-    let fact = s.rec(abs);
+    let fact = factorial(&mut s);
 
     let proof =
         prove_tail_recursive_universal(&s, fact).expect("factorial should now get a universal proof");
@@ -503,24 +455,12 @@ fn non_tail_recursion_gets_a_universal_proof_now() {
 
 #[test]
 fn fibonacci_two_self_calls_gets_a_universal_proof() {
-    // rec f n = if n < 2 then n else f(n-1) + f(n-2) -- naive
+    // Naive
     // Fibonacci: two self-calls combined by one Prim, exercising
     // combine_i for k=2 and kernel::cong_n's actual n>1 case
     // (factorial above only needs k=1, where cong_n's loop runs once).
     let mut s = TermStore::new();
-    let n = s.var(0);
-    let f = s.var(1);
-    let two = s.lit(2);
-    let cond = s.prim(PrimOp::Lt, n, two);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let n_minus_2 = s.prim(PrimOp::Sub, n, two);
-    let call1 = s.app(f, n_minus_1);
-    let call2 = s.app(f, n_minus_2);
-    let else_branch = s.prim(PrimOp::Add, call1, call2);
-    let body = s.if_(cond, n, else_branch);
-    let abs = s.abs(body);
-    let fib = s.rec(abs);
+    let fib = fib(&mut s);
 
     let proof = prove_tail_recursive_universal(&s, fib).expect("fibonacci should get a universal proof");
     assert_eq!(proof.arity, 1);
@@ -826,14 +766,11 @@ fn one_functions_instance_proof_is_rejected_against_anothers_type() {
 
 #[test]
 fn twice_inc_5_gets_a_kernel_checked_closure_proof() {
-    // (twice inc) 5 -- the higher-order demo term main.rs uses: a
+    // The higher-order demo term main.rs uses: a
     // closed (arity 0), non-recursive expression combining two
     // non-capturing combinators.
     let mut s = TermStore::new();
-    let t = twice(&mut s);
-    let i = inc(&mut s);
-    let five = s.lit(5);
-    let applied = s.app2(t, i, five);
+    let applied = twice_inc_5(&mut s);
 
     let proof = prove_closure_expr(&s, applied).expect("(twice inc) 5 should get a closure proof");
     assert_eq!(proof.arity, 0);
@@ -895,21 +832,16 @@ fn a_directly_called_self_recursive_combinator_gets_a_closure_proof() {
 
 #[test]
 fn a_self_recursive_combinator_used_as_a_value_gets_a_closure_proof() {
-    // (\g. g 10) fact -- what `let fact = rec f n = .. in fact 10`
-    // desugars to (found via the REPL -- see syntax.rs/repl.rs, and
+    // `let fact = rec f n = .. in fact 10` desugars to `(\g. g 10) fact`
+    // (found via the REPL -- see syntax.rs/repl.rs, and
     // jit::tests::a_let_bound_self_recursive_function_compiles_and_is_kernel_verified
     // for the same shape checked directly against jit.rs): `fact`
     // itself, a bare `Term::Rec` value, gets registered
     // (`ClosureCombinators::register`) the same way a non-recursive
-    // literal does, then called through `wrapper`'s own closure-typed
-    // parameter via call_indirect.
+    // literal does, then called through the closure-typed
+    // parameter of `\g. g 10` via call_indirect.
     let mut s = TermStore::new();
-    let f = factorial(&mut s);
-    let g = s.var(0);
-    let ten = s.lit(10);
-    let call_g = s.app(g, ten);
-    let wrapper = s.abs(call_g);
-    let applied = s.app(wrapper, f);
+    let applied = let_bound_factorial_10(&mut s);
 
     let proof = prove_closure_expr(&s, applied).expect("(\\g. g 10) fact should get a closure proof");
     assert_eq!(proof.arity, 0);
@@ -928,9 +860,8 @@ fn a_self_recursive_combinator_used_as_a_value_gets_a_closure_proof() {
 fn a_partially_applied_self_recursive_combinator_used_as_a_value_gets_a_closure_proof() {
     // fact(1) supplied as a 1-of-1 partial application isn't a
     // meaningful example on its own (fact's arity is already 1), so
-    // use a 2-ary self-recursive combinator instead: rec f n acc =
-    // if n <= 0 then acc else f(n-1, n*acc); partial = f(3) (under-
-    // applied by one arg); caller = \g. g(1); top = caller(partial).
+    // use a 2-ary self-recursive combinator instead, applied to 3
+    // (under-applied by one arg) and passed to `\g. g 1`.
     // pap_ref no longer rejects a recursive root -- compile::peel/
     // compile::free_vars/param_types_for were already generic over
     // is_rec (a call is always postulated opaque regardless), and
@@ -940,29 +871,7 @@ fn a_partially_applied_self_recursive_combinator_used_as_a_value_gets_a_closure_
     // codegen happens to loop), so the only thing standing in the way
     // was pap_ref's own extra is_rec check.
     let mut s = TermStore::new();
-    let acc = s.var(0);
-    let n = s.var(1);
-    let f = s.var(2);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let n_times_acc = s.prim(PrimOp::Mul, n, acc);
-    let rec_call = s.app2(f, n_minus_1, n_times_acc);
-    let body = s.if_(cond, acc, rec_call);
-    let inner = s.abs(body);
-    let abs = s.abs(inner);
-    let fact2 = s.rec(abs);
-
-    let three = s.lit(3);
-    let partial = s.app(fact2, three);
-
-    let g = s.var(0);
-    let one2 = s.lit(1);
-    let call_g = s.app(g, one2);
-    let caller = s.abs(call_g);
-
-    let top = s.app(caller, partial);
+    let top = a_pap_of_a_self_recursive_combinator(&mut s);
 
     let proof = prove_closure_expr(&s, top)
         .expect("a partially applied self-recursive combinator used as a value should get a closure proof");
@@ -983,38 +892,12 @@ fn partial_application_of_a_capturing_self_recursive_combinator_gets_a_closure_p
     // The two pap_ref restrictions lifted independently this session
     // (a capturing root, then a self-recursive root) combined in one
     // term, to confirm they actually compose rather than each having
-    // only been checked in isolation: \z. caller(fact2(3)) where
-    // fact2 = rec f n acc = if n <= 0 then acc else f(n-1, n*acc+z)
-    // captures z from the *enclosing* scope (not one of fact2's own
-    // parameters), and is itself partially applied (one arg short) --
-    // caller = \g. g(1) as before.
+    // only been checked in isolation: the combinator captures z from
+    // the *enclosing* scope (not one of its own parameters), and is
+    // itself partially applied (one arg short) -- passed to `\g. g 1`
+    // as before.
     let mut s = TermStore::new();
-    let acc = s.var(0);
-    let n = s.var(1);
-    let f = s.var(2);
-    let z = s.var(3); // captured from the enclosing \z. scope, not one of fact2's own params
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let n_times_acc = s.prim(PrimOp::Mul, n, acc);
-    let plus_z = s.prim(PrimOp::Add, n_times_acc, z);
-    let rec_call = s.app2(f, n_minus_1, plus_z);
-    let body = s.if_(cond, acc, rec_call);
-    let acc_abs = s.abs(body);
-    let n_abs = s.abs(acc_abs);
-    let fact2 = s.rec(n_abs);
-
-    let three = s.lit(3);
-    let partial = s.app(fact2, three);
-
-    let g = s.var(0);
-    let one2 = s.lit(1);
-    let call_g = s.app(g, one2);
-    let caller = s.abs(call_g);
-
-    let top_inner = s.app(caller, partial);
-    let top = s.abs(top_inner);
+    let top = a_pap_of_a_capturing_self_recursive_combinator(&mut s);
 
     let proof = prove_closure_expr(&s, top).expect(
         "a partially applied self-recursive combinator that also captures an outer variable should get a closure proof",
@@ -1056,7 +939,7 @@ fn recursion_combined_with_closures_is_out_of_scope() {
 
 #[test]
 fn inconsistent_call_arity_for_a_parameter_is_still_out_of_scope_for_the_closure_proof() {
-    // \f. f(1) + f(1, 2) -- `f`, a *parameter*, called with
+    // `f`, a *parameter*, called with
     // inconsistent arities (1 then 2) at different call sites.
     // Unrelated to partial application of a *literal lambda* (see
     // a_partially_applied_literal_lambda_used_as_a_value_gets_a_closure_proof
@@ -1081,42 +964,19 @@ fn inconsistent_call_arity_for_a_parameter_is_still_out_of_scope_for_the_closure
     // structural methodology), not a byproduct of compile.rs alone
     // accepting more terms.
     let mut s = TermStore::new();
-    let f1 = s.var(0);
-    let one = s.lit(1);
-    let call1 = s.app(f1, one);
-    let f2 = s.var(0);
-    let two = s.lit(2);
-    let call2 = s.app2(f2, one, two);
-    let body = s.prim(PrimOp::Add, call1, call2);
-    let g = s.abs(body);
+    let g = inconsistent_arity_parameter(&mut s);
 
     assert!(prove_closure_expr(&s, g).is_none());
 }
 
 #[test]
 fn a_partially_applied_literal_lambda_used_as_a_value_gets_a_closure_proof() {
-    // add = \x y. x + y; partial = add(3) (under-applied by one
-    // argument); caller = \g. g(4); top = caller(partial) -- same
-    // shape as compile::tests::partial_application_of_a_literal_lambda_compiles.
-    // `partial` is denoted via pap_ref's new `Less`-arity branch (a
-    // Clo-typed value), then completed through caller's own
+    // `(\x y. x + y) 3` is under-applied by one argument, then passed to
+    // `\g. g 4`. It is denoted via pap_ref's new `Less`-arity branch (a
+    // Clo-typed value), then completed through the caller's own
     // call_indirect the same way any other Clo-typed argument would be.
     let mut s = TermStore::new();
-    let x = s.var(1);
-    let y = s.var(0);
-    let sum = s.prim(PrimOp::Add, x, y);
-    let inner_add = s.abs(sum);
-    let add = s.abs(inner_add);
-
-    let three = s.lit(3);
-    let partial = s.app(add, three);
-
-    let g = s.var(0);
-    let four = s.lit(4);
-    let call_g = s.app(g, four);
-    let caller = s.abs(call_g);
-
-    let top = s.app(caller, partial);
+    let top = a_pap_non_capturing(&mut s);
 
     let proof = prove_closure_expr(&s, top).expect("a partially applied literal lambda used as a value should get a closure proof");
     assert_eq!(proof.arity, 0);
@@ -1171,7 +1031,7 @@ fn a_partially_applied_literal_lambda_with_mixed_parameter_types_gets_a_closure_
 
 #[test]
 fn a_partially_applied_capturing_literal_lambda_used_as_a_value_gets_a_closure_proof() {
-    // g = \z. (\g2. g2(4)) ((\x y. x + y + z)(3)) -- same shape as
+    // The same shape as
     // compile::tests::partial_application_of_a_capturing_literal_lambda_compiles,
     // which compiles via Lowering::pap_env composing the wrapper's own
     // environment with a copy of the (capturing) root's own
@@ -1182,24 +1042,7 @@ fn a_partially_applied_capturing_literal_lambda_used_as_a_value_gets_a_closure_p
     // prepends it to the wrapper's own arguments -- so this now gets a
     // kernel-checked proof too, not just empirical sample verification.
     let mut s = TermStore::new();
-    let y = s.var(0);
-    let x = s.var(1);
-    let z_captured = s.var(2);
-    let xy = s.prim(PrimOp::Add, x, y);
-    let xyz = s.prim(PrimOp::Add, xy, z_captured);
-    let inner = s.abs(xyz);
-    let capturing_add = s.abs(inner);
-
-    let three = s.lit(3);
-    let partial = s.app(capturing_add, three);
-
-    let g2 = s.var(0);
-    let four = s.lit(4);
-    let call_g2 = s.app(g2, four);
-    let caller = s.abs(call_g2);
-
-    let called = s.app(caller, partial);
-    let g = s.abs(called);
+    let g = a_pap_capturing(&mut s);
 
     let proof = prove_closure_expr(&s, g).expect("a partially applied capturing literal lambda used as a value should get a closure proof");
     assert_eq!(proof.arity, 1);
@@ -1302,44 +1145,21 @@ fn over_application_of_a_literal_lambda_is_still_out_of_scope_for_the_closure_pr
 
 #[test]
 fn calling_a_literal_lambda_whose_own_body_picks_between_two_closures_gets_a_closure_proof() {
-    // \x. (\g. g 5) (if 0 < x then (\y. x + y) else (\y. x - y)) --
-    // the same term compile.rs's own
+    // The same term compile.rs's own
     // a_capturing_closure_compiles_and_matches_interpreter test uses.
-    // `picker` (whose own body is the If) is *directly called*
-    // (`chosen = picker(x2)`, a fully-saturated application of a
+    // The picker (the literal lambda whose own body is the If) is
+    // *directly called* (a fully-saturated application of a
     // literal lambda) -- `call_ref`'s own postulated type used to
     // always assume a directly-called combinator returns `Int`,
-    // causing `chosen`'s claimed `Int` type to fail `inn`'s own
+    // causing the call's claimed `Int` type to fail `\g. g 5`'s own
     // `.clo()?` check where it's used as `g`. `call_ref` now consults
     // `combinator_return_type` for its own return type instead of
-    // universally assuming `Int` -- correctly classifying `picker`'s
+    // universally assuming `Int` -- correctly classifying the picker's
     // body (an `If` between two closures) as `Clo`-typed, without
-    // `call_ref` itself ever denoting `picker`'s own body -- so this
+    // `call_ref` itself ever denoting the picker's own body -- so this
     // now gets a genuine kernel-checked proof.
     let mut s = TermStore::new();
-    let x = s.var(0);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, x);
-    let y_pos = s.var(0);
-    let x_pos = s.var(1);
-    let plus = s.prim(PrimOp::Add, x_pos, y_pos);
-    let then_closure = s.abs(plus);
-    let y_neg = s.var(0);
-    let x_neg = s.var(1);
-    let minus = s.prim(PrimOp::Sub, x_neg, y_neg);
-    let else_closure = s.abs(minus);
-    let body = s.if_(cond, then_closure, else_closure);
-    let picker = s.abs(body);
-
-    let g = s.var(0);
-    let five = s.lit(5);
-    let call_g = s.app(g, five);
-    let inn = s.abs(call_g);
-
-    let x2 = s.var(0);
-    let chosen = s.app(picker, x2);
-    let called = s.app(inn, chosen);
-    let f = s.abs(called);
+    let f = calls_a_capturing_closure_picked_by_if(&mut s);
 
     assert!(compile::try_compile(&s, f).is_some(), "compile.rs should compile this via closure conversion");
     let proof = prove_closure_expr(&s, f).expect("picker's own Clo-typed body should now be reachable through call_ref");
@@ -1405,48 +1225,18 @@ fn a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope
 
 #[test]
 fn an_over_applied_literal_lambda_returning_a_closure_gets_a_closure_proof() {
-    // f = \a b. if 0 < a then (\c. a+b+c) else (\c. a-b+c); f(a,b,c) --
-    // same shape as compile::tests::
+    // Same shape as compile::tests::
     // an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter/
     // jit::tests::an_over_applied_literal_lambda_returning_a_closure_compiles_and_is_kernel_verified.
     // Unlike the test above (a directly-called combinator's own
     // Clo-typed result used as a *value*), this is genuine
-    // over-application: `f`'s own saturated call (`f(a,b)`) is
+    // over-application: `f`'s own saturated call (`f a b`) is
     // denoted first via `call_ref` (now correctly `Clo`-typed, same
     // classifier), then dispatched on the extra argument `c`
     // directly, exactly the way calling a closure-typed variable
     // already denotes.
     let mut s = TermStore::new();
-    let c1 = s.var(0);
-    let b1 = s.var(1);
-    let a1 = s.var(2);
-    let ab1 = s.prim(PrimOp::Add, a1, b1);
-    let abc1 = s.prim(PrimOp::Add, ab1, c1);
-    let closure1 = s.abs(abc1);
-
-    let c2 = s.var(0);
-    let b2 = s.var(1);
-    let a2 = s.var(2);
-    let amb2 = s.prim(PrimOp::Sub, a2, b2);
-    let ambc2 = s.prim(PrimOp::Add, amb2, c2);
-    let closure2 = s.abs(ambc2);
-
-    let a_body = s.var(1);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, zero, a_body);
-    let body = s.if_(cond, closure1, closure2);
-    let b_binder = s.abs(body);
-    let f = s.abs(b_binder);
-
-    let a_param = s.var(2);
-    let b_param = s.var(1);
-    let c_param = s.var(0);
-    let fa = s.app(f, a_param);
-    let fab = s.app(fa, b_param);
-    let fabc = s.app(fab, c_param);
-    let c_binder = s.abs(fabc);
-    let bc_binder = s.abs(c_binder);
-    let top = s.abs(bc_binder);
+    let top = over_application_if_between_closures_of_params(&mut s);
 
     assert_eq!(eval::apply_term(&s, top, &[10, 3, 100]).unwrap(), 113, "interpreter sanity check");
     assert_eq!(eval::apply_term(&s, top, &[-5, 3, 100]).unwrap(), 92, "interpreter sanity check");
@@ -1497,18 +1287,12 @@ fn a_capturing_closure_used_as_a_value_gets_a_closure_proof() {
 
 #[test]
 fn a_directly_called_capturing_closure_gets_a_closure_proof() {
-    // g = \x. (\y. x + y) 5 -- `\y. x + y` captures g's own `x`, and
+    // `\y. x + y` captures the enclosing function's own `x`, and
     // is called *directly* (a literal lambda in function position),
     // exercising call_ref's new Env-prefixed signature and
     // build_env_expr in the direct-call branch of denote_closure.
     let mut s = TermStore::new();
-    let y = s.var(0);
-    let x = s.var(1);
-    let sum = s.prim(PrimOp::Add, x, y);
-    let closure = s.abs(sum);
-    let five = s.lit(5);
-    let called = s.app(closure, five);
-    let g = s.abs(called);
+    let g = a_capturing_closure_call(&mut s);
 
     let proof = prove_closure_expr(&s, g).expect("a directly called capturing closure should get a proof now");
     assert_eq!(proof.arity, 1);
@@ -1580,8 +1364,7 @@ fn a_capture_of_a_closure_typed_value_gets_a_closure_proof() {
 
 #[test]
 fn a_closure_created_in_a_self_call_argument_capturing_a_closure_typed_loop_parameter_gets_a_universal_proof() {
-    // rec f n g x = if n <= 0 then x else f(n-1, g, g x + (\y. g y + 1) x)
-    // -- same closure-typed loop-carried parameter as `iterate`, but
+    // Same closure-typed loop-carried parameter as `iterate`, but
     // each iteration *also* creates a fresh closure (`\y. g y + 1`)
     // that captures `g` itself (a `Clo`-typed value, not an `Int`).
     // The direct call `g x` is still needed here, unrelated to the
@@ -1600,34 +1383,11 @@ fn a_closure_created_in_a_self_call_argument_capturing_a_closure_typed_loop_para
     // fragment `a_capture_of_a_closure_typed_value_gets_a_closure_proof`
     // above checks).
     let mut s = TermStore::new();
-    let x = s.var(0);
-    let g = s.var(1);
-    let n = s.var(2);
-    let f = s.var(3);
-
-    let gx = s.app(g, x);
-
-    let y = s.var(0);
-    let g_captured = s.var(2); // g, shifted by the wrapper's own y binder
-    let gy = s.app(g_captured, y);
-    let one = s.lit(1);
-    let gy_plus_1 = s.prim(PrimOp::Add, gy, one);
-    let wrapper = s.abs(gy_plus_1);
-    let wrapper_call = s.app(wrapper, x);
-
-    let new_x = s.prim(PrimOp::Add, gx, wrapper_call);
-
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one2 = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one2);
-    let f_n1_g = s.app2(f, n_minus_1, g);
-    let rec_call = s.app(f_n1_g, new_x);
-    let body = s.if_(cond, x, rec_call);
-    let g_binder = s.abs(body);
-    let n_binder = s.abs(g_binder);
-    let abs = s.abs(n_binder);
-    let it = s.rec(abs);
+    let it = iterate_creating_a_closure_over_g(&mut s);
+    let inc = inc(&mut s);
+    let (five, zero) = (source(&mut s, "5"), source(&mut s, "0"));
+    let partial = s.app2(it, five, inc);
+    let top = s.app(partial, zero);
 
     let proof = prove_tail_recursive_universal(&s, it)
         .expect("a closure created in a self-call argument capturing a closure-typed loop parameter should get a universal proof");
@@ -1635,20 +1395,11 @@ fn a_closure_created_in_a_self_call_argument_capturing_a_closure_typed_loop_para
     kernel::check_in(&proof.globals, &Ctx::new(), &proof.theorem_proof, &proof.theorem_ty)
         .expect("the recorded theorem should independently re-typecheck");
 
-    // inc = \y. y + 1, baked in as the initial g, run for real: each
+    // `inc` baked in as the initial g, run for real: each
     // iteration computes new_x = g(x) + (g(x)+1) = 2*inc(x) + 1 =
     // 2x + 3. Starting from x=0: 3, 9, 21, 45, 93 after 1..5
     // iterations (hand-derived and cross-checked against eval::apply_term
     // directly while building this test).
-    let y2 = s.var(0);
-    let one3 = s.lit(1);
-    let inc_body = s.prim(PrimOp::Add, y2, one3);
-    let inc = s.abs(inc_body);
-    let n_lit = s.lit(5);
-    let x0 = s.lit(0);
-    let partial = s.app2(it, n_lit, inc);
-    let top = s.app(partial, x0);
-
     assert_eq!(eval::apply_term(&s, top, &[]).unwrap(), 93);
     assert!(compile::try_compile(&s, top).is_some());
 }
@@ -1784,10 +1535,7 @@ fn one_closure_terms_proof_is_rejected_against_anothers_type() {
     // Adversarial: twice_inc_5's proof, checked in its own ctx, against
     // twice-alone's type -- must be rejected, not somehow typecheck.
     let mut s = TermStore::new();
-    let t = twice(&mut s);
-    let i = inc(&mut s);
-    let five = s.lit(5);
-    let applied = s.app2(t, i, five);
+    let applied = twice_inc_5(&mut s);
     let applied_proof = prove_closure_expr(&s, applied).expect("(twice inc) 5 should get a closure proof");
 
     let mut s2 = TermStore::new();
@@ -1824,25 +1572,7 @@ fn prove_closure_expr_declines_where_the_instance_proof_picks_up() {
     // own inconsistent arity has no honest static type), even though
     // it's now perfectly provable per-instance.
     let mut s = TermStore::new();
-    let a = s.var(1);
-    let b = s.var(0);
-    let add = s.prim(PrimOp::Add, a, b);
-    let inner = s.abs(add);
-    let f_lit = s.abs(inner);
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let zero = s.lit(0);
-    let one_c = s.lit(1);
-    let cond = s.prim(PrimOp::Lt, zero, one_c);
-    let inner_body = s.if_(cond, call_2, call_1);
-    let f_abs = s.abs(inner_body);
-    let top = s.app(f_abs, f_lit);
+    let top = inconsistent_arity_saturating_instance(&mut s);
 
     assert!(prove_closure_expr(&s, top).is_none());
     let proof = prove_closure_expr_instance(&s, top, &[]).expect("should be provable per-instance");
@@ -1855,24 +1585,7 @@ fn an_under_applying_instance_gets_a_per_instance_proof_too() {
     // compile.rs's
     // `an_inconsistently_called_parameter_matching_its_own_under_applying_arity_agrees_with_the_interpreter`.
     let mut s = TermStore::new();
-    let a = s.var(0);
-    let hundred = s.lit(100);
-    let a_plus_100 = s.prim(PrimOp::Add, a, hundred);
-    let f_lit = s.abs(a_plus_100);
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let one_c = s.lit(1);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Lt, one_c, zero); // always false
-    let inner_body = s.if_(cond, call_2, call_1);
-    let f_abs = s.abs(inner_body);
-    let top = s.app(f_abs, f_lit);
+    let top = inconsistent_arity_under_applying_instance(&mut s);
 
     assert!(prove_closure_expr(&s, top).is_none());
     let proof = prove_closure_expr_instance(&s, top, &[]).expect("should be provable per-instance");
@@ -1887,28 +1600,7 @@ fn a_captured_value_reached_through_an_inlined_call_gets_a_per_instance_proof() 
     // of `k` must resolve against `top`'s own (outer) frame, not
     // whatever frame is active once `f_abs`'s body is inlined.
     let mut s = TermStore::new();
-    let k = s.var(2);
-    let a = s.var(1);
-    let b = s.var(0);
-    let k_plus_a = s.prim(PrimOp::Add, k, a);
-    let sum = s.prim(PrimOp::Add, k_plus_a, b);
-    let inner = s.abs(sum);
-    let f_lit = s.abs(inner);
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let zero = s.lit(0);
-    let one_c = s.lit(1);
-    let cond = s.prim(PrimOp::Lt, zero, one_c);
-    let inner_body = s.if_(cond, call_2, call_1);
-    let f_abs = s.abs(inner_body);
-    let app = s.app(f_abs, f_lit);
-    let top = s.abs(app);
+    let top = inconsistent_arity_capturing_instance(&mut s);
 
     assert!(prove_closure_expr(&s, top).is_none());
     for k_val in [100i64, -7] {
@@ -1926,37 +1618,7 @@ fn a_runtime_chosen_literal_gets_a_per_instance_proof() {
     // `add_lit`/`sub_lit`, *before* `f_abs`'s own body is even
     // reached.
     let mut s = TermStore::new();
-    let a1 = s.var(1);
-    let b1 = s.var(0);
-    let add_body = s.prim(PrimOp::Add, a1, b1);
-    let add_inner = s.abs(add_body);
-    let add_lit = s.abs(add_inner);
-
-    let a2 = s.var(1);
-    let b2 = s.var(0);
-    let sub_body = s.prim(PrimOp::Sub, a2, b2);
-    let sub_inner = s.abs(sub_body);
-    let sub_lit = s.abs(sub_inner);
-
-    let pick = s.var(0);
-    let zero_p = s.lit(0);
-    let pick_cond = s.prim(PrimOp::Lt, zero_p, pick);
-    let f_value = s.if_(pick_cond, add_lit, sub_lit);
-
-    let f1 = s.var(0);
-    let one1 = s.lit(1);
-    let two1 = s.lit(2);
-    let call_2 = s.app2(f1, one1, two1);
-    let f2 = s.var(0);
-    let one2 = s.lit(1);
-    let call_1 = s.app(f2, one2);
-    let zero_c = s.lit(0);
-    let one_c = s.lit(1);
-    let cond = s.prim(PrimOp::Lt, zero_c, one_c);
-    let inner_body = s.if_(cond, call_2, call_1);
-    let f_abs = s.abs(inner_body);
-    let app = s.app(f_abs, f_value);
-    let top = s.abs(app);
+    let top = inconsistent_arity_runtime_chosen_instance(&mut s);
 
     assert!(prove_closure_expr(&s, top).is_none());
     for pick_val in [1i64, -1] {
@@ -1969,9 +1631,8 @@ fn a_runtime_chosen_literal_gets_a_per_instance_proof() {
 fn a_tail_recursive_loop_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof() {
     // Same shape as jit::tests::
     // a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent
-    // (and samples::inconsistent_arity_loop_carried_parameter_loop): `rec f n g x =
-    // if 1<0 then g(x,999) else (if n<=0 then x else f(n-1,g,g(x)))`,
-    // `g` baked in as `inc = \y. y+1`. The dead `g(x,999)` call site
+    // (and samples::inconsistent_arity_loop_carried_parameter_loop),
+    // `g` baked in as `inc`. The dead `g x 999` call site
     // makes `param_types_for(it)` classify `g` as `Inconsistent` (->
     // `None`, same as an absent one) even though every call actually
     // taken passes it exactly one argument -- exactly the gap
@@ -1981,48 +1642,13 @@ fn a_tail_recursive_loop_carrying_an_inconsistently_classified_closure_parameter
     // own tail self-calls concretely instead of trying (and failing)
     // to classify `g` statically.
     let mut s = TermStore::new();
-    let x_dead = s.var(0);
-    let nine_ninety_nine = s.lit(999);
-    let g_dead = s.var(1);
-    let dead_call = s.app2(g_dead, x_dead, nine_ninety_nine);
-
-    let x = s.var(0);
-    let g = s.var(1);
-    let n = s.var(2);
-    let f = s.var(3);
-    let zero = s.lit(0);
-    let cond = s.prim(PrimOp::Le, n, zero);
-    let one = s.lit(1);
-    let n_minus_1 = s.prim(PrimOp::Sub, n, one);
-    let gx = s.app(g, x);
-    let f_n1_g = s.app2(f, n_minus_1, g);
-    let rec_call = s.app(f_n1_g, gx);
-    let live_body = s.if_(cond, x, rec_call);
-
-    let one_c = s.lit(1);
-    let zero_c = s.lit(0);
-    let dead_cond = s.prim(PrimOp::Lt, one_c, zero_c); // always false
-    let body = s.if_(dead_cond, dead_call, live_body);
-
-    let g_binder = s.abs(body);
-    let n_binder = s.abs(g_binder);
-    let abs = s.abs(n_binder);
-    let it = s.rec(abs);
-
-    let y = s.var(0);
-    let one2 = s.lit(1);
-    let inc_body = s.prim(PrimOp::Add, y, one2);
-    let inc = s.abs(inc_body);
+    let it = inconsistent_arity_iterate(&mut s);
 
     assert!(param_types_for(&s, it).unwrap().contains(&None));
     assert!(prove_closure_expr(&s, it).is_none(), "it itself has no fixed arity to prove universally over g's own slot");
 
     for n_val in [0i64, 1, 10] {
-        let n_lit = s.lit(n_val);
-        let x0 = s.lit(0);
-        let partial = s.app2(it, n_lit, inc);
-        let top = s.app(partial, x0);
-
+        let top = inconsistent_arity_loop_carried_parameter_loop(&mut s, n_val);
         assert!(prove_closure_expr(&s, top).is_none(), "n={n_val}: top's own call to it still can't be classified statically");
         let proof = prove_closure_expr_instance(&s, top, &[]).unwrap_or_else(|| panic!("n={n_val} should be provable per-instance"));
         check_instance_proof(&proof);
@@ -2570,19 +2196,8 @@ fn an_inner_closures_captures_resolve_against_its_roots_own_frame_in_a_closure_p
 
 #[test]
 fn an_over_applied_partial_application_root_gets_a_closure_proof() {
-    // g = \x y. x*10 + y; f = \a. g(a); f(5)(3) = g(5, 3) = 53
     let mut s = TermStore::new();
-    let (x, y, ten) = (s.var(1), s.var(0), s.lit(10));
-    let x10 = s.prim(PrimOp::Mul, x, ten);
-    let xy = s.prim(PrimOp::Add, x10, y);
-    let g_inner = s.abs(xy);
-    let g = s.abs(g_inner);
-    let a = s.var(0);
-    let f_body = s.app(g, a);
-    let f = s.abs(f_body);
-    let (five, three) = (s.lit(5), s.lit(3));
-    let fa = s.app(f, five);
-    let h = s.app(fa, three);
+    let h = over_application_pap_producing_root(&mut s);
     check_closed_closure_proof(&s, h, &[], 53);
 
     // The same through two more levels of saturated calls that each return a closure: root = \a. outer(a),
