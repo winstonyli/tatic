@@ -5997,6 +5997,17 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   distinct laws (17/69/75/90 per band, 85 of them unproved in all 9 loops) of the held-out files' 1302 laws with `shr1`
   (265/347/354/336). A prover that knows `shr1` would turn them into machine-proved laws and leave M as it is, since M
   counts both; only rules that settle them lower it.
+- **What the loops see of the held-out laws (run `2026-10-26-held-overlap`, 12 min; `overlap.sh` in its folder, test
+  `probe_held_overlap` in `deepextras.patch`, `2026-10-26-deepextras-exes`, reverted).** Per salt 1-10, the 900 laws
+  the loops serve (phases 1-3, the first 300 each) and the 1650 the extras are drawn from (phase 0), against each
+  held-out band. Exact copies are rare: on salts 2-10 the served laws hold 29 band-11 and 13 band-13 held-out laws in
+  all (none of 15 or 17), about 3 per band and salt; the extras' source 0-14 per salt, again only in bands 11 and 13.
+  Twins (the same twin key: renamed, children made canonical) are not rare: 38-85 served laws per band and salt are
+  twins of a held-out law, 2467 of the 9000 served over the ten salts (27%), salt 1 as much as the others (its exact
+  copies were dropped, its twins not), and every band has them, 17 included (38-56 per salt); 71-165 per band and salt
+  of the extras' source. Counted per loop law, not per distinct held-out law. Both arms of an A/B see the same laws,
+  so a gate's difference stands; the absolute held-out M and frontier include laws whose twin the loops served.
+  (PARKED, "Drop the served laws' twins from the held-out set".)
 - **Rules mined on the held-out laws themselves (run `2026-10-26-held-oracle`, 51 min; `oracle.sh` in its folder).**
   For the same 9 loops and every band, the miner as the loop runs it (`RULEMINER_FAST=1`) on the whole held-out band
   file with the loop's final rules as base; its stragglers are exactly each loop's held-out M (478/1592/1872/2458).
@@ -6049,7 +6060,10 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     replaced taught band 11), 13 177.1 to 171.5, 15 208.6 to 191.8, 17 274.8 to 253.7; bands 13-17 -6.6%, about what
     the dose probe gave 100 laws per band (-6.4%), so the gain is the dose's, not lost to mixing with the batches. Cost:
     job CPU 1245 to 2841 s, peak process 1.5 to 3.3 GB; the 4-growth sequence took 256-401 s per sweep (three B arms
-    at once, 64-70% other load) and the loops' wall about doubled (424 to 805 s summed).
+    at once, 64-70% other load) and the loops' wall about doubled (424 to 805 s summed). By the work counts (WORK lines,
+    summed over the salts), the driver's `interp` (building both sequences) went 43.9 to 124.5 G and the mines' 31.2 to
+    52.6 G, their walk, match and op 2.1-2.7x: the 4-growth build is about 80% of the added `interp`, and the mines'
+    rewriting work more than doubled with 202 large extras per loop.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey

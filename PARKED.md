@@ -50,11 +50,14 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Other ways to build the past-domain held-out set** — what: (a) generate the ablation held-out set at run time from a held-out salt of decision 8's streams instead of frozen files; (b) stratify it per stream (a fixed count from each of the 56) instead of per size band. Why parked: by decision (spec `docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md`, decision 10): (a) would move with any generator change, so ablations at different commits stop being comparable; (b) bitwise-only streams find almost no open laws, so their quota would come from very few. Trigger: (a) when regenerating the files becomes a burden (the key or table size changes often); (b) when the per-band set turns out to miss an operator set an ablation depends on. Evidence: `docs/tier-cycle.md`, "Rotating over every operator pair beats the best pair" (per-pair yields, 2026-10-23). Status: parked.
 - **Drop the served laws' twins from the held-out set, not only exact copies** — what: `regenerate_held` drops a law
   salt 1's loops serve only when it is the same pair of terms; a twin (the same law up to renaming or a class-equivalent
-  subterm, `canonical`) stays, and a rule mined on it would flatter held-out M. Why parked: the exact overlap is small
-  (64 and 47 of the 19769 and 37996 laws in bands 11 and 13, none in 15 and 17), so twins are likely few, and changing
-  the filter moves the frozen files every ablation compares against. Trigger: a held-out M gain an ablation rests on
-  that the twins could explain, or the next regeneration for another reason. Evidence: `tests/church_bv/classes.rs`
-  (`regenerate_held`), run `2026-10-24-held-15-17-2` (`HELD` lines); phase 2 final review M3 (2026-10-23). Status: parked.
+  subterm, `canonical`) stays, and a rule mined on it would flatter held-out M. Why parked: changing the filter moves the frozen files
+  every ablation compares against, and both arms of an A/B see the same twins. Twins are not few, though: 27% of the
+  laws salts 1-10 serve are twins of a held-out law, in every band (2026-10-26, "What the loops see of the held-out
+  laws"), so the absolute held-out M and frontier are flattered. Trigger: a held-out M gain an ablation rests on that the
+  twins could explain, a claim about the frontier's absolute level, or the next regeneration for another reason
+  (dropping twins of the laws the gate's salts 1-10 serve and draw extras from). Evidence: `tests/church_bv/classes.rs`
+  (`regenerate_held`), run `2026-10-24-held-15-17-2` (`HELD` lines), run `2026-10-26-held-overlap`; phase 2 final
+  review M3 (2026-10-23). Status: parked.
 - **Size the extras for the streams (`STREAM_EXTRAS`)** — what: the extras are the first 1650 laws of phase 0, the size of cmp3d's generator list on the old gate (plan `docs/superpowers/plans/2026-10-23-class-table-phase-2.md`, R2), kept so a mine saw about as many extras as before. Why parked: with the families deleted the number has no source of its own; no arm has measured another size on the streams. Trigger: a streams sweep where the extras' share of mine time or of the rules chosen stands out, or a gate on another size. Evidence: `tests/church_bv/driver.rs` (`STREAM_EXTRAS`, `scope_extras`), verified 2026-10-23. Status: parked.
 
 ## Rewriter, rule order and the floor
