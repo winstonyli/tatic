@@ -41,4 +41,6 @@ results, 2026-10-17 and 2026-10-23).
   "Why a sound rule costs the join") by law size, against the table alone. Serving proves every law, so the share proved at all
   would always be 1. The gate prints it per arm for bands 11-17 (`docs/tier-cycle.md`, "The frontier on the gate":
   .94 to .72 with mined rules since 2026-10-26, .76 to .60 without); no threshold, since no band nears 50% (the probe before it:
-  "The frontier past the loops' sizes").
+  "The frontier past the loops' sizes"). First finding (2026-10-26): the loops miss rules that transfer because they
+  serve few or no laws as large as the held-out ones; mining 500-1000 fresh laws of those sizes per band cuts held-out M
+  22-28% (`docs/tier-cycle.md`, "Fresh laws of the held-out sizes do as well"). Next: a loop phase that serves them.
