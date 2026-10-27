@@ -4656,6 +4656,19 @@ grouping the grown terms by width-4 values (`pool_conjectures`) 5.8%, most of it
 prefix would shorten (normal forms and width-8 values) only 2.6%. It is still built on one thread before anything else
 runs, so it is 23 of the 53 s of wall. The join search is 62.0%.
 
+*The streams in parallel (2026-10-27, cleanup plan CU18).* `stream_sequence` now builds the 56 streams on
+`STREAM_THREADS` scoped threads (default 4), each taking the next stream when free, and merges them by stream index, so
+the sequence is the same at any thread count (`a_stream_sequence_is_the_same_on_any_thread_count`). Built alone (probes
+`2026-10-27-cu18-seqmem` and `-b`, salt 1, 58125 laws each): 1 thread 15.4 s and 1410 MB peak commit, 2 threads 8.7 s
+and 2050 MB, 4 threads 5.4 s and 2818 MB, 6 threads 4.3 s and 3074 MB, 12 threads 3.7 s and 4610 MB, with job CPU 15.3
+to 32.2 s. The peak grows with the thread count (each thread holds one stream's grown terms at a time, an inference,
+not profiled); 4 is the default
+because three gate processes then fill the 12-thread cap and most of the speedup is in. Gate `2026-10-27-cu18-ab`
+against 74c575b (salts 1-3, untimed, JOBS=3): rules the same in 9 of 9 loops, M 477, held-out 6400 and every band equal;
+work walk equal, match +10 k of 4.77 G, op -115. Timed (`2026-10-27-cu18-timed-2`, salt 1, quiet machine): the
+sequence 16.1 to 5.4 s and the sweep's wall 35.5 to 24.6 s (-31%), job CPU 144.9 to 146.6 s; the arm's peak commit
+rises from 1538 to 3074 MB and is still the sequence's.
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)

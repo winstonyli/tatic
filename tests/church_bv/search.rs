@@ -658,26 +658,57 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
 
 /// The law sequence for `salt` with the table's representatives grown `levels` times (spec §9; the loops use
 /// `STREAM_LEVELS`): the 56 streams (`stream_sets`, `STREAM_BUDGET`) interleaved round-robin, a law kept at its first
-/// appearance. Built once per process, salt and growth count.
+/// appearance. Built once per process, salt and growth count, on `STREAM_THREADS` threads (default 4, so three gate
+/// processes fill the 12-core cap; clamped to 1..=12; 4 threads: 5.4 s and 2.8 GB against 15.4 s and 1.4 GB serial,
+/// run `2026-10-27-cu18-seqmem-b`).
 pub fn stream_sequence(salt: usize, levels: usize) -> std::sync::Arc<Vec<(Term, Term)>> {
     static MEMO: crate::task::SharedMemo<(usize, usize), std::sync::Arc<Vec<(Term, Term)>>> = crate::task::SharedMemo::new();
-    let build = || {
-        let t0 = std::time::Instant::now();
-        let streams: Vec<Vec<(Term, Term)>> = stream_sets().iter().map(|ops| stream_laws(ops, salt, STREAM_BUDGET, levels)).collect();
-        let (mut seen, mut seq) = (HashSet::new(), vec![]);
-        for i in 0..streams.iter().map(Vec::len).max().unwrap_or(0) {
-            for s in &streams {
-                if let Some(l) = s.get(i) {
-                    if seen.insert(*l) {
-                        seq.push(*l);
-                    }
+    let threads = Setup::process().or("STREAM_THREADS", 4).clamp(1, 12);
+    MEMO.with((salt, levels), || std::sync::Arc::new(build_sequence(salt, STREAM_BUDGET, levels, threads)), |s| s.clone())
+}
+
+/// `stream_sequence`'s build: the streams on `threads` threads, each taking the next stream when free (their costs differ),
+/// merged by stream index. A stream is a pure function of its operators, salt, budget and growth count, so the sequence
+/// is the same at any thread count (`a_stream_sequence_is_the_same_on_any_thread_count`).
+fn build_sequence(salt: usize, budget: usize, levels: usize, threads: usize) -> Vec<(Term, Term)> {
+    let t0 = std::time::Instant::now();
+    let sets = stream_sets();
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let mut streams: Vec<Vec<(Term, Term)>> = vec![vec![]; sets.len()];
+    std::thread::scope(|sc| {
+        let worker = || {
+            let mut built = vec![];
+            loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some(ops) = sets.get(i) else { break built };
+                built.push((i, stream_laws(ops, salt, budget, levels)));
+            }
+        };
+        let handles: Vec<_> = (0..threads.min(sets.len())).map(|_| std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap()).collect();
+        for h in handles {
+            for (i, s) in h.join().unwrap() {
+                streams[i] = s;
+            }
+        }
+    });
+    let (mut seen, mut seq) = (HashSet::new(), vec![]);
+    for i in 0..streams.iter().map(Vec::len).max().unwrap_or(0) {
+        for s in &streams {
+            if let Some(l) = s.get(i) {
+                if seen.insert(*l) {
+                    seq.push(*l);
                 }
             }
         }
-        println!("STREAMS salt {salt}, {levels} growths: {} laws from {} streams in {:.1}s", seq.len(), streams.len(), t0.elapsed().as_secs_f64());
-        std::sync::Arc::new(seq)
-    };
-    MEMO.with((salt, levels), build, |s| s.clone())
+    }
+    println!("STREAMS salt {salt}, {levels} growths: {} laws from {} streams in {:.1}s on {threads} threads", seq.len(), streams.len(), t0.elapsed().as_secs_f64());
+    seq
+}
+
+/// The streams built on one thread and on four give one sequence (at a smaller budget than the loops').
+#[test]
+fn a_stream_sequence_is_the_same_on_any_thread_count() {
+    assert!(build_sequence(1, 2000, 2, 1) == build_sequence(1, 2000, 2, 4));
 }
 
 /// Phase `phase`'s window of a sequence: its residue class at `STREAM_STRIDE`, `laws` of them from `skip`.

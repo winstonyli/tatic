@@ -300,8 +300,8 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   and since the per-tuple `verdict` loop went (CU15) the filter is 2.6% of a base sweep's samples against 5.8% for
   grouping; the sequence as a whole fell from 109.5 to 23.3 s and is 10.6%. Either lever saves at most that 2.6%, and
   the lazy one changes `stream_sequence`'s interface (a length per caller, or a locked lazy type). The sequence's wall
-  share (built on one thread before the mines start, 23 of 53 s) is better cut by building the 56 independent streams in
-  parallel (cleanup plan CU18). Trigger: the filter grows again (a costlier open or refutation check). Evidence: runs
+  share went instead to building the 56 independent streams in parallel (cleanup plan CU18: 16.1 to 5.4 s on 4 threads,
+  `docs/tier-cycle.md`, "The streams in parallel"). Trigger: the filter grows again (a costlier open or refutation check). Evidence: runs
   `2026-10-26-cu14-base-prof` and `2026-10-27-cu17-base-prof` (`PROF_PARENTS` split of `stream_laws`, 2026-10-27);
   `docs/tier-cycle.md`, "One exhaustive check for both". Status: decided against (2026-10-27).
 - **Binary formats for the sweep's text files: task results (C7's `key<TAB>value` channel), rule libraries (`rules.txt`, `laws_extra_*.txt`), law files (`laws_text`), the `m.tsv` tables** — why: each is KB-sized and written once per task, the payloads are terms already printed as text, the text is the evidence a reader greps and diffs, and a binary form needs a reader for every consumer (scripts included). The lemma cache, the one large and hot store, is already binary (`TLC1`, `tatic::kernel::bin`). Trigger: any of these files reaching MB or showing in a sweep profile (parse or format time). Evidence: the writers in `tests/church_bv/driver.rs` (`laws_extra_*`, `m.tsv`), `laws_text` in `search.rs`, the lemma cache's `TLC1` format in `lemma_cache.rs` (2026-10-21; the prefs and joinability-unit files no longer exist, checked 2026-10-27). Status: parked (by decision, C7 ruling 2026-10-21).
