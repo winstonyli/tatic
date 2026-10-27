@@ -149,8 +149,8 @@ fn resetting_hp_between_calls_keeps_memory_bounded_across_many_calls() {
     // allocated every iteration (a directly called one takes its
     // capture as a parameter; see `lower_wat::direct_only`). This one
     // exercises the actual mechanism `jit.rs` relies on:
-    // `needs_hp_reset`/the exported `"hp"` global. Without resetting `hp` to 0 before every call,
-    // repeatedly calling the *same* compiled instance -- exactly
+    // `needs_hp_reset`/the exported `"hp"` global. Without resetting
+    // `hp` to 0 before every call, repeatedly calling the *same* compiled instance -- exactly
     // what `jit.rs`'s cache does -- would leak every capturing
     // closure's environment forever, growing linear memory without
     // bound across the instance's whole lifetime. This confirms both
@@ -548,8 +548,9 @@ fn curried_application_is_indistinguishable_from_multi_arg_calls() {
 
 #[test]
 fn an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_interpreter() {
-    // `f x y z` over-applies `f`, whose own arity is 2 (`peel` stops
-    // there: its body is an `If`, not a further bare `Abs`, so the two
+    // `f` is the lambda `\a b. ...` in `f_src`; the term applies it to
+    // three arguments `x y z`, over-applying it: its own arity is 2
+    // (`peel` stops there: its body is an `If`, not a further bare `Abs`, so the two
     // branches don't get folded into `f`'s own combinator the way
     // `\a b c. ..` would), and each branch is itself a fresh, arity-1
     // closure -- already compiled correctly today as an

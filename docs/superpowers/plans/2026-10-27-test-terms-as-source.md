@@ -428,7 +428,8 @@ After that come the fixes, the full suite, and then finishing-a-development-bran
 
 ## Outcome (2026-10-27)
 
-T1 to T5 landed on `test-terms`: 17af427, 9cae3dd, 757ecc7, 0076365, and the T5 commit. Each stage was gated
+T1 to T5 landed on `test-terms`: 17af427, 9cae3dd, 757ecc7, 0076365, fd8c29f, then the final review's comment
+fixes in the next commit. Each stage was gated
 with the temporary asserts in place and again after the strip: lib 358 passed / 2 ignored, golden_wat 2,
 rule_match_census 2, 0 warnings. The full suite passed at T5.
 
@@ -444,7 +445,8 @@ rule_match_census 2, 0 warnings. The full suite passed at T5.
 There are more comparisons than the spec's 112 converted terms, because kept sub-hashes and the `doubling` call
 were also checked. One mutation per stage was planted by the reviewer, not the implementer.
 
-Hand-built terms left: the six D5 tests, each with its comment. After the strip, the test modules of `jit.rs` and
+Hand-built terms left: the six D5 tests. Four carry a one-line comment. The two that call `test_corpus::doubling`
+rely on that function's doc (T4 Step 4). After the strip, the test modules of `jit.rs` and
 `eval.rs` build no term by hand. None of the test modules of `compile`, `jit.rs` or `eval.rs` imports `PrimOp` any
 more.
 
@@ -459,3 +461,14 @@ Rulings:
   - The frozen seed-2117 text keeps `syntax::print`'s `v0..v5` names.
 - **Comments.** When a comment's first line was deleted as a restatement, the rest was re-wrapped. Comment stubs
   that predate the branch (`jit.rs`: "have missed", "Same shape as") were left alone.
+- **Final review** (Opus, no Critical findings).
+  - The one Important finding was fixed: a comment in
+    `a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope` restated a term without its
+    picker redex.
+  - Its minor findings were fixed too: comments that named builder locals the conversion removed (`it`, `inner`,
+    `closure1`, `f_lit`, `f_abs`, `add_lit`, `mega`, `HUGE_S`, `f x y z`), a restated term in jit's
+    closure-typed-loop test, and one over-long line.
+  - Left as they are:
+    - the cleanup plan's "keeps two terms": a dated outcome, true when written, and `test_corpus.rs`'s module doc
+      holds the current count;
+    - one local `let inc = inc(&mut s)` that shadows the shape function.

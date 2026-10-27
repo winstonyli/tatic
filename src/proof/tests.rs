@@ -297,14 +297,14 @@ fn a_closure_typed_loop_carried_parameter_compiles_and_is_kernel_verified() {
     // it just had no proof strategy covering it -- now two do: this
     // *particular* term also happens to get `is_kernel_verified` via
     // `prove_closure_expr` directly (`applied` itself is a direct,
-    // fully-saturated call to the self-recursive combinator `it`,
+    // fully-saturated call to the self-recursive combinator `rec f ...`,
     // which `prove_closure_expr`'s own `Term::Rec` widening covers --
     // see a_directly_called_self_recursive_combinator_gets_a_closure_proof
     // below for the same shape without a closure-typed parameter
     // involved), independently of `prove_tail_recursive_universal`'s
     // own new coverage that
     // `a_closure_typed_loop_carried_parameter_gets_a_universal_proof`
-    // above exercises directly against `it` itself.
+    // above exercises directly against that combinator itself.
     let mut s = TermStore::new();
     let applied = source(&mut s, r"(rec f n g x = if n <= 0 then x else f (n - 1) g (g x)) 3 (\y. y + 1) 5"); // = 8
 
@@ -945,9 +945,8 @@ fn calling_a_literal_lambda_whose_own_body_picks_between_two_closures_gets_a_clo
 
 #[test]
 fn a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope() {
-    // Same shape as the test above -- `\x. (\g. g 5) (if 0 < x then
-    // (\y. x + y) else (\y. \z. x - y - z))` -- except `picker`'s own
-    // `else` branch now has arity *2*, not 1: `Clo`, before the
+    // Same shape as the test above, except the picker's own `else`
+    // branch now has arity *2*, not 1: `Clo`, before the
     // arity-indexed `Clo_k` refactor (`TYPES.md` section 7), was a
     // single, arity-blind kernel type, so this exact shape would have
     // kernel-*typechecked* under the old scheme (`ite_clo : Int -> Clo
@@ -1273,9 +1272,9 @@ fn an_under_applying_instance_gets_a_per_instance_proof_too() {
 fn a_captured_value_reached_through_an_inlined_call_gets_a_per_instance_proof() {
     // compile.rs's
     // `a_capturing_closure_reached_through_an_inconsistently_called_parameter_agrees_with_the_interpreter`
-    // -- exercises the two-frame fix directly: `f_lit`'s own capture
-    // of `k` must resolve against `top`'s own (outer) frame, not
-    // whatever frame is active once `f_abs`'s body is inlined.
+    // -- exercises the two-frame fix directly: `\a b. k + a + b`'s own
+    // capture of `k` must resolve against `top`'s own (outer) frame, not
+    // whatever frame is active once `\f. ...`'s body is inlined.
     let mut s = TermStore::new();
     let top = inconsistent_arity_capturing_instance(&mut s);
 
@@ -1292,8 +1291,8 @@ fn a_runtime_chosen_literal_gets_a_per_instance_proof() {
     // `a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_once_dispatched_generically`
     // -- the sharpest case: `f`'s own concrete identity isn't known
     // until `eval_dyn` concretely resolves the `If` choosing between
-    // `add_lit`/`sub_lit`, *before* `f_abs`'s own body is even
-    // reached.
+    // `\a b. a + b` and `\a b. a - b`, *before* `\f. ...`'s own body is
+    // even reached.
     let mut s = TermStore::new();
     let top = inconsistent_arity_runtime_chosen_instance(&mut s);
 
@@ -1508,11 +1507,11 @@ fn a_capturing_clo_returning_root_declines_without_evaluating_its_own_argument()
     // (`combinator_return_type` recognizes the `If`-between-lambdas
     // shape, same as `add5cap`/`sub5cap` in the plain
     // `a_closure_argument_arriving_via_a_separate_saturated_call...`
-    // test above) *and* captures `cap` (unlike that test's `add5`/
-    // `sub5`, which are fully closed) -- exactly the combination this
-    // function declines on. `mega = \cap. if 0<1 then pick_a else
-    // pick_a` supplies `cap` and hands back `pick_a` as a genuine
-    // `Clo` value; a `let`-bound call `g(HUGE_S)` (the usual dead-call
+    // test above) *and* captures `cap` (unlike that test's two
+    // closures, which are fully closed) -- exactly the combination this
+    // function declines on. `\cap. if 0 < 1 then pick_a else pick_a`
+    // supplies `cap` and hands back `pick_a` as a genuine `Clo` value;
+    // a `let`-bound call `g (huge_sum)` (the usual dead-call
     // trick forces `g`'s own classification `Inconsistent`, so this
     // whole chain is actually traced via `eval_dyn` rather than
     // deferred to the opaque, non-executing postulate path) then
@@ -1523,7 +1522,7 @@ fn a_capturing_clo_returning_root_declines_without_evaluating_its_own_argument()
     // to living inside `eval_dyn_inline_call` (checked only *after*
     // every argument is evaluated, its original position), this exact
     // term reliably overflowed the native stack in an unoptimized
-    // debug-build test thread -- `HUGE_S`'s own 301-deep, genuinely
+    // debug-build test thread -- `huge_sum`'s own 301-deep, genuinely
     // non-tail `Prim` chain is bounded by no `DynBudget` counter at
     // all (unlike the self-call/inline-call paths those bound), so
     // evaluating it wastefully was a real crash risk, not just wasted

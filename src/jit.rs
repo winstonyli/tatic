@@ -807,12 +807,13 @@ mod tests {
 
     #[test]
     fn a_returned_closure_now_compiles_via_over_application() {
-        // Applied to 3, then 4: `unwind_app_spine` can't distinguish this
-        // from "inner takes 2 arguments" (see `compile::tests::
+        // The literal lambda `\x. ...` applied to 3, then 4:
+        // `unwind_app_spine` can't distinguish this from "the lambda takes
+        // 2 arguments" (see `compile::tests::
         // curried_application_is_indistinguishable_from_multi_arg_calls`),
-        // and `inner` is declared 1-ary, so this reads as `inner`
-        // over-applied by one argument: `inner`'s own saturated call
-        // (`inner(3)`) is compiled, and whatever it returns -- one of two
+        // and the lambda is declared 1-ary, so this reads as it
+        // over-applied by one argument: its own saturated call (on 3) is
+        // compiled, and whatever it returns -- one of two
         // *capturing* closures, depending on `x` -- is dispatched via
         // `call_indirect` the same way a closure-typed variable would be
         // (see `compile.rs`'s module docs on over-application). Was
@@ -892,8 +893,7 @@ mod tests {
 
     #[test]
     fn a_closure_typed_loop_carried_parameter_compiles_and_is_kernel_verified() {
-        // rec f n g x = if n <= 0 then x else f(n-1, g, g x) -- same shape
-        // as proof::tests::iterate, but here actually run: a closure-typed
+        // `it` is `samples::iterate`, here actually run: a closure-typed
         // *parameter* threaded through every iteration and called
         // (call_indirect) rather than a fresh closure created each
         // iteration (capturing_closure_loop's own shape above). Since `g`
@@ -1079,8 +1079,8 @@ mod tests {
         // branches get exercised. `denote_closure`'s own `Term::Abs | Term::Rec`
         // case now covers over-application too, gated by
         // `combinator_return_type` correctly classifying `f`'s own
-        // saturated call as `Clo`-typed (the `If` between `closure1`/
-        // `closure2`) -- see proof::tests::
+        // saturated call as `Clo`-typed (the `If` between the two
+        // `\c. ...` closures) -- see proof::tests::
         // an_over_applied_literal_lambda_returning_a_closure_gets_a_closure_proof.
         let mut s = TermStore::new();
         let top = over_application_if_between_closures_of_params(&mut s);
