@@ -510,10 +510,11 @@ fn a_pap_wrappers_own_supplied_argument_creating_more_closures_does_not_corrupt_
     // self-contained, as a permanent regression rather than relying on
     // stumbling into this seed again during a future stress run.
     let mut s = TermStore::new();
-    // Frozen from tests/compile_fuzz.rs's generator at seed 0x00C0_FFEE_1E55 ^ 2117 (printed with syntax::print).
+    // Frozen from tests/compile_fuzz.rs's generator at seed 0x00C0_FFEE_1E55 ^ 2117 (printed with syntax::print;
+    // the outer binders renamed from `v0 v1 v2`, which leaves the hash unchanged).
     let h = source(
         &mut s,
-        r"rec v0 v1 v2 = if v1 <= 0 then v2 else v0 (v1 - 1) (v2 - (\v3. \v4. v3 v4) ((\v3. \v4. (\v5. if 10 <= v2 then v1 else v5) ((\v5. 35) v3)) (if -13 * v2 == (\v3. \v4. v3 v4) ((\v3. \v4. v1) v2) v2 then (\v3. \v4. v3 v4) (\v3. 46) 24 else (\v3. \v4. v3) (-42) v2)) (-28))",
+        r"rec f n acc = if n <= 0 then acc else f (n - 1) (acc - (\v3. \v4. v3 v4) ((\v3. \v4. (\v5. if 10 <= acc then n else v5) ((\v5. 35) v3)) (if -13 * acc == (\v3. \v4. v3 v4) ((\v3. \v4. n) acc) acc then (\v3. \v4. v3 v4) (\v3. 46) 24 else (\v3. \v4. v3) (-42) acc)) (-28))",
     );
 
     assert_eq!(

@@ -458,7 +458,8 @@ Rulings:
   - The S22 loop keeps no separate `f` hash, since nothing uses it alone.
   - The test's assert on the RNG's first draw (`choice == 1`) was deleted with the generator. It checked the
     generator, not the term.
-  - The frozen seed-2117 text keeps `syntax::print`'s `v0..v5` names.
+  - The frozen seed-2117 text keeps `syntax::print`'s `v0..v5` names. (Later, 2026-10-27: the outer `v0 v1 v2` were
+    renamed `f n acc`, hash-checked.)
 - **Comments.** When a comment's first line was deleted as a restatement, the rest was re-wrapped. Comment stubs
   that predate the branch (`jit.rs`: "have missed", "Same shape as") were left alone.
 - **Final review** (Opus, no Critical findings).
