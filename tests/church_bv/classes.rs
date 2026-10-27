@@ -411,14 +411,7 @@ fn verdict(job: &Job, n: usize, u: &Term, r: &Term) -> Option<Verdict> {
     let kv = 1 + u.max_var().max(r.max_var());
     let vars = (0..kv).map(Term::v);
     if u.add_free() && r.add_free() {
-        // a position reads only a few neighbours, so these widths hold every case (`prove_eq`'s per-position step)
-        let holds = (1..=5usize).all(|w| {
-            (0..1u128 << (w * kv)).all(|i| {
-                let x: Vec<u128> = (0..kv).map(|v| (i >> (w * v)) & low_bits(w)).collect();
-                u.interp(w, &x) == r.interp(w, &x)
-            })
-        });
-        return holds.then(|| Verdict { kind: LawKind::Bitwise, lhs: *u, rhs: *r, args: vars.collect() });
+        return bitwise_holds(u, r, kv).then(|| Verdict { kind: LawKind::Bitwise, lhs: *u, rhs: *r, args: vars.collect() });
     }
     fn atomize(t: Term, kv: usize, atoms: &mut Vec<Term>) -> Term {
         match *t.node() {

@@ -672,6 +672,19 @@ impl ValueMemo<u8> {
     }
 }
 
+/// Whether `a` and `b` agree on every input over `k` variables at widths 1..=5, narrowest first. For add-free terms
+/// (bitwise operators and shifts) a position reads only a few neighbours, so these widths hold every case; `verdict`'s
+/// `Bitwise` replacements and `prove_eq`'s per-position step rest on it (the kernel checks the proof regardless). Whole
+/// value vectors per width: a recursive `interp` pair per input was a quarter of a sweep's samples in `verdict` alone
+/// (docs/tier-cycle.md, "One exhaustive check for both").
+pub fn bitwise_holds(a: &Term, b: &Term, k: usize) -> bool {
+    (1..=5).all(|w| {
+        let mut memo = ValueMemo::exhaustive(w, k);
+        let len = memo.len;
+        memo.first_difference(a, b, len).is_none()
+    })
+}
+
 impl ValueMemo<u128> {
     /// The screen's inputs over `k` variables: all zeros, all ones, then pseudo-random width-`n` tuples.
     fn screen(n: usize, k: usize) -> Self {
@@ -2494,14 +2507,8 @@ pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
     }
     // add-free terms with shifts: the per-position prover, when the law holds exhaustively at widths 1..=5 (a position
     // reads only a few neighbours, so widths this small contain every case; the kernel checks the proof regardless)
-    if !job.setup().ablated("eq_pos") && k <= 3 && a.add_free() && b.add_free() && (a.has_shift() || b.has_shift()) {
-        let holds = (1..=5usize).all(|w| (0..1u128 << (w * k)).all(|i| {
-            let vals: Vec<u128> = (0..k).map(|v| (i >> (w * v)) & low_bits(w)).collect();
-            a.interp(w, &vals) == b.interp(w, &vals)
-        }));
-        if holds {
-            return Some(Plan::law(job, LawKind::Bitwise, *a, *b, vars(k)));
-        }
+    if !job.setup().ablated("eq_pos") && k <= 3 && a.add_free() && b.add_free() && (a.has_shift() || b.has_shift()) && bitwise_holds(a, b, k) {
+        return Some(Plan::law(job, LawKind::Bitwise, *a, *b, vars(k)));
     }
     // the class table's normal form of both sides was a step here (spec 2026-10-22-class-table-normal-form-design.md
     // §4); with the table's step in the rewriter, the sides arrive normalized, so it closed nothing and was deleted
@@ -4208,6 +4215,32 @@ fn value_memo_matches_interp() {
         let want: Vec<u8> = (0..64u128).map(|i| t.interp(3, &[i & 7, i >> 3]) as u8).collect();
         assert_eq!(memo.values(t), want, "{}", t.show());
     }
+}
+
+/// `bitwise_holds` gives the per-tuple loop's answer (the one `verdict` and `prove_eq` ran before it) on add-free pairs.
+#[test]
+fn bitwise_holds_is_the_per_tuple_check() {
+    let ts: Vec<Term> = ["x", "y", "0", "-1", "and(x, y)", "or(x, y)", "xor(x, y)", "xor(x, -1)", "shl1(x, 0)", "shr1(x, 0)",
+        "shl1(and(x, y), 0)", "and(shl1(x, 0), shl1(y, 0))", "shr1(shl1(x, 0), 0)", "and(x, shr1(shl1(x, 0), 0))",
+        "shr1(xor(x, z), 0)", "xor(shr1(x, 0), shr1(z, 0))", "or(and(x, y), and(x, z))", "and(x, or(y, z))"]
+    .iter()
+    .map(|s| parse_term(s))
+    .collect();
+    let old = |a: &Term, b: &Term, k: usize| {
+        (1..=5usize).all(|w| (0..1u128 << (w * k)).all(|i| {
+            let vals: Vec<u128> = (0..k).map(|v| (i >> (w * v)) & low_bits(w)).collect();
+            a.interp(w, &vals) == b.interp(w, &vals)
+        }))
+    };
+    let mut held = 0;
+    for a in &ts {
+        for b in &ts {
+            let k = 1 + a.max_var().max(b.max_var());
+            assert_eq!(bitwise_holds(a, b, k), old(a, b, k), "{} vs {}", a.show(), b.show());
+            held += bitwise_holds(a, b, k) as usize;
+        }
+    }
+    assert!(held > ts.len(), "some pairs other than a term with itself hold");
 }
 
 #[test]
