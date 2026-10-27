@@ -1,6 +1,7 @@
-//! Two test terms `samples` can't hold: one with a free variable (the
-//! parser rejects unbound names) and one built programmatically past
-//! `spec_check::MAX_NODES`.
+//! Three test terms `samples` can't hold: one with a free variable (the
+//! parser rejects unbound names), one built programmatically past
+//! `spec_check::MAX_NODES`, and a doubled DAG whose text is exponentially
+//! long.
 
 use crate::term::{Hash, TermStore};
 
@@ -37,4 +38,14 @@ pub(crate) fn oversized_source_with_a_shrinking_step(s: &mut TermStore) -> Hash 
     let k = s.abs(n);
     let r = s.app(k, big);
     s.abs(r)
+}
+
+/// `\x. t_d`, `t_0 = x`, `t_{i+1} = t_i + t_i`: d + 2 distinct nodes, 2^(d+1)
+/// as a tree, so its source text is exponentially long.
+pub(crate) fn doubling(s: &mut TermStore, d: u32) -> Hash {
+    let mut t = s.var(0);
+    for _ in 0..d {
+        t = s.prim(crate::term::PrimOp::Add, t, t);
+    }
+    s.abs(t)
 }

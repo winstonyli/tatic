@@ -952,28 +952,18 @@ fn a_trace_the_checker_rejects_falls_back_to_h_and_is_counted_in_release() {
     assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
 }
 
-/// `\x. t_d`, where `t_0 = x` and `t_{i+1} = t_i + t_i`: `d + 2`
-/// distinct nodes, `2^(d+1)` as a tree.
-fn doubling(s: &mut TermStore, d: u32) -> Hash {
-    let mut t = s.var(0);
-    for _ in 0..d {
-        t = s.prim(PrimOp::Add, t, t);
-    }
-    s.abs(t)
-}
-
 #[test]
 fn a_term_is_compiled_only_up_to_a_tree_size() {
     // Everything downstream walks the tree, and the emitted code is as
     // big as it, so sharing can't shrink the cost (RELATED_WORK.md §47).
     let mut s = TermStore::new();
-    let at_the_cap = doubling(&mut s, 13);
+    let at_the_cap = crate::test_corpus::doubling(&mut s, 13);
     assert_eq!(tree_size(&s, at_the_cap), MAX_TREE_NODES);
     assert!(try_compile(&s, at_the_cap).is_some());
-    let over = doubling(&mut s, 14);
+    let over = crate::test_corpus::doubling(&mut s, 14);
     assert!(try_compile(&s, over).is_none());
     // Counted without overflow, far past the cap.
-    let huge = doubling(&mut s, 200);
+    let huge = crate::test_corpus::doubling(&mut s, 200);
     assert_eq!(tree_size(&s, huge), MAX_TREE_NODES + 1);
 }
 

@@ -480,29 +480,15 @@ mod tests {
         iterate_creating_a_closure_over_g, let_bound_factorial_10, over_application_if_between_closures_of_params,
         source, twice_inc_5,
     };
-    use crate::term::{PrimOp, TermStore};
+    use crate::term::TermStore;
 
     #[test]
     fn a_closure_of_the_wrong_arity_off_the_samples_is_not_installed() {
-        // \n. (\g. if n == 777 then (\k. k n) (g 1) + (\k. k n) (g 2) else n) (\x. \y. x + y + n)
         let mut s = TermStore::new();
-        let (v0, v1, v2, one, two, k777) = (s.var(0), s.var(1), s.var(2), s.lit(1), s.lit(2), s.lit(777));
-        let kn = s.app(v0, v2);
-        let apply_n = s.abs(kn);
-        let g1 = s.app(v0, one);
-        let g2 = s.app(v0, two);
-        let a = s.app(apply_n, g1);
-        let b = s.app(apply_n, g2);
-        let sum = s.prim(PrimOp::Add, a, b);
-        let cond = s.prim(PrimOp::Eq, v1, k777);
-        let body = s.if_(cond, sum, v1);
-        let lam = s.abs(body);
-        let xy = s.prim(PrimOp::Add, v1, v0);
-        let xyn = s.prim(PrimOp::Add, xy, v2);
-        let y = s.abs(xyn);
-        let x = s.abs(y);
-        let redex = s.app(lam, x);
-        let h = s.abs(redex);
+        let h = source(
+            &mut s,
+            r"\n. (\g. if n == 777 then (\k. k n) (g 1) + (\k. k n) (g 2) else n) (\x y. x + y + n)",
+        );
         // Well typed, but `g` is called with one argument everywhere and
         // bound to a two-argument closure, so the fragment dispatches at the
         // wrong arity: it traps at n = 777, which no sample reaches. Types
@@ -541,20 +527,10 @@ mod tests {
 
     #[test]
     fn an_ill_typed_branch_off_the_samples_is_not_miscompiled() {
-        // \n. (\g. if n == 777 then g 1 + g else n) (\x. x + n)
         // `g 1 + g` adds a closure to an Int: `eval` fails with TypeError
         // at n = 777, which no sample hits.
         let mut s = TermStore::new();
-        let (v0, v1, one, k) = (s.var(0), s.var(1), s.lit(1), s.lit(777));
-        let g1 = s.app(v0, one);
-        let bad = s.prim(PrimOp::Add, g1, v0);
-        let cond = s.prim(PrimOp::Eq, v1, k);
-        let body = s.if_(cond, bad, v1);
-        let lam = s.abs(body);
-        let arg_body = s.prim(PrimOp::Add, v0, v1);
-        let arg = s.abs(arg_body);
-        let redex = s.app(lam, arg);
-        let h = s.abs(redex);
+        let h = source(&mut s, r"\n. (\g. if n == 777 then g 1 + g else n) (\x. x + n)");
         let mut jit = JitEngine::new();
         for n in [0, 1, 776, 777, 778] {
             assert_eq!(jit.apply(&s, h, &[n]), eval::apply_term(&s, h, &[n]), "n={n}");
@@ -564,17 +540,8 @@ mod tests {
 
     #[test]
     fn a_closure_argument_of_the_wrong_arity_gets_no_proof() {
-        // \n. (\g. g 1) (\x. \y. x + y) n
         let mut s = TermStore::new();
-        let (v0, v1, one) = (s.var(0), s.var(1), s.lit(1));
-        let g1 = s.app(v0, one);
-        let lam = s.abs(g1);
-        let xy = s.prim(PrimOp::Add, v1, v0);
-        let y = s.abs(xy);
-        let x = s.abs(y);
-        let redex = s.app(lam, x);
-        let body = s.app(redex, v0);
-        let h = s.abs(body);
+        let h = source(&mut s, r"\n. (\g. g 1) (\x y. x + y) n");
         // `\g. g 1` gives `g : Clo_1`, but the argument is a `Clo_2`. The
         // proof walkers used to compose them anyway, which the kernel
         // rejects (and a debug build panicked on).
@@ -661,15 +628,7 @@ mod tests {
         // interpreter via the heap-`Vec` fallback, not just avoid crashing.
         // A 10-ary sum is the simplest term whose arity exceeds the bound.
         let mut s = TermStore::new();
-        let mut body = s.var(0);
-        for i in 1..10 {
-            let v = s.var(i);
-            body = s.prim(PrimOp::Add, body, v);
-        }
-        let mut top = body;
-        for _ in 0..10 {
-            top = s.abs(top);
-        }
+        let top = source(&mut s, r"\a b c d e f g h i j. j + i + h + g + f + e + d + c + b + a");
         let args: Vec<i64> = (1..=10).collect();
 
         let mut jit = JitEngine::new();
@@ -716,14 +675,9 @@ mod tests {
 
     #[test]
     fn a_term_too_big_as_a_tree_is_interpreted() {
-        // `\x. t_16`, `t_{i+1} = t_i + t_i`: 18 distinct nodes, 2^17 as a
-        // tree, past `compile.rs`'s `MAX_TREE_NODES`.
+        // Past `compile.rs`'s `MAX_TREE_NODES` as a tree.
         let mut s = TermStore::new();
-        let mut t = s.var(0);
-        for _ in 0..16 {
-            t = s.prim(PrimOp::Add, t, t);
-        }
-        let h = s.abs(t);
+        let h = crate::test_corpus::doubling(&mut s, 16);
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, h, &[3]).unwrap(), 3 << 16);
         assert_eq!((jit.stats.compiled, jit.stats.interpreted), (0, 1));
@@ -757,11 +711,7 @@ mod tests {
         // the compiled fragment doesn't disagree with the interpreter on
         // an input `SAMPLE_ARGS` doesn't happen to include.
         let mut s = TermStore::new();
-        let a = s.var(1);
-        let b = s.var(0);
-        let body = s.prim(PrimOp::Div, a, b);
-        let inner = s.abs(body);
-        let div = s.abs(inner);
+        let div = source(&mut s, r"\a b. a / b");
 
         let mut jit = JitEngine::new();
         let args = [i64::MIN, -1];
@@ -857,9 +807,8 @@ mod tests {
 
     #[test]
     fn a_returned_closure_now_compiles_via_over_application() {
-        // (\x. if x > 0 then (\y. x + y) else (\y. x - y)) 3, then applied
-        // to 4 -- `unwind_app_spine` can't distinguish this from "inner
-        // takes 2 arguments" (see `compile::tests::
+        // Applied to 3, then 4: `unwind_app_spine` can't distinguish this
+        // from "inner takes 2 arguments" (see `compile::tests::
         // curried_application_is_indistinguishable_from_multi_arg_calls`),
         // and `inner` is declared 1-ary, so this reads as `inner`
         // over-applied by one argument: `inner`'s own saturated call
@@ -874,23 +823,7 @@ mod tests {
         // an_over_applied_literal_lambda_returning_a_closure_gets_a_closure_proof`)
         // covers this shape too, so it's kernel-verified as well.
         let mut s = TermStore::new();
-        let x1 = s.var(0);
-        let zero = s.lit(0);
-        let cond = s.prim(PrimOp::Lt, zero, x1);
-        let y_pos = s.var(0);
-        let x_pos = s.var(1);
-        let plus = s.prim(PrimOp::Add, x_pos, y_pos);
-        let then_closure = s.abs(plus);
-        let y_neg = s.var(0);
-        let x_neg = s.var(1);
-        let minus = s.prim(PrimOp::Sub, x_neg, y_neg);
-        let else_closure = s.abs(minus);
-        let picked = s.if_(cond, then_closure, else_closure);
-        let inner = s.abs(picked);
-        let three = s.lit(3);
-        let picked_closure = s.app(inner, three);
-        let four = s.lit(4);
-        let applied = s.app(picked_closure, four);
+        let applied = source(&mut s, r"(\x. if 0 < x then (\y. x + y) else (\y. x - y)) 3 4");
 
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, applied, &[]).unwrap(), 7); // 3 > 0, so 3 + 4
