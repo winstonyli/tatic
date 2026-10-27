@@ -6032,6 +6032,14 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     500 (1951 to 1827, 1703, 1530; per band 13/15/17: 3/12/4%, 5/19/13%, 11/24/26%), about 0.7 of M per mined rule at
     every dose (166, 347, 620 rules), so the gain has not levelled off by 500. Mining cost grows faster than the laws:
     summed over the three loops, 38 s at 100 laws per band, 136 s at 250, 546 s at 500 (band 17: 15, 72, 325 s).
+  - *Chained batches* (run `2026-10-26-fresh-chain`, 10 min; `chain.sh` in its folder): 1000 fresh laws per band
+    (its first 500 byte-identical to the 500 above) cut into four batches of 250, each mined with the loop's rules plus
+    the earlier batches' as base, as a loop would. Held-out M after each batch: 1951 to 1703, 1543, 1454, 1411 (-12.7%,
+    -20.9%, -25.5%, -27.7%); the batches gain 248, 160, 89, 43 at 347, 316, 215, 227 rules, so the gain per rule falls
+    from 0.7 to 0.2 by the fourth. Two chained batches match one 500-law mine (1543 against 1530) at 231 s of mining
+    against 546. Per band after the four batches: 13 521 to 392 (-25%, still falling: 437, 413, 392), 15 619 to 423
+    (-32%), 17 811 to 596 (-27%, flat after the second batch: 617, 598, 596). So about 500-750 large laws per band take
+    most of what this miner learns from them, in batches of 250 at about 1 min of mining per batch.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
