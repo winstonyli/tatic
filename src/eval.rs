@@ -176,8 +176,7 @@ pub fn apply_term(store: &TermStore, h: Hash, args: &[i64]) -> Result<i64, EvalE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::samples::{capturing_closure_loop, factorial, twice_inc_5};
-    use crate::term::PrimOp;
+    use crate::samples::{capturing_closure_loop, factorial, source, twice_inc_5};
 
     #[test]
     fn factorial_interprets_correctly() {
@@ -189,24 +188,6 @@ mod tests {
         assert_eq!(apply_term(&s, fact, &[10]).unwrap(), 3628800);
     }
 
-    fn countdown(s: &mut TermStore) -> Hash {
-        // rec f n = if n <= 0 then 0 else f(n - 1) -- the simplest possible
-        // tail-recursive shape, isolating the trampoline itself from any
-        // other per-iteration cost.
-        let n = s.var(0);
-        let zero = s.lit(0);
-        let cond = s.prim(PrimOp::Le, n, zero);
-        let n2 = s.var(0);
-        let one = s.lit(1);
-        let n_minus_1 = s.prim(PrimOp::Sub, n2, one);
-        let f = s.var(1);
-        let rec_call = s.app(f, n_minus_1);
-        let zero2 = s.lit(0);
-        let body = s.if_(cond, zero2, rec_call);
-        let abs = s.abs(body);
-        s.rec(abs)
-    }
-
     #[test]
     fn deep_tail_recursion_does_not_overflow_the_native_stack() {
         // Comfortably past the ~8,000-10,000 levels a plain (non-
@@ -215,8 +196,10 @@ mod tests {
         // regresses back to recursing instead of looping on a tail call,
         // this crashes the whole test process (a real stack overflow
         // aborts, it doesn't panic cleanly), not just fails an assertion.
+        // The simplest tail-recursive shape, isolating the trampoline
+        // itself from any other per-iteration cost.
         let mut s = TermStore::new();
-        let h = countdown(&mut s);
+        let h = source(&mut s, "rec f n = if n <= 0 then 0 else f (n - 1)");
         assert_eq!(apply_term(&s, h, &[2_000_000]).unwrap(), 0);
     }
 
@@ -239,9 +222,7 @@ mod tests {
     #[test]
     fn div_by_zero_errors_instead_of_panicking() {
         let mut s = TermStore::new();
-        let one = s.lit(1);
-        let zero = s.lit(0);
-        let div = s.prim(PrimOp::Div, one, zero);
+        let div = source(&mut s, "1 / 0");
         assert_eq!(apply_term(&s, div, &[]), Err(EvalError::DivByZero));
     }
 }

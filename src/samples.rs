@@ -165,9 +165,10 @@ pub fn iterate(s: &mut TermStore) -> Hash {
     source(s, "rec f n g x = if n <= 0 then x else f (n - 1) g (g x)")
 }
 
-/// The same shape as `proof::tests`'
-/// `a_non_tail_self_call_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof`,
-/// fully saturated (arity 0) so `prove_closure_expr_instance` can be
+/// The loop of `proof::tests`'
+/// `a_non_tail_self_call_carrying_an_inconsistently_classified_closure_parameter_gets_a_per_instance_proof`
+/// without its dead call site (`if 1 < 0 then g x 999 else`), so `g` is
+/// consistently classified here; fully saturated (arity 0) so `prove_closure_expr_instance` can be
 /// called with `&[]` directly. `n = 20` sits well under
 /// `DynBudget::recursion_depth`'s bound (`50`), giving this a real, if
 /// modest, non-tail recursion depth without risking a decline.
@@ -175,9 +176,10 @@ pub fn non_tail_closure_carrying_recursion(s: &mut TermStore) -> Hash {
     source(s, r"(rec f n g x = if n <= 0 then x else 1 + f (n - 1) g (g x)) 20 (\y. y + 1) 0")
 }
 
-/// The same shape as `proof::tests`'
-/// `branching_non_tail_self_calls_carrying_an_inconsistently_classified_closure_parameter_get_a_per_instance_proof`:
-/// a *branching* non-tail trace (two self-calls per interior leaf). Unlike
+/// The loop of `proof::tests`'
+/// `branching_non_tail_self_calls_carrying_an_inconsistently_classified_closure_parameter_get_a_per_instance_proof`
+/// without its dead call site (`if 1 < 0 then g 0 999 else`), so `g` is
+/// consistently classified here: a *branching* non-tail trace (two self-calls per interior leaf). Unlike
 /// the single-call shape above, `DynBudget::recursion_depth` here bounds
 /// the *total* number of self-calls across the whole trace (the budget
 /// never refunds on return), which grows with the size of the recursion

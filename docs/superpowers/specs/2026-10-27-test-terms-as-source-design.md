@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Test terms as source

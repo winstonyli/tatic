@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Test terms as source: implementation plan
@@ -425,3 +425,37 @@ One whole-branch review of `main..test-terms`:
 - It reads every comment within 5 lines of a converted site, and checks each D5 exception's comment.
 
 After that come the fixes, the full suite, and then finishing-a-development-branch (merge is the user's call).
+
+## Outcome (2026-10-27)
+
+T1 to T5 landed on `test-terms`: 17af427, 9cae3dd, 757ecc7, 0076365, and the T5 commit. Each stage was gated
+with the temporary asserts in place and again after the strip: lib 358 passed / 2 ignored, golden_wat 2,
+rule_match_census 2, 0 warnings. The full suite passed at T5.
+
+| Stage | Hash comparisons | Mutations caught | Lines (+/-) |
+|---|---|---|---|
+| T1 | 57 | 3 | +264 / -1104 |
+| T2 | 43 | 3 | +135 / -752 |
+| T3 | 7 | 3 | +31 / -97 |
+| T4 | 8 (9 at run time) | 3 | +70 / -289 |
+| T5 | 2 | 2 | +13 / -30 (code only) |
+| Total | 117 | 14 | +513 / -2272, net -1759 against the survey's ~1,300 |
+
+There are more comparisons than the spec's 112 converted terms, because kept sub-hashes and the `doubling` call
+were also checked. One mutation per stage was planted by the reviewer, not the implementer.
+
+Hand-built terms left: the six D5 tests, each with its comment. After the strip, the test modules of `jit.rs` and
+`eval.rs` build no term by hand. None of the test modules of `compile`, `jit.rs` or `eval.rs` imports `PrimOp` any
+more.
+
+Rulings:
+- **T2.** A loop that keeps a sub-hash (`it`, `step`, `pick`, `f`) parses it from a local `*_src` string, and
+  embeds that string in each iteration's `format!` rather than joining with `s.app`. D3 allows a piece to be parsed
+  alone or inside the whole term, and the embedded form reads as one term.
+- **T4.**
+  - The S22 loop keeps no separate `f` hash, since nothing uses it alone.
+  - The test's assert on the RNG's first draw (`choice == 1`) was deleted with the generator. It checked the
+    generator, not the term.
+  - The frozen seed-2117 text keeps `syntax::print`'s `v0..v5` names.
+- **Comments.** When a comment's first line was deleted as a restatement, the rest was re-wrapped. Comment stubs
+  that predate the branch (`jit.rs`: "have missed", "Same shape as") were left alone.
