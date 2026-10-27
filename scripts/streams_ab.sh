@@ -18,7 +18,7 @@ runs="$root/tools/runs/target/release/runs.exe"
 # the environments the gate sets, one NAME=value per line: the sweep's (<salt> <out dir>) and the held-out check's
 # (<rules file> <law file>, Windows paths); `changed` skips their names
 sweep_env() { printf '%s\n' MACHINE_STATE=0 SWEEP=cold:streams "SALT=$1" "SWEEP_OUT=$2"; }
-held_env() { printf '%s\n' MACHINE_STATE=0 CHECK_FAST=1 CHECK_FAMILY=streams "CHECK_RULES=$1" "CHECK_LAWFILE=$2"; }
+held_env() { printf '%s\n' MACHINE_STATE=0 CHECK_FAST=1 "CHECK_RULES=$1" "CHECK_LAWFILE=$2"; }
 # the held-out files in band order (tests/church_bv/held_<band>.txt; the bands are HELD_BANDS in classes.rs)
 bands() { local b; for b in $(ls "$root/tests/church_bv" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$root/tests/church_bv/held_$b.txt"; done; }
 held() { # <exe> <rules file> <arm dir> <label>: held-out M over every band, the bands checked at once; per band `<label> <band> <laws> <free> <M>` to <arm dir>/held_bands.txt, the check's ABLATED and ENV lines to <arm dir>/held_lines.txt

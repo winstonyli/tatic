@@ -127,7 +127,7 @@ ok "a store after another writer's keeps its entry" "$(cat "$T/put/cache/k/s1/fr
 # come from the same functions that set them, so a new one can't miss the list
 source <(sed -n '/^sweep_env() {/,/^}/p;/^held_env() {/,/^}/p;/^changed() {/,/^}/p' scripts/streams_ab.sh)
 mkdir -p "$T/set"; { sweep_env 1 o; held_env r l; } | sed 's/=.*/=other/; s/^/ENV /' > "$T/set/task.log"
-ok "the names the gate sets are skipped" "$(wc -l < "$T/set/task.log") [$(changed "$T/none.env" "$T/set")]" "9 []"
+ok "the names the gate sets are skipped" "$(wc -l < "$T/set/task.log") [$(changed "$T/none.env" "$T/set")]" "8 []"
 # an arm's switches: each named in its .exe.env must have an ABLATED line somewhere in the arm (a task log, the
 # held-out check's lines); spaces and CRLF in the .exe.env are read as job.rs's merge_env reads them
 source <(sed -n '/^untaken() {/,/^}/p' scripts/streams_ab.sh)
