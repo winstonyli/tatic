@@ -255,7 +255,6 @@ fn stream_phases_are_disjoint_residue_classes() {
     let distinct: hashbrown::HashSet<_> = all.iter().collect();
     assert_eq!(distinct.len(), seq.len(), "a law in two phases");
     assert!(residue(&seq, 1, 0, 10) == phase(1)[..10] && residue(&seq, 1, 10, 10) == phase(1)[10..20]);
-    assert_eq!(Family::parse("streams").vars(), 3);
 }
 
 /// Extras exist to be mined into rules: a mine with no rule rounds, a loop that only
@@ -522,7 +521,7 @@ fn worker_runs_tasks() {
     let nonce = |i: usize| text(i).lines().find_map(|l| l.strip_prefix("ECHO nonce=").map(String::from)).unwrap();
     assert_eq!(echoes(1), ["ECHO A=1", "ECHO B=<unset>", "ECHO C=x=y"]);
     // the setup's own reads, made as it is built (`Setup::var`'s ENV lines), are in the task's log, not on the task pipe
-    assert!(text(1).lines().any(|l| l.starts_with("ENV MINER_SUB")), "1.log: {}", text(1));
+    assert!(text(1).lines().any(|l| l.starts_with("ENV ABLATE")), "1.log: {}", text(1));
     assert_eq!(echoes(2), ["ECHO A=<unset>", "ECHO B=2"], "no variable leaks from task 1");
     assert!(text(3).contains("env_echo panicked on request"), "3.log: {}", text(3));
     assert!(text(5).contains("no task driver::no_such_task"), "5.log: {}", text(5));
@@ -668,8 +667,6 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
     std::fs::create_dir_all(out).unwrap();
     let s = |v: usize| v.to_string();
     let mut common: Vec<(String, String)> = [
-        ("RULEMINER_FAMILY", "streams".to_string()),
-        ("CHECK_FAMILY", "streams".to_string()),
         ("RULEMINER_PHASE", s(cfg.sphase)),
         // one machine-state line per loop or sweep instead of one per child
         ("MACHINE_BANNER", "0".to_string()),

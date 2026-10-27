@@ -692,21 +692,14 @@ impl ValueMemo<u128> {
     }
 }
 
-/// Leaves, every operator applied to two leaves, and (with `deep`) every operator applied to such a term
-/// and a leaf, in either order. Built once per thread for each argument pair and operator count.
-pub fn terms(setup: &Setup, nvars: usize, deep: bool) -> std::rc::Rc<[Term]> {
-    thread_local! {
-        static TERMS: std::cell::RefCell<hashbrown::HashMap<(usize, bool, usize), std::rc::Rc<[Term]>>> = Default::default();
-    }
-    TERMS.with(|c| c.borrow_mut().entry((nvars, deep, setup.nops())).or_insert_with(|| build_terms(setup, nvars, deep).into()).clone())
-}
-
-fn build_terms(setup: &Setup, nvars: usize, deep: bool) -> Vec<Term> {
+/// Leaves, each of `add`, `and`, `or` and `xor` applied to two leaves, and (with `deep`) each applied to such a term and a
+/// leaf, in either order.
+fn terms(nvars: usize, deep: bool) -> Vec<Term> {
     let mut leaves: Vec<Term> = (0..nvars).map(Term::v).collect();
     leaves.push(Term::ZERO);
     leaves.push(Term::ONES);
     let mut level1 = vec![];
-    for o in 0..setup.nops() {
+    for o in 0..4 {
         for a in &leaves {
             for b in &leaves {
                 level1.push(Term::op(o, *a, *b));
@@ -716,7 +709,7 @@ fn build_terms(setup: &Setup, nvars: usize, deep: bool) -> Vec<Term> {
     let mut all = leaves.clone();
     all.extend(level1.clone());
     if deep {
-        for o in 0..setup.nops() {
+        for o in 0..4 {
             for a in &level1 {
                 for b in &leaves {
                     all.push(Term::op(o, *a, *b));
@@ -4136,7 +4129,7 @@ fn rule_table_lists_every_matching_rule_in_order() {
     let mined = parse_rules("x -> and(x, x)\nsub(0, x) -> x\nadd(sub(x, y), z) -> sub(add(x, z), y)\n");
     let table = RuleTable::new(job.setup(), mined);
     let mut leaves: Vec<Term> = vec![Term::ZERO, Term::ONES, Term::v(0)];
-    leaves.extend(terms(job.setup(), 3, true).iter().copied());
+    leaves.extend(terms(3, true));
     let (mut tried, mut skipped) = (0, 0);
     for t in &leaves {
         let ids: Vec<usize> = table.candidates(t).map(|(i, _)| i).collect();

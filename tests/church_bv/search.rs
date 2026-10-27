@@ -55,45 +55,6 @@ impl Gates for GoodOps {
     }
 }
 
-/// Rewriting with the library rules over every constant-multiplication law (search note section 35): per law the
-/// carries of the target machines, whether a whole-term machine proof was still needed, build and check times; the
-/// totals show what the rules buy. `ABLATE=shldist,shldistsub,double,doublechain` (any subset) removes rules.
-#[test]
-#[ignore]
-pub fn rewrite_rules_over_the_mul_laws() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        let _banner = MachineBanner::start(job, "RULES");
-        let max = job.setup().or("MULMINER_MAX", 7);
-        let (mut proved, mut none, mut machine_free, mut over_cap, t0) = (0, 0, 0, 0, Instant::now());
-        for (name, t1, t2) in mul_laws(max) {
-            if !t1.is_law(&t2, 2) {
-                continue;
-            }
-            let cs = [&t1, &t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
-            let t = Instant::now();
-            let (r, spent) = job.spent(|job| rewrite_law(job, 4, 2, &t1, &t2));
-            let built = t.elapsed();
-            let fell = spent.fallbacks;
-            match r {
-                Some((p, s)) => {
-                    let t = Instant::now();
-                    job.lemmas.ck(&name, &p, &s);
-                    proved += 1;
-                    machine_free += (fell == 0) as u32;
-                    over_cap += (cs[0].max(cs[1]) > carry_cap(job)) as u32;
-                    println!("RULES {name}: carries {cs:?}, machine proofs used {fell}, build {built:?}, check {:?}", t.elapsed());
-                }
-                None => {
-                    none += 1;
-                    println!("RULES {name}: carries {cs:?}, no proof, {built:?}");
-                }
-            }
-        }
-        println!("RULES {proved} proved ({machine_free} with no whole-term machine proof, {over_cap} beyond the carry cap), {none} not, {:?}", t0.elapsed());
-    })
-}
-
 /// Rules from a file, one `lhs -> rhs` per line in `Term::show` syntax (blank lines and `#` comments skipped); the format of `RULEMINER_EXTRA`.
 pub fn read_rule_file(path: &str) -> Vec<(Term, Term)> {
     let text = std::fs::read_to_string(path).unwrap_or_else(|e| panic!("{path}: {e}"));
@@ -114,7 +75,6 @@ pub fn read_rule_file(path: &str) -> Vec<(Term, Term)> {
     out
 }
 
-/// The candidate laws of a miner family (`mul`, `shl`, `lt`, `shr`; the `RULEMINER_*` env vars size them).
 /// `laws` reordered by a hash of the salt and each law's text (FNV-1a: deterministic across runs); salt 0 keeps the order.
 pub fn shuffled(mut laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
     if salt != 0 {
@@ -146,46 +106,15 @@ fn num_stops_at_an_unparsable_value() {
     num(&|_| Some("25O".to_string()), "RULEMINER_LAWS", 250);
 }
 
-/// `family`'s laws, through the law-sequence variables (`RULEMINER_*`) that `env` gives, `None` for unset.
-pub fn family_laws(setup: &Setup, family: Family, env: &dyn Fn(&str) -> Option<String>, n: usize, nv: usize, max: u32) -> Vec<(String, Term, Term)> {
-    match family {
-        Family::Shl => {
-            let conj = shl_conjectures(2);
-            let stride = (conj.len() / num(env, "RULEMINER_LAWS", 250)).max(1);
-            conj.into_iter().step_by(stride).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
-        }
-        Family::Shr => {
-            // right shifts of the arithmetic pool terms, against every term of the pool and its right shifts
-            // RULEMINER_DEEP=1: the depth-2 pool of `terms` (set `MINER_SUB=1` to include `sub`)
-            let pool = if num(env, "RULEMINER_DEEP", 0) == 1 { terms(setup, 2, true).to_vec() } else { lt_pool(2) };
-            let shr = |a: &Term| Term::op(SHR1, *a, Term::ZERO);
-            let all: Vec<Term> = pool.iter().cloned().chain(pool.iter().map(&shr)).collect();
-            pool_conjectures(all, n, nv, 0)
-                .into_iter()
-                .filter(|(a, b)| a.has_shift() || b.has_shift())
-                .step_by(num(env, "RULEMINER_STRIDE", 1))
-                .take(num(env, "RULEMINER_LAWS", 250))
-                .map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b))
-                .collect()
-        }
-        Family::Lt => {
-            let pool = lt_pool(2);
-            let all = pool.iter().flat_map(|a| pool.iter().map(move |b| Term::op(LT, *a, *b)));
-            pool_conjectures(all, n, nv, num(env, "RULEMINER_LAWS", 250)).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
-        }
-        Family::Mul => mul_laws(max),
-        Family::Streams => panic!("family streams: three-variable laws come from stream law files (RULEMINER_LAWFILE, CHECK_LAWFILE)"),
-    }
-}
-
-/// A law window written as a law file (`driver::write_laws`) and read back (`read_laws`) gives the same laws, names included.
+/// Laws written as a law file (`driver::write_laws`) and read back (`read_named_laws`) are the same laws, names included:
+/// the equal pairs of the binary operators over `leaves3`, at width 4.
 #[test]
-pub fn law_windows_survive_a_law_file() {
-    let job = &Job::new(Setup::process());
-    let window = |take: usize| family_laws(job.setup(), Family::Lt, &move |k: &str| (k == "RULEMINER_LAWS").then(|| take.to_string()), 4, 2, 7);
-    let laws = window(60);
-    assert_eq!(laws.len(), window(usize::MAX).len().min(60));
-    let path = std::env::temp_dir().join(format!("law_window_lt_{}.txt", std::process::id()));
+pub fn laws_survive_a_law_file() {
+    let leaves = &leaves3();
+    let pool: Vec<Term> = (0..6).flat_map(|o| leaves.iter().flat_map(move |&a| leaves.iter().map(move |&b| Term::op(o, a, b)))).collect();
+    let laws: Vec<(String, Term, Term)> = pool_conjectures(pool, 4, STREAM_VARS, 60).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect();
+    assert!(laws.len() >= 20, "{} laws", laws.len());
+    let path = std::env::temp_dir().join(format!("law_file_{}.txt", std::process::id()));
     std::fs::write(&path, laws_text(&laws)).unwrap();
     let back = read_named_laws(path.to_str().unwrap());
     std::fs::remove_file(&path).unwrap();
@@ -214,11 +143,10 @@ pub fn guard_plan_samples_and_weights() {
     assert_eq!(guard_plan(0, 5).0, 1); // no clean laws: nothing to sample (the caller skips the guard)
 }
 
-/// Rule miner (search note section 36): candidate rules are the equal pairs of the `shl1` pool (two variables, width 4,
-/// the shl miner's pool), oriented to a strictly smaller right side and proved by `add_tree_law`. The targets are the
-/// mul laws that still needed a whole-term machine proof under the built-in rules (the "stragglers"). A candidate is
-/// tried on the stragglers whose normalized terms contain an instance of its left side; it scores by the machine
-/// proofs it removes. Env: `MULMINER_MAX` (default 7), `RULEMINER_TRIALS` (candidate cap, default 400).
+/// Rule miner (search note section 36; parts in `miner.rs`, switches in `MinerConfig`): rewrite rules for the laws of
+/// `RULEMINER_LAWFILE` that still need a whole-term machine proof under the rules in force (the "stragglers"); a
+/// candidate is tried on the stragglers whose normalized terms contain an instance of its left side and scores by the
+/// machine proofs it removes.
 #[test]
 #[ignore]
 pub fn rule_miner() {
@@ -558,166 +486,6 @@ pub fn rule_admission_refuses_wrong_rules() {
     })
 }
 
-/// Probe (search note section 61): the 7 non-constant `lt` stragglers restated through the borrow bit, at width 4.
-/// `lt(a, b)` is the top bit of `B(a, b) = (~a & b) | (~(a ^ b) & (a - b))`, so `lt(a, b) = lt(c, d)` becomes the
-/// shift-free law `B(a, b) & TOP = B(c, d) & TOP` (`TOP` = 8). Prints, per law, whether the rewriter proves it and how many
-/// whole-term machine proofs it still needed, next to the same count for the `lt` form.
-#[test]
-#[ignore]
-pub fn lt_borrow_bit_probe() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        let b = |o: usize, a: Term, c: Term| Term::op(o, a, c);
-        let not = |a: Term| b(3, a, Term::ONES);
-        let one = b(4, Term::ZERO, Term::ONES);
-        let top = b(6, b(6, b(6, one, Term::ZERO), Term::ZERO), Term::ZERO);
-        let borrow = |t: &Term| -> Term {
-            let Node::Op(LT, x, y) = *t.node() else { panic!("not an lt") };
-            b(2, b(1, not(x), y), b(1, not(b(3, x, y)), b(4, x, y)))
-        };
-        let laws = [
-            ("lt(0, xor(x, y))", "lt(and(0, y), sub(y, x))"),
-            ("lt(add(x, x), x)", "lt(sub(-1, x), xor(x, 0))"),
-            ("lt(add(x, y), -1)", "lt(xor(y, x), or(0, -1))"),
-            ("lt(add(y, y), y)", "lt(sub(-1, y), and(y, y))"),
-            ("lt(x, add(x, x))", "lt(or(0, x), sub(0, x))"),
-            ("lt(x, xor(y, -1))", "lt(or(y, 0), xor(-1, x))"),
-            ("lt(y, add(y, y))", "lt(xor(y, 0), sub(0, y))"),
-        ];
-        for (l, r) in laws {
-            let (l, r) = (parse_term(l), parse_term(r));
-            let (direct, direct_spent) = job.spent(|job| rewrite_plan(job, 4, 2, &l, &r).is_some());
-            let (bl, br) = (b(1, borrow(&l), top), b(1, borrow(&r), top));
-            let (via, via_spent) = job.spent(|job| rewrite_plan(job, 4, 2, &bl, &br).is_some());
-            println!("BORROW {} = {}: lt form proved={direct} machine proofs {}; borrow form proved={via} machine proofs {}", l.show(), r.show(), direct_spent.fallbacks, via_spent.fallbacks);
-        }
-    })
-}
-
-/// Soundness sweep (search note section 64). `SWEEP_FAMILY` (mul, shl, lt, shr; sized by the `RULEMINER_*` vars),
-/// `SWEEP_WIDTHS` (default `3,4`). (A) Every law plausible at widths 1-6 that the rewriter proves is kernel-checked at each
-/// width. (B) Every law equal at width 4 but false at some width `w` in 1..=6 must be refused at `w` (no proof, or a proof
-/// the kernel rejects). Prints counts; panics on a failed check or an accepted false law.
-#[test]
-#[ignore]
-pub fn soundness_sweep() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        let _banner = MachineBanner::start(job, "SWEEP");
-        let family = Family::parse(job.setup().var("SWEEP_FAMILY").unwrap_or("mul"));
-        let widths: Vec<usize> = job.setup().var("SWEEP_WIDTHS").unwrap_or("3,4").split(',').map(|w| w.parse().unwrap()).collect();
-        let kv = family.vars();
-        let laws = family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
-        let cap = carry_cap(job);
-        let capped = |t: &Term, w: usize| Machine::parse(t).is_some_and(|m| m.carries() > cap) && w > 0;
-        let (mut checked, mut unproved, mut refused, mut false_laws) = (0usize, 0usize, 0usize, 0usize);
-        let t0 = Instant::now();
-        for (name, t1, t2) in &laws {
-            if capped(t1, 1) || capped(t2, 1) {
-                continue;
-            }
-            let true_everywhere = t1.is_law(t2, kv);
-            if true_everywhere {
-                for &w in &widths {
-                    match rewrite_law(job, w, kv, t1, t2) {
-                        Some((p, s)) => {
-                            if let Err(m) = job.lemmas.holds(&p, &s) {
-                                panic!("kernel rejected the proof of {name} at width {w}: {}", m.chars().take(300).collect::<String>());
-                            }
-                            checked += 1;
-                        }
-                        None => unproved += 1,
-                    }
-                }
-            } else {
-                false_laws += 1;
-                for w in (1..=6).filter(|w| !t1.plausibly_equals(t2, *w, kv)) {
-                    if let Some((p, s)) = rewrite_law(job, w, kv, t1, t2) {
-                        assert!(job.lemmas.holds(&p, &s).is_err(), "FALSE law accepted: {name} at width {w}");
-                    }
-                    refused += 1;
-                }
-            }
-        }
-        println!("SWEEP {family}: {} laws; true: {checked} proofs kernel-checked at widths {widths:?}, {unproved} unproved; false at some width: {false_laws} laws, {refused} (law, width) pairs refused; {:?}", laws.len(), t0.elapsed());
-    })
-}
-
-/// Scaling probe (search note section 65): a sample of each family's laws (`SWEEP_SAMPLE`, default 30, evenly spaced among the
-/// true laws within the carry cap) proved by `rewrite_law` and kernel-checked at each of `SWEEP_WIDTHS` (default `4,8,16,32`),
-/// then every promoted rule via `prove_rule`. Per width: proofs, unproved, build and check seconds (sum and max), flushed as it goes.
-#[test]
-#[ignore]
-pub fn scaling_sweep() {
-    let job = &mut Job::new(Setup::process());
-    // SWEEP_SCOPE=law: one intern scope per law instead of one for the sweep (separates table size from per-node cost)
-    let per_law = job.setup().var("SWEEP_SCOPE").is_some_and(|v| v == "law");
-    let body = |job: &mut Job| {
-        let _banner = MachineBanner::start(job, "SCALE");
-        let family = Family::parse(job.setup().var("SWEEP_FAMILY").unwrap_or("mul"));
-        let widths: Vec<usize> = job.setup().var("SWEEP_WIDTHS").unwrap_or("4,8,16,32").split(',').map(|w| w.parse().unwrap()).collect();
-        let kv = family.vars();
-        let all = family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, job.setup().or("MULMINER_MAX", 7) as u32);
-        let ok: Vec<&(String, Term, Term)> = all
-            .iter()
-            .filter(|(_, a, b)| a.is_law(b, kv) && ![a, b].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))))
-            .collect();
-        let sample = job.setup().or("SWEEP_SAMPLE", 30).min(ok.len()).max(1);
-        let picked: Vec<&&(String, Term, Term)> = (0..sample).map(|i| &ok[i * ok.len() / sample]).collect();
-        for &w in &widths {
-            let (mut proved, mut none, mut build, mut check_t, mut worst) = (0, 0, 0f64, 0f64, (0f64, String::new()));
-            let mut dags: Vec<usize> = vec![];
-            let mut fell = 0;
-            for law in &picked {
-                let (name, t1, t2) = &***law;
-                let mut body = || {
-                    let t = Instant::now();
-                    let (r, spent) = job.measured(LAW_STEPS, |job| rewrite_law(job, w, kv, t1, t2));
-                    fell += spent.fallbacks;
-                    let b = t.elapsed().as_secs_f64();
-                    build += b;
-                    match r {
-                        Some((p, s)) => {
-                            dags.push(tatic::kernel::term_sizes(&p).0 as usize);
-                            let t = Instant::now();
-                            job.lemmas.ck(name, &p, &s);
-                            let c = t.elapsed().as_secs_f64();
-                            check_t += c;
-                            proved += 1;
-                            if b + c > worst.0 {
-                                worst = (b + c, name.clone());
-                            }
-                        }
-                        None => none += 1,
-                    }
-                };
-                if per_law { tatic::kernel::scoped(body) } else { body() }
-            }
-            println!("SCALE {family} n={w}: {proved} proved, {none} unproved of {}; build {build:.1}s, check {check_t:.1}s, slowest {:.2}s ({}), {fell} machine proofs", picked.len(), worst.0, worst.1);
-            dags.sort();
-            if let Some(m) = dags.get(dags.len() / 2) {
-                println!("SCALE {family} n={w}: proof dag nodes: median {m}, max {}, total {}", dags[dags.len() - 1], dags.iter().sum::<usize>());
-            }
-        }
-        let t = Instant::now();
-        let sweep_rules = job.setup().var("SWEEP_RULES").is_some();
-        for &w in widths.iter().filter(|_| !sweep_rules) {
-            let t = Instant::now();
-            for (l, r) in promoted_rules() {
-                assert!(prove_rule(job, w, l.max_var().max(r.max_var()) + 1, l, r).is_some(), "promoted rule not provable at width {w}");
-            }
-            println!("SCALE promoted rules n={w}: {:.1}s for {}", t.elapsed().as_secs_f64(), promoted_rules().len());
-        }
-        let _ = t;
-    };
-    // SWEEP_RULES: mined rules to sweep under, besides the built-in ones
-    let rules = match job.setup().var("SWEEP_RULES") {
-        Some(f) => job.rules().with_mined(job.setup(), parse_rules(&std::fs::read_to_string(f).unwrap())),
-        None => job.rules().clone(),
-    };
-    if !per_law { tatic::kernel::scoped(|| job.with_rules(rules, body)) } else { job.with_rules(rules, body) }
-}
-
 /// `show_cmp` is the order of the `show()` text, on every pair of the class table's first 2000 representatives in that
 /// order, constants and variables included.
 #[test]
@@ -789,6 +557,9 @@ pub fn stream_sets() -> Vec<Vec<usize>> {
 
 /// Terms grown per level of a stream (the probe's budget, docs/tier-cycle.md "Triples match pairs per grown term").
 pub const STREAM_BUDGET: usize = 20000;
+
+/// The stream laws' variables (`x`, `y`, `z`).
+pub const STREAM_VARS: usize = 3;
 /// Growth levels of a stream.
 pub const STREAM_LEVELS: usize = 2;
 /// Phases of the stream sequence: phase 0 feeds the mines' extras, 1-3 the loops (spec §9).
@@ -863,7 +634,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
     }
     let mut grown_ops = std::collections::BTreeSet::new();
     seeds.iter().for_each(|t| ops_of(*t, &mut grown_ops));
-    let leaves = leaves3();
+    let leaves = &leaves3();
     let mut memo = ValueMemo::exhaustive(4, 3);
     let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
     let grow: Vec<Term> = grown_ops
@@ -1006,53 +777,6 @@ pub fn twin_keys_rename_normalize_below_roots_and_keep_them() {
     assert_eq!(twin_key(&p("and(or(x, sub(y, 0)), z)"), &p("z")), twin_key(&p("and(or(x, y), z)"), &p("z")), "padding below the root");
 }
 
-/// A law family, by its `RULEMINER_FAMILY` / `CHECK_FAMILY` / `SWEEP_FAMILY` name: the two-variable ones `family_laws`
-/// builds, and the streams, whose three-variable laws come only through law files.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
-pub enum Family {
-    Mul,
-    Shl,
-    Shr,
-    Lt,
-    Streams,
-}
-
-impl Family {
-    const NAMES: [(&'static str, Family); 5] = [("mul", Family::Mul), ("shl", Family::Shl), ("shr", Family::Shr), ("lt", Family::Lt), ("streams", Family::Streams)];
-
-    /// The family named `name`; any other name panics, listing the five.
-    pub fn parse(name: &str) -> Family {
-        let names: Vec<&str> = Self::NAMES.iter().map(|(n, _)| *n).collect();
-        Self::NAMES.iter().find(|(n, _)| *n == name).map(|(_, f)| *f).unwrap_or_else(|| panic!("unknown family {name}: one of {}", names.join(", ")))
-    }
-
-    /// Its name, as `parse` reads it.
-    pub fn name(self) -> &'static str {
-        Self::NAMES.iter().find(|(_, f)| *f == self).unwrap().0
-    }
-
-    /// Its laws' variables.
-    pub fn vars(self) -> usize {
-        match self {
-            Family::Streams => 3,
-            Family::Mul | Family::Shl | Family::Shr | Family::Lt => 2,
-        }
-    }
-}
-impl std::fmt::Display for Family {
-    fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        f.write_str(self.name())
-    }
-}
-
-/// A family name outside the five is refused by name, before any law is built or filtered (the miner once mined nothing
-/// for `add3` with a law file, its laws dropped as two-variable ones).
-#[test]
-#[should_panic(expected = "unknown family add3")]
-fn an_unknown_family_is_refused() {
-    Family::parse("add3");
-}
-
 /// `x`, `y`, `z`, `0` and `-1`.
 fn leaves3() -> Vec<Term> {
     (0..3).map(Term::v).chain([Term::ZERO, Term::ONES]).collect()
@@ -1134,11 +858,9 @@ pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
 }
 
 /// The setup of the rule-set check tests: the `CHECK_RULES` (none when unset, printed as `CHECK_RULES none`) as the job's
-/// rules to install, in file order, `CHECK_FAMILY`'s variable count (default `streams`), and the laws of the family (sized by
-/// the `RULEMINER_*` vars, or the `lhs = rhs` lines of `CHECK_LAWFILE`, as the driver passes them) that are plausible at
-/// widths 1-6.
+/// rules to install, in file order, the stream laws' variable count, and the `lhs = rhs` laws of `CHECK_LAWFILE` (required,
+/// as the driver passes them) that are plausible at widths 1-6.
 fn check_laws(job: &Job) -> (Rules, Vec<(Term, Term)>, usize, Vec<(String, Term, Term)>) {
-    let family = Family::parse(job.setup().var("CHECK_FAMILY").unwrap_or("streams"));
     let text = match job.setup().var("CHECK_RULES") {
         Some(f) => std::fs::read_to_string(f).unwrap(),
         None => {
@@ -1147,18 +869,15 @@ fn check_laws(job: &Job) -> (Rules, Vec<(Term, Term)>, usize, Vec<(String, Term,
         }
     };
     let rules = parse_rules(&text);
-    let kv = family.vars();
-    let laws = match job.setup().var("CHECK_LAWFILE") {
-        Some(f) => read_named_laws(&f),
-        None => family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), 4, kv, 7),
-    };
+    let kv = STREAM_VARS;
+    let laws = read_named_laws(job.setup().var("CHECK_LAWFILE").expect("CHECK_LAWFILE: the laws to check"));
     let laws = laws.into_iter().filter(|(_, t1, t2)| t1.is_law(t2, kv)).collect();
     let installed = job.rules().with_mined(job.setup(), rules.clone());
     (installed, rules, kv, laws)
 }
 
-/// Kernel check of a rule set (search note section 75): every law of `CHECK_FAMILY` (sized by the `RULEMINER_*` vars, as in
-/// `rule_miner`) that `rewrite_law` proves under the built-in rules (less `ABLATE`) plus the rules in `CHECK_RULES` is
+/// Kernel check of a rule set (search note section 75): every law of `CHECK_LAWFILE`
+/// that `rewrite_law` proves under the built-in rules (less `ABLATE`) plus the rules in `CHECK_RULES` is
 /// checked by the kernel at width 4; prints how many were proved, how many without a whole-term machine proof, and per law
 /// `MACHINE <count> <law>` for the others and `EXHAUSTED <law>` for one that used up the step budget.
 #[test]
@@ -1232,7 +951,7 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
     });
 }
 
-/// Where the kernel's work goes under a rule set: like `rule_set_kernel_check` (same `CHECK_FAMILY` and `CHECK_RULES`; laws from `CHECK_LAWFILE`, required: the streams' laws come through files), but
+/// Where the kernel's work goes under a rule set: like `rule_set_kernel_check` (same `CHECK_RULES` and `CHECK_LAWFILE`), but
 /// reports, for the laws proved by rules alone ("rules"), by rules and the join with no whole-term machine proof ("joined"), and
 /// for those that needed one ("machine"), the count, the
 /// time to build the proof, the time for the kernel to check it, and its size (unique nodes / nodes per occurrence); then the same
@@ -1345,7 +1064,7 @@ pub fn proposal_credit(job: &mut Job, rules: &[(Term, Term)], kv: usize, held: &
 }
 
 /// Credit for the proposals in `CREDIT_LAWS` (`lhs = rhs` lines) from the library `CHECK_RULES` mined on them, against the held-out
-/// laws of `CHECK_FAMILY` (laws from `CHECK_LAWFILE`, required: the streams' laws come through files). Prints a `CREDIT rule` line per rule (held-out gain,
+/// laws of `CHECK_LAWFILE`. Prints a `CREDIT rule` line per rule (held-out gain,
 /// users) and a `CREDIT total` line; `CREDIT_OUT` saves `credit<TAB>law` per proposal.
 #[test]
 #[ignore]
@@ -1402,7 +1121,7 @@ pub fn read_laws(path: &str) -> Vec<(Term, Term)> {
     std::fs::read_to_string(path).unwrap().lines().filter_map(|l| l.split_once(" = ")).map(|(a, b)| (parse_term(a), parse_term(b))).collect()
 }
 
-/// `read_laws` with each law named as `family_laws` names it.
+/// `read_laws` with each law named by its `lhs = rhs` text.
 pub fn read_named_laws(path: &str) -> Vec<(String, Term, Term)> {
     read_laws(path).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
 }

@@ -334,48 +334,6 @@ pub fn pages_line_task(setup: &Arc<Setup>) {
     setup.result("pages", pages);
 }
 
-/// What `prove_checked` found for a law.
-pub enum Verdict {
-    /// proved by `add_tree_law` and accepted by the kernel
-    Proved,
-    /// no proof and a side is over the carry cap
-    OverCap,
-    /// no proof, and neither side has a carry (`bitwise_law` territory)
-    CarryFree,
-    /// no proof within the cap; `generic` = the law holds at widths 1..6 (else it is width-specific and cannot have one)
-    NoProof { generic: bool },
-}
-/// A `Verdict` with the time `add_tree_law` took and the time the kernel took to check its proof.
-pub struct Tried {
-    pub verdict: Verdict,
-    pub law: std::time::Duration,
-    pub check: std::time::Duration,
-}
-/// The driver step shared by the conjecture miners: prove `t1 = t2` over `nv` variables at width `n`, kernel-check the proof, else classify the failure.
-pub fn prove_checked(job: &mut Job, n: usize, nv: usize, name: &str, t1: &Term, t2: &Term) -> Tried {
-    let t = Instant::now();
-    let law = add_tree_law(job, n, nv, t1, t2);
-    let law_time = t.elapsed();
-    let verdict = match law {
-        Some((p, s)) => {
-            let t = Instant::now();
-            job.lemmas.ck(name, &p, &s);
-            return Tried { verdict: Verdict::Proved, law: law_time, check: t.elapsed() };
-        }
-        None => {
-            let carries = [t1, t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries())).into_iter().max().unwrap_or(0);
-            if carries > carry_cap(job) {
-                Verdict::OverCap
-            } else if carries == 0 {
-                Verdict::CarryFree
-            } else {
-                Verdict::NoProof { generic: t1.is_law(t2, nv) }
-            }
-        }
-    };
-    Tried { verdict, law: law_time, check: std::time::Duration::ZERO }
-}
-
 /// The most carries per side `add_tree_law` takes on (its lemmas are case trees over `k + carries` bits); env `CARRY_CAP`.
 pub fn carry_cap(job: &Job) -> usize {
     job.setup().or("CARRY_CAP", 10)
@@ -815,122 +773,6 @@ pub fn plain_steps_match_the_kernel_gates() {
     })
 }
 
-/// Mine at width `MINER_N` (default 4) over `MINER_VARS` variables (default 2), `MINER_DEEP=1` for terms two
-/// operators deep. Prints the classes, then tries every conjecture over x, y with the generic builder.
-#[test]
-#[ignore]
-pub fn conjecture_miner() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        let (n, nvars, deep) = (job.setup().or("MINER_N", 4), job.setup().or("MINER_VARS", 2), job.setup().flag("MINER_DEEP", false));
-        let ts = terms(job.setup(), nvars, deep);
-        let t0 = Instant::now();
-        // classes by the values on the tuples (variable `i` is bits `n*i..` of a tuple)
-        let mut classes: std::collections::BTreeMap<Vec<u128>, Vec<usize>> = Default::default();
-        // all input tuples, or `MINER_SAMPLE` of them (a fixed pseudo-random subset plus the all-zero and all-one
-        // tuples): a class may then hold a false equality, which no proof builder or kernel check will accept
-        let total = 1u128 << (n * nvars);
-        let sample = job.setup().or("MINER_SAMPLE", 0) as u128;
-        let tuples: Vec<u128> = if sample == 0 || sample >= total {
-            (0..total).collect()
-        } else {
-            let mut x = 0x9e3779b97f4a7c15u128;
-            let mut v = vec![0, total - 1];
-            for _ in 0..sample {
-                x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
-                v.push((x >> 40) % total);
-            }
-            v.sort();
-            v.dedup();
-            v
-        };
-        for (i, t) in ts.iter().enumerate() {
-            let values = tuples.iter().map(|&tu| t.interp(n, &(0..nvars).map(|v| tu >> (n * v) & low_bits(n)).collect::<Vec<_>>())).collect();
-            classes.entry(values).or_default().push(i);
-        }
-        let conjectures: usize = classes.values().map(|c| c.len() - 1).sum();
-        println!("MINER n={n} vars={nvars} deep={deep}: {} terms, {} classes, {conjectures} conjectures, run in {:?}", ts.len(), classes.len(), t0.elapsed());
-        let show = job.setup().flag("MINER_SHOW", false);
-        // Every conjecture (class representative = shortest term) over x, y, by what can check it.
-        let (mut by_builder, mut rejected, mut needs_add, mut needs_z, mut by_third) = (0, vec![], vec![], 0, (0usize, 0usize));
-        let (mut by_rewrite, mut rewrite_bugs, mut by_chain, mut by_tree) = (0, vec![], 0, 0);
-        let t1 = Instant::now();
-        for c in classes.values().filter(|c| c.len() > 1) {
-            let mut members: Vec<&Term> = c.iter().map(|&i| &ts[i]).collect();
-            members.sort_by_key(|t| t.show().len());
-            for other in &members[1..] {
-                let law = format!("{} = {}", members[0].show(), other.show());
-                if show {
-                    println!("  CONJ: {law}");
-                }
-                let k = (members[0].max_var().max(other.max_var()) + 1).max(2);
-                if k > 2 {
-                    by_third.0 += 1;
-                }
-                if members[0].uses_add() || other.uses_add() {
-                    match rewrite_law(job, n, k, members[0], other) {
-                        Some((p, s)) if k > 2 && job.lemmas.holds(&p, &s).is_ok() => by_third.1 += 1,
-                        _ if k > 2 => match add_tree_law(job, n, k, members[0], other) {
-                            Some((p, s)) if job.lemmas.holds(&p, &s).is_ok() => by_third.1 += 1,
-                            _ => needs_z += 1,
-                        },
-                        Some((p, s)) if job.lemmas.holds(&p, &s).is_ok() => by_rewrite += 1,
-                        Some(_) => rewrite_bugs.push(law),
-                        None => {
-                            // the generic carry-chain builder, in either orientation
-                            let chain = carry_chain_law(n, members[0], other).or_else(|| carry_chain_law(n, other, members[0]));
-                            match chain {
-                                Some((p, s)) if job.lemmas.holds(&p, &s).is_ok() => by_chain += 1,
-                                _ => match add_tree_law(job, n, 2, members[0], other) {
-                                    Some((p, s)) if job.lemmas.holds(&p, &s).is_ok() => by_tree += 1,
-                                    _ => needs_add.push(law),
-                                },
-                            }
-                        }
-                    }
-                } else {
-                    let (p, s) = bitwise_law_k(n, k, members[0], other);
-                    if job.lemmas.holds(&p, &s).is_ok() {
-                        by_builder += 1;
-                        by_third.1 += (k > 2) as usize;
-                    } else {
-                        rejected.push(law);
-                    }
-                }
-            }
-        }
-        println!("MINER generic builder: {by_builder} proved, {} rejected {rejected:?}, in {:?}", rejected.len(), t1.elapsed());
-        println!("MINER carry-chain builder: {by_chain} proved, state-encoding search: {by_tree} proved");
-        println!("MINER rewrite: {by_rewrite} proved, {} failed to check {:?}", rewrite_bugs.len(), &rewrite_bugs[..rewrite_bugs.len().min(5)]);
-        println!("MINER third variable: {} conjectures, {} proved, {needs_z} unproved", by_third.0, by_third.1);
-        println!("MINER no builder: {} still need `add`", needs_add.len());
-        for law in needs_add.iter().take(12) {
-            println!("  needs add: {law}");
-        }
-        // Known library lemmas: does the miner conjecture them, and does the template proof check?
-        let v = |i: usize| Term::v(i);
-        let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
-        let same = |a: &Term, b: &Term| {
-            classes.values().any(|c| c.iter().any(|&i| ts[i] == *a) && c.iter().any(|&i| ts[i] == *b))
-        };
-        let (p0, s0) = add_zero_proof(n, 0);
-        let (p1, s1) = add_identity_proof(n, 0, true);
-        let (p2, s2) = add_comm_proof(n, false);
-        for (name, mined, proved) in [
-            ("add x 0 = x", same(&op(0, v(0), Term::ZERO), &v(0)), job.lemmas.holds(&p0, &s0).is_ok()),
-            ("add 0 x = x", same(&op(0, Term::ZERO, v(0)), &v(0)), job.lemmas.holds(&p1, &s1).is_ok()),
-            ("add x y = add y x", same(&op(0, v(0), v(1)), &op(0, v(1), v(0))), job.lemmas.holds(&p2, &s2).is_ok()),
-        ] {
-            println!("MINER known lemma {name}: conjectured {mined}, template proof checks {proved}");
-            assert!(mined && proved, "{name}");
-        }
-        if deep && nvars >= 3 {
-            let assoc = same(&op(0, op(0, v(0), v(1)), v(2)), &op(0, v(0), op(0, v(1), v(2))));
-            println!("MINER add associativity conjectured: {assoc}");
-        }
-    })
-}
-
 // ---- Comparison (search note section 20): `lt a b` is the final borrow of the chain for `a - b`, a `Bool0` result.
 
 /// The conjectures of a term pool: terms with equal values on every width-`n` tuple of `nv` variables are paired with
@@ -951,21 +793,6 @@ pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usiz
         conj = conj.into_iter().step_by(stride).take(cap).collect();
     }
     conj
-}
-
-/// The terms `lt` is mined over: the leaves and every operator applied to two leaves.
-pub fn lt_pool(nvars: usize) -> Vec<Term> {
-    let mut leaves: Vec<Term> = (0..nvars).map(Term::v).collect();
-    leaves.extend([Term::ZERO, Term::ONES]);
-    let mut pool = leaves.clone();
-    for o in 0..5 {
-        for a in &leaves {
-            for b in &leaves {
-                pool.push(Term::op(o, *a, *b));
-            }
-        }
-    }
-    pool
 }
 
 #[test]
@@ -1003,48 +830,6 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
         // false laws are not proved: by the plausibility screen, and a wrong proof would not check
         assert!(add_tree_law(job, n, 2, &lt(Term::v(0), Term::v(1)), &lt(Term::v(1), Term::v(0))).is_none());
         assert!(add_tree_law(job, n, 2, &lt(Term::v(0), Term::v(1)), &lt(Term::v(0), op(0, v(1), Term::ONES))).is_none());
-    })
-}
-
-/// All `lt` pairs over the pool that agree on every width-4 input, grouped by behaviour; each conjecture is
-/// built and kernel-checked.
-#[test]
-#[ignore]
-pub fn lt_conjecture_miner() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        let _banner = MachineBanner::start(job, "LTMINER");
-        let n = 4usize;
-        let nv = job.setup().or("LTMINER_VARS", 2);
-        let cap = job.setup().or("LTMINER_MAX", 0);
-        let pool = lt_pool(nv);
-        let (mut total, mut proved, mut none) = (0, 0, 0);
-        let t0 = Instant::now();
-        let (mut t_law, mut t_ck) = (std::time::Duration::ZERO, std::time::Duration::ZERO);
-        let conj = pool_conjectures(pool.iter().flat_map(|a| pool.iter().map(move |b| Term::op(LT, *a, *b))), n, nv, cap);
-        {
-            for (g0, t2) in &conj {
-                let g = [*g0];
-                total += 1;
-                let tried = prove_checked(job, n, nv, &format!("{} = {}", g[0].show(), t2.show()), &g[0], t2);
-                t_law += tried.law;
-                t_ck += tried.check;
-                match tried.verdict {
-                    Verdict::Proved => proved += 1,
-                    _ => {
-                        none += 1;
-                        // the groups are by behaviour at width 4; a law that fails at another width cannot have a proof for all widths
-                        let why = match g[0].refute(t2, nv) {
-                            None => "holds at widths 1..6".to_string(),
-                            Some((w, vals)) => format!("width-specific, differs at width {w} on {vals:?}"),
-                        };
-                        println!("LTMINER no proof ({why}): {} = {}", g[0].show(), t2.show());
-                    }
-                }
-            }
-        }
-        println!("LTMINER time: add_tree_law {t_law:?}, kernel check {t_ck:?}");
-        println!("LTMINER {total} conjectures, {proved} proved, {none} without a proof, {:?}", t0.elapsed());
     })
 }
 
@@ -1197,44 +982,6 @@ pub fn shift_ops_compute_and_shift_laws_check_and_false_ones_fail() {
     })
 }
 
-/// Every pair of bitwise and shift terms over the pool that agree on all width-4 inputs, grouped by behaviour; each
-/// conjecture is built and kernel-checked.
-#[test]
-#[ignore]
-pub fn shift_conjecture_miner() {
-    tatic::kernel::scoped(|| {
-        let n = 4usize;
-        let leaves = [Term::v(0), Term::v(1), Term::ZERO, Term::ONES];
-        let mut base: Vec<Term> = leaves.to_vec();
-        for a in &leaves {
-            for (k, left) in [(1, true), (2, true), (1, false), (2, false)] {
-                base.push(shift_k(k, left, *a));
-            }
-        }
-        let mut pool = base.clone();
-        for o in 1..=3 {
-            for a in &base {
-                for b in &base {
-                    pool.push(Term::op(o, *a, *b));
-                }
-            }
-        }
-        let level1: Vec<Term> = pool[base.len()..].to_vec();
-        for a in &level1 {
-            for (k, left) in [(1, true), (1, false), (2, true)] {
-                pool.push(shift_k(k, left, *a));
-            }
-        }
-        let t0 = Instant::now();
-        let conj = pool_conjectures(pool.iter().cloned(), n, 2, 0);
-        for (a, b) in &conj {
-            let (p, s) = bitwise_law_k(n, 2, a, b);
-            ck(&format!("{} = {}", a.show(), b.show()), &p, &s);
-        }
-        println!("SHIFTMINER {} terms, {} conjectures proved and checked, 0 rejected, {:?}", pool.len(), conj.len(), t0.elapsed());
-    })
-}
-
 #[test]
 pub fn large_sums_with_shared_subterms_stay_provable() {
     let job = &mut Job::new(Setup::process());
@@ -1282,76 +1029,6 @@ pub fn shifts_inside_sums_are_machines_and_their_laws_check() {
     })
 }
 
-/// The equal pairs of the `shl1` pool over `nv` variables at width 4 (leaves, shifted leaves, every operator on two of
-/// them, and shifts of those), each group's first term paired with the others.
-pub fn shl_conjectures(nv: usize) -> Vec<(Term, Term)> {
-    let n = 4usize;
-    let b = |o: usize, a: &Term, c: &Term| Term::op(o, *a, *c);
-    let shl = |a: &Term| b(6, a, &Term::ZERO);
-    let leaves: Vec<Term> = (0..nv).map(Term::v).chain([Term::ZERO, Term::ONES]).collect();
-    let mut base: Vec<Term> = leaves.to_vec();
-    base.extend(leaves.iter().map(&shl));
-    let sh: Vec<Term> = leaves.iter().map(&shl).collect();
-    base.extend(sh.iter().map(&shl));
-    let mut level1 = vec![];
-    for o in 0..5 {
-        for x in &base {
-            for y in &base {
-                level1.push(b(o, x, y));
-            }
-        }
-    }
-    let mut pool = base.clone();
-    pool.extend(level1.iter().cloned());
-    pool.extend(level1.iter().map(&shl));
-    pool_conjectures(pool, n, nv, 0)
-}
-
-/// Pairs over a pool with `shl1` that agree on all width-4 inputs; each is built and kernel-checked.
-#[test]
-#[ignore]
-pub fn shl_conjecture_miner() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        let _banner = MachineBanner::start(job, "SHLMINER");
-        let n = 4usize;
-        let (nv, cap) = (job.setup().or("SHLMINER_VARS", 2), job.setup().or("SHLMINER_MAX", 0));
-        let mut conj = shl_conjectures(nv);
-        if cap > 0 && conj.len() > cap {
-            let stride = conj.len() / cap;
-            conj = conj.into_iter().step_by(stride).take(cap).collect();
-        }
-        let (mut total, mut proved, mut generic_none, mut t_none, mut carry_free, mut skipped, t0) = (0, 0, 0, 0, 0, 0, Instant::now());
-        for (g0, t2) in &conj {
-            let g = [*g0];
-            {
-                let big = [&g[0], t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job)));
-                if big {
-                    skipped += 1; // beyond the carry cap of add_tree_law
-                    continue;
-                }
-                total += 1;
-                match prove_checked(job, n, nv, &format!("{} = {}", g[0].show(), t2.show()), &g[0], t2).verdict {
-                    Verdict::Proved => proved += 1,
-                    Verdict::CarryFree => carry_free += 1, // `bitwise_law` territory
-                    Verdict::OverCap => unreachable!("bigger laws are skipped above"),
-                    Verdict::NoProof { generic } => {
-                        // a law that fails at another width cannot have a proof for all widths
-                        t_none += 1;
-                        if generic {
-                            generic_none += 1;
-                            if generic_none <= 12 {
-                                println!("SHLMINER no proof, holds at widths 1..6: {} = {}", g[0].show(), t2.show());
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        println!("SHLMINER {} listed conjectures ({} after the cap), {total} conjectures within the carry cap ({skipped} bigger ones skipped): {proved} proved and checked, {carry_free} carry-free (bitwise laws), {t_none} without a proof ({generic_none} hold at widths 1..6), {:?}", conj.len(), conj.len(), t0.elapsed());
-    })
-}
-
 /// `c * t` (mod 2^n) as shift-and-add: the sum of `shl1^i t` over the set bits `i` of `c`.
 pub fn mul_const(c: u32, t: &Term) -> Term {
     let shl = |a: Term, k: u32| (0..k).fold(a, |acc, _| Term::op(SHL1, acc, Term::ZERO));
@@ -1388,101 +1065,5 @@ pub fn multiplication_by_constants_as_shift_and_add_machines() {
         }
         // false: 3x is not 4x - 2
         assert!(add_tree_law(job, n, 2, &mul_const(3, &v(0)), &mul_const(5, &v(0))).is_none());
-    })
-}
-
-/// Constant-multiplication laws (`(a + b) x`, `(a b) x`, `a (x + y)`, `(2^j - 1) x`) for constants up to `MULMINER_MAX`
-/// (default 7), each proved by `add_tree_law` and kernel-checked; prints carries per side and cost, so the carry cap
-/// (env `CARRY_CAP`, default 10) can be probed.
-/// The constant-multiplication laws over constants up to `max`: sums, products, differences, distribution over `x+y`, `x-y`.
-pub fn mul_laws(max: u32) -> Vec<(String, Term, Term)> {
-    let (x, y) = (Term::v(0), Term::v(1));
-    let add = |a: Term, b: Term| Term::op(ADD, a, b);
-    let mut laws: Vec<(String, Term, Term)> = vec![];
-    for a in 1..=max {
-        for b in a..=max {
-            laws.push((format!("({a}+{b})x = {a}x + {b}x"), mul_const(a + b, &x), add(mul_const(a, &x), mul_const(b, &x))));
-            laws.push((format!("({a}*{b})x = {a}({b}x)"), mul_const(a * b, &x), mul_const(a, &mul_const(b, &x))));
-            if b > a {
-                let sub = |l: Term, r: Term| Term::op(SUB, l, r);
-                laws.push((format!("({b}-{a})x = {b}x - {a}x"), mul_const(b - a, &x), sub(mul_const(b, &x), mul_const(a, &x))));
-            }
-        }
-        let sub = |l: Term, r: Term| Term::op(SUB, l, r);
-        laws.push((format!("{a}(x-y) = {a}x - {a}y"), mul_const(a, &sub(x, y)), sub(mul_const(a, &x), mul_const(a, &y))));
-        laws.push((format!("{a}(x+y) = {a}x + {a}y"), mul_const(a, &add(x, y)), add(mul_const(a, &x), mul_const(a, &y))));
-    }
-    laws
-}
-
-#[test]
-#[ignore]
-pub fn mul_conjecture_miner() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        let _banner = MachineBanner::start(job, "MULMINER");
-        let max = job.setup().or("MULMINER_MAX", 7);
-        let n = 4usize;
-        let only = job.setup().var("MULMINER_ONLY").unwrap_or_default();
-        let mut laws = mul_laws(max);
-        laws.retain(|l| l.0.contains(&only));
-        let (mut proved, mut none, mut capped, t0) = (0, 0, 0, Instant::now());
-        for (name, t1, t2) in &laws {
-            let cs = [t1, t2].map(|t| Machine::parse(t).map_or(0, |m| m.carries()));
-            if !t1.is_law(t2, 2) {
-                continue;
-            }
-            let tried = prove_checked(job, n, 2, name, t1, t2);
-            match tried.verdict {
-                Verdict::Proved => {
-                    proved += 1;
-                    println!("MULMINER {name}: carries {cs:?}, build {:?}, total {:?}", tried.law, tried.law + tried.check);
-                }
-                Verdict::OverCap => {
-                    capped += 1;
-                    println!("MULMINER {name}: carries {cs:?} over the cap");
-                }
-                _ => {
-                    none += 1;
-                    println!("MULMINER {name}: carries {cs:?}, NO PROOF though it holds at widths 1..6");
-                }
-            }
-        }
-        println!("MULMINER {} laws, {proved} proved and checked, {capped} over the carry cap, {none} unproved within it, {:?}", laws.len(), t0.elapsed());
-    })
-}
-
-/// Ablation audit (search note section 32): for each mul law, what a lemma-finding search would have to invent. The
-/// proof's lemmas `Id(F_j, G_j(bits, phi(carries)))` are decided by case analysis once the midpoint (the phi
-/// encodings and the tables `g`) is given, and the midpoint is the coarsest bisimulation, found by `moore_encoding`.
-/// Prints per law: carries per side, states, classes, phi bits, table bits of `g`, the Moore time, the total time.
-#[test]
-#[ignore]
-pub fn ablation_audit() {
-    let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
-        let _banner = MachineBanner::start(job, "AUDIT");
-        let max = job.setup().or("MULMINER_MAX", 7);
-        let (mut n_laws, mut moore_ns, mut total_ns) = (0, 0u128, 0u128);
-        for (name, t1, t2) in mul_laws(max) {
-            let (Some(m1), Some(m2)) = (Machine::parse(&t1), Machine::parse(&t2)) else { continue };
-            if !t1.is_law(&t2, 2) || m1.carries().max(m2.carries()) > carry_cap(job) {
-                continue;
-            }
-            let t = Instant::now();
-            let Some(enc) = moore_encoding(&m1, &m2, 2, None) else { continue };
-            let moore = t.elapsed();
-            let t = Instant::now();
-            let proved = add_tree_law(job, 4, 2, &t1, &t2).is_some();
-            let total = t.elapsed();
-            let m = enc.phi[0].len();
-            let classes = (0..2).map(|s| enc.phi[s][0].len()).collect::<Vec<_>>();
-            let gbits = (1 + m) << (2 + m);
-            n_laws += 1;
-            moore_ns += moore.as_nanos();
-            total_ns += total.as_nanos();
-            println!("AUDIT {name}: carries [{}, {}], states {classes:?}, phi bits {m}, g bits {gbits}, moore {moore:?}, proof {total:?}, proved {proved}", m1.carries(), m2.carries());
-        }
-        println!("AUDIT {n_laws} laws, Moore {:.1}s of {:.1}s proof time", moore_ns as f64 / 1e9, total_ns as f64 / 1e9);
     })
 }

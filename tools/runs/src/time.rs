@@ -84,7 +84,6 @@ pub fn sweep_arms(old: &str, new: &str) -> Vec<Arm> {
 /// exe the arms come from `arm_envs` (`NAME:VAR=val,...`; `NAME:` for none); with two exes they are `old` and `new`.
 pub fn pcs_arms(root: &Path, exes: &[String], arm_envs: &[String]) -> Result<Vec<Arm>, String> {
     let base = vec![
-        ("CHECK_FAMILY".to_string(), "streams".to_string()),
         ("CHECK_LAWFILE".to_string(), root.join(r"tests\church_bv\held_11.txt").display().to_string()),
     ];
     let args: Vec<String> = ["search::proof_cost_split", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec();

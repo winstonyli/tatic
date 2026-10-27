@@ -17,11 +17,8 @@ impl Clock {
 }
 
 /// Every `RULEMINER_*` switch of `rule_miner`, read once (defaults in `new`), except the law window's (`RULEMINER_LAWS`,
-/// `_STRIDE`, `_DEEP`), which `family_laws` reads through the `env` it is given; three-variable laws come only through
-/// `RULEMINER_LAWFILE` (family `streams`).
+/// `_PHASE`, `_SKIP`), which the driver reads when it writes the law file (`driver::write_laws`).
 pub struct MinerConfig {
-    /// `MULMINER_MAX`: largest constant in the mul family.
-    pub max: u32,
     /// `RULEMINER_TRIALS`: candidate cap.
     pub trials: usize,
     /// `RULEMINER_PERM`: 0 strict rule order, 1 ties broken by `tie_greater`, 2 no order check.
@@ -39,12 +36,10 @@ pub struct MinerConfig {
     pub any_op: bool,
     pub show: bool,
     pub fast: bool,
-    /// `RULEMINER_FAMILY`: the law family (default `mul`; `streams` with `lawfile`, which it gives the variable count).
-    pub family: Family,
     /// `RULEMINER_BASE=<file>`: rules (`lhs -> rhs` lines) in force throughout (section 74).
     pub base: Option<String>,
-    /// `RULEMINER_LAWFILE=<file>`: mine from these `lhs = rhs` lines (a proposer's band) instead of the family's window.
-    pub lawfile: Option<String>,
+    /// `RULEMINER_LAWFILE=<file>` (required): mine from these `lhs = rhs` lines.
+    pub lawfile: String,
     /// `RULEMINER_GUARD=<k>`: about k machine-free laws scored with the stragglers (default 120, 0 = off).
     pub guard: usize,
     /// `RULEMINER_EXTRA=<file>`: extra candidates (`lhs -> rhs` lines).
@@ -58,7 +53,6 @@ impl MinerConfig {
         let flag = |k: &str| s.flag(k, false);
         let path = |k: &str| s.var(k).map(String::from);
         MinerConfig {
-            max: s.or("MULMINER_MAX", 7) as u32,
             trials: s.or("RULEMINER_TRIALS", 400),
             perm: s.or("RULEMINER_PERM", 0),
             steps: s.or("RULEMINER_STEPS", 200),
@@ -68,9 +62,8 @@ impl MinerConfig {
             any_op: flag("RULEMINER_ANY"),
             show: flag("RULEMINER_SHOW"),
             fast: flag("RULEMINER_FAST"),
-            family: Family::parse(s.var("RULEMINER_FAMILY").unwrap_or("mul")),
             base: path("RULEMINER_BASE"),
-            lawfile: path("RULEMINER_LAWFILE"),
+            lawfile: s.var("RULEMINER_LAWFILE").expect("RULEMINER_LAWFILE: the laws to mine").to_string(),
             guard: s.or("RULEMINER_GUARD", 120),
             extra: path("RULEMINER_EXTRA"),
             no_dup_lhs: s.flag("RULEMINER_NODUPLHS", true),
@@ -148,17 +141,10 @@ struct Laws {
 /// The laws of `cfg` and their stragglers under the rules installed on this thread (P1, P2), each rewritten under `budget`
 /// steps.
 fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
-    let max = cfg.max;
-    let family = cfg.family;
-    // `add3` laws have three variables (the pool route's patterns are over at most `POOL_VARS`)
-    let (n, nv, kv) = (4usize, 2usize, family.vars());
+    let (n, kv) = (4usize, STREAM_VARS);
     // stragglers under the built-in rules
     let mut stragglers: Vec<Scored> = vec![];
-    // a lawfile is a proposer's band (docs/tier-cycle.md)
-    let laws = match &cfg.lawfile {
-        Some(f) => read_named_laws(f),
-        None => family_laws(job.setup(), family, &|k: &str| job.setup().var(k).map(str::to_owned), n, nv, max),
-    };
+    let laws = read_named_laws(&cfg.lawfile);
     clock.phase("law building");
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
@@ -187,7 +173,7 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
         }
     });
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
-    println!("RULEMINER {family}: {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
+    println!("RULEMINER {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
     clock.phase("laws and stragglers");
     // `RULEMINER_GUARD=<k>` (default 120, 0 = off): about k of the already machine-free laws are scored with the stragglers, so a candidate that breaks them loses
     // the same 1000 per law as it gains per straggler fixed (the miner otherwise sees only the stragglers and cannot see a regression)

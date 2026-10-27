@@ -22,8 +22,6 @@ pub struct Setup {
     unset: RwLock<hashbrown::HashSet<String>>,
     /// `ABLATE`'s comma list, each name with whether it has switched something off (`ablated`).
     ablate: Vec<(String, AtomicBool)>,
-    /// `nops()`: how many of `OP_INFO` the miner enumerates.
-    nops: usize,
     /// The task's result file (`result`); `None` in a process that runs one test.
     results: Mutex<Option<std::fs::File>>,
     /// The fixed rules and their table rows, built at first use (the driver process builds a `Setup` only to read
@@ -58,14 +56,12 @@ impl Setup {
             env,
             unset: Default::default(),
             ablate: Vec::new(),
-            nops: 0,
             results: Mutex::new(None),
             fixed: OnceLock::new(),
             fixed_table: OnceLock::new(),
             lemmas: Default::default(),
         };
         s.ablate = s.var("ABLATE").map(|v| v.split(',').map(|n| (n.to_string(), AtomicBool::new(false))).collect()).unwrap_or_default();
-        s.nops = if s.flag("MINER_SUB", false) { 5 } else { 4 };
         s
     }
 
@@ -116,11 +112,6 @@ impl Setup {
             println!("ABLATED {name}");
         }
         true
-    }
-
-    /// How many of `OP_INFO` the miner enumerates: `sub` only with `MINER_SUB=1`.
-    pub fn nops(&self) -> usize {
-        self.nops
     }
 
     /// The rules that do not change during the task (`rewrite::build_fixed_rules`).
@@ -458,7 +449,7 @@ fn ablated_probe() {
 /// Each name a setup reads from the process environment or `<exe>.env` says so once per setup: `ENV <name>=<value>`, or
 /// `ENV <name> unset`, on stdout at its first read, so the gate's arm cache can tell whether a cached arm read the same
 /// environment. A name the task's pairs set is not reported (the sweep sets those itself). It runs `env_probe` in a child
-/// process with `ENV_PROBE_X=a` set; only the probe's names are compared (the setup reads others, such as `MINER_SUB`).
+/// process with `ENV_PROBE_X=a` set; only the probe's names are compared (the setup reads others, such as `ABLATE`).
 #[test]
 fn a_read_of_the_environment_says_so_once() {
     let out = std::process::Command::new(std::env::current_exe().unwrap())
@@ -661,10 +652,9 @@ fn hidden_finds_thread_locals_process_wide_statics_and_job_swaps() {
 /// or `Job`, so a `driver::worker` task never sees another task's state, nor a job another job's.
 #[test]
 fn hidden_state_is_classified() {
-    const THREAD_LOCAL: [(&str, &str, &str); 8] = [
+    const THREAD_LOCAL: [(&str, &str, &str); 7] = [
         ("rewrite.rs", "OP_CACHE", "op results by operator and operand values"),
         ("rewrite.rs", "BUFS", "scratch buffers, emptied before each use"),
-        ("rewrite.rs", "TERMS", "enumerated terms by size and shape"),
         ("rewrite.rs", "CLOSED", "memo's closed library terms by key"),
         ("rewrite.rs", "COUNTING", "the one Counting plan, shared"),
         ("encoding.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
