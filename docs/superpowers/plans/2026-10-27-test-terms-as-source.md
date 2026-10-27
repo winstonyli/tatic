@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Test terms as source: implementation plan
