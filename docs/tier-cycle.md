@@ -4860,7 +4860,7 @@ this n (ROADMAP v0.3's gate).
 - **Cost does not move.** Job CPU of draws 1-3 is 6285-6582 s (within 2.5%). Loop seconds spread 1.7x (warm 404-676,
   cold 546-986), but they follow the load at launch (26% for draw 0 against 35-63%), not the draw.
 - So at this n a ranker over which generated laws to mine on can gain at most a few percent of M and no cost; the
-  levers left are a smaller n at equal M (not tested here) and new vocabulary (`ROADMAP.md`, v0.4).
+  levers left are a smaller n at equal M (not tested here) and new vocabulary (goal 2, `ROADMAP.md`; its enumerator form was decided against in v0.4, "They do not transfer").
 
 *Free proofs by law size: a gradient for the frontier (2026-10-22; run `2026-10-22-size-band`, 49 s, CPU 51% at
 launch; probe `docs/runs/2026-10-22/patches/size_band_probe.patch`, reverted).* Serving never fails to prove a law:
