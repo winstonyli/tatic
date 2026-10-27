@@ -2,6 +2,8 @@
 
 > Note: paths under `docs/superpowers/` and `scripts/experiments/` cited below point to internal planning notes and experiment scripts that are not in this repository.
 
+> Note (2026-10-26, "CU3"): `prove_tail_recursive_instance` and the concrete-witness engine only it used (`build_ev_witness`, `eval_and_prove*`, `resolve_closure_shape_to_leaf`, `build_clo_call_bridge`, the `*_eq_ref` computation-rule axioms, `assume_prim_fact`/`assume_ite_fact`, `ClosureRhsShape`, `src/proof/instance.rs`) were deleted; `build_universal` is now `prove_tail_recursive_universal` itself. Sections below that describe them are the record of what they did, not of current code. Per-call proofs come from `prove_closure_expr_instance`.
+
 This document is not a design proposal — it's a record of the formal-logic
 and compiler-runtime landscape surveyed while scoping possible future work
 (see `README.md`'s own Future Work list, and `TYPES.md` for what this
@@ -338,7 +340,8 @@ the four listed above, plus two more found while landing `ClosureRhsShape
 both committed) — was caught this same way: a real, immediate,
 un-ignorable panic, never a silent wrong answer that shipped. The
 recursive functions most exposed to this class (`eval_and_prove_call_over`
-and its siblings, `resolve_closure_shape_to_leaf`, `build_ev_witness`,
+and its siblings, `resolve_closure_shape_to_leaf`, `build_ev_witness` --
+all three deleted 2026-10-26, "CU3" --
 `eval_dyn`/`eval_dyn_tail_recursive`/`eval_dyn_direct_call`) already carry
 `debug_assert_has_type` at their own return points; extending that same
 manual discipline to new proof.rs code as it's written remains the

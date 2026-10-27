@@ -188,7 +188,7 @@ gate recursion structure, a stricter requirement than typing alone, see
 `compile.rs`'s/`proof.rs`'s own docs). The two branches must derive the
 *same* `τ` — both `Int` (`ite_ref : Int -> Int -> Int -> Int`, eager,
 `ArithPostulates::new`) or both `Clo` (`ite_clo_ref : Int -> Clo -> Clo ->
-Clo`, lazily postulated, primed once per `build_universal` call so its
+Clo`, lazily postulated, primed once per `prove_tail_recursive_universal` call so its
 first use is never inside a truncating `params_and_close_typed` scope —
 see `proof.rs`'s own docs on that staleness class). One of each is
 rejected (`an_if_mismatching_int_and_clo_branches_is_out_of_scope`) — this

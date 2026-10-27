@@ -329,7 +329,10 @@ This is stated precisely because it would be easy to overclaim here.
   not itself a per-input guarantee: instantiating it at a concrete
   `params` needs an actual `Ev`-witness built by following `cond`'s real
   value at each step (`prove_tail_recursive_instance`, via
-  `build_ev_witness`/`eval_and_prove`), grounded in one postulated axiom
+  `build_ev_witness`/`eval_and_prove` -- **deleted 2026-10-26, "CU3"**: it was
+  off the JIT path, whose per-call proofs come from
+  `prove_closure_expr_instance`; the rest of this bullet is the record of
+  what it did), grounded in one postulated axiom
   per distinct concrete primitive application the trace performs
   (`ArithPostulates::assume_prim_fact` — a postulated operator has no
   built-in computation rule, so a witness for one call has to assume each
@@ -378,8 +381,9 @@ This is stated precisely because it would be easy to overclaim here.
   `apply_k`, reused directly via `ClosurePostulates: Deref<Target =
   ArithPostulates>`, which lets the whole induction pipeline (`Ev`,
   `loop_val`, the congruence/transitivity chaining) keep calling every
-  plain-arithmetic postulate method unchanged. `prove_tail_recursive_instance`/
-  `_with_instances`'s own per-call specialization still declines whenever
+  plain-arithmetic postulate method unchanged. (Deleted 2026-10-26, "CU3":)
+  `prove_tail_recursive_instance`/
+  `_with_instances`'s own per-call specialization still declined whenever
   any parameter is `Clo`-typed (there's no way to represent a closure value
   as the concrete `i64` its model needs), but that's the weaker,
   sample-oriented proof — the *theorem* itself (what `jit.rs`'s
@@ -664,7 +668,7 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   which is cheaper depends entirely on how many sample points
   `jit.rs` would otherwise verify against. Also `closures_fragment_proof`
   — `prove_closure_expr`'s own cost across the closures fragment's shapes,
-  none of which touch `build_universal`'s induction machinery at all (the
+  none of which touch `prove_tail_recursive_universal`'s induction machinery at all (the
   top-level term must be non-recursive for this fragment): on this
   machine, `twice_inc_5` (non-capturing, the same term `main.rs`'s own
   demo uses) is the cheapest at ~10.3µs; a directly-called capturing
@@ -676,7 +680,7 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
   own cost for a closure-typed loop-carried parameter (`iterate`'s
   shape, see the closures-fragment table row above), which unlike
   `closures_fragment_proof`'s own group *does* go through
-  `build_universal`'s full induction pipeline (`denote_closure_typed`, not
+  `prove_tail_recursive_universal`'s full induction pipeline (`denote_closure_typed`, not
   just `denote_closure`): at ~13.7ms, noticeably more than the same 2-leaf
   shape's plain-arithmetic counterpart (`gcd_2_leaves`, ~9.0ms above) —
   the closure-typed pipeline's extra bookkeeping costs something even on
@@ -961,11 +965,16 @@ guards against by hand): caught immediately, at seed 22.
   top-level expression (`(\y. n+y)(5) + f(n-1)`) alike — and
   `prove_closure_expr` now covers a self-recursive combinator called or
   used as a value from a non-recursive main term (see the table rows
-  above). `eval_and_prove`/`build_ev_witness` now cover a concrete
+  above). (**Deleted 2026-10-26, "CU3"**: the rest of this bullet, from
+  `eval_and_prove`/`build_ev_witness` through the `clo_eq_ref*` axioms, is the
+  record of the concrete-instance engine removed with
+  `prove_tail_recursive_instance`; `prove_closure_expr` proves the same
+  over-applied shapes, see `src/proof/tests.rs`.)
+  `eval_and_prove`/`build_ev_witness` now cover a concrete
   *instance* proof for the fully-applied case too (`call_eq_ref`, a
   computation-rule axiom postulated once per combinator from its own real
   body via `denote`, then used through `cong_n`/`cong1`/`trans_proof`
-  congruence at each concrete call — the same move `build_universal`
+  congruence at each concrete call — the same move `prove_tail_recursive_universal`
   already makes for `loop_val`/`Ev`), as long as the closure created and
   called is a literal lambda whose own body stays in the `Var`/`Lit`/
   `Prim`/`If` fragment (no further nested `Abs`/`App`, which would need a
@@ -997,7 +1006,7 @@ guards against by hand): caught immediately, at seed 22.
   covered too now — `clo_eq_ref_if_tree` generalizes the original flat,
   depth-1 `If`-between-two-closures construction (`clo_eq_ref_if_between`)
   to an arbitrary-depth decision tree (reusing `DecisionTree`, the type
-  `build_universal`'s own arithmetic-fragment tail recursion already used,
+  `prove_tail_recursive_universal`'s own arithmetic-fragment tail recursion already used,
   via a new unrestricted classifier rather than that module's own
   comparison-restricted one), with the axiom RHS and the concrete-instance
   resolution both built recursively over the tree instead of in one flat
