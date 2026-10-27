@@ -79,18 +79,6 @@ pub(super) enum DynDenoted {
     Clo(Expr, Rc<ConcreteClo>),
 }
 
-/// Projects `frame` down to plain `i64`s, for `eval_concrete`'s own
-/// `params: &[i64]` convention -- used only to resolve an `If`'s own
-/// condition concretely. A `Clo` slot has no meaningful projection (a
-/// well-typed condition never references one); `0` is an arbitrary
-/// placeholder, never legitimately read -- if it somehow were, the
-/// resulting proof attempt would fail `kernel::check` later rather than
-/// silently proving something false, the same "sound, not complete"
-/// tolerance this whole fragment already has for a malformed input.
-pub(super) fn dyn_frame_concrete_ints(frame: &[DynVal]) -> Vec<i64> {
-    frame.iter().map(|v| match v { DynVal::Int(_, n) => *n, DynVal::Clo(..) => 0 }).collect()
-}
-
 /// Rebuilds an `eval::Env` matching `frame`'s own `Var`-index convention
 /// (`frame[i]` <-> `Var(i)`), recursively reconstructing a `Clo` slot's
 /// own `eval::Value::Closure`/`Value::Rec` from its `ConcreteClo` (whose
@@ -119,25 +107,44 @@ pub(super) fn dyn_frame_to_env(store: &TermStore, frame: &[DynVal]) -> Option<ev
     Some(env)
 }
 
-/// The concrete numeral `eval_dyn_tail_recursive`/`eval_dyn_direct_call`
-/// need for a *newly computed* `Int`-typed argument (so a later branch
-/// condition that depends on it stays evaluable) -- unlike `eval_concrete`
-/// (used only for the pure-arithmetic conditions `classify_step` itself
-/// resolves, which `build_node`'s `If`-arm restriction guarantees never
-/// embed a call), this argument may itself be an application of a
-/// concretely-known closure (e.g. a loop-carried `g(x)`), which
-/// `eval_concrete`'s own fragment (`Var`/`Lit`/`Prim`/`If` only) can't
-/// evaluate at all. Rather than re-derive a second concrete evaluator for
-/// applications, this defers to the reference interpreter itself
-/// (`eval::eval`) over an `Env` rebuilt from `frame` (`dyn_frame_to_env`)
-/// -- the same ground truth this whole project already judges every
-/// other representation against, so reusing it here needs no separate
-/// argument for why it's correct.
+/// The concrete value of an `Int`-typed `h` in `frame`: an `If`'s condition
+/// (which branch one execution takes) or a *newly computed* argument (so a
+/// later condition that depends on it stays evaluable; it may be an
+/// application of a concretely-known closure, e.g. a loop-carried `g(x)`).
+/// Defers to the reference interpreter itself (`eval::eval`) over an `Env`
+/// rebuilt from `frame` (`dyn_frame_to_env`) -- the same ground truth this
+/// whole project already judges every other representation against, so
+/// reusing it here needs no separate argument for why it's correct. An
+/// `eval` error declines: a division by zero takes no branch (the Wasm
+/// traps), where a private evaluator once took `x / 0 = 0` (cleanup plan
+/// CU1). In the JIT it follows only the execution `verify()` already ran,
+/// so it terminates.
 pub(super) fn eval_concrete_dyn(store: &TermStore, h: Hash, frame: &[DynVal]) -> Option<i64> {
     let env = dyn_frame_to_env(store, frame)?;
     match eval::eval(store, &env, h).ok()? {
         eval::Value::Int(n) => Some(n),
         eval::Value::Closure(..) | eval::Value::Rec(..) => None,
+    }
+}
+
+enum StepOutcome {
+    Base(Hash),
+    TailCall(Vec<Hash>),
+}
+
+/// Walks `h` (a `build_node`-shaped If-chain, in tail position) along one
+/// concrete execution, mirroring `compile::build_node`'s own structure: an
+/// `If`'s condition is evaluated in `frame` and we recurse into the taken
+/// branch; a fully-saturated self-call is reported as a `TailCall`;
+/// anything else is the reached base case.
+fn classify_step(store: &TermStore, h: Hash, arity: usize, self_idx: u32, frame: &[DynVal]) -> Option<StepOutcome> {
+    match compile::classify(store, h, arity, Some(self_idx)) {
+        Shape::If(c, t, e) => {
+            let cv = eval_concrete_dyn(store, c, frame)?;
+            classify_step(store, if cv != 0 { t } else { e }, arity, self_idx, frame)
+        }
+        Shape::SelfCall(args) => Some(StepOutcome::TailCall(args)),
+        _ => Some(StepOutcome::Base(h)),
     }
 }
 
@@ -261,8 +268,7 @@ pub(super) fn eval_dyn_tail_recursive(
             return None;
         }
         budget.steps -= 1;
-        let concrete = dyn_frame_concrete_ints(&frame);
-        match classify_step(store, body, arity, self_idx, &concrete)? {
+        match classify_step(store, body, arity, self_idx, &frame)? {
             StepOutcome::Base(leaf) => return eval_dyn(leaf, combinators, self_ctx, budget, &frame),
             StepOutcome::TailCall(arg_exprs) => {
                 if arg_exprs.len() != arity {
@@ -538,8 +544,7 @@ pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self
     };
     match shape {
         Shape::If(c, t, e) => {
-            let concrete = dyn_frame_concrete_ints(frame);
-            let cv = eval_concrete(store, c, &concrete)?;
+            let cv = eval_concrete_dyn(store, c, frame)?;
             eval_dyn(if cv != 0 { t } else { e }, combinators, self_ctx, budget, frame)
         }
         Shape::SelfCall(args) => {

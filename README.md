@@ -925,6 +925,15 @@ guards against by hand): caught immediately, at seed 22.
   validation as the literature means it — a genuine per-compilation
   validator's success would cover every input, and building one is a
   route tatic hasn't taken (see §28).
+- **Division by zero is outside the theorems' claim**: they treat `/` and
+  `%` as opaque postulated operators with no computation rule, so a
+  theorem holds for every total reading of `x / 0`, and a term that
+  divides by zero can still be kernel-verified. There the Wasm traps and
+  `eval` returns `DivByZero`, which `verify()` counts as agreement, so no
+  wrong value is reachable. The per-instance prover picks branches with
+  `eval` itself (`eval_concrete_dyn`) and declines an execution that
+  divides by zero; until 2026-10-27 (cleanup plan CU1) a private evaluator
+  of its own took `x / 0 = 0`.
 - **`Anchored`, and a staleness bug it doesn't automatically prevent**
   (history; the type is gone as of stage 4, `RELATED_WORK.md` §72): back
   when a postulate's `Expr` reference was a `Var` index, only valid

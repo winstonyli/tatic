@@ -637,7 +637,9 @@ can't evaluate a fresh argument that's itself a call (e.g. a loop-carried
 evaluable) — rather than duplicate a second concrete evaluator that
 understands closures, `eval_concrete_dyn` rebuilds an `eval::Env` from
 the current frame and defers to the reference interpreter (`eval::eval`)
-directly.
+directly. (2026-10-27, cleanup plan CU1: `eval_concrete` is gone too;
+branch conditions also go through `eval_concrete_dyn`, which declines on
+a division by zero where `eval_concrete` took `x / 0 = 0`.)
 
 **Since covered too: a *non*-tail recursive use, including branching.**
 A self-call embedded inside a larger expression (`1 + f(n-1)`, or two

@@ -840,6 +840,19 @@ fn a_long_running_trace_declines_instead_of_overflowing_the_stack() {
     assert!(prove_closure_expr_instance(&s, h, &[10, 0]).is_some());
 }
 
+#[test]
+fn an_instance_whose_branch_divides_by_zero_gets_no_proof() {
+    // `eval` fails with DivByZero and the Wasm traps, so no branch is taken.
+    // The instance prover once picked one by its own `x / 0 = 0` (cleanup plan CU1),
+    // in a plain `If` and in a tail-recursive loop's condition alike.
+    for (src, args) in [(r"if 7 / 0 then 1 else 2", &[][..]), (r"rec go n = if 10 / n then go (n - 1) else 0", &[3][..])] {
+        let mut s = TermStore::new();
+        let h = crate::syntax::parse(&mut s, src).unwrap();
+        assert_eq!(eval::apply_term(&s, h, args), Err(eval::EvalError::DivByZero), "{src}");
+        assert!(prove_closure_expr_instance(&s, h, args).is_none(), "{src}");
+    }
+}
+
 /// `rec f n = if n < 2 then n else f(n-1) + f(n-2)` -- two self-calls in the recursive leaf.
 fn fib(s: &mut TermStore) -> Hash {
     let n = s.var(0);
