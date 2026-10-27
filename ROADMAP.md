@@ -2,7 +2,7 @@
 
 The project's goals, then ordered milestones, each the question it answers (format: `~/.claude/VERSIONING.md`).
 `kind: experiment`: a tag marks a step and its message is the milestone sentence; tagging moves the line out of this
-file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22) and `v0.3.0` (2026-10-23; `git tag -n99`). Deferred work is in
+file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23) and `v0.4.0` (2026-10-26; `git tag -n99`). Deferred work is in
 `PARKED.md`.
 
 ## Goals
@@ -34,17 +34,6 @@ results, 2026-10-17 and 2026-10-23).
 
 ## Milestones
 
-- **v0.4 - Do mined rules carry to laws the loop has not seen?** (goal 2) Measured by the held-out free share by band
-  (11-17) and held-out M. Most held-out M is laws without `shr1` that the rules leave to a machine proof, and rules
-  carry worst as laws grow: about one rule per law even among laws mined together (`docs/tier-cycle.md`, "Where a
-  loop's definitions should come from"). Candidate levers, each tested on that measure: rule lifting (each rule made
-  as general as still proves; tried 2026-10-25, held-out M -0.1%, same section); smaller rules (the cross-side cap at 9 or 7, tried 2026-10-26,
-  held-out M +31%, same section); the pool route over three variables (tried 2026-10-26, held-out M -6.9%, job CPU
-  1.84x, same section; with the lookahead off and rivals taken, -6.6% at 0.74x HEAD's CPU; kept 2026-10-26, the lookahead
-  deleted); the `shr1` prover (at width 4 an every-input fallback in `prove_rule`, kept 2026-10-26, held-out M -8.7%; wider, `PARKED.md`, "A prover that knows what `shr1` means"); definitions
-  as a vocabulary of the enumerators (decided against 2026-10-26: the reach past the size caps they add does not
-  transfer to unseen laws, `PARKED.md`, "Definitions as an enumerator vocabulary"). Rescoped 2026-10-25 from "Can the kernel extend its own
-  vocabulary?", after the probes in that section found no reach a vocabulary gives the miner.
 - **v0.5 - Does closing the cycle push the frontier?** (goals 2 and 3) Experiment 3: train on accepted laws, repeat,
   and track the frontier, not only M on a fixed stream. The frontier: on a fixed held-out set of laws larger than the
   loops serve (the loops run on operator-set streams, the class-table spec's decision 11), the share proved free (with no whole-term machine proof, within the rule budget and the join's cap
