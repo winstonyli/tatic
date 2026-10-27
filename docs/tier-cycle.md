@@ -6039,7 +6039,7 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     from 0.7 to 0.2 by the fourth. Two chained batches match one 500-law mine (1543 against 1530) at 231 s of mining
     against 546. Per band after the four batches: 13 521 to 392 (-25%, still falling: 437, 413, 392), 15 619 to 423
     (-32%), 17 811 to 596 (-27%, flat after the second batch: 617, 598, 596). So about 500-750 large laws per band take
-    most of what this miner learns from them, in batches of 250 at about 1 min of mining per batch.
+    most of what this miner learns from them, in batches of 250 at 22-43 s of mining per loop and batch (all three bands).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
