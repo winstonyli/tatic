@@ -45,7 +45,6 @@ results, 2026-10-17 and 2026-10-23).
   serve few or no laws as large as the held-out ones; mining 500-1000 fresh laws of those sizes per band cuts held-out M
   22-28% (`docs/tier-cycle.md`, "Fresh laws of the held-out sizes do as well"). Design chosen 2026-10-26: draw the
   extras (laws a loop's mines take but it does not serve) from the sequence at 4 growths instead of 2, at every size
-  (replacing the small ones cost band 11) and minus every held-out law and its twins; the extras' count is open: 4950
-  (three times today's) cut held-out M 19.3% at 6.3x job CPU, 1650 only 4.5% (`docs/tier-cycle.md`, "As the loop's
-  extras" and "At every size, and at three times the count"; rejected designs in `PARKED.md`, "Mine large laws after the
+  (replacing the small ones cost band 11) and minus every held-out law and its twins; the extras' count is open, weighed against
+  mining CPU (`docs/tier-cycle.md`, "As the loop's extras" and "At every size, and at three times the count"; rejected designs in `PARKED.md`, "Mine large laws after the
   loop" and "Serve laws of the held-out sizes").
