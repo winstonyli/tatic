@@ -932,7 +932,7 @@ pub fn wasm_programs_as_kernel_data() {
 }
 
 /// The countdown invariant at n=24 stays fast. Without `conv`'s pair memo it walked a shared case tree once per path
-/// (docs/tier-cycle.md, "The countdown invariant is exponential"; n=32 took over 600 s).
+/// (docs/tier-cycle.md, "The countdown invariant was exponential"; n=32 took over 600 s).
 #[test]
 pub fn countdown_invariant_is_not_exponential() {
     let n = 24;

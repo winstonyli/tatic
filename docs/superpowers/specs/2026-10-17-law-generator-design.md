@@ -173,8 +173,9 @@ they arrive through the mine's env, which gives the same values; the change is t
 The static `MEMO`, its `PURE` entry (11 entries to 10; `task_state_is_classified` does not check that entries are
 used, so the entry is removed by hand) and the `GEN_TERMS` env var go. The term budget becomes a constant beside
 `grammar_laws` (20000, the value every run used). Generation took 0.1-0.6 s per family on the loop families. The mix3
-pool (23665 distinct terms, `docs/tier-cycle.md` "Pool duplicates") has never been generated; its exhaustive values
-are heavy for `cargo test`, so its L, time and coverage are measured in step 4's 1-salt probe, not in the unit test.
+pool (23665 distinct terms, "Pool duplicates", cut from `docs/tier-cycle.md` on 2026-10-26:
+`git show 00a21d9:docs/tier-cycle.md`) has never been generated; its exhaustive values are heavy for `cargo test`, so its L,
+time and coverage are measured in step 4's 1-salt probe, not in the unit test.
 
 ### 5. Removed
 

@@ -25,9 +25,9 @@ and libraries (43 MB) were not kept.
 |---|---|---|---|
 | `sm0*`, `sm1*` | 930c345 with and without the state memo | `sm_job.sh` | "Rule-set evaluations reuse the last one's memo" |
 | `sweep_h_*`, `sweep_sm_*`, `sweep_f1_*`, `sweep_w2_*` | sweeps around 930c345-8979a3f; `sweep_f1_*` is the library the `du*` runs pool | `sm_sweep.sh` (`sweep_h_*`); the others' commands were not recorded | |
-| `du_*`, `dufloor_*`, `duheld_*`, `duroot_*`, `dujoin_*`, `duonce_*`, `dunofloor_*` | drop-unit variants, 8979a3f-d19c654 (pooled stage on `sweep_f1_*`) | `du_job.sh` with `TAG` | "Drop units", "Joinability units" |
+| `du_*`, `dufloor_*`, `duheld_*`, `duroot_*`, `dujoin_*`, `duonce_*`, `dunofloor_*` | drop-unit variants, 8979a3f-d19c654 (pooled stage on `sweep_f1_*`) | `du_job.sh` with `TAG` | "Drop units", "Joinability units" (cut 2026-10-26: `git show 00a21d9:docs/tier-cycle.md`) |
 | `pair_head_*`, `pair_base_*` | HEAD of 5dbf48f against 6ca89b3, same load | `pair_sweep.sh` | 5dbf48f |
-| `s3_*`, `s4_*`, `s5_*` | head, and the 2000 drop floor set to 0 (`nofloor`, reverted, no patch kept) | `salt3.sh`, `order_probe.sh`, `nofloor45.sh` | "The floor is still needed" |
+| `s3_*`, `s4_*`, `s5_*` | head, and the 2000 drop floor set to 0 (`nofloor`, reverted, no patch kept) | `salt3.sh`, `order_probe.sh`, `nofloor45.sh` | "The floor is still needed" (cut 2026-10-26: `git show 00a21d9:docs/tier-cycle.md`) |
 | `ord_*` | 465ed76 + `probe_promo.patch`'s `ORDER` part (`ord_def_1`: default order, sanity) | `order_probe.sh` | "Operand order" |
 | `np_*` | the same, `ABLATE=promoted` | `order_np.sh` | "Operand order" |
 | `do_*` | 740dcd0's parent + own-rule drop units (reverted, no patch kept) | `dropown.sh` | "Drops of the mine's own rules" |

@@ -64,8 +64,8 @@ An experiment on whether rule mining can run alongside execution: laws are
 served in batches, rules are mined from each served batch, and the next batch
 is served under the rules mined so far. The metric M is the number of laws that
 still need a whole-term machine proof. The measured results are in
-`docs/loop-result.md` and `docs/tier-cycle.md`, with raw rows and the scripts
-that produced them under `docs/runs/`.
+`docs/tier-cycle.md`, with raw rows and the scripts that produced them under
+`docs/runs/`.
 
 - The laws come from the streams: `search::stream_sequence(salt)`, the operator-set
   streams round-robin, built once per process and salt; a phase is a residue class
@@ -94,8 +94,9 @@ that produced them under `docs/runs/`.
 Results on the streams, with their A/A baseline, are in `docs/tier-cycle.md`
 ("The gate on the streams and its A/A baseline"). The earlier results on the
 hand-built three-variable families (`add3`, `sbo3`, `cmp3d`, `mix3`, the pooled
-and cross-family libraries) are in `docs/loop-result.md`; the code that ran them
-was deleted with the families (tag `v0.2.0` has it).
+and cross-family libraries) were in `docs/loop-result.md`, deleted on 2026-10-26
+(`git show 00a21d9:docs/loop-result.md`); the code that ran them was deleted
+with the families (tag `v0.2.0` has it).
 
 The planning notes and the per-experiment scripts and logs are not part of the
 repository (see the previous section).

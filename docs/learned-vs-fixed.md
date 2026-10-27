@@ -5,12 +5,12 @@ Which parts of the reasoning pipeline (rewriter, prover, miner, loop) are learne
 
 **Keep this current.** Update the row when a part becomes learned, when an experiment measures a fixed part (put the number and a
 pointer in "Evidence"), and when a part is added or removed. Experiments' details stay in docs/tier-cycle.md; this page holds the
-verdicts. Last updated 2026-10-24.
+verdicts. Last updated 2026-10-26.
 
 Columns: *learned in the run*: changes from data while the loop runs. *Learned once*: came from data, then frozen in code.
 *Fixed*: written by hand, possibly tuned by experiments (tuning is not learning).
 
-| Part | Learned in the run | Learned once | Fixed | Evidence (M is total over families; lower is better) |
+| Part | Learned in the run | Learned once | Fixed | Evidence (M is a total over loops; lower is better) |
 |---|---|---|---|---|
 | Trusted checker (`src/kernel.rs`) | | | all, by design (soundness) | |
 | Rewrite rules | mined rules (`set_extra_rules`): each loop batch mines rules from its stragglers | `PROMOTED` (35 rules), some of the built-in `rules()` | the other built-in rules (shift distribution, `lt` falsity, cancellation) | one sweep iteration: best loops 157 to 142 (pooled 58/99 to 57/85, own 55/90); a second adds nothing (tier-cycle.md, "Promotion as an iterated sweep"); iterated from `ABLATE=promoted` the sweep does not recover PROMOTED (pooled 125/160 to 107/140 after three iterations, against 58/99 with it), so it stays; on the streams gate `ABLATE=promoted` raises M on salts 1-2, 176 to 180 and 181 to 192 (tier-cycle.md, "Ablations of the class table"); PROMOTED re-mined by its documented procedure reproduces HEAD's rows ("Operand order") |
@@ -20,7 +20,7 @@ Columns: *learned in the run*: changes from data while the loop runs. *Learned o
 | Prover after rewriting (`prove_eq`) | | | a fixed cascade: truth table over atoms, per-position prover, `shr_mask_eq`, the bounded join (`join_eq`: the rules in force both ways plus add, and, or, xor associativity and commutativity; terms up to the larger side plus 2 nodes; 1000 reached terms; also on `lt` roots), then the whole-term machine (counted in M); `CARRY_CAP` = 10 | ablated: only the truth table matters on the three-variable families (106 to 110; 828 to 832 with no library); the per-position prover and `shr_mask_eq` are needed for `shr1` laws (unit tests); congruences and generalization changed nothing and are deleted ("Ablating the fixed rewriter and prover parts"); the join, salts 1-10: own M 865 to 13, pooled 757 to 33, cold 4380 to 1568, ref mines 160 to 2, sweep wall +76%; cap 5000 gains a few laws at 2-3x the time ("The bounded join removes the floor"); with the class table, on the streams gate: without the truth table M rises on salt 1, 176 to 229, without the per-position prover on salt 3, 167 to 192; the table's own step there (`eq_classes`) changes nothing and is deleted ("Ablations of the class table") |
 | Rule prover (`prove_rule`) | | | routes by shape: the bitwise case split, `shr_not_law`, rewriting under a `shr1` root, the carry encoding (`add_tree_law`); then, for a rule of at most `EVERY_INPUT_BITS` = 12 input bits, a proof over every input at width 4 | the every-input fallback, streams gate salts 1-10: M 1665 to 1562, held-out M 23992 to 21905 (-8.7%), work 0.74x, `shr1` rules 93 to 350 (tier-cycle.md, "Kept: the every-input fallback"); alone it would replace the routes but costs about 0.4 s a rule at 12 bits and 16x per 4 bits more (`PARKED.md`, "The every-input proof as the only rule prover") |
 | Miner | | | candidate shapes (pool terms up to 5 nodes; cross-side pairs); at most 400 candidates; gain = 1000 per fixed law + guard weight + size cut; greedy, one rule per round; stops when nothing gains | held-out scoring (min of the gains on two halves of the stragglers) changed nothing (tier-cycle.md); the 8-round cap dropped general rules that transfer (removed); a general rule the gain values at 0 cost add3 108 vs 65 when seeded from cmp3d's library (tier-cycle.md) |
-| Loop and driver | | | batch size, `STREAM_STRIDE` and the phases, the streams' operator sets | drop units (deleted with the families, 2026-10-23) were: pooling's hand-picked list of dropped orientations replaced by learned preferences (above); drop units: pooled loops 60 to 58 (salt 1), 129 to 99 (salt 2); root-overlap units 60/103; whole-library drops were net zero (tier-cycle.md, "Drop units", "Joinability units") |
+| Loop and driver | | | batch size, `STREAM_STRIDE` and the phases, the streams' operator sets |  |
 | Law source (conjecture proposers) | | the seeds: the class table's representatives, per operator set | the streams (`stream_sequence`): the 56 operator sets, the growth levels and budget, the open-law filter | the hand-written family pools (add3, sbo3, cmp3d, mix3, u3) and the n-gram and mutation proposers were deleted (spec §10, 2026-10-23) |
 
 ## Moving parts to learned: candidates
@@ -40,13 +40,7 @@ Ranked by measured effect; each needs the same check as the rules: mine on phase
    held-out finished value (2-fold over the stragglers) removes that loss but gains nothing (1234 both ways) at 3.5-4.5x the
    cmp3d mine time ("Runners-up chosen held out"). Dropping the mine's own
    rules afterwards found nothing: none of 642 candidates gains in-sample (tier-cycle.md, "Drops of the mine's own rules").
-3. Pooling's drop units (deleted with the families and the pooled library, 2026-10-23; the record stays): where two libraries' normal forms meet (B's rules with a critical pair against A's that does not
-   join), learned per family as preference-phase moves; pooled loops 60/129 to 58/99, every salt-2 family at or below its own
-   library (tier-cycle.md, "Drop units", "Joinability units"). A drop needs a hand-set gain floor (2000) against one-law
-   overfit; held-out gain in its place lost (salt 2 103 to 106). On three salts harmful drops gain 1000-1033 and helpful ones
-   3215+, so the floor separates two classes rather than being tuned (salt 3 pooled 74 with it, 80 without; salts 4-5 never
-   reach it; "The floor is still needed").
-4. The normal form itself: a table of class representatives learned by enumeration (the smallest term of each class of
+3. The normal form itself: a table of class representatives learned by enumeration (the smallest term of each class of
    equal values, Ruler-style) instead of the rewrite strategy and rules. Wired in first as `prove_eq`'s phase 1, then as a step in the rewriter (below). Up to size 9 with `lt`
    as a second sort, it makes 189-200 of 200 of each family's held-out laws meet with no rules, and every one of its 3203
    replacements is proved and kernel-checked (tier-cycle.md, "A learned table of representatives: the probe", "The table

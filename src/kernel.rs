@@ -1641,7 +1641,7 @@ thread_local! {
 /// it the walk is a tree walk over shared nodes: two equal but distinct
 /// subterms under a case tree that shares its tail (a borrow chain applied to
 /// continuations) were compared once per path, 2^n times for n bits
-/// (docs/tier-cycle.md, "The countdown invariant is exponential"). Unequal
+/// (docs/tier-cycle.md, "The countdown invariant was exponential"). Unequal
 /// pairs need no entry: the first one ends the call.
 fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
     if s.same(a, b) {
