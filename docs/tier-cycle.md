@@ -6017,6 +6017,16 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   definition that relieves the size caps would not lower held-out M; what transfers is the multi-law rules, which cap 13
   already reaches. Mining on half the held-out laws lowers the other half's M by 17%, rules the loops' own mines (on the
   laws they serve) do not find.
+- **Fresh laws of the held-out sizes do as well (run `2026-10-26-fresh-transfer`, 12.5 min; `fresh.sh` in its folder,
+  `F.exe` and `fresh.patch` in `2026-10-26-fresh-exes`, reverted).** The first v0.5 probe: is the split's 17% closeness
+  to the held-out files, or what any laws of those sizes teach? 500 laws per band 13/15/17 from the stream sequence at
+  another salt (8888888, each band's own growths as its held file), minus salt 1's served laws and the held files' own
+  (148/12/0 dropped), mined as in the split (loop 1 of salts 1-3, its rules as base, no candidate cap, cross-side cap 13).
+  Held-out M on the whole band files falls 521/619/811 to 463/469/598: -11%/-24%/-26%, -22% in all (1951 to 1530),
+  against the split's 17% at the same cap. So the loops miss these rules because they never serve laws this large,
+  not because the rules fit the held-out files: band 13, inside the loops' sizes, gains least. In-sample the mines
+  cover 61-96% of their stragglers (b13 about 95%, b17 about 64%), at 51-83 rules each, 7-18 of them fixing two laws or
+  more when chosen.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
