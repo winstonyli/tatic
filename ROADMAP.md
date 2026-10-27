@@ -3,7 +3,7 @@
 The project's goals, then ordered milestones, each the question it answers (format: `~/.claude/VERSIONING.md`).
 `kind: experiment`: a tag marks a step and its message is the milestone sentence; tagging moves the line out of this
 file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23) and `v0.4.0` (2026-10-26; `git tag -n99`). Deferred work is in
-`PARKED.md`.
+`PARKED.md`. In progress: a cleanup break from v0.5 (`docs/superpowers/plans/2026-10-26-cleanup.md`).
 
 ## Goals
 
