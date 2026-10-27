@@ -6659,7 +6659,7 @@ Options, ranked by end-state design (fewer concepts, fewer special cases):
 | D | Compiled evaluation for kernel conversion | | Closed above (`kernel_lazy` 64-100x behind; trusted base grows) |
 
 A is the only option that removes concepts; B and C each add a second implementation of something that exists. A's
-cheapest falsifier is additive and leaves no rework: on the JIT's own corpus (`src/test_corpus.rs`), count the terms
+cheapest falsifier is additive and leaves no rework: on the JIT's own corpus (`src/test_corpus.rs` then; `samples::corpus()` since c002e6f), count the terms
 that the mined `add`/`sub` rules would rewrite (ring identities, which hold at every width) and the change in compiled
 instruction count. If the mined rules never fire on the JIT's programs, A's cycle has nothing to run on.
 

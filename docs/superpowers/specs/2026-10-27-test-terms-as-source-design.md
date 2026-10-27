@@ -20,8 +20,8 @@ files. Source text can be read, and when a term is shared, one function holds it
 `src/eval.rs`; also `src/samples.rs` and `src/test_corpus.rs`, which gain functions.
 
 **Out of scope:**
-- `samples::corpus()`, which must not change because `tests/golden_wat.rs` and the corpus-wide tests in
-  `decompile.rs`, `specialise.rs` and `spec_check.rs` read it;
+- `samples::corpus()`, which must not change because `tests/golden_wat.rs`, `tests/rule_match_census.rs` (its
+  pinned node counts) and the corpus-wide tests in `decompile.rs`, `specialise.rs` and `spec_check.rs` read it;
 - `benches/`, `main.rs`, `tests/golden_wat.rs`;
 - the builder tests in `syntax.rs` and `term.rs`, which test the builders themselves.
 
@@ -155,7 +155,8 @@ the test counts, and the lines removed.
 - The lib suite's test count is unchanged against a baseline taken before T1 (358 passed at the CU5 close; the
   ignored count is recorded at the baseline). A count that moves is a stop.
 - Every golden in `tests/golden_wat.rs` stays byte-identical. It reads `corpus()`, two samples by name and its own
-  `rejects_*` terms, and none of these change. A moved golden means an edit escaped the scope.
+  `rejects_*` terms, and none of these change. A moved golden means an edit escaped the scope. The same holds for
+  `rule_match_census.rs`'s pinned counts.
 - Lines removed are recorded per stage. The survey estimated about 1,300 in total.
 - If a term doesn't parse, or the hash check fails and fixing the transcription doesn't settle it, that is a
   finding. Stop and report it with options.
