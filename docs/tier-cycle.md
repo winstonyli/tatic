@@ -6027,6 +6027,11 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   not because the rules fit the held-out files: band 13, inside the loops' sizes, gains least. In-sample the mines
   cover 61-96% of their stragglers (b13 about 95%, b17 about 64%), at 51-83 rules each, 7-18 of them fixing two laws or
   more when chosen.
+  - *Dose* (run `2026-10-26-fresh-dose`, 3 min; `dose.sh` in its folder): the first 100 and 250 of the same fresh laws
+    per band, mined and checked the same way. Held-out M falls 6.4% at 100 laws per band, 12.7% at 250 and 21.6% at
+    500 (1951 to 1827, 1703, 1530; per band 13/15/17: 3/12/4%, 5/19/13%, 11/24/26%), about 0.7 of M per mined rule at
+    every dose (166, 347, 620 rules), so the gain has not levelled off by 500. Mining cost grows faster than the laws:
+    summed over the three loops, 38 s at 100 laws per band, 136 s at 250, 546 s at 500 (band 17: 15, 72, 325 s).
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
