@@ -55,7 +55,7 @@ Chosen by the user on 2026-10-17: option 1, the non-padding laws.
 
 1. **Non-padding laws (chosen).** Lowest M (9) and almost no twins, so the twin filter barely touches it. Costs
    the most: 1373 loop seconds at today's counts. The count rule (§2) is how the cost is managed, and the mining-cost
-   work (`PARKED.md`, "Make the join cheaper") is how it shrinks. A 10-salt result, from another build; round B (§2)
+   work (`PARKED.md`, "Cheaper join searches") is how it shrinks. A 10-salt result, from another build; round B (§2)
    and the acceptance rule below settle it.
 2. **Mixed grammar (padding and non-padding).** M 21 filtered, at 359 s: about 3.8 times cheaper than option 1, for M
    21 against 9. At equal count, half its laws are padding laws, which filtered pay less than the stream's. Option 1
@@ -290,7 +290,7 @@ time and coverage are measured in step 4's 1-salt probe, not in the unit test.
 
 ## Not in scope
 
-- Making mining cheaper (`PARKED.md`, "Make the join cheaper"; the next measurement is a profile of an extras mine).
+- Making mining cheaper (`PARKED.md`, "Cheaper join searches"; the next measurement is a profile of an extras mine).
   It changes this stage's cost, not its design.
 - Deeper growth (two grown leaves, depth-2 terms).
 - Enumo-style full enumeration.

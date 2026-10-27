@@ -928,7 +928,7 @@ summed over salts 1-10 (total; mined-batch M, batches 1-2 counted from 0, in bra
   stages M 735 against 911, of which cross carries 164 (685 against 849); own ties (4 against 5). Pooled is the one stage that loses (21 against 15, mined 9 against 3); a guess at why: its library
   already holds three families' rules, and the extras add mined rules that conflict with them. Weak (4 worse, 1 better; two-sided sign
   test p ≈ 0.4) and below the regime: turning extras off for one stage would be a per-stage case, so it is parked
-  (`PARKED.md`, "Extras on a warm stage that loses").
+  (`PARKED.md`, "Extras on a warm stage that loses"; decided against when the warm stage went with the families, entry deleted 2026-10-27).
 - **Both** (on_on against off_off): own 7/3/0, cross 10/0/0, pooled 5/1/4, mixed 4/3/3, cold 10/0/0.
 - **Cost** (wall over 10 salts, CPU saturated by other sessions, so an upper bound): ref mines 349 s against 29, loops
   1225 s against 26 (cold included in both), job CPU 1635 + 8721 s against 65 + 71. mix3's generator list (never built
@@ -3844,7 +3844,7 @@ a miss. Terms are unchanged (hash-consing already made a rebuilt lambda the same
 ### The join's speed: lazy steps, canonical orders and the store (2026-10-18 to 10-21)
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
-(`PARKED.md`, "Make the join cheaper") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
+(`PARKED.md`, now "Cheaper join searches") ranked lazy neighbours first; a probe sized it, and with lanes the extras' cost
 falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
 - **Probe** (run `2026-10-18-join-count`, `patches/join_count.patch` on 6e621ca, salt 6 `cold:cmp3d` with extras, CPU
   33-100% from other sessions): the first mine made 490628 searches, 816.5 s searching (307.6 s failed), and built 387M
@@ -3969,8 +3969,8 @@ roughly 6% of samples by `Term::op`'s 20.5% in `-mainprof2`; skipping the step t
 itself: 74.0% of calls hit the thread's cache, 25.7% find the node in the shared table, 0.3% insert; 236.4 M of the 307 M
 misses (77%) found the slot holding another node, so they are conflict or capacity misses, not first sight. 2^18 slots
 did no better than 2^16 on salt 6 (above, "The interner's per-thread cache"), which points at conflicts, or at a 2 MB
-cache missing L2 (1 MB per core) as often as the shared table does; which one is untested (PARKED.md, "Make the
-interner's thread cache 2-way").
+cache missing L2 (1 MB per core) as often as the shared table does; which one is untested (PARKED.md, "Cheaper join searches",
+item (b): decided against).
 
 *The three levers, tried (2026-10-19).* Shadow caches in `Term::op` (run `2026-10-18-cache-ways`,
 `patches/cache_ways.patch`, counting only; its direct-mapped 2^16 shadow hit exactly the real cache's 872.7 M) split
