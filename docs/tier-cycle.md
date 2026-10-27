@@ -6064,6 +6064,16 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     summed over the salts), the driver's `interp` (building both sequences) went 43.9 to 124.5 G and the mines' 31.2 to
     52.6 G, their walk, match and op 2.1-2.7x: the 4-growth build is about 80% of the added `interp`, and the mines'
     rewriting work more than doubled with 202 large extras per loop.
+  - *At every size, and at three times the count* (runs `2026-10-26-deep-ab` and `2026-10-26-deep3-ab`, gate salts
+    1-3, run at once, 27 and 35 min; `deepextras.patch`, `D.exe` and `D3.exe` with `PROBE_EXTRAS=4950` in
+    `2026-10-26-deepextras-exes`, reverted): the extras' source became the first laws of the 4-growth sequence at every
+    size, minus every held-out law and its twins (181-188 dropped per 1650, 541-556 per 4950). At 1650 (sizes up to 11,
+    13, 15, 17 about 250/360/530/510; L about 1170, n 186-191 per loop) held-out M 6400 to 6112 (-4.5%), loop M 477 to
+    467, band 11 still 53.1 to 61.3: the old extras' small laws are not replaced by a sixth of the count. At 4950 (n
+    635-639 per loop) held-out M 6400 to 5167 (-19.3%; per salt -18.7%, -19.8%, -19.3%), loop M 477 to 439 (-8.0%),
+    rules 580 to 1104, and every band lower or level: per 1000 laws 11 53.1 to 54.4, 13 177.1 to 147.4, 15 208.6 to
+    162.2, 17 274.8 to 212.1. Cost at 4950: job CPU 1245 to 7802 s (6.3x; 2660 s at 1650), work `interp` 3.1x and
+    walk, match and op 11-14x: the mines' rewriting work, not the sequence, now dominates.
 
 
 *Lazy join steps, and sweeps in lanes (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The join's survey
