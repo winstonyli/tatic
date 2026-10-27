@@ -4645,7 +4645,12 @@ of the generator's terms (`bitwise_holds_is_the_per_tuple_check`). Gate `2026-10
 untimed, JOBS=3): rules the same in 9 of 9 loops, M 477, held-out 6400 and every band equal; work counts walk equal,
 match +19 k of 4.77 G, op +115, and `interp` 75.8 G to 0 (all of it was these checks); job CPU 978 to 553 s
 (338 to 218, 346 to 203, 293 to 132 per salt). The base profile's `verdict` share was nearly all this loop, so the
-next lever on the sequence (cleanup plan CU17, building only the prefix that is read) is re-measured from a new profile.
+next lever on the sequence (cleanup plan CU17, building only the prefix that is read) was re-measured: the base salt
+re-profiled at 32fb207 (profile `2026-10-27-cu17-base-prof`, untimed) took 52.6 s against 154.9 s with 219 k busy samples
+against 343 k, and the sequence 23.3 s against 109.5 s (its `STREAMS` line). The sequence is now 10.6% of samples:
+grouping the grown terms by width-4 values (`pool_conjectures`) 5.8%, most of it `ValueMemo::values`, and the filter a
+prefix would shorten (normal forms and width-8 values) only 2.6%. It is still built on one thread before anything else
+runs, so it is 23 of the 53 s of wall. The join search is 62.0%.
 
 ## The kernel
 
