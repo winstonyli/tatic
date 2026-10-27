@@ -481,7 +481,7 @@ This is stated precisely because it would be easy to overclaim here.
   directly-called literal lambda's own top-level body: `call_ref`'s
   postulated return type is no longer a blanket `Int` assumption
   (`combinator_return_type` classifies it structurally, per `Hash`, once
-  — see the "Future work" section below for how), so a combinator whose
+  — see its docs in `src/proof/closures.rs` for how), so a combinator whose
   own body resolves to `Clo` gets an honest proof whether it's used as a
   bare *value* or *called* directly (including over-applied — see
   `lower_wat.rs`'s row above and its "Over-application" docs); and for a capturing
@@ -954,6 +954,11 @@ guards against by hand): caught immediately, at seed 22.
 
 ## Future work
 
+Open items only. What has landed is in "What's actually proven, and what isn't" above
+and in `RELATED_WORK.md` (§9-12 on closures and recursion, §44-72 on the type system and
+proof speed); the longer list this section kept until 2026-10-27 is in
+`git show 6f877af:README.md`.
+
 - Mined rules on the JIT's programs, and learned compilations: where the
   JIT meets the rule miner (`ROADMAP.md`, "Goals" 1 and 2). The two share
   no term language yet. A probe found that the mined `add`/`sub` rules
@@ -966,229 +971,13 @@ guards against by hand): caught immediately, at seed 22.
   "Compiling hot transformations, with learnable compilations"; parked in
   `PARKED.md`). Trigger: workloads with arithmetic depth, or the
   specialiser producing it by inlining.
-- Combining closures with self-recursion more fully in one proof.
-  `prove_tail_recursive_universal` now covers a closure-typed *parameter*
-  threaded through recursion, *and* a closure genuinely created and
-  called anywhere in the body — a self-call argument (`f(n-1, (\y.
-  acc+y)(n))`, the `capturing_closure_loop` shape) or a leaf's own
-  top-level expression (`(\y. n+y)(5) + f(n-1)`) alike — and
-  `prove_closure_expr` now covers a self-recursive combinator called or
-  used as a value from a non-recursive main term (see the table rows
-  above). (**Deleted 2026-10-26, "CU3"**: the rest of this bullet, from
-  `eval_and_prove`/`build_ev_witness` through the `clo_eq_ref*` axioms, is the
-  record of the concrete-instance engine removed with
-  `prove_tail_recursive_instance`; `prove_closure_expr` proves the same
-  over-applied shapes, see `src/proof/tests.rs`.)
-  `eval_and_prove`/`build_ev_witness` now cover a concrete
-  *instance* proof for the fully-applied case too (`call_eq_ref`, a
-  computation-rule axiom postulated once per combinator from its own real
-  body via `denote`, then used through `cong_n`/`cong1`/`trans_proof`
-  congruence at each concrete call — the same move `prove_tail_recursive_universal`
-  already makes for `loop_val`/`Ev`), as long as the closure created and
-  called is a literal lambda whose own body stays in the `Var`/`Lit`/
-  `Prim`/`If` fragment (no further nested `Abs`/`App`, which would need a
-  fixpoint-queue redesign this module was deliberately built without).
-  `eval_and_prove` now also covers the *over-applied* case
-  (`AppShape::LitLambdaOver`: `root`'s own saturated call returns a
-  further `Clo_k`, then the extra arguments dispatch against it directly
-  — a `Clo_k`-typed value is itself the real curried `Int -> .. -> Int`
-  arrow type, so no `apply_ref` axiom mediates the call, see
-  `RELATED_WORK.md` section 11) for the canonical shape — `root`'s own
-  body an `If` choosing between two same-arity literal lambdas (e.g. `f =
-  \a b. if 0<a then (\c. a+b+c) else (\c. a-b+c)`, called as `f(a,b,c)`)
-  — via two more computation-rule axioms in the same idiom: `clo_eq_ref`
-  (a `Clo_k`-typed sibling of `call_eq_ref`) and `apply_clo_eq_ref` (ties
-  whichever closure value is concretely produced, called directly, to
-  `call_ref`'s own value), plus a small `ite_clo_eq_ref` bridge for the
-  concrete branch selection. A *PAP-producing* `root` (`root`'s own body
-  a partial application of a further literal lambda `g`, e.g. `f = \a.
-  g(a)` for a 2-ary `g`, then over-applied as `f(a)(c)`) is covered too
-  now — `clo_eq_ref_pap`, a sibling of `clo_eq_ref_if_tree` sharing
-  `clo_eq_ref`'s own dispatch, states `root`'s call equals `pap_ref(g,
-  s)` applied to the supplied args' own denoted values, and a new
-  `apply_pap_eq_ref` ties that `Clo_k` value, called directly on the
-  remaining `k` arguments, down to a direct call on `g` with all `s + k`
-  arguments together (mirroring `apply_clo_eq_ref`'s
-  role, but for a partial-application value instead of a directly-
-  registered combinator's) — restricted, for now, to `g`'s own params all
-  being `Int`-typed. A further-nested `If` inside either branch is
-  covered too now — `clo_eq_ref_if_tree` generalizes the original flat,
-  depth-1 `If`-between-two-closures construction (`clo_eq_ref_if_between`)
-  to an arbitrary-depth decision tree (reusing `DecisionTree`, the type
-  `prove_tail_recursive_universal`'s own arithmetic-fragment tail recursion already used,
-  via a new unrestricted classifier rather than that module's own
-  comparison-restricted one), with the axiom RHS and the concrete-instance
-  resolution both built recursively over the tree instead of in one flat
-  step. A *further nested-call-producing* `root` is covered too, for a
-  statically-known indirection chain of any depth — `root`'s own body a
-  *saturated* call to a further literal lambda `g` whose own saturated
-  call is itself `Clo_k`-typed (e.g. `middle = \b. h(b)` a PAP of a 2-ary
-  `h`, `root = \a. middle(a)`, over-applied as `root(a)(c)`) —
-  `clo_eq_ref_call`, a third sibling of `clo_eq_ref_pap`/
-  `clo_eq_ref_if_tree`, states `root`'s call equals `call_ref(g)` applied
-  to `args`'s own denoted values, deliberately opaque about `g`'s own
-  definition (exactly like `Pap`'s own `g`); concrete resolution
-  (`resolve_closure_shape_to_leaf`, generalized from the `IfTree`/`Pap`
-  arms `eval_and_prove_call_over` used to inline directly) recurses
-  through however many further `Call` links this reaches, each one
-  building `g`'s own bridge (`build_clo_call_bridge`, itself a shared
-  extraction of what was `eval_and_prove_call_over`'s own `root`-specific
-  preamble) and continuing into `g`'s own shape — terminating because
-  hash-consing makes the "calls" relation between distinct combinators a
-  strict partial order, the same well-foundedness argument
-  `combinator_return_type`'s own recursion already relies on. A `Pap`-shaped
-  `IfTree` leaf (a branch that's itself a *partially*-applied closure
-  creation, e.g. `if c then g(a) else h`) is covered too now —
-  `classify_closure_if_tree_leaf` classifies each leaf independently
-  (`Abs` or `Pap`, mirroring `clo_eq_ref_pap`'s own classification, keyed
-  per leaf instead of per `root`), and `resolve_closure_if_tree`'s own
-  return grew a leaf-specific supplied-args prefix so a chosen `Pap` leaf's
-  own `g` gets called with its own supplied args *and* the outer
-  over-application's extra ones, not just the extra ones. A `Call`-shaped
-  leaf (a branch reached only through a further *saturated* indirect call
-  to a further literal lambda `g` whose own saturated call is itself
-  `Clo_k`-typed) is covered too now — `classify_closure_if_tree_leaf`
-  classifies it the same way `clo_eq_ref_call` classifies a root-level
-  `Call`, and `resolve_closure_if_tree`'s own return grew an
-  `IfTreeLeafResolution::Direct`/`Indirect` split: a `Call`-shaped leaf's
-  own further indirection is resolved recursively, via the same
-  `resolve_closure_shape_to_leaf` the root-level `Call` arm already uses
-  (mirroring it exactly, one level deeper inside an `If`), reusing its
-  own already-complete "call with all args" fact rather than building a
-  second one. A self-recursive
-  `root` (compiled via `Term::Rec`) is covered too now — `clo_eq_ref_if_tree`/
-  `clo_eq_ref_call`/`clo_eq_ref_pap` each thread `root`'s own `is_rec` flag
-  into `compile::free_vars` instead of hardcoding `false`, since the
-  downstream machinery (`param_types_for`, `combinator_return_type`,
-  `return_type_of`'s own self-call classification) was already `is_rec`-safe;
-  the blanket decline in `clo_eq_ref` was the only thing blocking it, and
-  lifting it needed fixing the three sites that would otherwise have
-  mis-counted a self-binder as an ordinary capture. No longer open, closed
-  out after investigation: a `root` with a `Clo`-typed *parameter* (as
-  opposed to `Int`-typed) looked like a missing universal-axiom case, but
-  turned out to be two separate findings instead — `clo_eq_ref`'s own
-  decline on it is a permanent, correct property of its own construction
-  (its one call site, `build_clo_call_bridge`, is only ever reached through
-  `eval_and_prove_call_over`, whose own `(i64, Expr, Expr)` return type has
-  no way to carry a concrete `Clo` value in the first place, so no path
-  that reaches `clo_eq_ref` could ever instantiate a widened axiom there,
-  even after actually building one); and the real capability — proving a
-  call made *through* such a parameter — was already covered elsewhere, by
-  `eval_dyn_direct_call`'s existing per-instance path (its `(Some(_),
-  DynDenoted::Clo(e, _)) => e` arm, denoting through `call_ref` exactly as
-  `clo_eq_ref`'s own callee-side construction would), confirmed end to end
-  by `proof.rs`'s
-  `branching_non_tail_self_calls_carrying_an_inconsistently_classified_closure_parameter_get_a_per_instance_proof`
-  and `jit.rs`'s
-  `a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_parameter_turns_inconsistent`
-  — see `RELATED_WORK.md` section 12 for the full investigation and its
-  correction. No longer fully open: a callee reached only through a
-  captured/parameter variable rather than a further statically-known
-  combinator (genuinely unknown at proof-construction time which literal
-  lambda underlies it) is now covered per instance — `eval_dyn`'s own
-  `Var`-root case (`src/proof.rs`) resolves the concrete `ConcreteClo`
-  such a value actually carries regardless of whether it reached the
-  frame as a parameter or a capture, the same `eval_dyn`-style tracing
-  this paragraph used to name as a hypothetical fix; see
-  `RELATED_WORK.md` §9's own "Since covered, per instance" finding and
-  `proof.rs`'s
-  `a_captured_value_reached_through_an_inlined_call_gets_a_per_instance_proof`.
-  `clo_eq_ref`'s own *universal* axiom still can't cover it — that would
-  need a real dependent sum (an honest single kernel type for "either
-  `Clo_1` or `Clo_2`"), the separate, larger research question §9 already
-  scoped out — but that's "sound, not complete", the same standing
-  tradeoff this fragment makes everywhere else; doesn't affect
-  `kernel_verified`, only weaker, call-specific evidence.
-- `prove_closure_expr` now covers an `If` choosing between two closures
-  too (`ite_clo`, lazily postulated — see the table row above), when the
-  `If`'s own result is used as a *value* — and, separately, `call_ref`'s
-  own postulated return type is no longer a blanket `Int` assumption:
-  `combinator_return_type` structurally classifies a literal lambda's own
-  saturated-call return type (`Int` or `Clo`) once per `Hash`, without
-  denoting its body in the usual (postulate-building) sense — well-founded
-  since a self-call is always `Int` by this fragment's own convention and
-  calling *any* closure value (a parameter, a capture, or another
-  directly-called combinator's own result) is too, so the classifier only
-  ever needs to look at each combinator's own declared parameters and its
-  own `If`/literal-lambda-call shape, never a captured free variable's
-  actual type. This closes two previously-open cases at once: a
-  *directly-called* combinator whose own body is an `If` between two
-  closures (see the table row above), and over-application of a literal
-  lambda (`root`'s own saturated call, now denoted via the same
-  `call_ref`, dispatched on the extra arguments directly, exactly like
-  calling a closure-typed variable — see `lower_wat.rs`'s
-  "Over-application" module docs for the compiled-code-level counterpart).
-- Widening the compilable fragment further: more primitives. (Capturing
-  closures and partial application of a literal lambda — real closure
-  conversion, an environment representation, calling a closure reached
-  through a captured free variable, a compile-time-desugared synthesized
-  wrapper for an under-applied literal — landed, as has over-application
-  of a literal lambda — dispatching a saturated call's own result through
-  `call_indirect`, the same as calling a closure-typed variable; see
-  `lower_wat.rs`'s module docs. A variable called with inconsistent
-  arities across sites — a genuinely different, harder problem than
-  over-application, since there's no fixed arity to desugar around at all
-  — has landed too, via a curried, one-argument-at-a-time dispatch
-  mechanism generated once any such inconsistency is found anywhere in
-  the compiled fragment; see `lower_wat.rs`'s module docs and
-  `TYPES.md`.)
-- `prove_closure_expr` now covers *capturing* closures too (`mk_clo_h`/
-  `Env`/`build_env_expr` — see the table row above and `proof.rs`'s own
-  section docs), including a captured `Clo` value (e.g. capturing a
-  closure-typed loop-carried parameter), not just `Int` — `Env`/`mk_env`
-  are keyed by the whole capture signature (`capture_sig`), not a count,
-  so a mixed-type environment gets its own honestly-typed postulate.
-  Each captured index must still resolve directly to one of the calling
-  scope's own parameters; a captured value that's itself a capture of
-  that scope (`build_read`'s own recursive case, for a function
-  that's itself a capturing closure) has no proof-side counterpart, not
-  because it's deferred, but because it can't arise here: `denote_closure`
-  never enters a registered combinator's own body, and `compile::peel`
-  always folds consecutive `Abs` layers into one combinator before it's
-  ever registered, so there's no way for this fragment to encounter one
-  combinator's own body containing another, separately registered one —
-  every capture list is always relative to the one flat ambient scope
-  currently being denoted.
-- `prove_closure_expr` now covers partial application of a literal lambda
-  too (`mk_pap_h_k`/`pap_ref` — see the table row above and `proof.rs`'s
-  own section docs), including a *capturing* root: `pap_ref`'s postulated
-  type takes the root's own `Env` as a leading parameter (mirroring
-  `call_ref`'s own environment-first convention) when the root captures,
-  and every call site builds that environment via `build_env_expr` and
-  prepends it, mirroring `lower_wat.rs`'s `Lowering::pap_env`, which composes
-  a PAP wrapper's own environment with a copy of the root's. Also covers
-  partial application of a *self-recursive* combinator, the same opaque-call
-  reasoning `register`/`call_ref` already use for a direct call or bare
-  value (`compile.rs`'s `register_partial_app`/`lower_wat.rs`'s
-  `emit_pap_wrapper` never special-cased `is_rec` either). Over-application (more arguments than
-  arity) stays out of scope on both readings.
-- The closures fragment's kernel-checked proof now verifies closure
-  *arity*, not just structural agreement: `Clo` was a single, arity-blind
-  postulate (`TYPES.md` section 6.2's own finding), so an `If` choosing
-  between two literal-lambda values of genuinely different arity
-  kernel-typechecked despite being unsound. `Clo` is now `Clo_k`, a family
-  postulated lazily per distinct arity (`ClosurePostulates::clo_ty`,
-  mirroring how a capture signature was already postulated per shape, not
-  a global count) — `Clo_k`/`Clo_j` are definitionally distinct whenever
-  `k ≠ j`, so `kernel::check` rejects an arity mismatch on its own, for
-  every rule that already tracked the correct `k` in Rust (a parameter's
-  declared arity, a literal lambda's own peeled arity,
-  `combinator_return_type`'s own classification). See `TYPES.md` section 7
-  for the full design and
-  `a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope`
-  (`proof.rs`) for the regression test confirming the previously-unsound
-  shape is now rejected.
-- `prove_closure_expr` now covers a `Clo`-typed *top-level* result too --
-  previously hardcoded to require the whole function's own body to denote
-  `Int` (`.int()?` at its own entry point), regardless of whether
-  everything beneath it already supported `Clo` (an `If` between two
-  closures, a bare closure-typed parameter read, ...). Now picks
-  `EquivalenceProof`'s own `result_ty` from `denote_closure`'s `Denoted`
-  tag directly -- `Int`'s postulate, or the specific `Clo_k` (re-derived
-  via `return_type_of` applied to the whole body), covering e.g. `\x. \y.
-  x+y` used bare or `\f. if (f 0) then f else f`. See
-  `a_whole_functions_result_being_a_closure_now_gets_a_closure_proof`/
-  `a_bare_closure_typed_parameter_read_gets_a_closure_proof` (`proof.rs`).
+- A universal proof for a call through a closure-typed variable whose
+  callee is known only at run time (a captured or parameter closure, not a
+  statically known combinator). Such calls are proved per instance
+  (`eval_dyn`); a universal axiom would need a dependent sum in the kernel,
+  an honest single type for "either `Clo_1` or `Clo_2`" (`RELATED_WORK.md`
+  §9 and §12).
+- Widening the compilable fragment further: more primitives.
 - REPL hint bug (`src/bin/repl.rs`, the `EvalError::TypeError` arm): a
   line that evaluates to a function prints the hint
   ``e.g. `{printed} 1 2` ``, which is invalid syntax whenever the printed
@@ -1198,46 +987,8 @@ guards against by hand): caught immediately, at seed 22.
 - The type system, taken as a whole (`RELATED_WORK.md` §44). Five notions
   of type (`typing.rs`, compile's `ArityUse`, the provers' `Denoted`, the
   kernel's `Clo_k`, and `calls_a_parameter`) must agree. `try_compile`'s
-  IR has no `let`, so it emits one copy of a shared subterm per use. It
-  now declines terms over 16384 nodes as a tree (§47). Most of the cost
-  is the kernel, not the IR (§48). `whnf` now keeps its pointer cache
-  working and `denote` shares subterms (§49), so one proof went from
-  217 to 56 ms. `subst_top` no longer shifts an unused argument (§51),
-  which took it to 9.4 ms and the universal-proof benches 2 to 4 times
-  faster, and substitutes a used argument in one pass (§53), which made
-  the over-application instance proofs about 7 times faster. `def_eq`
-  was then about half of an instance proof's `infer` (§55). It now
-  skips syntactically equal sides (§56) and compares weak head normal
-  forms instead of full ones (§57), which halved `kernel::check` on the
-  `fib` instance proofs. `whnf` keeps a stuck term's own pointers, so
-  deep stuck spines normalise in linear time (§59), and it remembers
-  the pairs `==` found unequal, so a chain that differs only at the
-  bottom is compared in linear time too (§61). What's left is a
-  per-node constant times the proof's size (§60). The instance proofs
-  had almost no sharing, because the witness memo returned shifted
-  copies. A prepass now pushes every postulate the witness needs before
-  it's built, so memo hits share, which halved `fib(12)`'s instance
-  proof (§62). The kernel's `infer` now memoises shared nodes by (node,
-  context id), which made that proof 73% faster again and leaves
-  unshared proofs unchanged (§63). A spike took `fib(16)`'s instance
-  proof from 1.9 s to 19 ms and its DAG from 265k nodes to 10.5k (§64).
-  Its stage 1 is built: kernel nodes cache their loose-variable range, so
-  `shift` and `instantiate` keep closed subterms by pointer. That made
-  `fib(16)`'s build and check each 11% faster and its DAG 14% smaller
-  (§65). mimalloc is the allocator: it halves every proof bench and
-  speeds up the interpreter by 13% and the cold JIT by 21% (§66). Stage
-  2 is built: the kernel types `Const`s from a global environment and
-  rejects `Free`s, at no measurable cost, and nothing produces either
-  until stage 3 (§67). The kernel now checks that a claim is a type,
-  which exposed an ill-typed `Ev` in closure-typed universal proofs
-  (§68; it costs universal proofs 11-30%). Stage 3 is built: the proof
-  builder emits postulates as constants, which took `fib(16)`'s DAG from
-  227k to 10.5k nodes and its build and check from ~150 ms to ~3-4 ms
-  each, and made large proofs 44-58% faster (§69), and a scope's
-  parameters as free levels, so a leaked parameter fails the check
-  (§70). The µs-scale proofs are 51-83% slower across stage 3: checking
-  every pushed postulate costs ~4 µs a proof (§69). Stage 4 is built (§72):
-  `push_ev_facts`, the closure priming, `Anchored`, and `Params` are gone,
-  and a push may now happen while a scope is open. If the proof gate is ever relaxed, the next step
-  is a typed IR that `ir::check` checks (§46's B5): it closes the arity
-  and Int-vs-closure agreements for compiled code in one place.
+  IR has no `let`, so it emits one copy of a shared subterm per use, and
+  declines terms over 16384 nodes as a tree (§47). If the proof gate is
+  ever relaxed, the next step is a typed IR that `ir::check` checks (§46's
+  B5): it closes the arity and Int-vs-closure agreements for compiled code
+  in one place.

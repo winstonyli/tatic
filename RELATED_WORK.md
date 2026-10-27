@@ -1,6 +1,6 @@
 # Related work
 
-> Note: paths under `docs/superpowers/` and `scripts/experiments/` cited below point to internal planning notes and experiment scripts that are not in this repository.
+> Note: the specs and plans cited below are in `docs/superpowers/` (some superseded or deleted ones only in git history, as each pointer says); the experiment scripts under `scripts/experiments/` are not tracked in this repository.
 
 > Note (2026-10-26, "CU3"): `prove_tail_recursive_instance` and the concrete-witness engine only it used (`build_ev_witness`, `eval_and_prove*`, `resolve_closure_shape_to_leaf`, `build_clo_call_bridge`, the `*_eq_ref` computation-rule axioms, `assume_prim_fact`/`assume_ite_fact`, `ClosureRhsShape`, `src/proof/instance.rs`) were deleted; `build_universal` is now `prove_tail_recursive_universal` itself. Sections below that describe them are the record of what they did, not of current code. Per-call proofs come from `prove_closure_expr_instance`.
 
@@ -5994,7 +5994,7 @@ Fetched 2026-09-30 (source files read through a summarising fetch; the two paper
 - **smalltt** (Kovacs): NbE with closures and de Bruijn levels; its README reports elaboration 8 to 30 times faster than Agda on synthetic benchmarks and Church-numeral conversion at 0.712 s against 19.7 s for Agda (the author's own benchmarks, not reproduced here).
 - **Rocq `cClosure.ml`**: a forced closure updates its mutable cell in place so later references share the result (`Zupdate`); `FLOCKED` marks a cell being updated.
 
-What it means here. Lean's kernel is eager and fast, so eager substitution is not the flaw by itself; this lemma's O(n^2)-node bodies under O(n) betas are. Rocq's closure design is the one precedent for removing body construction inside a small kernel. The compiled routes put an untrusted code generator into checking, which this repo keeps apart on purpose. Options and a gate are in `docs/superpowers/specs/2026-09-30-kernel-node-churn-options.md`.
+What it means here. Lean's kernel is eager and fast, so eager substitution is not the flaw by itself; this lemma's O(n^2)-node bodies under O(n) betas are. Rocq's closure design is the one precedent for removing body construction inside a small kernel. The compiled routes put an untrusted code generator into checking, which this repo keeps apart on purpose. Options and a gate are in a 2026-09-30 options note, superseded by `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md` and deleted 2026-10-27 (`git show 6f877af:docs/superpowers/specs/2026-09-30-kernel-node-churn-options.md`).
 
 ## 78. Can normalization be eased? Explicit conversion, proof irrelevance, observational, cubical, categorical views
 

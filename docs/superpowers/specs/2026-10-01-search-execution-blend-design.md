@@ -10,7 +10,7 @@ Status: **explored and partly built (test code only; `src/kernel.rs` untouched);
 
 (Sections 37 onward live in `2026-10-02-search-execution-blend-design-part2.md`; the table below cites sections in both files.)
 
-**Fresh sessions: read `2026-10-04-research-state.md` first** (the proposer line, sections 66-90 compressed). Since it was written: the loop between permutative and regrouping rules is settled as a trade-off, not a bug (section 89: `PERM_ORDER=lpo` gives unique normal forms at a cost of 8 to 68 machine-free laws, and is no more confluent than the default on the benchmark law sets); the shr bit-0 leftovers are reachable by rules stated over normal forms (section 90a).
+**Fresh sessions: read `2026-10-05-loop-summary.md` first**. It superseded the research-state note (the proposer line, sections 66-90 compressed; deleted 2026-10-27: `git show 6f877af:docs/superpowers/specs/2026-10-04-research-state.md`). Since that note was written: the loop between permutative and regrouping rules is settled as a trade-off, not a bug (section 89: `PERM_ORDER=lpo` gives unique normal forms at a cost of 8 to 68 machine-free laws, and is no more confluent than the default on the benchmark law sets); the shr bit-0 leftovers are reachable by rules stated over normal forms (section 90a).
 
 `src/kernel.rs` is untouched; everything below is in `tests/church_bv.rs`. Pipeline: a **pool** of small terms over `Term` ops
 (add, and, or, xor, sub, lt at the root, shl1, shr1) gives candidate laws by equal value at width 4 (`pool_conjectures`); each law is

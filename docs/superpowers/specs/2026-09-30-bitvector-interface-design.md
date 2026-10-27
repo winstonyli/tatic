@@ -4,7 +4,7 @@ status: done
 
 # Bit-vector interface for the formalized target machine (design)
 
-Status: draft. Interface and obligations only; nothing is built.
+Began as an interface sketch with nothing built; the sections below record what was then built and measured.
 
 Goal: a type isomorphic to Wasm's `i32`/`i64`, defined in the kernel with no
 new primitive, so the target machine can be stated over it. This document
@@ -674,7 +674,7 @@ The two are within the noise. Reading: the proof's per-bit terms `s_i` and `pc_i
 
 ## 29. NbE status (2026-09-30)
 
-One place for what has been tried, since it is spread over §20-§28 and `2026-09-30-kernel-node-churn-options.md`.
+One place for what has been tried, since it is spread over §20-§28 and the node-churn options note (deleted 2026-10-27: `git show 6f877af:docs/superpowers/specs/2026-09-30-kernel-node-churn-options.md`).
 
 | Item | State | Evidence |
 |---|---|---|
@@ -1381,7 +1381,7 @@ Peak working set 0.57 GB at n=512 (scoped, three widths in one process) and 1.73
 Assumptions and what the proof shows:
 - `div_s` is not in the library, so its raw result `r = div_s a b` is a variable with a `GoodBv` witness. The statement is `Pi r. GoodBv r -> Id(Bv_n, wrap_div(a, b, r), MIN)` with `a = MIN`, `b = -1`.
 - A Church `Bool0` lives in Sort1 and cannot select between `Bv` values (its eliminator targets Sort0), so the wrapper muxes bitwise with `or(and(c, x), and(not c, y))`. A selection at `Bv` level would need a higher-universe Bool or a `GoodBool` motive.
-- The guard is `and(eq a MIN, eq b -1)` with `eq_bv` a generated Church term; it reduces to `true` by conversion on literals, so the step case is `refl MIN`. `GoodBv` is needed because conversion does not eta-expand a neutral `r` (`r C (_i. ..)` does not reduce).
+- The guard is `and(eq a MIN, eq b -1)` with `eq_bv` a generated Church term; it reduces to `true` by conversion on literals, so the step case is `refl MIN`. `GoodBv` is needed because conversion does not eta-expand a neutral `r` (`r C (\r_i. ..)` does not reduce).
 - Mutations are rejected: `(MIN, -2)`, `(MIN+1, -1)`, `(0, -1)`, `(MIN, 0)`.
 
 Not done: D1/D2 (`None` iff `b = 0` or the overflow case; `Some (wrapping_div ..)` otherwise). They need a Church `Option` with None/Some disjointness and a spec for `div_s`; `b = 0` also needs `eq_bv` completeness for good vectors (H3), which wants `toN` (H1).
