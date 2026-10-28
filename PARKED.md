@@ -67,37 +67,36 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   laws salts 1-10 serve are twins of a held-out law, in every band (2026-10-26, "What the loops see of the held-out
   laws"), so the absolute held-out M and frontier are flattered. Trigger: a held-out M gain an ablation rests on that the
   twins could explain, a claim about the frontier's absolute level, or the next regeneration for another reason
-  (dropping twins of the laws the gate's salts 1-10 serve and draw extras from). Evidence: `tests/church_bv/classes.rs`
+  (dropping twins of the laws the gate's salts 1-10 serve; the extras need no such step, since `scope_extras` drops
+  held-out laws and their twins as it draws them, 66a9810). Evidence: `tests/church_bv/classes.rs`
   (`regenerate_held`), run `2026-10-24-held-15-17-2` (`HELD` lines), run `2026-10-26-held-overlap`; phase 2 final
   review M3 (2026-10-23). Status: parked.
-- **The extras: count, share, draw and source** — what: each loop's mines get extra laws beside the loop's own
-  (`scope_extras`, `tests/church_bv/driver.rs`): the first `STREAM_EXTRAS` (1650) laws of phase 0 of the stream
-  sequence, filtered against the served laws, n = ⌊`GEN_F` × L⌋ of the L left, in shared slices, drawn at the salt
-  (`GEN_DRAW` moves the draw). One entry per knob:
-  (a) *Count.* 1650 was cmp3d's generator list on the old gate (plan
-  `docs/superpowers/plans/2026-10-23-class-table-phase-2.md`, R2) and has no source of its own on the streams; v0.5's
-  large extras measure 1650 and 4950 (`docs/tier-cycle.md`, "At every size, and at three times the count"), and 1650
-  to 9900 with either slicing ("Count and slicing", runs `2026-10-27-xgrid-*`): held-out M falls with count to -28.6%
-  at 9900, no plateau, at 36x the base's job CPU. Status: held for v0.5 (`ROADMAP.md`), which chooses the count
-  against mining CPU, together with (e).
-  (b) *Share f.* 0.16 was tuned on cold loops under the two-leaf twin filter; the wider filter halved n, and f = 0.32
-  bought 1-3% of M, weakly significant, for 3.3x the job CPU ("The generator's n after the wider filter", runs
-  `2026-10-22-gen-f32`, `-gen-warm-fix`). Trigger: a question resting on the extras' best M, or a sweep cheap enough
-  for f in 0.16, 0.24, 0.32, 0.48. Status: parked (default 0.16).
-  (c) *Draw: a learned ranker choosing which laws each mine takes.* Redrawn lists leave batch 0 and job CPU unchanged,
+- **The extras: count, draw, source and slicing** — what: each loop's mines get extra laws beside the loop's own
+  (`scope_extras`, `tests/church_bv/driver.rs`, since 66a9810 on 2026-10-28): from the stream sequence grown as deep as
+  the held-out bands (4 growths, every phase and size), the first laws the filter keeps against the served laws and the
+  held-out laws and their twins, each mine its own n = `EXTRAS_N` (319) in fresh slices, drawn at the salt (`GEN_DRAW`
+  moves the draw). Before it: the first 1650 laws of phase 0 of the 2-growth sequence, n = ⌊0.16 L⌋ in shared slices.
+  One entry per knob:
+  (a) *Count n.* Held-out M falls about 770 per e-fold of n with no knee, and walk grows about linearly in n, so n is
+  a price, not an optimum ("Count and slicing", runs `2026-10-27-xgrid-*`); 319 bought most of the gain at a fraction
+  of 9900's CPU (the landing gate: "Count and slicing", run `2026-10-28-land-n319`). The share f (`GEN_F`) went with
+  it: n is set directly. Cheaper ways to the same held-out M (a stop rule, a mine-only join budget) are measured in
+  "Count and slicing". Trigger: a question resting on the extras' best held-out M, or mining made cheaper. Status:
+  held for v0.5 (`ROADMAP.md`), which weighs n against mining CPU.
+  (b) *Draw: a learned ranker choosing which laws each mine takes.* Redrawn lists leave batch 0 and job CPU unchanged,
   and the best of four draws saves 51 of about 2230 M, against 7-37 points of held-out free share for having a library
   at all ("How much choosing the extras can gain", "Does the choice of extras move the frontier?", runs
   `2026-10-22-gen-draw1` to `3`, `-draw-band`). Trigger: a much smaller n, or a vocabulary that makes some laws far
   more useful than others. Status: decided against.
-  (d) *Source.* Padding laws lost to the stream (M 40 against 29, worse on 6 salts of 10); the mixed grammar had M 21
+  (c) *Source.* Padding laws lost to the stream (M 40 against 29, worse on 6 salts of 10); the mixed grammar had M 21
   against the non-padding laws' 10 at 9 against 26 times the stream's loop time and was held for a cost limit (runs
   `2026-10-17-gen-wide`, `-gen-round-a`, `docs/runs/2026-10-17/README.md`). No source switch is left in the code: the
-  stream sequence is the only source (checked 2026-10-27). Status: decided against (a new source would be a new arm).
-  (e) *Slicing.* `extra_slices` gives both mines of a loop the same n laws; shared 0.16 beat fresh slices at f 0.08 on
-  the families (round A, 2026-10-18), and was kept. On the streams with the deep source the order reverses: distinct
-  laws per loop matter more than laws per mine, so fresh at f 0.08 gets 90% of shared 4950's held-out gain at half
-  its CPU, and at 9900 93% of shared's gain at 41% of its CPU ("Count and slicing", runs `2026-10-27-xgrid-f4950h`,
-  `-f4950`, `-f9900h2`). Fresh slices cap f at 1/6 (six mines per salt, disjoint). Status: held for v0.5, with (a).
+  deep stream sequence is the only source (66a9810). Status: decided against (a new source would be a new arm).
+  (d) *Shared slices* (a loop's mines mining the same n laws): they beat fresh slices on the families (round A,
+  2026-10-18), but on the streams with the deep source distinct laws per loop matter more than laws per mine: fresh
+  got 90% of shared's held-out gain at half its CPU at 4950 and 93% at 41% at 9900 ("Count and slicing", runs
+  `2026-10-27-xgrid-f4950h`, `-f4950`, `-f9900h2`). Deleted in 66a9810 (`xgrid.patch` in
+  `2026-10-27-xgrid-exes` has both). Status: decided against.
 
 ## Rewriter, rule order and the floor
 
@@ -300,15 +299,20 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Sweep-worker deferred bugs: unchecked Unix `dup`/`dup2` in `stdio`; case-sensitive `process_start` prefix match; a panic during flush leaves the std handle on a dropped `File`** — why: deferred as minor. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("A persistent worker for the sweep's children"). Status: parked.
 - **A shorter quiet wait before each `runs time` round (`--quiet-secs` 10 against 60)** — why: the waits were 37 of `lazy-quiet`'s 69 minutes, but an A/A at 10 s under a busier machine gave 1 clean round of 9 (run `2026-10-19-lazy-aa-q10`), which cannot be told apart from the load having changed since. Trigger: A/B wall time matters again; the test is the two waits alternating in one session (an A/A at each), comparing clean rounds per hour and the noise around each run order's mean. Evidence: `docs/tier-cycle.md`, "A shorter quiet wait before each round", verified 2026-10-19. Status: parked.
 - **Build the stream sequence lazily, only as far as it is read; memoize normal forms in its filter** — what: a sweep
-  reads only sequence positions under about 6600 of about 58000 (phases 1-3's first 300 laws, phase 0's first 1650
-  extras, stride 4). `stream_laws` filters (class-table normal forms, width-8 values) after `shuffled(laws, salt)`, so
+  reads only positions under about 1200 of the loops' 58125-law sequence (phases 1-3's first 300 laws, stride 4) and,
+  since 66a9810, about the first 2600 of the extras' 230801-law 4-growth one (salt 1, until 6 × 319 laws pass the
+  filter); the 4-growth build took 28.4 s on 4 threads (4 × 28.4 s is about 12% of salt 1's 959 s of job CPU, an
+  estimate) and a sweep peaks at 5-6 GB (run
+  `2026-10-28-land-n319`). Before 66a9810 the extras read phase 0's first 1650 of the 2-growth one. `stream_laws` filters (class-table normal forms, width-8 values) after `shuffled(laws, salt)`, so
   lazy streams stopped at the read prefix give identical laws (cleanup plan CU17); a memo of normal forms per term in the
   same filter was CU16. Why not: growing and grouping a stream's terms (`pool_conjectures`) is paid in full either way,
   and since the per-tuple `verdict` loop went (CU15) the filter is 2.6% of a base sweep's samples against 5.8% for
   grouping; the sequence as a whole fell from 109.5 to 23.3 s and is 10.6%. Either lever saves at most that 2.6%, and
   the lazy one changes `stream_sequence`'s interface (a length per caller, or a locked lazy type). The sequence's wall
   share went instead to building the 56 independent streams in parallel (cleanup plan CU18: 16.1 to 5.4 s on 4 threads,
-  `docs/tier-cycle.md`, "The streams in parallel"). Trigger: the filter grows again (a costlier open or refutation check). Evidence: runs
+  `docs/tier-cycle.md`, "The streams in parallel"). The 4-growth build is the same shape (growth and grouping paid in
+  full), so laziness would again save only its filter share, unmeasured there. Trigger: the filter grows again (a
+  costlier open or refutation check), or the 4-growth build's cost matters (a profile of a sweep at n 319). Evidence: runs
   `2026-10-26-cu14-base-prof` and `2026-10-27-cu17-base-prof` (`PROF_PARENTS` split of `stream_laws`, 2026-10-27);
   `docs/tier-cycle.md`, "One exhaustive check for both". Status: decided against (2026-10-27).
 - **Binary formats for the sweep's text files: task results (C7's `key<TAB>value` channel), rule libraries (`rules.txt`, `laws_extra_*.txt`), law files (`laws_text`), the `m.tsv` tables** — why: each is KB-sized and written once per task, the payloads are terms already printed as text, the text is the evidence a reader greps and diffs, and a binary form needs a reader for every consumer (scripts included). The lemma cache, the one large and hot store, is already binary (`TLC1`, `tatic::kernel::bin`). Trigger: any of these files reaching MB or showing in a sweep profile (parse or format time). Evidence: the writers in `tests/church_bv/driver.rs` (`laws_extra_*`, `m.tsv`), `laws_text` in `search.rs`, the lemma cache's `TLC1` format in `lemma_cache.rs` (2026-10-21; the prefs and joinability-unit files no longer exist, checked 2026-10-27). Status: parked (by decision, C7 ruling 2026-10-21).

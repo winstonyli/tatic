@@ -27,10 +27,11 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
 - **The gate** (`scripts/streams_ab.sh`) runs two builds' loops per salt and compares their rules, M, held-out M per band
   and work counts ("The gate on the streams and its A/A baseline", "Work counts as the gate's cost",
   "The frontier on the gate").
-- **The explorer is not learned.** Each loop mines on its batches plus extras drawn from unserved laws of the same sequence
-  (`scope_extras`), through the miner's greedy candidate pool. Mining on more laws beats ranking candidates
-  ("More laws beat any ranking"); v0.5 draws the extras at the held-out sizes
-  ("Fresh laws of the held-out sizes do as well"; `ROADMAP.md`, v0.5).
+- **The explorer is not learned.** Each loop mines on its batches plus extras (`scope_extras`), through the miner's
+  greedy candidate pool: each mine its own `EXTRAS_N` (319) laws from the stream sequence grown to the held-out sizes,
+  minus served laws and held-out laws and their twins (since 2026-10-28, "Count and slicing"). Mining on more laws
+  beats ranking candidates ("More laws beat any ranking"; "Fresh laws of the held-out sizes do as well";
+  `ROADMAP.md`, v0.5).
 - **Raw rows**, run scripts and the patches of reverted switches are kept per day under `docs/runs/<date>/` (from
   2026-10-12); runs from 2026-10-17 on have a row each in `docs/runs.md`. A `scripts/` path cited below that no longer
   exists is in that day's `docs/runs/<date>/scripts/`, or in git history (`git log --all --oneline -- <path>`), except
@@ -64,10 +65,12 @@ How the results are measured (code: `tests/church_bv/driver.rs` and its module d
 - **Salt:** reshuffles the stream's order (and the generator's sample); salts 1-10 are ten independent samples.
 - **Paired counts** (better / equal / worse): per salt, the first arm's total M against the second's; 9/0/1 means lower
   on 9 salts of 10. A sign test p is given for weak splits.
-- **The law generator's extras.** Laws a mine also mines on, drawn from the generator, not the stream. L is the
-  generator's list for a scope after the filter; n = ⌊0.16 L⌋ is each loop's share, in slices shared within the scope. The
-  filter drops a twin (an extra whose normalized key is a served law's: a served law in disguise), a trivial law (sides
-  equal once normalized below their roots) and a law with a served law's skeleton (variables written `v`).
+- **The extras.** Laws a mine also mines on beside its loop's batch. First drawn from the law generator, then (class-table
+  phase 2) from phase 0 of the stream sequence: L is the list for a scope after the filter and n = ⌊0.16 L⌋ each loop's share,
+  in slices shared by its mines. Since 2026-10-28 (66a9810) each mine takes its own n = `EXTRAS_N` (319) laws of the
+  4-growth sequence ("Count and slicing"). The filter drops a twin (an extra whose normalized key is a served law's: a
+  served law in disguise; since 2026-10-28 also a held-out law's), a trivial law (sides equal once normalized below
+  their roots) and a law with a served law's skeleton (variables written `v`).
 - **Arms** (`gen_warm.sh`): `<ref>_<loop>`, whether the ref mines and the loops took extras (on/off, `ABLATE=gen`);
   `mon`/`moff` are the ref-mine sweeps.
 - **Cost** (`tools/runs`, a run's `result.txt`): wall, jobcpu (CPU seconds of the sweep's process tree), peakjob (its peak
@@ -2288,6 +2291,14 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     Peak process 5.1-6.7 GB (the 4-growth sequence built on 4 threads). The probe exes read the held-out files from
     the worktree path compiled into them: run `2026-10-27-xgrid-f9900h` failed at once on every salt after that
     worktree was removed, and `-f9900h2` is its rerun.
+  - *Landed: fresh slices of n = 319* (66a9810, `EXTRAS_N`; run `2026-10-28-land-n319`, gate salts 1-3, `R.exe` against
+    `L319.exe` in `2026-10-28-land-exes`, JOBS=2, 39 min). The deep source and fresh slices of the grid's probe, with n
+    set directly; shared slices, `STREAM_EXTRAS` and `GEN_F` are gone. Held-out M 5340 against 6400 (-16.6%), loop M
+    440 against 477, job CPU 2921 s against 589 (5.0x), walk/match/op 7.12/28.21/6.35 G (walk 4.6x). Salts 1 and 3
+    reproduce fresh 4950, f 0.08 exactly (n was 319 there; extras, rules and held-out M identical); salt 2 had n 317
+    there and gives 1750 against 1701, inside the per-salt noise. Per 1000 laws, bands 11/13/15/17: 55.6/151.4/167.6/
+    220.8 (base 53.1/177.1/208.6/274.8); free share .944/.849/.832/.779 (base .947/.823/.791/.725). The 4-growth
+    sequence took 28.4 s on 4 threads per sweep process (salt 1), and peak process 5.1-6.2 GB.
 
 ## The rewriter and the mined rules
 
