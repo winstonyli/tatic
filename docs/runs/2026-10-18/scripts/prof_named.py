@@ -9,9 +9,10 @@ D, EXE = sys.argv[1], sys.argv[2]
 p = json.load(gzip.open(f"{D}/pcs.json.gz"))
 libs = p["libs"]
 threads = list(p["threads"]) + [t for sp in p.get("processes", []) for t in sp["threads"]]
-# PROF_THREAD=<name>: only threads of that name (e.g. search::rule_miner), the table in named_<name>.txt
+# PROF_THREAD=<name or tid>[,...]: only threads of those names (e.g. search::rule_miner) or tids (unnamed threads, such as
+# one build's `build_sequence` workers), the table in named_<PROF_THREAD>.txt
 ONLY = __import__("os").environ.get("PROF_THREAD")
-threads = [t for t in threads if ONLY is None or t.get("name") == ONLY]
+threads = [t for t in threads if ONLY is None or {t.get("name"), str(t.get("tid"))} & set(ONLY.split(","))]
 IDLE = ("NtWaitFor", "NtDelayExecution", "NtWaitForWorkViaWorkerFactory", "ZwWaitFor", "NtRemoveIoCompletion", "NtWaitForAlertByThreadId")
 syms = json.load(open(f"{D}/pcs.json.syms.json"))
 ST = syms["string_table"]
