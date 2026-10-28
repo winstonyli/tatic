@@ -108,21 +108,21 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 
 - **Learn a rule order (a global order, or a priority per rule)** — why: no better global order was found; the one signal left on the families was per family (sbo3 under size first), and the families are gone (2026-10-23), so a learned order would start from the streams. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Rule order"), `docs/tier-cycle.md` ("Operand order"); also `docs/learned-vs-fixed.md` ("Moving parts to learned: candidates", the rule-order row). Status: parked.
 - **The embedding test's worst case (`embeds`, the cycle cut)** — what: `embeds(s, t)` (`tests/church_bv/rewrite.rs`),
-  the homeomorphic-embedding test that `cut_at` runs against every term on the rewrite path (for the cut itself, and
-  through `cut_by` for the memo's check of a cached entry), recurses both on "match at this node" and "skip a node of
-  t" with no memo and no size check inside the recursion, so one pair of subterms is reached along exponentially many
-  paths. Two salt-3 runs of the mines' join-budget probe hung, stopped by hand 1 h 28 min and 1 h 53 min after a
-  mine's last log line; reruns of both spin in `embeds` on terms hundreds of nodes deep (138 and 496 nested frames in
-  the last samples). Proposed fix: return false at once
-  when `s.size() > t.size()` (a larger term never embeds; sizes are cached), and memoize the answer per `(s, t)` pair
+  the homeomorphic-embedding test that `cut_at` runs against every term on the rewrite path no larger than the one at
+  hand (for the cut itself, and through `cut_by` for the memo's check of a cached entry), recurses both on "match at
+  this node" and "skip a node of t" with no memo and no size check inside the recursion, so one pair of subterms is
+  reached along exponentially many paths. Two salt-3 runs of the mines' join-budget probe hung, stopped by hand 1 h
+  28 min (budget 100, n 688) and 1 h 53 min (budget 0) after a mine's last log line; reruns of both spin in `embeds`
+  on terms over a hundred nodes deep (up to 496 nested frames in the last sample of the budget-100 rerun, 138 in the
+  budget-0 one). Proposed fix: inside the recursion, return false at once when `s.size() > t.size()` (a larger term
+  never embeds; sizes are cached; `cut_at` checks this only at the top), and memoize the answer per `(s, t)` pair
   within one top-level call (terms are hash-consed, so a pair is two pointers); a call is then bounded by the product
   of the two terms' distinct subterms, and every answer stays the same. With it: a unit test on a pair the current
   code cannot finish, a work count on a normal sweep (`embeds` is 1.7% self of the budget-100 profile, run
   `2026-10-28-mjv-prof`, so the memo's own cost must stay below that), then the two hung salts rerun: the fix bounds
   each call, and only the rerun shows whether that ends the hang or leaves a long rewrite chain behind it. Why
   parked: found 2026-10-28 during the probe; a change to shared code, held for a go-ahead. Trigger: met on the
-  probe's configurations (no sweep at the landed one has hung).
-  Evidence: `docs/tier-cycle.md`, "A join budget for the mines alone" (runs `2026-10-28-hang-j0`, `-hang-j100n688`;
+  probe's configurations (no sweep at the landed one has hung). Evidence: `docs/tier-cycle.md`, "A join budget for the mines alone" (runs `2026-10-28-hang-j0`, `-hang-j100n688`;
   frames in `docs/runs/2026-10-28/rows/`), verified 2026-10-28. Status: held for go-ahead.
 - **Learn which rule wins at each overlapping pair, or complete overlaps Knuth-Bendix style so order stops mattering** — why: needs a critical-pair finder, or is "most work"; the pooled library had about 1000 critical pairs (overlaps are still found by `rule_overlaps`, `rewrite.rs`). Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Rule order"). Status: parked (joinability units and the critical-pair finder were built, then deleted with the pooled library on 2026-10-23; tag `v0.2.0` has them).
 - **On a cycle cut, return a canonical cycle member (for example the `show()`-least term visited)** — why: it would let both sides of 59 of 101 floor laws meet, but the bounded join removed the whole floor, including the 37 cmp3d permutation laws a canonical member would not reach. Trigger: none. Evidence: `docs/tier-cycle.md` ("Completion on the floor"), `docs/tier-cycle.md` ("The bounded join removes the floor"). Status: decided against (superseded by the join). A learned table of class representatives does the canonical job differently: each class's smallest enumerated term, not a cycle member ("A learned table of representatives: the probe"; candidate 4 in `docs/learned-vs-fixed.md`).

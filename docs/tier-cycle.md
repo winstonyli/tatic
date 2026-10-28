@@ -2410,15 +2410,17 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     0) and 1 h 28 min (100 at n 688) after its log's last line, and the arm failed. Rerun alone on a debug-info build of the same code (runs
     `2026-10-28-hang-j0` and `-hang-j100n688`, `docs/runs/2026-10-28/scripts/hang_probe.sh`), each hung again: a
     mine thread passed 120 s of CPU within 4 minutes of the start, where a whole salt takes 46-62 s of wall. 40 stack samples of the spinning thread
-    (`stack_sample.ps1`, no debugger) put 38 in `embeds` and all 40 under `rewrite` called from a mine's
+    (`stack_sample.ps1`, no debugger) put all 40 inside `embeds`' code (38 named `embeds`, 2 its inlined `Term::node`)
+    and all 40 under `rewrite` called from a mine's
     `Scorer::score_laws` (frames in `docs/runs/2026-10-28/rows/2026-10-28-hang-j0.txt` and `-hang-j100n688.txt`).
     `embeds` (`tests/church_bv/rewrite.rs`) is the cycle cut's homeomorphic-embedding test, run by `cut_at` against
     the terms on the rewrite path no larger than the term at hand, innermost first, both for the cut itself and for
     the memo's check of a cached result. It recurses
     both on "match at this node" and "skip a node of t", with no memo and no size check inside the recursion, so one
     pair of subterms can be reached along exponentially many paths. The terms compared are deep: the last sample of
-    each rerun holds 138 and 496 nested `embeds` frames, so these configurations, on salt 3, reach a rewrite hundreds
-    of nodes deep where the recursion blows up. The code is on main; whether the landed configuration can reach such
+    each rerun holds up to 138 (budget 0) and 496 (100 at n 688) nested `embeds` frames, each one node further down
+    `t` (stale stack words count too, but the per-sample counts are steady), so these configurations, on salt 3,
+    reach a rewrite over a hundred nodes deep where the recursion blows up. The code is on main; whether the landed configuration can reach such
     a rewrite is untested (no sweep at it has hung: the landing gate's three salts and the other 12 salt runs of the
     first two rounds, `-mjv-j500` and `-mjv-j250` then `-mjv-j100` and `-mjv-j250n688`, passed). The proposed fix is
     in `PARKED.md`, "The embedding test's worst case". Not measured: salt 3 of
