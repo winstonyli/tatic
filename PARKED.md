@@ -76,8 +76,10 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   (`GEN_DRAW` moves the draw). One entry per knob:
   (a) *Count.* 1650 was cmp3d's generator list on the old gate (plan
   `docs/superpowers/plans/2026-10-23-class-table-phase-2.md`, R2) and has no source of its own on the streams; v0.5's
-  large extras measure 1650 and 4950 (`docs/tier-cycle.md`, "At every size, and at three times the count"). Status:
-  held for v0.5 (`ROADMAP.md`), which chooses the count against mining CPU.
+  large extras measure 1650 and 4950 (`docs/tier-cycle.md`, "At every size, and at three times the count"), and 1650
+  to 9900 with either slicing ("Count and slicing", runs `2026-10-27-xgrid-*`): held-out M falls with count to -28.6%
+  at 9900, no plateau, at 36x the base's job CPU. Status: held for v0.5 (`ROADMAP.md`), which chooses the count
+  against mining CPU, together with (e).
   (b) *Share f.* 0.16 was tuned on cold loops under the two-leaf twin filter; the wider filter halved n, and f = 0.32
   bought 1-3% of M, weakly significant, for 3.3x the job CPU ("The generator's n after the wider filter", runs
   `2026-10-22-gen-f32`, `-gen-warm-fix`). Trigger: a question resting on the extras' best M, or a sweep cheap enough
@@ -91,6 +93,10 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   against the non-padding laws' 10 at 9 against 26 times the stream's loop time and was held for a cost limit (runs
   `2026-10-17-gen-wide`, `-gen-round-a`, `docs/runs/2026-10-17/README.md`). No source switch is left in the code: the
   stream sequence is the only source (checked 2026-10-27). Status: decided against (a new source would be a new arm).
+  (e) *Slicing.* `extra_slices` gives both mines of a loop the same n laws; shared 0.16 beat fresh slices at f 0.08 on
+  the families (round A, 2026-10-18), and was kept. On the streams with the deep source the order reverses: distinct
+  laws per loop matter more than laws per mine, so fresh at f 0.08 gets 90% of shared 4950's held-out gain at half
+  its CPU ("Count and slicing", runs `2026-10-27-xgrid-f4950h`, `-f4950`). Status: held for v0.5, with (a).
 
 ## Rewriter, rule order and the floor
 

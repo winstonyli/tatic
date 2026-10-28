@@ -2248,6 +2248,32 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     rules 580 to 1104, and every band lower or level: per 1000 laws 11 53.1 to 54.4, 13 177.1 to 147.4, 15 208.6 to
     162.2, 17 274.8 to 212.1. Cost at 4950: job CPU 1245 to 7802 s (6.3x; 2660 s at 1650), work `interp` 3.1x and
     walk, match and op 11-14x: the mines' rewriting work, not the sequence, now dominates.
+  - *Count and slicing* (runs `2026-10-27-xgrid-s1650`, `-s3300`, `-s4950`, `-f4950h`, `-f4950`, `-s9900`, gate salts
+    1-3, one after another, 11-79 min each; `xgrid.patch`, base `R.exe` at 8482070 and one exe per arm with its
+    `.exe.env`, in `2026-10-27-xgrid-exes`, reverted; all sweep profile, so CPU is not comparable to the bullet above).
+    The deep source as above, at four counts, and a second slicing: `PROBE_SLICES=fresh` gives each of a loop's two
+    mines its own disjoint n laws, where `extra_slices` gives both the same n. Base held-out M 6400, loop M 477, job CPU
+    589 s, work walk/match/op 1.53/4.77/1.06 G.
+
+    | Arm | Laws per mine (distinct per loop) | Held-out M | Loop M | Job CPU | walk / match / op (G) |
+    |---|---|---|---|---|---|
+    | shared 1650 | ~190 (~190) | 6112 (-4.5%) | 467 | 1325 s | 2.94 / 10.34 / 2.54 |
+    | shared 3300 | 399 (399) | 5564 (-13.1%) | 460 | 4355 s | 9.11 / 35.07 / 7.97 |
+    | fresh 4950, f 0.08 | 319 (638) | 5291 (-17.3%) | 438 | 3103 s | 7.02 / 28.10 / 6.33 |
+    | shared 4950 | 638 (638) | 5167 (-19.3%) | 439 | 6167 s | 16.97 / 67.92 / 14.57 |
+    | fresh 4950, f 0.16 | 638 (1276) | 4885 (-23.7%) | 432 | 8897 s | 18.39 / 76.75 / 15.85 |
+    | shared 9900 | 1375 (1375) | 4567 (-28.6%) | 419 | 21388 s | 42.0 / 186.7 / 38.6 |
+
+    Shared 4950 and 1650 reproduce the bullet above exactly (held-out M and walk), so the port is faithful. Distinct
+    laws per loop drive held-out M more than laws per mine: fresh at f 0.08 gets 90% of shared 4950's gain at half
+    its CPU, and fresh at f 0.16 gets 83% of shared 9900's gain at 42% of its CPU. Shared 3300 is dominated by fresh
+    f 0.08; the rest form the front. Gains keep coming with count (no plateau by 9900, where 1082 held-out laws or
+    twins were dropped from L 8598) while work grows faster than linearly in laws per mine (walk 5.8x for 3.4x laws
+    from 1650 to 4950). Per 1000 laws, bands 11/13/15/17: shared 4950 54.4/147.4/162.2/212.1, fresh f 0.08
+    53.9/150.6/165.6/219.8, fresh f 0.16 52.8/136.2/152.7/202.9, shared 9900 47.9/127.2/142.3/191.7: band 11 falls
+    below the base's 53.1 only with 1276 or more distinct laws per loop. Peak process 5.1-6.7 GB
+    (the 4-growth sequence built on 4 threads). Untested: fresh at 9900, f 0.08 (688 per mine, 1375 distinct), the
+    like-for-like partner of shared 9900.
 
 ## The rewriter and the mined rules
 
