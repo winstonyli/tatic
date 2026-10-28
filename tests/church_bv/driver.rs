@@ -6,8 +6,9 @@
 //!
 //! The laws come from the streams (spec docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §9):
 //! `search::stream_sequence(salt, STREAM_LEVELS)`, the operator-set streams round-robin, and a phase is its residue
-//! class mod `STREAM_STRIDE` (`search::residue`). Phases 1-3 feed the loops; phase 0 fed the mines' extras until 2026-10-28
-//! and is unused (the stride stays, so the loops' laws do).
+//! class mod `STREAM_STRIDE` (`search::residue`). A sweep's loops serve phases 1-3; a single loop serves SPHASE (default
+//! 0). Phase 0 fed the mines' extras until 2026-10-28; they now come from a deeper sequence (`scope_extras`), and the
+//! stride stays, so the loops' laws do.
 //!
 //! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
 //! Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of phase SPHASE of the stream sequence at salt RULEMINER_SHUFFLE. It is
@@ -657,9 +658,9 @@ fn filter(served: &[(Term, Term)], held: &[(Term, Term)]) -> impl Fn(&(Term, Ter
 
 /// Laws each mine takes from its scope's extras (n): fresh slices of 317-319 had held-out M 5291 against 6400 for the
 /// earlier shared slices of the 2-growth phase 0, at 7.0 G of walk against 1.5 (run `2026-10-27-xgrid-f4950h`, gate
-/// salts 1-3); held-out M falls about 770 per e-fold of n with no knee
-/// and walk grows about linearly in n, so n is a price (docs/tier-cycle.md "Count and slicing"). The variable
-/// `EXTRAS_N` overrides it.
+/// salts 1-3). Over the measured fresh arms (n 319-688) held-out M fell about 770 per e-fold of n with no knee and walk
+/// grew about linearly in n, so n is a price (docs/tier-cycle.md "Count and slicing"); nothing below 319 was measured.
+/// The variable `EXTRAS_N` overrides it.
 const EXTRAS_N: usize = 319;
 
 /// Draws one scope's extras (spec §1-3; docs/tier-cycle.md "Count and slicing"): the stream sequence at the scope's

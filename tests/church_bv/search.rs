@@ -529,7 +529,8 @@ pub const STREAM_BUDGET: usize = 20000;
 pub const STREAM_VARS: usize = 3;
 /// Growth levels of a stream.
 pub const STREAM_LEVELS: usize = 2;
-/// Phases of the stream sequence: 1-3 feed the loops (spec §9); 0 fed the mines' extras until 2026-10-28 and is unused.
+/// Phases of the stream sequence: a sweep's loops serve 1-3 (spec §9); 0 fed the mines' extras until 2026-10-28 and is
+/// left to a single loop's default SPHASE.
 pub const STREAM_STRIDE: usize = 4;
 
 /// The 4096 pseudo-random width-8 inputs an open law must agree on (the probe's): width 4 only conjectured it.
@@ -719,7 +720,8 @@ pub fn residue(seq: &[(Term, Term)], phase: usize, skip: usize, laws: usize) -> 
     seq.iter().skip(phase).step_by(STREAM_STRIDE).skip(skip).take(laws).cloned().collect()
 }
 
-/// Builds `stream_sequence(STREAMS_SALT)` (default 1) and prints its size and time: what a sweep pays once (spec §9, Risks).
+/// Builds `stream_sequence(STREAMS_SALT)` (default 1) and prints its size and time: what a sweep pays once for its loops'
+/// laws (spec §9, Risks); the extras' deeper sequence is a second build (`driver::scope_extras`).
 #[test]
 #[ignore]
 pub fn stream_sequence_cost() {
