@@ -2301,48 +2301,65 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     sequence took 28.4 s on 4 threads per sweep process (salt 1), and peak process 5.1-6.2 GB.
   - *Cutting a mine short: the truncation ladder* (run `2026-10-28-ladder-f9900h2c`, 114 min beside the gates below;
     `docs/runs/2026-10-28/scripts/ladder.sh` under `R.exe`). Could a stop rule end a mine early for less held-out M
-    than a smaller n costs? Offline: fresh 9900, f 0.08's 9 libraries (n 688), each cut without mining again, in
-    choice order per mine, and each cut's held-out M from the gate's own check. A cut's cost is the mine seconds of
-    the rounds that chose its kept rules (a lower bound: a stop rule still pays the sequence and serving). The last
-    column is n at the same share of walk on the fresh line (walk -4.28 + 0.0355 n G) and the fit's held-out M there.
+    than a smaller n costs? Offline: fresh 9900, f 0.08's 9 libraries (n 686-689 by salt), each cut without mining
+    again, in choice order per mine, and each cut's held-out M from the gate's own check. A cut's cost is the mine
+    seconds of the rounds that chose its kept rules (a lower bound: a stop rule still pays the sequence and serving).
+    The last column takes a cut's share of mine seconds as its share of walk (no walk is counted per cut) and gives n
+    at that walk on the fresh line (walk -4.28 + 0.0355 n G, 20.14 G at n 688) and the fit's held-out M there.
 
     | Cut | Rules | Mine seconds kept | Held-out M | Same walk on the n-curve |
     |---|---|---|---|---|
-    | full (control) | 1332 | 100% | 4690 | n 688, 4736 |
-    | drop0: rules fixing at least 1 straggler | 1057 | 84% | 4819 | n 597, 4845 |
-    | m0: mine 0's rules only | 633 | 68% | 5482 | n 506, 4972 |
-    | stop3: up to the third in a row fixing fewer than 2 | 357 | 45% | 5661 | n 376, 5201 |
-    | drop1: rules fixing at least 2 | 328 | 43% | 5593 | n 365, 5225 |
-    | stop1: up to the first fixing fewer than 2 | 265 | 37% | 6053 | n 330, 5300 |
+    | full (control) | 1332 | 100% | 4690 | n 688, 4737 |
+    | drop0: rules fixing at least 1 straggler | 1057 | 84% | 4819 | n 600, 4842 |
+    | m0: mine 0's rules only | 633 | 68% | 5482 | n 508, 4970 |
+    | stop3: up to the third in a row fixing fewer than 2 | 357 | 45% | 5661 | n 377, 5200 |
+    | drop1: rules fixing at least 2 | 328 | 43% | 5593 | n 365, 5223 |
+    | stop1: up to the first fixing fewer than 2 | 265 | 37% | 6053 | n 329, 5305 |
 
     The control reproduces the arm's 4690. Every cut a mine could reach (m0, stop1, stop3) loses to a smaller n by
-    460-750, past the arm noise of about 100: measured, fresh 4950, f 0.08 (n 319) got 5291 at 35% of this arm's job
-    CPU and walk, where stop1 got 6053 at 37% of its mine seconds. drop0, a bound no stop rule reaches (a rule's
+    460-750, past the arm noise of about 100: measured, fresh 4950, f 0.08 (n 317-319) got 5291 at 35% of this arm's
+    job CPU and walk, where stop1 got 6053 at 37% of its mine seconds. drop0, a bound no stop rule reaches (a rule's
     fixes are known only once chosen), ties the curve. The gain is in the tail: dropping the 729 rules that fix
     exactly one straggler each (drop0 to drop1) costs 774, the 275 that fix none 129. A mine's late rules carry its
     held-out gain, so n is the lever and a stop rule is not. Not rerun on the n 319 libraries: the margins are 460-750
     against a noise of about 100, and the budget below is the cheaper lever.
-  - *A join budget for the mines alone* (runs `2026-10-28-mjv-j500` and `-mjv-j250`, gate salts 1-3, `L319.exe`
-    against `J500.exe` and `J250.exe` in `2026-10-28-land-exes`, `mjv.patch` on 66a9810: `MINE_JOIN_VISIT` sets
-    `JOIN_VISIT` in each mine's env only, so the loops' serving and the held-out check keep 1000; A arms reused from
-    `-land-n319`; JOBS=2, 26 and 21 min, beside the ladder at 32-52% other load, so job CPU and work counts are the
-    measures, not wall). Of a mine's search time 99% is failed joins, most at the budget (above).
+  - *A join budget for the mines alone* (runs `2026-10-28-mjv-j500`, `-mjv-j250`, `-mjv-j100` and `-mjv-j250n688`,
+    gate salts 1-3, `L319.exe` against one exe per arm in `2026-10-28-land-exes`: `mjv.patch` on 66a9810, where
+    `MINE_JOIN_VISIT` sets `JOIN_VISIT` in each mine's env only, so the loops' serving and the held-out check keep
+    1000; J100 and J250n688 are J250's bytes with their own `.exe.env`, the latter also `EXTRAS_N=688`; A arms reused
+    from `-land-n319`; JOBS=2, 26, 21, 10 and 14 min, at 19-52% other load (the first two beside the ladder), so job
+    CPU and work counts are the measures, not wall). Of a mine's search time 99% is failed joins, most at the budget
+    (above). The n 688 arm's budget-1000 reference is fresh 9900, f 0.08 (run `2026-10-27-xgrid-f9900h2`, n
+    687/686/689 by salt). Base without extras: held-out M 6400, loop M 477, job CPU 589 s, walk 1.53 G.
 
-    | Mines' budget | Held-out M (salts 1/2/3) | Loop M | Rules | Job CPU | walk / match / op (G) |
+    | Mines' budget, n | Held-out M (salts 1/2/3) | Loop M | Rules | Job CPU | walk / match / op (G) |
     |---|---|---|---|---|---|
-    | 1000 (landed) | 5340 (1774/1750/1816) | 440 | 1037 | 2921 s | 7.12 / 28.21 / 6.35 |
-    | 500 | 5192 (1754/1691/1747) | 450 | 1088 | 1542 s (0.53x) | 3.16 / 13.21 / 3.33 |
-    | 250 | 5237 (1737/1690/1810) | 440 | 1152 | 974 s (0.33x) | 1.32 / 5.62 / 1.76 |
+    | 1000, 319 (landed) | 5340 (1774/1750/1816) | 440 | 1037 | 2921 s | 7.12 / 28.21 / 6.35 |
+    | 500, 319 | 5192 (1754/1691/1747) | 450 | 1088 | 1542 s | 3.16 / 13.21 / 3.33 |
+    | 250, 319 | 5237 (1737/1690/1810) | 440 | 1152 | 974 s | 1.32 / 5.62 / 1.76 |
+    | 100, 319 | 5166 (1730/1668/1768) | 447 | 1140 | 627 s | 0.36 / 2.01 / 0.83 |
+    | 1000, 688 (fresh 9900, f 0.08) | 4690 (1559/1516/1615) | 431 | 1332 | 8870 s | 20.10 / 87.25 / 17.53 |
+    | 250, 688 | 4577 (1533/1492/1552) | 424 | 1389 | 1671 s | 2.98 / 14.15 / 3.94 |
 
-    Held-out M is lower by 148 and 103, about the noise of a difference of two arms (1.4 x 100), and lower or level on
-    all six salts; loop M is level. At 250 the job CPU is a third and the walk a fifth of the landed design's, the walk
-    below the base's without extras (1.53 G), and against the base held-out M is -18.2% at 1.65x its job CPU (landed:
-    -16.6% at 5.0x). The mines choose 5% and 11% more rules. A guess, not tested: a pair the join no longer meets within 250 terms stays a straggler, so a
-    rule that shortcuts it now scores, and serving at 1000 keeps the shortcut ("Derivability prune": a derivable rule
-    is a shortcut, not redundant). Per 1000 laws, bands 11/13/15/17, at 250: 52.7/152.5/162.8/215.9, free share
-    .947/.848/.837/.784; at 500: 49.8/149.1/163.9/216.0, .950/.851/.836/.784. At 250 the 4-growth sequence (about
-    4 x 28.4 s per sweep process, an estimate) is about a third of job CPU. Not measured: budgets below 250, the
-    budget at larger n (the n-curve at a third of the CPU per law), and the budget without extras.
+    A lower budget in the mines costs no held-out M down to 100, and saves most of the mining. At n 319, 500, 250
+    and 100 are lower than 1000 by 148, 103 and 174, against a noise of about 140 for a difference of two arms (1.4 x
+    100), and lower in all nine salt pairs (three budgets by three salts); loop M is level (440-450). At 100 the job
+    CPU is 21% and the walk 5% of the landed design's: held-out M -19.3% against the base at 1.06x its job CPU
+    (landed: -16.6% at 5.0x), the walk 24% of the base's. At n 688, 250 against 1000 is -113 (lower on all three salts), loop M 424 against
+    431, at 19% of the job CPU and 15% of the walk; against the base -28.5% at 2.84x its job CPU, and against the
+    landed design -14.3% at 57% of its job CPU. Along n at 250 held-out M falls 5237 to 4577 for n 319 to 688, about
+    860 per e-fold (769 at 1000): the budget lowers the n-curve's cost without flattening its gain. The mines choose
+    5%, 11% and 10% more rules at 500, 250 and 100 (n 319), and 4% more at 250 than 1000 at n 688. A guess, not
+    tested: a pair the join no longer meets within the budget stays a straggler, so a rule that shortcuts it now
+    scores, and serving at 1000 keeps the shortcut ("Derivability prune": a derivable rule is a shortcut, not
+    redundant). Per 1000 laws, bands 11/13/15/17, and free share: at 500 49.8/149.1/163.9/216.0, .950/.851/.836/.784;
+    at 250 52.7/152.5/162.8/215.9, .947/.848/.837/.784; at 100 57.1/150.2/160.4/208.2, .943/.850/.840/.792; at 250,
+    n 688 51.1/129.9/141.9/187.3, .949/.870/.858/.813 (budget 1000 at n 688: 46.6/129.8/148.3/198.2, .953/.870/.852/
+    .802). Band 11 is the one band that gets worse, at 100 (55.6 to 57.1) and at n 688 (46.6 to 51.1); band 13 at n
+    688 is level (129.8 to 129.9); every other band improves. The 4-growth sequence's build is at most 23% of job
+    CPU at 250 and 32% at 100 (4 threads times each arm's logged build walls, 55.7 and 50.1 s over
+    the salts: an upper bound; the walls vary 13.7-28.4 s with load). Not measured: budgets below 100, down to 0
+    (`MINE_JOIN_VISIT=0`, no code needed), 100 at larger n, and the budget without extras.
 
 ## The rewriter and the mined rules
 

@@ -48,7 +48,7 @@ results, 2026-10-17 and 2026-10-23).
   (replacing the small ones cost band 11) and minus every held-out law and its twins. Landed 2026-10-28 (66a9810) with
   each mine its own n = 319 laws (fresh slices: distinct laws per loop matter more than laws per mine): held-out M
   -16.6% at 5x the base's job CPU. n is a price on a curve with no knee, weighed against mining CPU. Cutting a mine
-  short loses to a smaller n; a join budget of 250 in the mines alone (probe, not landed) keeps held-out M at a third
-  of the CPU, -18.2% at 1.65x the base's (`docs/tier-cycle.md`, "As the loop's extras", "At every size, and at three
+  short loses to a smaller n; a lower join budget in the mines alone (probe, not landed) keeps held-out M at a fraction
+  of the CPU: at 100, -19.3% at 1.06x the base's job CPU; at 250 with n 688, -28.5% at 2.84x (`docs/tier-cycle.md`, "As the loop's extras", "At every size, and at three
   times the count", "Count and slicing" and the bullets after it; rejected designs in `PARKED.md`, "Mine large laws
   after the loop" and "Serve laws of the held-out sizes").
