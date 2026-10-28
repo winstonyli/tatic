@@ -2062,15 +2062,24 @@ impl Default for RewriteState {
     }
 }
 
-/// `s` homeomorphically embeds in `t`: `t` is `s` with nodes inserted (Kruskal). Between terms of equal size it is equality.
+/// `s` homeomorphically embeds in `t`: `t` is `s` with nodes inserted (Kruskal). Between terms of equal size it is equality,
+/// and a larger term never embeds. Each pair of subterms is decided once (`seen`), so a call takes at most |subterms of `s`|
+/// x |subterms of `t`| steps; the plain recursion took exponentially many on chains of one operator
+/// (`embedding_long_chains_finishes`).
 fn embeds(s: &Term, t: &Term) -> bool {
-    let couple = match (*s.node(), *t.node()) {
-        (Node::V(i), Node::V(j)) => i == j,
-        (Node::Zero, Node::Zero) | (Node::Ones, Node::Ones) => true,
-        (Node::Op(f, s1, s2), Node::Op(g, t1, t2)) => f == g && embeds(&s1, &t1) && embeds(&s2, &t2),
-        _ => false,
-    };
-    couple || matches!(*t.node(), Node::Op(_, t1, t2) if embeds(s, &t1) || embeds(s, &t2))
+    fn go(s: Term, t: Term, seen: &mut hashbrown::HashMap<(Term, Term), bool>) -> bool {
+        if s.size() >= t.size() {
+            return s == t;
+        }
+        if let Some(&e) = seen.get(&(s, t)) {
+            return e;
+        }
+        let Node::Op(g, t1, t2) = *t.node() else { unreachable!("a term larger than another is an Op") };
+        let e = matches!(*s.node(), Node::Op(f, s1, s2) if f == g && go(s1, t1, seen) && go(s2, t2, seen)) || go(s, t1, seen) || go(s, t2, seen);
+        seen.insert((s, t), e);
+        e
+    }
+    go(*s, *t, &mut hashbrown::HashMap::new())
 }
 
 /// `t` (over `k` variables) rewritten bottom-up, with the plan of `t = t'` (`Compiler` proves it). Rewriting is deterministic apart from
@@ -2103,8 +2112,63 @@ fn cut_by(path: &[Term], t: &Term) -> bool {
 
 /// The index of the innermost term on `path` that cuts `t`.
 fn cut_at(path: &[Term], t: &Term) -> Option<usize> {
-    let size = t.size();
-    path.iter().rposition(|s| s.size() <= size && embeds(s, t))
+    path.iter().rposition(|s| embeds(s, t))
+}
+
+/// `embeds` on chains of one operator: `s` is y under 50 `add(_, x)` nodes and `t` is z under 60, so `s` does not embed,
+/// and the plain recursion tries every way to place `s`'s 50 nodes among `t`'s 60 (about C(60, 10) = 7.5e10 calls). A
+/// sweep's mine spun on such a pair for hours (docs/tier-cycle.md, "The hang"). With y at the bottom of both, `s` embeds.
+#[test]
+fn embedding_long_chains_finishes() {
+    let chain = |leaf, n| (0..n).fold(Term::v(leaf), |c, _| Term::op(ADD, c, Term::v(0)));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let s = chain(1, 50);
+        let _ = tx.send((embeds(&s, &chain(2, 60)), embeds(&s, &chain(1, 60))));
+    });
+    assert_eq!(rx.recv_timeout(std::time::Duration::from_secs(10)), Ok((false, true)), "an answer within 10 s");
+}
+
+/// `embeds` gives the plain recursion's answer (Kruskal's definition, kept here as the reference) on every pair of terms over
+/// `add`, `and`, x, y, 0 and -1: those of up to 5 nodes against those of up to 7.
+#[test]
+fn embedding_matches_the_plain_recursion() {
+    fn plain(s: &Term, t: &Term) -> bool {
+        let couple = match (*s.node(), *t.node()) {
+            (Node::V(i), Node::V(j)) => i == j,
+            (Node::Zero, Node::Zero) | (Node::Ones, Node::Ones) => true,
+            (Node::Op(f, s1, s2), Node::Op(g, t1, t2)) => f == g && plain(&s1, &t1) && plain(&s2, &t2),
+            _ => false,
+        };
+        couple || matches!(*t.node(), Node::Op(_, t1, t2) if plain(s, &t1) || plain(s, &t2))
+    }
+    // the terms by size: sized[n] holds those of n nodes
+    let mut sized: Vec<Vec<Term>> = vec![vec![], vec![Term::v(0), Term::v(1), Term::ZERO, Term::ONES]];
+    for n in 2..=7 {
+        let mut ts = vec![];
+        for a in 1..n - 1 {
+            for x in &sized[a] {
+                for y in &sized[n - 1 - a] {
+                    ts.extend([ADD, AND].map(|o| Term::op(o, *x, *y)));
+                }
+            }
+        }
+        sized.push(ts);
+    }
+    let (small, all) = (sized[..=5].concat(), sized.concat());
+    let (mut pairs, mut yes, mut differ) = (0, 0, vec![]);
+    for s in &small {
+        for t in &all {
+            let e = embeds(s, t);
+            if e != plain(s, t) {
+                differ.push(format!("{} in {}: {e}", s.show(), t.show()));
+            }
+            (pairs, yes) = (pairs + 1, yes + e as usize);
+        }
+    }
+    println!("{pairs} pairs, {yes} embed");
+    assert!(differ.is_empty(), "{} of {pairs} differ, first: {:?}", differ.len(), &differ[..differ.len().min(5)]);
+    assert!(yes > 0 && yes < pairs, "both answers occur");
 }
 
 fn rewrite_memo(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
