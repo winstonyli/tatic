@@ -2356,10 +2356,73 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     at 250 52.7/152.5/162.8/215.9, .947/.848/.837/.784; at 100 57.1/150.2/160.4/208.2, .943/.850/.840/.792; at 250,
     n 688 51.1/129.9/141.9/187.3, .949/.870/.858/.813 (budget 1000 at n 688: 46.6/129.8/148.3/198.2, .953/.870/.852/
     .802). Band 11 is the one band that gets worse, at 100 (55.6 to 57.1) and at n 688 (46.6 to 51.1); band 13 at n
-    688 is level (129.8 to 129.9); every other band improves. The 4-growth sequence's build is at most 23% of job
-    CPU at 250 and 32% at 100 (4 threads times each arm's logged build walls, 55.7 and 50.1 s over
-    the salts: an upper bound; the walls vary 13.7-28.4 s with load). Not measured: budgets below 100, down to 0
-    (`MINE_JOIN_VISIT=0`, no code needed), 100 at larger n, and the budget without extras.
+    688 is level (129.8 to 129.9); every other band improves. With the mining this cheap, building the 4-growth
+    sequence is a third of the job: 34.0% of a sweep's busy samples at 100 (salt 1, run `2026-10-28-mjv-prof`,
+    samply on a debug-info build of the J exes' code, taken beside the next round's gate, so shares only; it repeats
+    that arm's rules), and the loops' 2-growth build another 12.4%. The two builds run one after the other, 4 threads
+    each, before any loop starts: 31 of the sweep's 56 s. Inside the 4-growth build, grouping (`pool_conjectures`)
+    is 52%: its exhaustive width-4 value vectors 31 points, reallocating each term's group key 9.4 (the 4096-byte
+    vector is copied, then one byte pushed), the rest in the frame and its inlined hashing of those keys. The
+    open-law filter is 33% (`Classes::normalize` 27), and growth and sorting the rest. Frames in
+    `docs/runs/2026-10-28/rows/2026-10-28-mjv-prof.txt`; what it means for a lazy build is in `PARKED.md`, "Build the
+    stream sequence lazily". At 250 the build's share is lower, at most 23% by 4 threads times that arm's logged
+    build walls (55.7 s over the salts; the walls vary 13.7-28.4 s with load).
+
+    A third round (runs `2026-10-28-mjv-j0` and `-mjv-j100n688`, set up as above: J0 and J100n688 are J250's bytes
+    with `MINE_JOIN_VISIT=0`, and 100 with `EXTRAS_N=688`) tried budget 0, a mine with no join at all, and 100 at n
+    688. Both lost salt 3 to a hang (below), so every arm is recounted here on salts 1-2 from its gate's per-salt lines
+    (base: the A arm of `2026-10-27-xgrid-f9900h2`; bands per 1000 laws from the arms' `held_bands.txt`, the
+    table-only lines left out; the script is `docs/runs/2026-10-28/scripts/s12.sh`):
+
+    | Mines' budget, n | Held-out M (salts 1/2) | Loop M | Rules | Job CPU | walk / match / op (G) | Bands 11/13/15/17 |
+    |---|---|---|---|---|---|---|
+    | base, no extras | 4170 (2037/2133) | 323 | 416 | 433 s | 1.06 / 3.34 / 0.75 | 50.7/174.3/204.4/267.9 |
+    | 1000, 319 (landed) | 3524 (1774/1750) | 295 | 693 | 1980 s | 4.58 / 18.06 / 4.17 | 53.5/148.6/165.0/222.2 |
+    | 500, 319 | 3445 (1754/1691) | 302 | 720 | 962 s | 1.97 / 8.40 / 2.14 | 51.2/148.3/161.0/215.6 |
+    | 250, 319 | 3427 (1737/1690) | 296 | 748 | 603 s | 0.83 / 3.57 / 1.12 | 49.7/148.6/160.5/214.3 |
+    | 100, 319 | 3398 (1730/1668) | 298 | 739 | 389 s | 0.23 / 1.28 / 0.54 | 54.8/148.0/157.6/207.7 |
+    | 0, 319 | 3513 (1752/1761) | 319 | 734 | 320 s | 0.00 / 0.15 / 0.17 | 66.3/152.3/162.2/206.6 |
+    | 1000, 688 (fresh 9900, f 0.08) | 3075 (1559/1516) | 294 | 878 | 5752 s | 12.92 / 56.93 / 11.31 | 45.0/127.0/145.8/196.5 |
+    | 250, 688 | 3025 (1533/1492) | 285 | 899 | 1122 s | 1.90 / 9.05 / 2.55 | 50.8/128.5/138.6/188.0 |
+    | 100, 688 | 2996 (1501/1495) | 287 | 968 | 626 s | 0.51 / 3.06 / 1.15 | 47.5/127.3/143.6/182.6 |
+
+    Budget 0 is no better than 100, and probably worse. Its held-out M is level with the landed design's (3513
+    against 3524) and above 100's by 115, on both salts but by 22 and 93, which is at the noise (about 115 for a
+    two-salt difference: the 140 above scaled by the root of 2/3). The clearer signs are loop M, the highest at n 319
+    (319 against 295-302, higher on both salts), and band 11: 66.3 against 49.7-54.8 at every budget from 100 to 1000
+    (band 13 152.3 against 148.0-148.6), while band 17 is level with 100's (206.6 to 207.7). Dropping the join
+    entirely (the walk falls below 0.001 G) saves only 18% of 100's job CPU (320 s against 389 s), since what is left
+    is the sequence builds, serving, and the mines' own rewriting and scoring (the held-out check runs outside job
+    CPU). So 100 stays the lowest budget measured to cost nothing, and "mines don't join" is not shown to be as good.
+    Why the easy band would lose first is not measured. Nor does budget 0 extend the rise in rules chosen (734
+    against 739 and 748 at 100 and 250, 693 at 1000), which the straggler guess above would predict; that guess
+    stays untested.
+
+    At n 688, 100 holds: held-out M 2996 against 3025 at 250 (salt 1 lower by 32, salt 2 higher by 3) and 3075 at
+    1000, loop M 287 against 285 and 294, at 56% of 250's job CPU and 11% of 1000's. Against the base it is -28.2% at
+    1.45x its job CPU on these salts (100 at n 319: -18.5% at 0.90x; 250 at n 688: -27.5% at 2.59x; landed: -15.5% at
+    4.57x), and against 100 at n 319 it is -402 at 1.61x. Along n, 319 to 688 lowers held-out M by 402 at both 100
+    and 250 (449 at 1000): the budget keeps the n-curve's gain. The mines choose 8% more rules at 100 than at 250 at
+    n 688, where at n 319 the two are level (739 and 748). Band 17 is the lowest of any arm (182.6); band 11 is 47.5
+    against 45.0 at 1000.
+
+    The hang. On salt 3 one mine of each arm went silent, its thread busy, until stopped by hand 1 h 53 min (budget
+    0) and 1 h 28 min (100 at n 688) after its log's last line, and the arm failed. Rerun alone on a debug-info build of the same code (runs
+    `2026-10-28-hang-j0` and `-hang-j100n688`, `docs/runs/2026-10-28/scripts/hang_probe.sh`), each hung again: a
+    mine thread passed 120 s of CPU within 4 minutes of the start, where a whole salt takes 46-62 s of wall. 40 stack samples of the spinning thread
+    (`stack_sample.ps1`, no debugger) put 38 in `embeds` and all 40 under `rewrite` called from a mine's
+    `Scorer::score_laws` (frames in `docs/runs/2026-10-28/rows/2026-10-28-hang-j0.txt` and `-hang-j100n688.txt`).
+    `embeds` (`tests/church_bv/rewrite.rs`) is the cycle cut's homeomorphic-embedding test, run by `cut_at` against
+    the terms on the rewrite path no larger than the term at hand, innermost first, both for the cut itself and for
+    the memo's check of a cached result. It recurses
+    both on "match at this node" and "skip a node of t", with no memo and no size check inside the recursion, so one
+    pair of subterms can be reached along exponentially many paths. The terms compared are deep: the last sample of
+    each rerun holds 138 and 496 nested `embeds` frames, so these configurations, on salt 3, reach a rewrite hundreds
+    of nodes deep where the recursion blows up. The code is on main; whether the landed configuration can reach such
+    a rewrite is untested (no sweep at it has hung: the landing gate's three salts and the other 12 salt runs of the
+    first two rounds, `-mjv-j500` and `-mjv-j250` then `-mjv-j100` and `-mjv-j250n688`, passed). The proposed fix is
+    in `PARKED.md`, "The embedding test's worst case". Not measured: salt 3 of
+    these two arms (until `embeds` is fixed), and the budget without extras.
 
 ## The rewriter and the mined rules
 
