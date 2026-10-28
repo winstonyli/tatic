@@ -529,7 +529,7 @@ pub const STREAM_BUDGET: usize = 20000;
 pub const STREAM_VARS: usize = 3;
 /// Growth levels of a stream.
 pub const STREAM_LEVELS: usize = 2;
-/// Phases of the stream sequence: phase 0 feeds the mines' extras, 1-3 the loops (spec §9).
+/// Phases of the stream sequence: 1-3 feed the loops (spec §9); 0 fed the mines' extras until 2026-10-28 and is unused.
 pub const STREAM_STRIDE: usize = 4;
 
 /// The 4096 pseudo-random width-8 inputs an open law must agree on (the probe's): width 4 only conjectured it.

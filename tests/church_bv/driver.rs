@@ -6,7 +6,8 @@
 //!
 //! The laws come from the streams (spec docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §9):
 //! `search::stream_sequence(salt, STREAM_LEVELS)`, the operator-set streams round-robin, and a phase is its residue
-//! class mod `STREAM_STRIDE` (`search::residue`). Phase 0 feeds the mines' extras, phases 1-3 the loops.
+//! class mod `STREAM_STRIDE` (`search::residue`). Phases 1-3 feed the loops; phase 0 fed the mines' extras until 2026-10-28
+//! and is unused (the stride stays, so the loops' laws do).
 //!
 //! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
 //! Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of phase SPHASE of the stream sequence at salt RULEMINER_SHUFFLE. It is
@@ -18,9 +19,10 @@
 //! unchanged), MACHINE_STATE [1] (a machine-state line at start and end, about 2 s each). Other variables pass through to the
 //! children: RULEMINER_FAST=1 (exact counts without proving every candidate, docs/tier-cycle.md "Miner speedups"),
 //! RULEMINER_SHUFFLE=<salt> (the stream sequence's salt).
-//! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md): every mine with rule rounds also mines a slice of the
-//! first `STREAM_EXTRAS` laws of phase 0 that the filter keeps (`scope_extras`, a shared 16% slice per loop); off with
-//! ABLATE=gen; GEN_DRAW=d draws them from the sequence at salt + 1000 d instead.
+//! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md, docs/tier-cycle.md "Count and slicing"): every mine
+//! with rule rounds also mines its own `EXTRAS_N` laws, the next the filter keeps from the stream sequence grown as deep
+//! as the held-out bands (`scope_extras`, fresh slices); off with ABLATE=gen; GEN_DRAW=d draws them from the sequence at
+//! salt + 1000 d instead.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
 //! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the stream sequence, built once
@@ -188,30 +190,38 @@ struct LoopCfg {
     env: Vec<(String, String)>,
 }
 
-/// Each mine's slice of a scope's filtered extras list of `len` laws, ordered (loop, mine): `loops` loops of `mines` mines,
-/// `n` laws each, a loop's mines sharing its one slice (shared slices, spec §3: the default arm s16 is shared, see `GEN_F`);
+/// Each mine's slice of a scope's extras list of `len` laws, ordered (loop, mine): `loops` loops of `mines` mines, each
+/// mine its own `n` laws (fresh slices: at equal laws per loop they beat a loop's mines sharing one slice, see `EXTRAS_N`);
 /// the shortfall if they do not fit.
 fn extra_slices(len: usize, loops: usize, mines: usize, n: usize) -> Result<Vec<std::ops::Range<usize>>, usize> {
-    if loops * n > len {
-        return Err(loops * n - len);
+    let k = loops * mines;
+    if k * n > len {
+        return Err(k * n - len);
     }
-    Ok((0..loops).flat_map(|i| (0..mines).map(move |_| i * n..(i + 1) * n)).collect())
+    Ok((0..k).map(|j| j * n..(j + 1) * n).collect())
 }
 
-/// The filter drops a twin of a served law (here through `sub(y, 0)`, which normalizes to `y`) and a law with a served
-/// law's skeleton and a law trivial after normalizing (its sides equal below their roots), and keeps an unrelated law.
+/// The filter drops a twin of a served law (here through `sub(y, 0)`, which normalizes to `y`), a law with a served
+/// law's skeleton, a law trivial after normalizing (its sides equal below their roots) and a twin of a held-out law, and
+/// keeps an unrelated law.
 #[test]
-fn filtered_drops_twins_skeletons_and_trivial_laws() {
+fn the_filter_drops_twins_skeletons_and_trivial_laws() {
     let p = |a: &str, b: &str| (parse_term(a), parse_term(b));
     let served = [p("and(or(x, y), z)", "or(and(x, z), and(y, z))")];
+    let held = [p("or(and(x, y), z)", "and(or(x, z), or(y, z))")];
     let twin = p("and(or(x, sub(y, 0)), z)", "or(and(x, z), and(y, z))");
     let skel = p("and(or(x, y), y)", "or(and(x, y), and(y, y))");
     let trivial = p("add(sub(x, x), y)", "add(0, y)");
+    let held_twin = p("or(and(x, sub(y, 0)), z)", "and(or(x, z), or(y, z))");
     let other = p("add(add(x, y), z)", "add(x, add(y, z))");
     // `Term` has no `Debug`, so compare texts
     let text = |(a, b): (Term, Term)| format!("{} = {}", a.show(), b.show());
-    let got: Vec<String> = filtered(&[twin, skel, trivial, other], &served).into_iter().map(text).collect();
-    assert_eq!(got, [other].map(text));
+    let kept = |held: &[(Term, Term)]| -> Vec<String> {
+        let keep = filter(&served, held);
+        [twin, skel, trivial, held_twin, other].into_iter().filter(|l| keep(l)).map(text).collect()
+    };
+    assert_eq!(kept(&[]), [held_twin, other].map(text), "with no held-out laws the held-out twin stays");
+    assert_eq!(kept(&held), [other].map(text));
 }
 
 /// Whether the mines of `cfg` take extras: it has mines with rule rounds, and `ABLATE=gen` is off.
@@ -239,29 +249,24 @@ fn schedule(mode: &str, offset: usize, b: usize, k: usize) -> Vec<Mine> {
     }
 }
 
-/// A loop's mines share one n-law range, and the loops' ranges are disjoint, in order.
+/// Every mine gets its own n laws: the slices are disjoint, in order, and cover the first loops × mines × n laws.
 #[test]
 fn extra_slices_are_disjoint_and_full() {
-    let shared = extra_slices(100, 3, 2, 10).unwrap();
-    assert_eq!(shared.len(), 6);
-    for l in 0..3 {
-        assert_eq!(shared[2 * l], shared[2 * l + 1], "{shared:?}");
-        assert_eq!(shared[2 * l].len(), 10);
-    }
-    assert!(shared[0].end <= shared[2].start && shared[2].end <= shared[4].start, "{shared:?}");
-    // a scope with no laws: n is 0 and the mine takes nothing
+    let fresh = extra_slices(100, 3, 2, 10).unwrap();
+    assert_eq!(fresh, (0..6).map(|j| 10 * j..10 * (j + 1)).collect::<Vec<_>>());
+    // n 0: every mine takes nothing
     assert_eq!(extra_slices(0, 1, 1, 0), Ok(vec![0..0]));
 }
 
 /// A list shorter than its slices returns the shortfall.
 #[test]
 fn extra_slices_refuse_a_short_list() {
-    assert_eq!(extra_slices(29, 3, 2, 10), Err(1));
-    assert!(extra_slices(30, 3, 2, 10).is_ok());
+    assert_eq!(extra_slices(59, 3, 2, 10), Err(1));
+    assert!(extra_slices(60, 3, 2, 10).is_ok());
 }
 
-/// Review Focus 4: the stream phases are disjoint residue classes, so phase 0 (the mines' extras) shares no law with
-/// the loops' phases 1-3, and their windows tile each class.
+/// Review Focus 4: the stream phases are disjoint residue classes, so no two of the loops' phases share a law, and
+/// their windows tile each class.
 #[test]
 fn stream_phases_are_disjoint_residue_classes() {
     let seq: Vec<(Term, Term)> = (0..200).map(|i| (Term::v(0), (0..i).fold(Term::v(1), |t, _| Term::op(ADD, t, Term::v(2))))).collect();
@@ -595,10 +600,6 @@ fn write_laws(setup: &Setup, env: &[(String, String)], path: &Path, var: &str) -
     (var.to_string(), path.display().to_string())
 }
 
-/// Laws in a stream mine's extras: the first this many of phase 0, about the size of cmp3d's generator list on the old
-/// gate (L 1644, docs/tier-cycle.md), so a mine sees as many extras as it did there (plan R2).
-const STREAM_EXTRAS: usize = 1650;
-
 /// The law window `get`'s `RULEMINER_*` variables select: phase `RULEMINER_PHASE`'s residue class of
 /// `stream_sequence(RULEMINER_SHUFFLE)` (spec §9, plan R1).
 fn window(get: &dyn Fn(&str) -> Option<String>) -> Vec<(Term, Term)> {
@@ -645,42 +646,41 @@ fn skeleton(l: &(Term, Term)) -> String {
     if a <= c { format!("{a} = {c}") } else { format!("{c} = {a}") }
 }
 
-/// The filter chain (spec §1): the laws of `source` that, against `served`, are neither a twin nor trivial after normalizing
-/// (a trivial law follows from equalities of its subterms, which may be served laws) and have no served law's skeleton, in
-/// `source`'s order.
-fn filtered(source: &[(Term, Term)], served: &[(Term, Term)]) -> Vec<(Term, Term)> {
-    let keys: hashbrown::HashSet<String> = served.iter().filter_map(|(a, b)| twin_key(a, b)).collect();
+/// The filter chain (spec §1) as a predicate: it keeps a law that is not trivial after normalizing (a trivial law follows
+/// from equalities of its subterms, which may be served laws), is no twin of a law in `served` or `held` (so no held-out
+/// law reaches a mine) and has no served law's skeleton.
+fn filter(served: &[(Term, Term)], held: &[(Term, Term)]) -> impl Fn(&(Term, Term)) -> bool {
+    let keys: hashbrown::HashSet<String> = served.iter().chain(held).filter_map(|(a, b)| twin_key(a, b)).collect();
     let skels: hashbrown::HashSet<String> = served.iter().map(skeleton).collect();
-    let mut out = vec![];
-    for l in source {
-        if twin_key(&l.0, &l.1).is_some_and(|k| !keys.contains(&k)) && !skels.contains(&skeleton(l)) {
-            out.push(*l);
-        }
-    }
-    out
+    move |l| twin_key(&l.0, &l.1).is_some_and(|k| !keys.contains(&k)) && !skels.contains(&skeleton(l))
 }
 
-/// The share of the filtered list each loop's mines take: 0.16 in shared slices had the lowest M of the generator arms
-/// over salts 1-20 (runs `2026-10-18-gen-round-a` and `-b`, docs/tier-cycle.md "The law generator as a stage"); the variable
-/// `GEN_F` overrides it.
-const GEN_F: f64 = 0.16;
+/// Laws each mine takes from its scope's extras (n): fresh slices of 317-319 had held-out M 5291 against 6400 for the
+/// earlier shared slices of the 2-growth phase 0, at 7.0 G of walk against 1.5 (run `2026-10-27-xgrid-f4950h`, gate
+/// salts 1-3); held-out M falls about 770 per e-fold of n with no knee
+/// and walk grows about linearly in n, so n is a price (docs/tier-cycle.md "Count and slicing"). The variable
+/// `EXTRAS_N` overrides it.
+const EXTRAS_N: usize = 319;
 
-/// Draws one scope's extras (spec §1-3): the first `STREAM_EXTRAS` laws of phase 0 of the stream sequence at the scope's salt
-/// (+ 1000 × `GEN_DRAW`, default 0), filtered against the laws `scope`'s loops serve; n = ⌊f × L⌋ (f: `GEN_F`) with L the
-/// filtered list, in shared slices. Sets each loop's `extras` and `extra_at`, or says by how much the list is short.
+/// Draws one scope's extras (spec §1-3; docs/tier-cycle.md "Count and slicing"): the stream sequence at the scope's
+/// salt (+ 1000 × `GEN_DRAW`, default 0) grown as deep as the deepest held-out band (`held_levels`), every phase and
+/// size, the first laws the filter keeps against the laws `scope`'s loops serve and the held-out laws, n (`EXTRAS_N`)
+/// for each mine in fresh slices. Sets each loop's `extras` and `extra_at`, or says by how much the sequence is short.
 fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
+    use crate::classes::{held_laws, held_levels, HELD_BANDS};
     let served: Vec<(Term, Term)> = scope.iter().flat_map(served_laws).collect();
+    let held: Vec<(Term, Term)> = HELD_BANDS.into_iter().flat_map(held_laws).collect();
     let c = scope[0].clone();
     let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
-    // the sequence is built once per process (its `STREAMS` line gives the time); the loops' windows usually built it first
-    let source = residue(&stream_sequence(salt, STREAM_LEVELS), 0, 0, STREAM_EXTRAS);
-    println!("GEN_LAWS streams: {} laws", source.len());
-    let laws = filtered(&source, &served);
-    let n = (setup.or("GEN_F", GEN_F) * laws.len() as f64) as usize;
-    let mines = c.mines.len();
-    let at = extra_slices(laws.len(), scope.len(), mines, n)
-        .map_err(|short| format!("{}: extras list of {} laws is {short} short of {} loops x {n}", c.out.display(), laws.len(), scope.len()))?;
-    println!("GEN {}: L {} n {n}", c.out.display(), laws.len());
+    let (n, mines) = (setup.or("EXTRAS_N", EXTRAS_N), c.mines.len());
+    // built once per process and salt (its `STREAMS` lines give the time)
+    let deep = stream_sequence(salt, held_levels(HELD_BANDS.into_iter().max().unwrap()));
+    let keep = filter(&served, &held);
+    let laws: Vec<(Term, Term)> = deep.iter().filter(|l| keep(l)).take(scope.len() * mines * n).copied().collect();
+    let at = extra_slices(laws.len(), scope.len(), mines, n).map_err(|short| {
+        format!("{}: the extras sequence of {} laws keeps {}, {short} short of {} loops x {mines} mines x {n}", c.out.display(), deep.len(), laws.len(), scope.len())
+    })?;
+    println!("GEN {}: n {n}, {} laws from a sequence of {}", c.out.display(), laws.len(), deep.len());
     let laws = std::sync::Arc::new(laws);
     for (i, cfg) in scope.iter_mut().enumerate() {
         cfg.extras = laws.clone();
