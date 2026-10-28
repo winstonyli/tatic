@@ -43,8 +43,23 @@
 40	church_bv::miner::Scorer::score_laws
 40	church_bv::job::Setup::or<usize>
 40	__xmm@1a3fe98f26d51ea4c0d11ec126f77609
+== last sample's stack words by function (a recursion's depth, at most: stale words count too)
+    138 church_bv::rewrite::embeds
+    137 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
+      6 church_bv::rewrite::rewrite
+      5 mi_free
+      5 church_bv::rewrite::rewrite_uncached
+      5 church_bv::rewrite::rewrite_memo
+      3 core::fmt::num::impl$63::fmt
+      3 church_bv::rewrite::rule_weight
+      2 wasmtime::runtime::vm::libcalls::raw::_::I_AM_USED
+      2 class type_info `RTTI Type Descriptor'
+      2 church_bv::rewrite::Term::show_into
+      1 std::sys::thread_local::native::eager::destroy<tatic::kernel::spaces::Spaces>
 == last sample's frames, innermost first (runs of a repeated frame collapsed)
       3 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
+      1 church_bv::rewrite::embeds
+      4 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
       1 church_bv::rewrite::embeds
       4 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
       1 church_bv::rewrite::embeds

@@ -1,6 +1,6 @@
 # run 2026-10-28-hang-j100n688: gate mjv-j100n688's hung salt 3 rerun on the debug-info build of the J exes' code
 # (MINE_JOIN_VISIT=100, EXTRAS_N=688, SALT=3; hang_probe.sh): loop 2's first mine again stopped logging; its
-# thread thread 55420 of pid 50536 passed 120 s of CPU and was sampled 40 times (stack_sample.ps1),
+# thread 55420 of pid 50536 passed 120 s of CPU and was sampled 40 times (stack_sample.ps1),
 # named by stack_names.sh. The stack words include stale return addresses: read the frames all 40 samples share.
 
 == rip functions (innermost frame), by samples
@@ -40,11 +40,26 @@
 40	church_bv::miner::impl$5::pick::closure$6
 40	church_bv::miner::Scorer::score_laws
 40	__xmm@1a3fe98f26d51ea4c0d11ec126f77609
+== last sample's stack words by function (a recursion's depth, at most: stale words count too)
+    547 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
+    496 church_bv::rewrite::embeds
+     32 church_bv::rewrite::Term::show_into
+     24 church_bv::rewrite::rewrite_uncached
+     24 church_bv::rewrite::rewrite
+     23 church_bv::rewrite::rewrite_memo
+      9 mi_free
+      5 core::slice::sort::unstable::quicksort::quicksort<church_bv::rewrite::Term,core::slice::impl$0::sort_unstable_by_key::closure_env$0<church_bv::rewrite::Term,u64,church_bv::rewrite::rewrite_memo::closure_env$6> >
+      5 class type_info `RTTI Type Descriptor'
+      4 church_bv::rewrite::zip_word<u8,7>
+      4 church_bv::rewrite::zip_word<u8,6>
+      3 core::fmt::num::impl$63::fmt
 == last sample's frames, innermost first (runs of a repeated frame collapsed)
       1 church_bv::rewrite::embeds
       1 church_bv::rewrite::Term::show_into
       2 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
       1 church_bv::rewrite::embeds
       1 church_bv::rewrite::Term::show_into
+      3 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
+      1 church_bv::rewrite::embeds
       3 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
       1 church_bv::rewrite::embeds

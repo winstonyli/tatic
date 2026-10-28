@@ -13,6 +13,8 @@ echo "== rip functions (innermost frame), by samples"
 grep '^rip ' "$f" | awk '{print $2}' | awk -F'\t' 'NR==FNR { n[$1]=$2; next } { print n[$1] }' "$t/map" - | sort | uniq -c | sort -rn | head -8
 echo "== functions reached from the stack words (outermost inlined frame), samples containing them"
 grep '^stack ' "$f" | awk -F'\t' 'NR==FNR { n[$1]=$3; next } { delete s; for (i = 2; i <= NF; i++) ; } { split($0, w, " "); for (i = 2; i in w; i++) if (n[w[i]] != "" && n[w[i]] != "??") s[n[w[i]]] = 1; for (k in s) c[k]++ } END { for (k in c) print c[k] "\t" k }' "$t/map" - | sort -rn | head -40
+echo "== last sample's stack words by function (a recursion's depth, at most: stale words count too)"
+tail -1 "$f" | tr ' ' '\n' | tail -n +2 | awk -F'\t' 'NR==FNR { n[$1]=$3; next } n[$1] != "" && n[$1] != "??" { print n[$1] }' "$t/map" - | sort | uniq -c | sort -rn | head -12
 echo "== last sample's frames, innermost first (runs of a repeated frame collapsed)"
 tail -1 "$f" | tr ' ' '\n' | tail -n +2 | awk -F'\t' 'NR==FNR { n[$1]=$3; next } n[$1] != "" && n[$1] != "??" { print n[$1] }' "$t/map" - | uniq -c | head -60
 rm -rf "$t"
