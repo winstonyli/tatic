@@ -96,7 +96,8 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   (e) *Slicing.* `extra_slices` gives both mines of a loop the same n laws; shared 0.16 beat fresh slices at f 0.08 on
   the families (round A, 2026-10-18), and was kept. On the streams with the deep source the order reverses: distinct
   laws per loop matter more than laws per mine, so fresh at f 0.08 gets 90% of shared 4950's held-out gain at half
-  its CPU ("Count and slicing", runs `2026-10-27-xgrid-f4950h`, `-f4950`). Status: held for v0.5, with (a).
+  its CPU, and at 9900 93% of shared's gain at 41% of its CPU ("Count and slicing", runs `2026-10-27-xgrid-f4950h`,
+  `-f4950`, `-f9900h2`). Fresh slices cap f at 1/6 (six mines per salt, disjoint). Status: held for v0.5, with (a).
 
 ## Rewriter, rule order and the floor
 
