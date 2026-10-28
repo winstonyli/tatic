@@ -1,0 +1,50 @@
+# run 2026-10-28-hang-j0: gate mjv-j0's hung salt 3 rerun on the debug-info build of the J exes' code
+# (MINE_JOIN_VISIT=0, SALT=3; hang_probe.sh): after two loops' results the sweep stopped logging; its
+# thread 45724 of pid 13232 passed 120 s of CPU and was sampled 40 times (stack_sample.ps1),
+# named by stack_names.sh. The stack words include stale return addresses: read the frames all 40 samples share.
+
+== rip functions (innermost frame), by samples
+     38 church_bv::rewrite::embeds
+      2 church_bv::rewrite::Term::node
+== functions reached from the stack words (outermost inlined frame), samples containing them
+40	wasmtime::runtime::vm::libcalls::raw::_::I_AM_USED
+40	std::sys::thread_local::native::eager::destroy<tatic::kernel::spaces::Spaces>
+40	std::sys::thread_local::destructors::list::register
+40	std::sys::thread::windows::impl$0::new::thread_start
+40	std::sys::backtrace::__rust_begin_short_backtrace<church_bv::miner::impl$5::pick::closure$9::closure_env$0,tuple$<> >
+40	mi_theap_malloc_zero_aligned_at_overalloc
+40	mi_page_queue_find_free_ex
+40	mi_page_extend_free
+40	mi_free_block_local
+40	mi_free
+40	hashbrown::raw::RawTable<tuple$<tuple$<church_bv::rewrite::Term,enum2$<church_bv::rewrite::Fired> >,tuple$<> >,allocator_api2::stable::alloc::global::Global>::reserve_rehash<tuple$<tuple$<church_bv::rewrite::Term,enum2$<church_bv::rewrite::Fired> >,tuple$<> >,allocator_api2::stable::alloc::global::Global,hashbrown::map::make_hasher::closure_env$0<tuple$<church_bv::rewrite::Term,enum2$<church_bv::rewrite::Fired> >,tuple$<>,hashbrown::hasher::DefaultHashBuilder> >
+40	hashbrown::raw::RawTable<tuple$<church_bv::rewrite::Term,church_bv::rewrite::Term>,allocator_api2::stable::alloc::global::Global>::reserve_rehash<tuple$<church_bv::rewrite::Term,church_bv::rewrite::Term>,allocator_api2::stable::alloc::global::Global,hashbrown::map::make_hasher::closure_env$0<church_bv::rewrite::Term,church_bv::rewrite::Term,hashbrown::hasher::DefaultHashBuilder> >
+40	enum2$<church_bv::rewrite::Plan>::law
+40	core::slice::sort::unstable::quicksort::quicksort<church_bv::rewrite::Term,core::slice::impl$0::sort_unstable_by_key::closure_env$0<church_bv::rewrite::Term,u64,church_bv::rewrite::rewrite_memo::closure_env$6> >
+40	core::ops::function::FnOnce::call_once<std::thread::lifecycle::spawn_unchecked::closure_env$1<church_bv::miner::impl$5::pick::closure$9::closure_env$0,tuple$<> >,tuple$<> >
+40	core::fmt::num::impl$63::fmt
+40	class type_info `RTTI Type Descriptor'
+40	church_bv::rewrite::zip_word<u8,7>
+40	church_bv::rewrite::zip_word<u8,6>
+40	church_bv::rewrite::zip_word<u8,2>
+40	church_bv::rewrite::zip_word<u8,1>
+40	church_bv::rewrite::zip_word<u8,0>
+40	church_bv::rewrite::rule_weight
+40	church_bv::rewrite::rewrite_uncached
+40	church_bv::rewrite::rewrite_plan
+40	church_bv::rewrite::rewrite_memo
+40	church_bv::rewrite::rewrite
+40	church_bv::rewrite::embeds
+40	church_bv::rewrite::ValueMemo<u8>::first_difference<u8>
+40	church_bv::rewrite::Term::show_into
+40	church_bv::rewrite::Term::occurrences
+40	church_bv::miner::impl$5::pick::closure$9::closure$0::closure$0::closure$0
+40	church_bv::miner::impl$5::pick::closure$6
+40	church_bv::miner::Scorer::score_laws
+40	church_bv::job::Setup::or<usize>
+40	__xmm@1a3fe98f26d51ea4c0d11ec126f77609
+== last sample's frames, innermost first (runs of a repeated frame collapsed)
+      3 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
+      1 church_bv::rewrite::embeds
+      4 __xmm@1a3fe98f26d51ea4c0d11ec126f77609
+      1 church_bv::rewrite::embeds
