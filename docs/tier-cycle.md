@@ -2271,11 +2271,18 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     its CPU, and fresh at 9900, f 0.08 gets 93% of shared 9900's gain (same 1375 distinct laws) at 41% of its CPU and
     45-48% of its work. Halving the laws per mine at equal distinct laws costs 2.4-2.7% of held-out M at both counts
     (5291 against 5167, 4690 against 4567; at 9900 worse on every salt, by 21-77). Fresh at 9900, f 0.08 against
-    fresh at 4950, f 0.16 (about the same laws per mine and CPU, work 9-14% higher): 4690 against 4885, so a larger
-    pool beats a larger share of it. Shared 3300 is dominated by fresh 4950, f 0.08, and fresh 4950, f 0.16 nearly so
+    fresh at 4950, f 0.16 (about the same laws per mine and CPU, work 9-14% higher): 4690 against 4885, inside the
+    arm noise below; the pool is not a variable of its own, since the source is a prefix of the sequence and the
+    slices are taken from its start, so arms with equal n mine the same laws. Shared 3300 is dominated by fresh 4950, f 0.08, and fresh 4950, f 0.16 nearly so
     by fresh 9900, f 0.08; the rest form the front. Gains keep coming with count (no plateau by 9900, where 1082 held-out laws or
-    twins were dropped from L 8598) while work grows faster than linearly in laws per mine (walk 5.8x for 3.4x laws
-    from 1650 to 4950). Per 1000 laws, bands 11/13/15/17: shared 4950 54.4/147.4/162.2/212.1, fresh f 0.08
+    twins were dropped from L 8598). Fit over the seven arms (2026-10-28, from the run folders): an arm is set by its
+    slicing and n; held-out M follows distinct laws per loop d, M = 9833 - 712 ln d (R2 0.975), and fresh slicing
+    adds about +124-154 at equal d; along the fresh line M = 9761 - 769 ln n, with no knee: each halving of n costs
+    about 530 M (8% of the base, 31% of fresh 9900's gain). Walk is linear in n above about 300 for the fresh
+    arms, -4.28 + 0.0355 n G (mine 0, from no rules, -1.85 + 0.0244 n; mine 1 40% of that per law); the shared
+    arms' extra cost is mine 1 re-reading mine 0's laws. Per-loop noise is about 33 M, so one 9-loop arm sum has
+    about 100 M. Of a mine's search time 99% is join searches that fail, most reaching the 1000-term visit budget.
+    Per 1000 laws, bands 11/13/15/17: shared 4950 54.4/147.4/162.2/212.1, fresh f 0.08
     53.9/150.6/165.6/219.8, fresh f 0.16 52.8/136.2/152.7/202.9, fresh 9900, f 0.08 46.6/129.8/148.3/198.2, shared
     9900 47.9/127.2/142.3/191.7: band 11 falls below the base's 53.1 only with 1276 or more distinct laws per loop.
     Peak process 5.1-6.7 GB (the 4-growth sequence built on 4 threads). The probe exes read the held-out files from
