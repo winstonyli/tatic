@@ -4994,7 +4994,7 @@ shares within about three points: the open-law filter (`scoped`) 46.5%, `pool_co
 only inlined under `zip_word`. `Plan::new` doubled (6.4% against 3.2), most of the rise in its allocations: mimalloc's
 `mi_arena_try_purge` is 3.8% self, 2.6 points of it under `Plan::new`'s (0.5% in run `2026-10-28-class-ids-prof`,
 under 0.6% in run `2026-10-28-zipword-prof`). The loops are the same, so this reads as the allocator returning memory
-on a timer, not as a change in the code; not counted.
+on a timer, not as a change in the code; not counted here (the "P1 spike" below counts purging).
 
 *The zero-fill patch on typed rows (2026-10-29, patch `docs/runs/2026-10-29/patches/zero_fill_on_7637e88.patch`):
 -1.4% with the streams built on one thread.* The patch above ("Without the fill's zero-fill") rebased onto `7637e88`.
@@ -5036,10 +5036,11 @@ exe in one session with `STREAM_THREADS=1`, rounds landed, patch, patch, landed 
 -0.6%, medians -0.4%), inside both arms' spreads (pooled (median - best) / best 0.5-0.75%), so the checks and the
 restructuring cost nothing measurable. The patch's exe counted 0.7% (best) and 0.9% (median) above its own counts a
 few hours earlier (`2026-10-29-zerofill2-icount`), so one stream thread does not remove the drift between batches of
-counts; its cause is not known. A profile after landing (run `2026-10-29-zerofill3-prof`, 56,466 busy samples at 8%
-machine load; frames in `docs/runs/2026-10-29/rows/2026-10-29-zerofill3-prof.txt`): `memset` 0.18% (4.1% self after
-typed rows); the open-law filter (`scoped`) 45.4%, `pool_conjectures` 28.4, `verdict` 18.7, `fill_op` 11.7 (8.8 points
-under `pool_conjectures`), `Term::show` 11.0, `ValueMemo::agree` 7.9; `mi_arena_try_purge` 3.8% self, 2.6 points of it
+counts; mimalloc's purging adds spread to counts ("P1 spike" below), but how the drift splits between purging and load
+is still open. A profile after landing (run `2026-10-29-zerofill3-prof`, 56,466 busy samples at 8% machine load;
+frames in `docs/runs/2026-10-29/rows/2026-10-29-zerofill3-prof.txt`): `memset` 0.18% (4.1% self after typed rows);
+the open-law filter (`scoped`) 45.4%, `pool_conjectures` 28.4, `verdict` 18.7, `fill_op` 11.7 (8.8 points under
+`pool_conjectures`), `Term::show` 11.0, `ValueMemo::agree` 7.9; `mi_arena_try_purge` 3.8% self, 2.6 points of it
 under `Plan::new`'s allocations, as after typed rows.
 
 *Why normalize is slow on a cold stream (2026-10-28, runs `2026-10-28-normalize-cold`, `-twice`, `-twice-all56`,
@@ -5063,10 +5064,11 @@ path, 156-437 ns a node between runs; in run `-twice-all56` builds that took 10,
 normalize itself took 4 of the 4.99 M faults. That mechanism is not tested. The shares are of a build before `cd7dacb`
 (4.9% less work); the miss times do not depend on it. Levers, none built (`PARKED.md`, "Cheaper first asks in the
 stream builds"): batching the `CLASS_UNUSABLE` lines (1.04 s, 2.3% of the build); building `bitwise_holds`' exhaustive
-inputs once per process (1.00 s, 2.2%); a normal-form memo per term in `stream_laws` (cleanup plan CU16, decided
-against 2026-10-27), which would remove most of the hit path (4.98 s, 10.8%); verdicts and lookups carried across
-processes (5.73 s, needs a stored format). Not measured: `carry_cap` reads `CARRY_CAP` through `Setup::var` (a
-string-keyed map and a lock) on each of the 4.49 M steps that have a representative.
+inputs once per process (1.00 s, 2.2%; F3 in the survey below); a normal-form memo per term in `stream_laws` (cleanup
+plan CU16, decided against 2026-10-27, now F1 below), which would remove most of the hit path (4.98 s, 10.8%);
+verdicts and lookups carried across processes (5.73 s, needs a stored format). Not measured: `carry_cap` reads
+`CARRY_CAP` through `Setup::var` (a string-keyed map and a lock) on each of the 4.49 M steps that have a
+representative.
 
 *Deriving the 2-growth sequence from the 4-growth build (survey, 2026-10-28; nothing built).* A sweep's parent builds
 both before any loop starts, the 2-growth one first (`scope_extras` calls `served_laws`, hence `window`, before
@@ -5087,6 +5089,222 @@ when the shallow sequence is asked first; `regenerate_held` would go from four b
 stays). The nesting was probed only at salt 1, on 3662451's copy of the build. Options: `PARKED.md`, "Derive the
 2-growth sequence from the 4-growth build". Found on the way: `scope_extras` builds the 4-growth sequence even with
 `EXTRAS_N=0`, where it takes no law from it.
+
+*Survey: the open-law filter, `Term::show` and mimalloc's purge (2026-10-29, profile `2026-10-29-zerofill3-prof` of the
+pin test at `c8c2e68`; read-only, each finding re-checked by a second agent told to refute it; nothing built for it,
+the "P1 spike" below came after).* Shares
+are of the profile's 56,466 busy samples: the two sequence builds alone (the 4-growth one about three quarters of
+them), on 4 stream threads, so they are time, not work. Lock, allocator and stall time weighs more in samples than in a
+count of instructions at one thread, and every instruction figure below but the P1 spike's is an estimate, not a
+count. In a sweep at a join budget of 100 the two builds were 46% of the busy samples (run `2026-10-28-mjv-prof`, before
+`cd7dacb`). The splits reproduce from the run's folder (`pcs.json.gz` with the `pcs.json.syms.json` beside it, the exe
+copy and its PDB; `llvm-symbolizer` on `PATH`) with `docs/runs/2026-10-29/scripts/`
+`filter_split.py <dir> <exe>` (the filter's samples by kind of work) and `callers.py <dir> <exe> <frame>... [--with
+<frame>...] [--without <frame>...]` (the samples holding any of the frame prefixes, by caller). Options have ids (F, S,
+P) for the order chosen at the end, and their points overlap, so they do not add: 3.0 of the plans built (6.14, most
+of F2's bound, inside F1's 17.63) are the purge sweep P1 removes (`_mi_arenas_collect`; 2.6 of it in
+`mi_arena_try_purge`'s own frame, 2.5 of that the stall), F1 shrinks what F2 acts on, and S1 and S3 share the sorts.
+
+*The filter (`stream_laws`' `scoped` closure, 45.41%).* `Classes::normalize` is 38.48: 20.85 on a term's first ask
+(verdicts: tree searches 8.92, `bitwise_holds` 9.56, of it building exhaustive inputs 4.26, filling vectors 3.50 and
+comparing them 1.80; other verdict work 0.17; class lookups 2.20) and 17.63 on every visit (plans built 6.14, lookup
+hits 5.23, drops 0.27, the walk and the rest 5.98). `shuffled` is 3.58, the width-8 refuter (`r8.agree`) 2.69
+(filling 1.40, comparing 1.29), the closure's own drops 0.63 (`Rc` drops: the plan is the one `Rc` it gets back from
+`normalize`) and the rest 0.03. The causes:
+- `pool_conjectures` pairs every member of a group with its head (`(g[0], t2)`), so the filter normalizes the head once
+  per conjecture. A 4-growth build makes 26.64 M node visits for 2.797 M distinct arguments (run
+  `2026-10-28-normalize-cold-distinct`): 12.18 M of operator nodes, 4.4 per distinct argument, from the repeated heads
+  and from subterms shared across terms (the log does not split them), and 14.46 M (54%) of leaves, of five kinds
+  (`NODE` and `NODE_OP` in the raw `out.log` of run `2026-10-28-normalize-cold-once-all56`).
+- `normalize` builds a plan at every node (`Plan::refl`, `cong`, `trans`), and the filter reads only the normal form.
+- `bitwise_holds` builds up to five exhaustive input memos (widths 1-5, `k` vectors each) per call: all five unless the
+  sides differ at a narrower width, which is rare here.
+- `first_difference` compares element by element (`(0..tries).find(|&i| x[i] != y[i])`).
+- `shuffled` formats a `String` per law to hash it.
+
+`normalize`'s normal form is a pure function of the table, `n`, `k`, the carry cap and the term (`step`, `verdict` and
+`tree_encoding` are pure in their keys), and `r8` is a cache. `normalize` also records each step in `job.table_steps`
+and builds a real plan unless `job.rules().score_only`; `stream_laws` never reads `table_steps` back and drops every
+plan unread, so no memo or reordering of this work can change the laws. Options, in points of busy samples:
+- **F1.** A normal-form memo per `stream_laws` call (a memo parameter on `normalize`, leaves answered without it):
+  about 9-13. The 2.28 M top-level calls (both sides of each of the 1,139,766 grown laws) and the two child calls of
+  each of the 2.797 M evaluations remain, 7.87 M of the 26.64 M visits, so at equal cost per visit it saves
+  17.63 × (1 - 7.87/26.64) = 12.4. These are the 4-growth build's counts (its 2.797 M distinct arguments summed over
+  its 56 `stream_laws` calls, each counting its own), applied to both builds' points; over both builds 30.0% of the
+  visits remain, 12.3, and the ranges below become 9.1-12.2 and 11.8-12.7. Two corrections, neither counted, pull
+  opposite ways. The visits that remain are at most half leaves (only a law's head can be one, and every evaluated
+  node but the few whose children are both leaves has an operator child), against 54% of all of them, so the visits
+  removed are the cheaper mix: 9.2-12.3 if a leaf costs 0.3-0.5 of an operator visit (the low end if none of the
+  visits that remain is a leaf, the high end if half are). And of the calls that remain only the 2.797 M evaluations
+  do a visit's work; the others that are not leaves (1.1-5.1 M) are memo hits, one probe each: with both corrections,
+  leaves at 0.3-0.5 and a hit at half an operator visit, 11.9-12.8. Neither figure charges the 2.797 M misses' probes
+  and inserts. About 1.6-2.2 of F1's saving is the purge sweep under the plans built (P1: its 3.02 points there, times
+  the saving's 52-73% share of the 17.63). `normalize`'s present hit path (the per-visit work on a term already seen:
+  the `lookup` lock, hashing, plan allocation) is 10.8% of a quiet one-thread 4-growth build's time before `cd7dacb`
+  ("Why normalize is slow on a cold stream"), and F1 removes most of it; that path's share of instructions is
+  probably smaller (3-5%, an estimate). `Term::op` counts `Site::Op`, so the `op` totals of this workload's WORK lines
+  drop with it. `table_steps`, a set of distinct pairs, would not change: a memo hit only skips a `step` the same job
+  already took, and nothing wraps `normalize` in `steps_if_closed` (its one non-test user, the kernel-check task, and
+  its tests wrap `rewrite_plan`, which takes class-table steps itself, or bare inserts). A memo shared across
+  `steps_if_closed` calls would change it: a closed law's call would not retake the steps an earlier open law's call
+  took and dropped. It is the memo half of `PARKED.md`, "Build the stream sequence lazily, only as far as it is read;
+  memoize normal forms in its filter" (cleanup plan CU16).
+- **F2.** Counting mode for the filter (`job.with_rules(job.rules().counting(true), ..)`, as the test
+  `counting_and_compiling_agree` runs it; "Scoring builds no plans"): at most the plans built (6.14, 3.0 of it the
+  purge sweep P1 also removes) and the plans' drops (about 0.8: the `Rc` drops, 0.18 inside `normalize` and 0.63
+  after it). Once F1 lands the plans built scale with the visits that remain: at most 1.8 at equal cost per visit
+  (less if a memo hit builds no plan), 0.9 with P1's sweep gone.
+- **F3.** `bitwise_holds`' exhaustive inputs built once per process, shared by the threads and keyed by `(w, k)` (a
+  `OnceLock`; `ValueMemo` owns its `vars`, so they would sit behind an `Arc` or a static slice): 4.26. The probe above
+  measured them at 1.00 s of a 45.97 s one-thread build (2.2%, "Why normalize is slow on a cold stream"), so expect a
+  count saving nearer that 2.2% than these 4.26 points of time at 4 threads. Both callers gain (`verdict` and
+  `prove_eq`'s per-position step). It is one piece of `PARKED.md`, "Cheaper first asks in the stream builds".
+- **F4.** `first_difference` compares the slices whole first (`x[..tries] == y[..tries]`, a `memcmp` for `u8` and
+  `u128`) and scans only where they differ: the compare loops are 3.09 (bitwise 1.80, refuter 1.29). Not tried before.
+
+Rejected: refuting first, since `r8.agree` would run on every grown law instead of the open ones: 4.6 times as many at
+4 growths (1,139,766 against the 246,721 that `normalize` leaves open) and 7.2 at 2 (449,962 against 62,864; run
+`2026-10-28-stream-probe`), 5.1 over the profile's two builds (1,589,728 against 309,585). So the refuter's 2.69 points
+grow by at most 4.1 times themselves, about 11 more (5.3 for the compares, which scale with the laws; up to 5.8 for
+the fills, which grow with the distinct terms), to skip `normalize` for the 0.9% of grown laws it refutes over the two
+builds (1.1% at 4 growths; about 0.35); a
+process-wide normal-form memo on top of F1 (0.7-1.4 points, an estimate, for a lock per visit); a memo of
+`tree_encoding`'s raw tables (about 2 if half the calls repeat, not measured; all of `raw_table` is 4.08).
+
+*`Term::show` (11.00%; 16.28% with the `sort_by_cached_key` frames that use it as a key).* By caller: the pool sort
+(`terms.sort_by_cached_key(|t| (level[t], t.show()))` in `stream_laws`) 5.43, the conjecture sort in
+`pool_conjectures` 3.05, `shuffled`'s hash 1.82, the pin test's digest 0.44, the seeds sort 0.23, the `CLASS_UNUSABLE`
+lines 0.02; with the sorts' own frames, `stream_laws`' two sorts are 8.11, `pool_conjectures` 4.13 and `shuffled`
+3.58 (`callers.py` with `church_bv::rewrite::Term::show`, then with `alloc::slice::impl$0::sort_by_cached_key` added).
+Each call grows a `String` from empty (`show_into`): about 16.1 M calls over both builds (the seeds, each pooled term,
+both sides of each conjecture and of each shuffled law, and the digest; the counts of run `2026-10-28-stream-probe`),
+about 0.39 µs each at 4 threads (11.00% of 56,466 samples at 1 ms each). `shuffled` and the digest hash the string
+once and drop it; the sorts keep every key until the sort ends, and a term's key is an operand in about 2·log2(n) of a
+sort's n·log2(n) comparisons (2.05 points of `String` compares in the sorts' own frames: `callers.py` with the sort
+frame, `--with 'alloc::string::impl$84::cmp' --without church_bv::rewrite::Term::show`). The text order is the
+lexicographic order of the terms' preorder tokens ranked as text (`-1`, `0`, `add(`, `and(`, `lt(`, `or(`, `p`, `q`,
+`shl1(`, `shr1(`, `sub(`, `u`, `v`, `w`, `x`, `xor(`, `y`, `z`): equal token prefixes give equal text prefixes, and the
+one token that is a prefix of another, `x` of `xor(`, is followed by `,`, `)` or the end, all below `o` (checked on
+every term to size 5 and 47k random terms to size 17 by `docs/runs/2026-10-29/scripts/text_order_check.py`). Options:
+- **S1.** A structural `show_cmp` (token ranks compared in preorder, no strings), and the seeds, pool and conjecture
+  sorts by it (the pool sort over `(level, term)` items, with no `level` lookup inside the comparator). One mechanism
+  for every text-order site: this workload's three sorts and, outside it (no samples here), the rewriter's four
+  `show_cmp` uses, with no change of order or contract; the miner's and the table tests' sorts by `show()` could
+  follow. Unlike the structural operand order rejected in "Miner speedups", it is the same text order, so no mined
+  library moves. The keys' `show` calls are 8.71 points (5.43 + 3.05 + 0.23) and the sorts' own frames 3.53
+  (8.11 + 4.13 - 8.71; 2.05 of it `String` compares). In their place each of the n·log2(n) comparisons walks two
+  terms through interned nodes as far as their first differing token: the formats and key allocations go, but misses
+  on scattered nodes, which a count does not see, are new. So the saving (5-10 points, an estimate; at most 10.2 =
+  8.71 + 3.53 - 2.05 if a comparison costs no less than a `String` compare does now) needs a profile. The test
+  `show_cmp_is_the_text_order` checks only the first 2000 representatives in text order; its replacement should
+  compare against every term to size 5 and a sample of all representatives.
+- **S2.** `shuffled` hashes without a `String`: `show_into` writes through `fmt::Write` into the FNV state, the same
+  bytes in the same order, so the same permutation: about 2 (an estimate: 2.02 of `shuffled`'s 3.58 have a mimalloc
+  (`mi_`, `_mi_`), `church_bv::_::__rust_` or `alloc::raw_vec::` frame on the stack, 0.35 of them the purge sweep;
+  with purge off those are 1.21 of 2.80 (run `2026-10-29-purge-spike-prof`), so after P1 nearer 1.2; the walk and
+  the hash stay). If the test's digest also streams into its FNV state, up to 0.35 there (its 0.59 less the walk and
+  the multiply; 0.20 by the same frames).
+- **S3.** Drop the conjecture sort by making `shuffled` a total order (hash, then text), and take each group's head as
+  its minimum instead of sorting the pool; the seeds sort stays, since its order picks the terms the growth samples.
+  At salt 0, `RULEMINER_SHUFFLE`'s default, `shuffled` keeps the conjecture sort's order, so there the conjecture
+  sort stays, either in `pool_conjectures` or moved into `shuffled` after the filter, on the grown laws only
+  (1,139,766 of 1,838,265 conjectures at 4 growths, 449,962 of 851,901 at 2), roughly 40-50% less of it; the
+  pool-sort half applies at any salt. The pins (salt 1) do not cover salt 0, which needs its own check. At most about
+  7 more after S1 if S1 saves 5 (the low end of its range), about 2 if it saves 10: S1 and S3 together cannot exceed
+  the three sorts' 12.24 points (8.11 + 4.13) less what is left of the seeds sort, before the cost of the minimum
+  scan. It changes `pool_conjectures`' contract (it keeps its sort when `cap` is nonzero, since
+  `laws_survive_a_law_file` samples by stride over it; only `stream_laws`' `cap` 0 call drops it) and
+  `shuffle_is_a_fixed_permutation`.
+- **S4.** Presize `show`'s `String` to `5 * size - 3` (an upper bound, reached by terms of only shifts and `-1`): about
+  2.5-2.9 (an estimate: the 2.95 of `show`'s samples holding a mimalloc or `church_bv::_::__rust_` frame, less the
+  0.25 of the first allocation, which presizing keeps; the 4.09 holding `::reserve::do_reserve_and_handle` include
+  the growth logic too and are an upper bound), mostly covered by S1 and S2.
+
+Rejected: caching each term's text (about 0.7 GB, an estimate); a structural hash in `shuffled`, which changes the
+permutation and so both pinned sequences.
+
+*mimalloc's purge (4.95% inclusive).* `_mi_arenas_collect` is 4.95, `mi_arena_try_purge` 4.80 inclusive and 3.79 self,
+with 95% of the self samples on the instruction after its first load (`arena->memid.is_pinned`): a stall, not work.
+`VirtualFree` is 0.92, recommits 0.04. It runs only in the 4-growth build: none of `mi_arena_try_purge`'s samples in
+the run's first 6 s (seconds counted from the profile's first sample; 15 of `_mi_arenas_collect`'s, all at its entry,
+12 of them the clock read), 2.5% of second 6 (nearly all `VirtualFree`) and none of second 7, then 5-19% of each whole
+second's busy samples from 8 s to the end at 16 s (`_mi_arenas_collect` inclusive; `mi_arena_try_purge` self 4-17%).
+The mechanism (mimalloc v3.3.2 from `libmimalloc-sys` 0.1.49, `v3/src/arena.c`): a free into an arena that is not
+pinned (large-page arenas are) schedules a purge `purge_delay` (1 s) out and sets the process-wide expiry if none is
+set. Once that expiry passes, every
+`_mi_arenas_collect` (on a page abandoned or freed, and on a heap collect) that wins a one-thread guard (the others
+return at once) visits the arenas (`mi_arenas_try_purge`), stopping once a quarter of them plus one have purged. Only a
+visit of every arena that finds none purged and none with its own expiry still pending clears the process-wide expiry,
+which steady freeing does not allow: some arena always has one pending. The "at most one purge per delay cycle" store
+(`now + delay/10`) runs only when the expiry is set and not yet passed: the unforced calls (a page abandoned or freed,
+the periodic collect) have ruled that out, and only the forced or visit-all ones (`mi_collect(true)`, thread and
+process exit), rare here, can reach it. The self share swings between profiles of the same loops: 0.5% in run
+`2026-10-28-class-ids-prof`, at most about 0.6% in `2026-10-28-zipword-prof` (absent from its top 40), 3.8% in
+`2026-10-29-typedrows-prof` and here. A reading, not checked: the build turns large pages on (`.cargo/config.toml`; a
+sweep's children turn them off), so how many arenas get large pages decides the share. As work, the sweep was
+guessed at 0.1-0.5% of the run's ~300 G instructions (not derived: its samples are mostly one stalled load); the "P1
+spike" below found purging adds none to the runs that count lowest. Three earlier probes with purging off
+(`MIMALLOC_PURGE_DELAY=-1`) tied: a sweep's time and faults ("Survey: the OS kernel's 22.8%"), kernel time
+("Kernel scaling and the id arena") and faults (`docs/superpowers/specs/2026-09-30-bitvector-interface-design.md`,
+"Allocator purge is not it"). A fourth, with
+immediate purging (delay 0), left the miner's peak commit unchanged (run `2026-10-23-miner-mem-purge0`). None tested
+this workload's time: the sweep's probe set it only for the children, which run 28-68 ms each, so the 1 s delay never
+fired; the kernel-time probe read the accounted kernel/user split of a ~3 s `proof_cost_split`, which that section
+finds unreliable (total CPU stayed 2.70-2.91 s); the third counted faults in an n=512 scoped check; the fourth had no
+delay and measured memory. Options:
+- **P1.** Purge off in the harness (`mi_option_set(purge_delay, -1)`: the sweep returns at once and `_mi_os_purge_ex`
+  decommits nothing, so `mi_collect(true)` returns no memory either), through a typed binding for the functions:
+  `libmimalloc-sys` as a direct dependency with its `extended` feature, replacing the hand-declared `mi_collect`
+  (`classes.rs`) and `mi_option_get` (`machine.rs`), which a third declaration would otherwise join (`PARKED.md`,
+  "Class-table loose ends"). The crate has no constant for `purge_delay` (or `arena_reserve`), so its id, 15 in v3's
+  enum, stays a literal, while its `mi_option_large_os_pages` replaces `machine.rs`'s `6`. Memory is no longer
+  returned after the class build, so it stays out of the product. Estimated before the spike at up to 4.95 points of
+  time and, in instructions, the sweep's 0.1-0.5% plus the decommits' and refaults' kernel work; measured in the "P1
+  spike" paragraph below (no instructions saved in the runs that count lowest, less spread in the counts, the sweep
+  gone from the profile, busy samples down 8.9% and untimed times 5.8% and 10.6%, a direction only).
+- **P2.** `arena_reserve` at 256 MiB instead of the build's 64 MiB (`mi_arena_reserve` reads the option at each
+  reservation, so unlike large pages it can be set at run time, for every arena after the first, which the runtime's
+  first allocation reserves before the test runs; sizes double every 8 arenas): about 11 arenas to visit instead of
+  about 22 if the run reaches 3 GiB of arenas (its size is not measured), about 2 points of time (the 3.79 self stall,
+  if it scales with the arenas visited). "Allocation schemes against the size cost" found 256 MiB tied 64 MiB on CPU
+  only on a ~3 s `proof_cost_split`, shorter than the 6 s this profile ran before its first sweep and not checked for
+  sweeps, with 192 MB more peak private memory (1090 against 898 MB).
+- **P3.** Patch mimalloc to set the expiry to the earliest pending one instead of leaving it stale (about 6 lines of
+  C, through `[patch.crates-io]` or upstream): it keeps purging, removes the sweep and leaves `VirtualFree`.
+
+*Order chosen (2026-10-29).* P1 first, as a throwaway spike: a profile with purge off, and counts of the same exe in
+batches with purge on and off (if purging causes the batch-to-batch drift, it vanishes with purge off, and every later
+count A/B tightens). Then F4, F3 and F1; then S1 and S2. Each keeps both pinned sequences byte-identical and gets its
+own count A/B. F2, S3 and S4 wait on the options before them, and P2 and P3 on whether P1 lands (`PARKED.md`, "Options
+held behind the filter, `show` and purge survey").
+
+*P1 spike (2026-10-29, throwaway, reverted).* One exe, the `c8c2e68` code with
+`docs/runs/2026-10-29/patches/purge_spike_on_ab9eeba.patch` (on `ab9eeba`; `PURGE_OFF` in the exe's `.env` sets
+`purge_delay` to -1 at the test's start), run with purge on (A, the 1 s default) and off (B). Both sequences stay pinned
+with purge off at one stream thread (run `2026-10-29-purge-spike-pin-B`; A in `-pin-A`) and at four (`-prof`), so
+`c8c2e68`'s fill gives the same sequences when no freed page is returned to the OS and refilled with zeros (on these
+runs; not a proof for every path). Counts (runs `2026-10-29-purge-spike-icount-*`, 4 rounds of 3 runs per arm in two
+batches, A B B A then B A A B; `docs/runs/2026-10-29/rows/2026-10-29-purge-spike-icount.txt`): the best runs tie
+(298.66 G against 298.68), so purging adds no instructions to the runs that count lowest, but the purge-on rounds spread
+more: medians 299.16-304.86 G (a range of 1.9%) against 299.14-301.31 (0.7%), pooled (median - best) / best 0.016
+against 0.003. Purge off's 0.7% range is mostly the one round that started at 47% machine load; without it the
+purge-off rounds span 0.18%. The purge-on arm had loaded starts too (28% and 35%), so the arms are not load-matched;
+among the rounds that started at 14% load or less (2 with purge on, and purge off's same 3), purge on spans 1.40% and
+purge off 0.18%. With so few rounds this suggests that purging adds spread; it does not show how the 0.7-0.9% drift
+between batches ("Landed with both checks" above) splits between purging and load. A reading, not checked: purging
+is timed (the 1 s delay), so a run slowed by load purges and refaults more for the same work. Purge off drifted less
+from the first batch to the second (best +0.08%,
+298.68 to 298.91 G, pooled median +0.23%, against +1.20% and +1.15% with purge on), but that is one pair of batches,
+with second-batch rounds starting at 28% and 35% load with purge on and 14% and 47% with it off, so it has not been
+shown to make batches comparable; count A/Bs still need interleaved rounds in one batch. The profile with purge off (run
+`2026-10-29-purge-spike-prof`, `docs/runs/2026-10-29/rows/2026-10-29-purge-spike-prof.txt`): the sweep is gone
+(`_mi_arenas_collect` 4 samples against 2,797, 4.95%); the plans built fell from 3,469 to 1,758 samples, about the 1,707
+of the sweep under them; busy samples fell 8.9% (51,413 against 56,466), of which 2,793 are the sweep and about 2,260
+are not attributed (about 1,800 of those outside the filter). Time, from untimed pairs only: 39.68 against 42.12 s at
+one stream thread (-5.8%, the pin runs back to back), 14.41 against 16.12 s at four (-10.6%, against
+`2026-10-29-zerofill3-prof`, the unpatched `c8c2e68` exe six hours earlier, and more than the busy samples fell), so
+both give a direction only, and a time claim needs a timed A/B. P1 itself is held for the user's call (`PARKED.md`,
+"Options held behind the filter, `show` and purge survey").
 
 ## The kernel
 
@@ -6428,8 +6646,10 @@ bulk-freed arena of `Rc` nodes, because 16% of a scope's nodes outlive it. The s
    n=8: no change (medians 32-36 ms). On `proof_cost_split` (`scripts/cpu_ab.ps1`, 6 pairs) they won 6 of 6: CPU 3.02-3.20
    → 2.69-2.75 s (-12%), build 1.80-1.92 → 1.56-1.62 s, check 256-283 → 227-240 ms. Defender RTP off, load 2-8%.
    **Adopted (2026-10-14).** `.cargo/config.toml` compiles mimalloc's defaults in: large pages and a 64 MiB
-   `arena_reserve`. `mi_option_set` from `main` would be too late, because mimalloc reads its options and enables the
-   privilege when the process loads. `MIMALLOC_ALLOW_LARGE_OS_PAGES=0` turns them off for one run. The test
+   `arena_reserve`. `mi_option_set` from `main` would be too late for large pages, because mimalloc enables the
+   privilege when the process loads; `arena_reserve` is read at each reservation, so a set from `main` reaches every
+   arena after the first ("Survey: the open-law filter, `Term::show` and mimalloc's purge", P2).
+   `MIMALLOC_ALLOW_LARGE_OS_PAGES=0` turns them off for one run. The test
    `machine::mimalloc_defaults_to_large_pages` fails if the define stops reaching mimalloc (checked by building
    without the config). Every timing's machine-state line now ends `lockpriv=… pages=large|normal`. **Every timing in
    this file before this entry is on normal pages; later ones are on large pages unless they say otherwise.**

@@ -1,0 +1,63 @@
+# 2026-10-29-purge-spike-icount: retired instructions of search::stream_sequences_are_pinned (--exact --ignored), 3 runs
+# each on CPU 4 by ~/.claude/samply/icount.ps1, STREAM_THREADS=1 from each exe's .env. One exe, the c8c2e68 code with
+# docs/runs/2026-10-29/patches/purge_spike_on_ab9eeba.patch (throwaway): A = purge on (mimalloc's default 1 s delay),
+# B = PURGE_OFF=1 (purge_delay -1). Two batches, rounds A1 B1 B2 A2 (12:32-12:47) then B A A B (r2B1 r2A1 r2A2 r2B2,
+# 12:51-13:12); CPU load at each round's start 8-14% in the first batch, then 14, 28, 35 and 47% (other processes,
+# not identified); Defender real-time off. Pooled (12 runs each): best A 298.66 / B 298.68 G (a tie); median
+# A 303.49 / B 299.66 G; (median-best)/best A 0.0162, B 0.0033; stdev/mean A 0.0135, B 0.0058.
+# Round medians: A 299.16, 303.35, 304.86, 303.93 (range 1.90%); B 299.33, 299.14, 299.67, 301.31 (0.72%; 0.18%
+# without r2B2, the round at 47% load).
+# First batch to second (6 runs each): best A 298.66 -> 302.25 G (+1.20%), B 298.68 -> 298.91 (+0.08%); median
+# A 300.94 -> 304.39 (+1.15%), B 299.24 -> 299.92 (+0.23%).
+# Reading, not checked: purging adds a varying number of instructions to some runs and none to the best ones; load
+# adds more (r2B2), whatever counts in a run's scheduled intervals. In 6 of the 8 rounds (3 of 4 in each arm) the first
+# run is the round's highest. Before each round no exclusive CPU lease was live and the Samply task was Ready (checked
+# by hand before each launch; run.json records neither); each round ran icount.ps1 through run.ps1 -Kind probe.
+== A1 (2026-10-29-purge-spike-icount-A1, 12:32:06-12:35:35, CPU load 14% at start)
+run	pid	instructions
+1	3840	298660962971
+2	47584	299163707916
+3	55388	300051187716
+n 3  best 298,660,962,971  median 299,163,707,916  (median-best)/best 0.00168  max/best 1.00465
+== B1 (2026-10-29-purge-spike-icount-B1, 12:35:42-12:39:35, CPU load 8% at start)
+run	pid	instructions
+1	43560	301446641028
+2	40240	298691699884
+3	60408	299334845272
+n 3  best 298,691,699,884  median 299,334,845,272  (median-best)/best 0.00215  max/best 1.00922
+== B2 (2026-10-29-purge-spike-icount-B2, 12:39:43-12:43:04, CPU load 10% at start)
+run	pid	instructions
+1	27476	300213934472
+2	49212	299142248110
+3	25700	298677522251
+n 3  best 298,677,522,251  median 299,142,248,110  (median-best)/best 0.00156  max/best 1.00514
+== A2 (2026-10-29-purge-spike-icount-A2, 12:43:09-12:47:00, CPU load 12% at start)
+run	pid	instructions
+1	59472	303802236262
+2	17896	303345713062
+3	55632	301830121424
+n 3  best 301,830,121,424  median 303,345,713,062  (median-best)/best 0.00502  max/best 1.00653
+== r2B1 (2026-10-29-purge-spike-icount-r2B1, 12:51:22-12:55:04, CPU load 14% at start)
+run	pid	instructions
+1	28828	299663325576
+2	50396	300167251124
+3	56808	299666251004
+n 3  best 299,663,325,576  median 299,666,251,004  (median-best)/best 0.00001  max/best 1.00168
+== r2A1 (2026-10-29-purge-spike-icount-r2A1, 12:55:18-13:03:05, CPU load 28% at start)
+run	pid	instructions
+1	48548	310741641124
+2	51908	303636191968
+3	6984	304858389701
+n 3  best 303,636,191,968  median 304,858,389,701  (median-best)/best 0.00403  max/best 1.02340
+== r2A2 (2026-10-29-purge-spike-icount-r2A2, 13:03:12-13:07:09, CPU load 35% at start)
+run	pid	instructions
+1	7648	311961578249
+2	55044	303929652475
+3	49600	302253778050
+n 3  best 302,253,778,050  median 303,929,652,475  (median-best)/best 0.00554  max/best 1.03212
+== r2B2 (2026-10-29-purge-spike-icount-r2B2, 13:07:17-13:12:15, CPU load 47% at start)
+run	pid	instructions
+1	52820	304868956970
+2	58716	301310835137
+3	25704	298909055433
+n 3  best 298,909,055,433  median 301,310,835,137  (median-best)/best 0.00804  max/best 1.01994

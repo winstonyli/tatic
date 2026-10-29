@@ -1,0 +1,22 @@
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index d3f6be6..d0cd08e 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -720,7 +720,16 @@ fn a_stream_sequence_is_the_same_on_any_thread_count() {
+ #[test]
+ #[ignore]
+ pub fn stream_sequences_are_pinned() {
+-    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
++    // PURGE SPIKE (throwaway): PURGE_OFF in <exe>.env sets mimalloc's purge_delay (option 15 in v3) to -1, no purging.
++    if Setup::process().var("PURGE_OFF").is_some() {
++        unsafe extern "C" {
++            fn mi_option_set(option: std::ffi::c_int, value: std::ffi::c_long);
++            fn mi_option_get(option: std::ffi::c_int) -> std::ffi::c_long;
++        }
++        unsafe { mi_option_set(15, -1) };
++        println!("PURGE_DELAY {}", unsafe { mi_option_get(15) });
++    }
++    let deep =crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
+     let pinned = [(STREAM_LEVELS, 58125, 0x7703_133d_0c24_dbb2), (deep, 230801, 0x4bb4_78c5_da79_675b)];
+     let got: Vec<(usize, usize, u64)> = pinned
+         .iter()

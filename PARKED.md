@@ -315,27 +315,32 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   filter); the 4-growth build took 28.4 s on 4 threads (4 × 28.4 s is about 12% of salt 1's 959 s of job CPU, an
   estimate) and a sweep peaks at 5-6 GB (runs `2026-10-28-land-n319`, `-mjv-j250`, `-mjv-j100`). At a mines' join
   budget of 100 it was profiled: 34.0% of the sweep's busy samples, and the 2-growth build 12.4% more (run
-  `2026-10-28-mjv-prof`). Before 66a9810 the extras read phase 0's first 1650 of the 2-growth one. `stream_laws` filters (class-table normal forms, width-8 values) after `shuffled(laws, salt)`, so
-  lazy streams stopped at the read prefix give identical laws (cleanup plan CU17); a memo of normal forms per term in the
-  same filter was CU16. Why not: growing and grouping a stream's terms (`pool_conjectures`) is paid in full either way,
-  and since the per-tuple `verdict` loop went (CU15) the filter is 2.6% of a base sweep's samples against 5.8% for
-  grouping; the sequence as a whole fell from 109.5 to 23.3 s and is 10.6%. Either lever saves at most that 2.6%, and
-  the lazy one changes `stream_sequence`'s interface (a length per caller, or a locked lazy type). The sequence's wall
-  share went instead to building the 56 independent streams in parallel (cleanup plan CU18: 16.1 to 5.4 s on 4 threads,
-  `docs/tier-cycle.md`, "The streams in parallel"). The 4-growth build is the same shape, and laziness again saves
-  at most its filter: 33% of that build at budget 100, about 11% of the sweep, while grouping is 52% of it (about 18%
-  of the sweep: the exhaustive width-4 value vectors and, until `cd7dacb`, each term's 4097-byte group key) and
-  growth and sorting the rest, all paid in full (`docs/tier-cycle.md`, "A join budget for the mines alone"). Trigger: the filter grows again
-  (a costlier open or refutation check), or the 4-growth build's cost matters: met 2026-10-28 if the mines' join
-  budget lands at 100. Evidence: runs `2026-10-26-cu14-base-prof` and `2026-10-27-cu17-base-prof` (`PROF_PARENTS`
-  split of `stream_laws`, 2026-10-27), `2026-10-28-mjv-prof` (`PROF_THREAD` by the builds' thread ids);
-  `docs/tier-cycle.md`, "One exhaustive check for both". A probe split the build and found the loops' 2-growth build
-  inside the extras' 4-growth one (`docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside
-  the 4-growth one", run `2026-10-28-stream-probe`; deriving the first from the second is the entry "Derive the 2-growth
-  sequence from the 4-growth build"), and value-class ids for grouping were chosen (2026-10-28). The normal-form memo
-  would remove most of normalize's hit path, 4.98 s (10.8%) of a quiet one-thread 4-growth build before `cd7dacb`
-  (`docs/tier-cycle.md`, "Why normalize is slow on a cold stream"). Status: decided against (2026-10-27); held for the
-  join budget's landing, with cheaper grouping the larger lever (2026-10-28).
+  `2026-10-28-mjv-prof`). Before 66a9810 the extras read phase 0's first 1650 of the 2-growth one. `stream_laws`
+  filters (class-table normal forms, width-8 values) after `shuffled(laws, salt)`, so lazy streams stopped at the read
+  prefix give identical laws (cleanup plan CU17); a memo of normal forms per term in the same filter was CU16. Why not
+  (2026-10-27; for the memo, superseded: see the status): growing and grouping a stream's terms (`pool_conjectures`)
+  is paid in full either way, and since the per-tuple `verdict` loop went (CU15) the filter is 2.6% of a base sweep's
+  samples against 5.8% for grouping; the sequence as a whole fell from 109.5 to 23.3 s and is 10.6%. Either lever
+  saved at most that 2.6% then (the memo's figure is replaced by F1's in the survey named in the status; the lazy
+  build's stands), and the lazy one changes `stream_sequence`'s interface (a length per caller, or a locked lazy
+  type). The sequence's wall share went instead to building the 56 independent streams in parallel (cleanup plan
+  CU18: 16.1 to 5.4 s on 4 threads, `docs/tier-cycle.md`, "The streams in parallel"). The 4-growth build is the same
+  shape, and laziness again saves at most its filter: 33% of that build at budget 100, about 11% of the sweep, while
+  grouping is 52% of it (about 18% of the sweep: the exhaustive width-4 value vectors and, until `cd7dacb`, each
+  term's 4097-byte group key) and growth and sorting the rest, all paid in full (`docs/tier-cycle.md`, "A join budget
+  for the mines alone"). Trigger: the filter grows again (a costlier open or refutation check), or the 4-growth
+  build's cost matters: met 2026-10-28 if the mines' join budget lands at 100. Evidence: runs
+  `2026-10-26-cu14-base-prof` and `2026-10-27-cu17-base-prof` (`PROF_PARENTS` split of `stream_laws`, 2026-10-27),
+  `2026-10-28-mjv-prof` (`PROF_THREAD` by the builds' thread ids); `docs/tier-cycle.md`, "One exhaustive check for
+  both". A probe split the build and found the loops' 2-growth build inside the extras' 4-growth one
+  (`docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside the 4-growth one", run
+  `2026-10-28-stream-probe`; deriving the first from the second is the entry "Derive the 2-growth sequence from the
+  4-growth build"), and value-class ids for grouping were chosen (2026-10-28). The normal-form memo would remove most
+  of normalize's hit path, 4.98 s (10.8%) of a quiet one-thread 4-growth build before `cd7dacb` (`docs/tier-cycle.md`,
+  "Why normalize is slow on a cold stream"). Status: the lazy build decided against (2026-10-27), held for the join
+  budget's landing with cheaper grouping the larger lever (2026-10-28); the normal-form memo (F1) held for F4 and F3,
+  which come before it in the order chosen 2026-10-29 (`docs/tier-cycle.md`, "Survey: the open-law filter,
+  `Term::show` and mimalloc's purge"), reversing the 2026-10-27 call before the join budget lands.
 - **Derive the 2-growth sequence from the 4-growth build** — what: keep each stream's 4-growth list with each law's
   depth and merge the lists restricted to depth 2, instead of building the 2-growth sequence separately; filtering the
   merged 4-growth sequence is not exact. Design options (the user's call): (a) one memo per salt holding the
@@ -354,14 +359,28 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Cheaper first asks in the stream builds** — what: the once-per-process work `Classes::normalize` does for a term
   it has not seen (6.78 s, 14.8% of a quiet one-thread 4-growth build before `cd7dacb`). Pieces, each exact: write the
   `CLASS_UNUSABLE` lines in one batch rather than one `println` each (1.04 s, about 100 µs a line); build
-  `bitwise_holds`' fifteen exhaustive input sets once per process rather than per call (1.00 s at 4 growths, 0.58 s at
-  2); take the `CARRY_CAP` read (`Setup::var`: a string-keyed map and a lock) off the path of each of the 4.49 M steps
-  that have a representative (not measured); carry verdicts
+  `bitwise_holds`' exhaustive input memos (widths 1-5, `k` vectors each; fifteen over k = 1-3) once per process
+  rather than per call (1.00 s at 4 growths, 0.58 s at 2); take the `CARRY_CAP` read (`Setup::var`: a string-keyed
+  map and a lock) off the path of each of the 4.49 M steps that have a representative (not measured); carry verdicts
   and lookups across processes (5.73 s, needs a stored format and its invalidation). Why held: found by a probe on
   one thread, not yet weighed against the sweep (the two builds were 46% of the busy samples at a join budget of 100,
-  run `2026-10-28-mjv-prof`) or counted. Trigger: the user's call, or a count of the pin test showing normalize's misses still above about
-  10% of a build after `cd7dacb`. Evidence: `docs/tier-cycle.md`, "Why normalize is slow on a cold stream" (runs
-  `2026-10-28-normalize-cold*`, 2026-10-28). Status: held for the user's call (2026-10-28).
+  run `2026-10-28-mjv-prof`) or counted. Trigger: the user's call, or a count of the pin test showing normalize's
+  misses still above about 10% of a build after `cd7dacb`. Evidence: `docs/tier-cycle.md`, "Why normalize is slow on
+  a cold stream" (runs `2026-10-28-normalize-cold*`, 2026-10-28). Status: the exhaustive inputs (F3) held for F4,
+  which comes before them in the order chosen 2026-10-29 (`docs/tier-cycle.md`, "Survey: the open-law filter,
+  `Term::show` and mimalloc's purge"); the rest held for the user's call (2026-10-28).
+- **Options held behind the filter, `show` and purge survey** — what: P1, mimalloc's purge off in the harness
+  (`mi_option_set(15, -1)`, spiked and reverted: `docs/runs/2026-10-29/patches/purge_spike_on_ab9eeba.patch`); F2,
+  counting mode for the open-law filter; S3, dropping the conjecture sort (`shuffled` a total order, each group's head
+  its minimum); S4, presizing `show`'s `String`; P2, `arena_reserve` at 256 MiB; P3, a mimalloc patch that keeps the
+  purge expiry current. Why held: P1's spike tied on the best counts and gave a time direction from untimed pairs
+  only, and landing it keeps memory after the class build; each other one's size depends on an option before it in
+  the chosen order (F1 for F2, S1 and S2 for S3 and S4), or, for P2 and P3, on whether P1 lands. Trigger: P1 on the
+  user's call (land it, scope it, time it first or drop it); F2 when a profile after F1 still shows plans built; S3
+  when one after S1 and S2 still shows the sorts; S4 if S1 or S2 is not built; P2 or P3 if P1 does not land.
+  Evidence: `docs/tier-cycle.md`, "Survey: the open-law filter, `Term::show` and mimalloc's purge" (profile
+  `2026-10-29-zerofill3-prof`, 2026-10-29; the P1 spike's results in its "P1 spike" paragraph). Status: P1 held for
+  the user's call; F2 held for F1, S3 and S4 for S1 and S2, P2 and P3 for P1's outcome.
 - **A prefilter before the full value vectors** — what: in `pool_conjectures`, group the terms first by their values
   on 16 fixed inputs and fill full width-4 vectors only for terms that share a bucket; exact, since equal vectors agree
   on any subset. Why parked: 52% of a stream's terms are in true groups, so it can skip at most about half the fills;
@@ -409,4 +428,4 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Kernel work instrumentation (`record-defeq`: per-traversal visit counts, beta steps, nodes built, the defeq log, `law_work_report`, `walk_counts_on_hard_queries`) and the `kernel_lazy` evaluator** — why: deleted from the trusted kernel (38 probe sites, 26 hand-numbered slots); their findings are in `docs/tier-cycle.md`'s tables. Trigger: a new question about the kernel's own deterministic work, or a second evaluator to test `def_eq` against; restore with `git revert 306a968` (expect merges against later kernel changes, C6's `Checker` first). Evidence: commit 306a968, 2026-10-21. Status: parked (removed by decision, C11 ruling 2026-10-21).
 - **Ignored probes nothing cited** — (a) nine (`scaling_probe`, `skeleton_probe` with `add_mode`'s skeleton modes, `add_comm_scaling`, the 64-bit conv add, `profile_add_zero_n256`, `raw_table_probe`, `machine_lemma_probe`, `lemma_overhead_probe`, `three_var_probe`), commit 7865865, 2026-10-21 (C13); (b) the 2026-09-30 bitvector spec's probes (`shared_carry_scaling`, `proof_size_scaling`, `add_zero_lemma_scaling`, `add_comm_rejection_probe`, `add_shared_zero_scaling`, `whole_check_time`, `table_lookup_cost_by_size`), `tree_proof_cost_by_carries` and `tests/proof_scope.rs` (scoped against unscoped universal proofs, DAG against tree size), cleanup CU7, 2026-10-27. Why: no live doc, script or entry named them; only done specs, read as history. Trigger: one of their questions coming back; restore with `git revert` of the named commit. Status: parked (removed by decision).
 - **Counters as return values (machine fallbacks, cycle cuts, join cost returned by rewriting rather than accumulated in the job)** — why: by decision 2026-10-21; the rewrite-context plan (`docs/superpowers/plans/2026-10-21-rewrite-context.md`, D1) moves them into `Job`, and cleanup C2 (2026-10-22) turns the callers' before/after delta reads into one `Job::measured(budget, f)` / `Job::spent(f)` call returning a `Spent`. Trigger: the delta reads grow again or cause a bug. Evidence: after C2 (2026-10-22, `grep -nE "= *job\.(rw\.(budget|fallbacks|cycle_cuts)|join_cost)|\(job\.rw\." tests/church_bv/*.rs`) no caller snapshots a counter. What is left: `Job::spent` itself and the rewriter's own memo and replay bookkeeping (`rewrite_memo`, `check_replay`, `rewrite_law`'s per-side budget in rewrite.rs). Status: parked.
-- **Class-table loose ends (final review M6, M7, 2026-10-23)** — the table pin and `class_hash` use std's `DefaultHasher`, whose algorithm a toolchain update may change (the pin would fail with the table unchanged); `mi_collect` is declared by hand, since `mimalloc` keeps `libmimalloc_sys` private (`extern crate libmimalloc_sys as ffi`), so a typed binding needs `libmimalloc-sys` as a direct dependency with its `extended` feature. Why: latent, no wrong answer today. Trigger: a toolchain bump failing the pin, or a `mimalloc` upgrade. Evidence: `tests/church_bv/classes.rs` (`class_hash`, `Classes::get`, `the_full_table_is_pinned`). Status: parked.
+- **Class-table loose ends (final review M6, M7, 2026-10-23)** — the table pin and `class_hash` use std's `DefaultHasher`, whose algorithm a toolchain update may change (the pin would fail with the table unchanged); `mi_collect` and `mi_option_get` (with the option's id as the literal `6`) are declared by hand, since `mimalloc` keeps `libmimalloc_sys` private (`extern crate libmimalloc_sys as ffi`), so a typed binding needs `libmimalloc-sys` as a direct dependency with its `extended` feature. Why: latent, no wrong answer today. Trigger: a toolchain bump failing the pin, a `mimalloc` upgrade, or a third mimalloc function (P1 in `docs/tier-cycle.md`, "Survey: the open-law filter, `Term::show` and mimalloc's purge", if it lands; its spike ran 2026-10-29). Evidence: `tests/church_bv/classes.rs` (`class_hash`, `Classes::get`, `the_full_table_is_pinned`), `tests/church_bv/machine.rs` (`large_pages_option`), 2026-10-29. Status: parked.
