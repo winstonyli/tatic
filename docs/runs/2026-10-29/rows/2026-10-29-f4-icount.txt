@@ -1,0 +1,35 @@
+# 2026-10-29-f4-icount: retired instructions of search::stream_sequences_are_pinned (--exact --ignored), 3 runs
+# each on CPU 4 by ~/.claude/samply/icount.ps1, STREAM_THREADS=1 from each exe's .env. L = c8c2e68 (the
+# 2026-10-29-zerofill3 batch's L.exe, not rebuilt); F = c8c2e68 plus F4, `first_difference` comparing the slices whole
+# before scanning (tests/church_bv/rewrite.rs; built 13:24 after its suite and pins passed, runs 2026-10-29-f4-suite and
+# -f4-pin). Both `cargo test --release`, same target dir. Rounds L1 F1 F2 L2, 13:25-13:44, CPU load 18-30% at each
+# round's start (other processes, not identified), Defender real-time off, mimalloc's purge on (the default).
+# Pooled (6 runs each): best F/L 274.66 / 298.23 = 0.9210 (-7.9%), median 275.54 / 306.35 = 0.8994 (-10.1%). Every F run
+# counts below every L run (F max 278.37, L min 298.23). Spreads (median-best)/best F 0.0032, L 0.0272; L's rounds
+# drift (medians 308.51 then 301.46, 2.3%), F's do not (275.03, 275.74). The saving is far above the 3.09 points of
+# busy samples the survey gave the compare loops: a tight scalar loop runs many instructions per cycle, so its share of
+# instructions exceeds its share of time (a reading, not checked; a profile after landing shows the time).
+== L1 (2026-10-29-f4-icount-L1, 13:25:06-13:29:35, CPU load 24% at start)
+run	pid	instructions
+1	11688	311543260210
+2	53096	308507237518
+3	17860	308257636296
+n 3  best 308,257,636,296  median 308,507,237,518  (median-best)/best 0.00081  max/best 1.01066
+== F1 (2026-10-29-f4-icount-F1, 13:29:42-13:34:07, CPU load 18% at start)
+run	pid	instructions
+1	60188	274663039348
+2	17860	275026407216
+3	18168	278374187427
+n 3  best 274,663,039,348  median 275,026,407,216  (median-best)/best 0.00132  max/best 1.01351
+== F2 (2026-10-29-f4-icount-F2, 13:34:17-13:40:18, CPU load 30% at start)
+run	pid	instructions
+1	34980	275329054936
+2	48888	276568576341
+3	40784	275741981390
+n 3  best 275,329,054,936  median 275,741,981,390  (median-best)/best 0.00150  max/best 1.00450
+== L2 (2026-10-29-f4-icount-L2, 13:40:24-13:43:52, CPU load 21% at start)
+run	pid	instructions
+1	41000	304437835979
+2	45100	298233260653
+3	56444	301457590927
+n 3  best 298,233,260,653  median 301,457,590,927  (median-best)/best 0.01081  max/best 1.02080

@@ -338,8 +338,8 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   4-growth build"), and value-class ids for grouping were chosen (2026-10-28). The normal-form memo would remove most
   of normalize's hit path, 4.98 s (10.8%) of a quiet one-thread 4-growth build before `cd7dacb` (`docs/tier-cycle.md`,
   "Why normalize is slow on a cold stream"). Status: the lazy build decided against (2026-10-27), held for the join
-  budget's landing with cheaper grouping the larger lever (2026-10-28); the normal-form memo (F1) held for F4 and F3,
-  which come before it in the order chosen 2026-10-29 (`docs/tier-cycle.md`, "Survey: the open-law filter,
+  budget's landing with cheaper grouping the larger lever (2026-10-28); the normal-form memo (F1) held for F3, which
+  comes before it in the order chosen 2026-10-29 (`docs/tier-cycle.md`, "Survey: the open-law filter,
   `Term::show` and mimalloc's purge"), reversing the 2026-10-27 call before the join budget lands.
 - **Derive the 2-growth sequence from the 4-growth build** — what: keep each stream's 4-growth list with each law's
   depth and merge the lists restricted to depth 2, instead of building the 2-growth sequence separately; filtering the
@@ -366,9 +366,9 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   one thread, not yet weighed against the sweep (the two builds were 46% of the busy samples at a join budget of 100,
   run `2026-10-28-mjv-prof`) or counted. Trigger: the user's call, or a count of the pin test showing normalize's
   misses still above about 10% of a build after `cd7dacb`. Evidence: `docs/tier-cycle.md`, "Why normalize is slow on
-  a cold stream" (runs `2026-10-28-normalize-cold*`, 2026-10-28). Status: the exhaustive inputs (F3) held for F4,
-  which comes before them in the order chosen 2026-10-29 (`docs/tier-cycle.md`, "Survey: the open-law filter,
-  `Term::show` and mimalloc's purge"); the rest held for the user's call (2026-10-28).
+  a cold stream" (runs `2026-10-28-normalize-cold*`, 2026-10-28). Status: the exhaustive inputs (F3) next in the
+  order chosen 2026-10-29, after F4 landed (`docs/tier-cycle.md`, "Survey: the open-law filter, `Term::show` and
+  mimalloc's purge"); the rest held for the user's call (2026-10-28).
 - **Options held behind the filter, `show` and purge survey** — what: P1, mimalloc's purge off in the harness
   (`mi_option_set(15, -1)`, spiked and reverted: `docs/runs/2026-10-29/patches/purge_spike_on_ab9eeba.patch`); F2,
   counting mode for the open-law filter; S3, dropping the conjecture sort (`shuffled` a total order, each group's head

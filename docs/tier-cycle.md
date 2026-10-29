@@ -5161,6 +5161,7 @@ plan unread, so no memo or reordering of this work can change the laws. Options,
   `prove_eq`'s per-position step). It is one piece of `PARKED.md`, "Cheaper first asks in the stream builds".
 - **F4.** `first_difference` compares the slices whole first (`x[..tries] == y[..tries]`, a `memcmp` for `u8` and
   `u128`) and scans only where they differ: the compare loops are 3.09 (bitwise 1.80, refuter 1.29). Not tried before.
+  Landed 2026-10-29 ("F4 landed" below).
 
 Rejected: refuting first, since `r8.agree` would run on every grown law instead of the open ones: 4.6 times as many at
 4 growths (1,139,766 against the 246,721 that `normalize` leaves open) and 7.2 at 2 (449,962 against 62,864; run
@@ -5305,6 +5306,20 @@ one stream thread (-5.8%, the pin runs back to back), 14.41 against 16.12 s at f
 `2026-10-29-zerofill3-prof`, the unpatched `c8c2e68` exe six hours earlier, and more than the busy samples fell), so
 both give a direction only, and a time claim needs a timed A/B. P1 itself is held for the user's call (`PARKED.md`,
 "Options held behind the filter, `show` and purge survey").
+
+*F4 landed (2026-10-29).* `first_difference` compares the vectors' first `tries` entries whole (`x == y` on the two
+slices, a `memcmp`) and scans for the first differing input only when they differ. The test `value_memo_matches_interp`
+now also runs 2 tries (the corners alone, where many distinct terms agree), so a version that compares past `tries`
+fails it; at 16 and `SCREEN_INPUTS` tries that mutation survived. The church_bv suite passed (163 tests, 30 ignored;
+run `2026-10-29-f4-suite`) and both sequences stay pinned (run `2026-10-29-f4-pin`). Counts against `c8c2e68` in one
+batch (runs `2026-10-29-f4-icount-{L1,F1,F2,L2}`, rounds L F F L of 3 runs at one stream thread, purge on;
+`docs/runs/2026-10-29/rows/2026-10-29-f4-icount.txt`): -7.9% at the best runs (274.66 G against 298.23), -10.1% at the
+pooled medians (275.54 against 306.35), every F run below every L run. L's round medians drifted 2.3% (308.51 then
+301.46 G) and F's 0.26% (275.03, 275.74), both with purge on, so purging does not widen every pair of rounds (P1 spike
+above). The survey gave the compare loops 3.09 points of busy samples; a reading, not checked: a tight scalar loop
+retires many instructions per cycle, so its share of instructions exceeds its share of time, and a sample share
+understates what removing such a loop saves in a count. Time is not measured here; the profile after this landing
+shows it.
 
 ## The kernel
 

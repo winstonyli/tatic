@@ -709,12 +709,16 @@ impl<W: Word> ValueMemo<W> {
         id
     }
 
-    /// The first of the first `tries` inputs on which `a` and `b` differ.
+    /// The first of the first `tries` inputs on which `a` and `b` differ. The vectors are compared whole first (a
+    /// `memcmp`, which stops near a difference), and scanned for the input only when they differ.
     pub fn first_difference(&mut self, a: &Term, b: &Term, tries: usize) -> Option<usize> {
         assert!(tries <= self.len, "{tries} tries over {} inputs", self.len);
         let (a, b) = (self.fill(*a), self.fill(*b));
-        let (x, y) = (self.vector(a), self.vector(b));
-        (0..tries).find(|&i| x[i] != y[i])
+        let (x, y) = (&self.vector(a)[..tries], &self.vector(b)[..tries]);
+        if x == y {
+            return None;
+        }
+        x.iter().zip(y).position(|(p, q)| p != q)
     }
 
     /// Whether `a` and `b` agree on every input.
@@ -4311,7 +4315,8 @@ fn value_memo_matches_interp() {
     for n in [1, 4, 64, 128] {
         for a in &ts {
             for b in &ts {
-                for tries in [16, SCREEN_INPUTS] {
+                // 2 tries are the corners alone, where many distinct terms agree: a screen past `tries` would differ
+                for tries in [2, 16, SCREEN_INPUTS] {
                     let old = old_counterexample(a, b, n, k, tries);
                     assert_eq!(a.differs_in(b, n, k, tries), old.is_some());
                     assert_eq!(a.counterexample_in(b, n, k, tries), old, "{} vs {} at {n}", a.show(), b.show());
