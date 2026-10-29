@@ -522,7 +522,7 @@ impl Term {
 }
 
 /// How `ValueMemo` stores a value: one byte for exhaustive signatures (width at most 8), `u128` for the screen.
-pub trait Word: Copy {
+pub trait Word: Copy + Eq + std::hash::Hash {
     fn of(x: u128) -> Self;
     fn get(self) -> u128;
 }
@@ -560,6 +560,11 @@ pub struct ValueMemo<W: Word> {
     /// Vectors per block.
     per: usize,
     blocks: Vec<Vec<W>>,
+    /// Value classes, made when asked (`class`): the first vector asked about with each list of values, by its hash.
+    classes: hashbrown::HashTable<(u64, usize)>,
+    /// `class_of[id]`: vector `id`'s class, `u32::MAX` until asked.
+    class_of: Vec<u32>,
+    hasher: hashbrown::DefaultHashBuilder,
 }
 
 /// `out[i] = op(x[i], y[i])` for operator `O`: its `word` is a constant here, so it inlines into the loop (called through
@@ -597,13 +602,34 @@ fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R)
 impl<W: Word> ValueMemo<W> {
     pub fn new(n: usize, len: usize, vars: Vec<Box<[W]>>) -> Self {
         let per = (VALUE_BLOCK / (len * std::mem::size_of::<W>())).max(1);
-        ValueMemo { mask: low_bits(n), len, vars, ids: Default::default(), per, blocks: vec![] }
+        let (classes, class_of, hasher) = Default::default();
+        ValueMemo { mask: low_bits(n), len, vars, ids: Default::default(), per, blocks: vec![], classes, class_of, hasher }
     }
 
     /// `t`'s values, one per input.
     pub fn values(&mut self, t: &Term) -> &[W] {
         let id = self.fill(*t);
         self.vector(id)
+    }
+
+    /// `t`'s value class: the id of the first vector asked about with `t`'s values, so two terms share a class exactly
+    /// when they agree on every input. Grouping terms by class keys on an integer; copying each 4096-byte vector into its
+    /// key was 11-13% of a stream's build (docs/tier-cycle.md, "Grouping the streams' terms, and the 2-growth build inside
+    /// the 4-growth one").
+    pub fn class(&mut self, t: &Term) -> u32 {
+        use std::hash::BuildHasher;
+        let id = self.fill(*t);
+        let ValueMemo { len, per, blocks, classes, class_of, hasher, .. } = self;
+        if id >= class_of.len() {
+            class_of.resize(id + 1, u32::MAX);
+        }
+        if class_of[id] == u32::MAX {
+            let at = |id: usize| -> &[W] { &blocks[id / *per][id % *per * *len..][..*len] };
+            let hash = hasher.hash_one(at(id));
+            let &(_, first) = classes.entry(hash, |&(_, c)| at(c) == at(id), |&(h, _)| h).or_insert((hash, id)).get();
+            class_of[id] = u32::try_from(first).unwrap();
+        }
+        class_of[id]
     }
 
     fn vector(&self, id: usize) -> &[W] {
@@ -656,6 +682,11 @@ impl<W: Word> ValueMemo<W> {
         (0..tries).find(|&i| x[i].get() != y[i].get())
     }
 
+    /// Whether `a` and `b` agree on every input.
+    pub fn agree(&mut self, a: &Term, b: &Term) -> bool {
+        self.first_difference(a, b, self.len).is_none()
+    }
+
     /// Input `i`, one value per variable.
     pub fn input(&self, i: usize) -> Vec<u128> {
         self.vars.iter().map(|c| c[i].get()).collect()
@@ -678,11 +709,7 @@ impl ValueMemo<u8> {
 /// value vectors per width: a recursive `interp` pair per input was a quarter of a sweep's samples in `verdict` alone
 /// (docs/tier-cycle.md, "One exhaustive check for both").
 pub fn bitwise_holds(a: &Term, b: &Term, k: usize) -> bool {
-    (1..=5).all(|w| {
-        let mut memo = ValueMemo::exhaustive(w, k);
-        let len = memo.len;
-        memo.first_difference(a, b, len).is_none()
-    })
+    (1..=5).all(|w| ValueMemo::exhaustive(w, k).agree(a, b))
 }
 
 impl ValueMemo<u128> {
@@ -4262,6 +4289,31 @@ fn value_memo_matches_interp() {
         let want: Vec<u8> = (0..64u128).map(|i| t.interp(3, &[i & 7, i >> 3]) as u8).collect();
         assert_eq!(memo.values(t), want, "{}", t.show());
     }
+}
+
+/// Two terms get one value class exactly when they agree on every input, asked in any order (pairs that agree here:
+/// add's operands swapped, `x ^ x` and `0`, `x & -1` and `x`, `(x + y) - y` and `x`, `x << 1` and `x + x`, and the
+/// comparison `x < x` and `0`: a class is values only, so callers that keep comparisons apart key on that too).
+#[test]
+fn value_classes_are_exact() {
+    let ts: Vec<Term> = ["x", "y", "z", "0", "-1", "add(x, y)", "add(y, x)", "xor(x, x)", "and(x, -1)", "or(x, 0)",
+        "sub(add(x, y), y)", "shl1(x, 0)", "add(x, x)", "xor(x, y)", "or(and(x, y), xor(x, y))", "or(x, y)", "lt(x, y)",
+        "lt(y, x)", "lt(x, x)"]
+    .iter()
+    .map(|s| parse_term(s))
+    .collect();
+    let mut memo = ValueMemo::exhaustive(4, 3);
+    let classes: Vec<u32> = ts.iter().rev().map(|t| memo.class(t)).collect::<Vec<_>>().into_iter().rev().collect();
+    let (mut equal, mut differ) = (0, 0);
+    for (a, ca) in ts.iter().zip(&classes) {
+        assert_eq!(memo.class(a), *ca, "{}'s class moved", a.show());
+        for (b, cb) in ts.iter().zip(&classes) {
+            let same = memo.values(a).to_vec() == memo.values(b);
+            assert_eq!(ca == cb, same, "{} and {}", a.show(), b.show());
+            (equal, differ) = if same { (equal + 1, differ) } else { (equal, differ + 1) };
+        }
+    }
+    assert!(equal > ts.len() && differ > 0);
 }
 
 /// `bitwise_holds` gives the per-tuple loop's answer (the one `verdict` and `prove_eq` ran before it) on add-free pairs.

@@ -282,8 +282,9 @@ const POOL_VARS: usize = 3;
 /// of up to 3 nodes, indexed apart so their 0/1 values never meet the n-bit constants.
 struct Pool {
     memo: ValueMemo<u8>,
-    index: hashbrown::HashMap<Vec<u8>, Vec<Term>>,
-    index_lt: hashbrown::HashMap<Vec<u8>, Vec<Term>>,
+    /// The terms by value class (`ValueMemo::class`), comparisons apart.
+    index: hashbrown::HashMap<u32, Vec<Term>>,
+    index_lt: hashbrown::HashMap<u32, Vec<Term>>,
     /// The terms outside `lt`.
     terms: usize,
 }
@@ -312,13 +313,13 @@ impl Pool {
         }
         let mut pool = Pool { memo: ValueMemo::exhaustive(n, POOL_VARS), index: Default::default(), index_lt: Default::default(), terms: 0 };
         for t in by_size.iter().flatten() {
-            pool.index.entry(pool.memo.values(t).to_vec()).or_default().push(*t);
+            pool.index.entry(pool.memo.class(t)).or_default().push(*t);
             pool.terms += 1;
         }
         for a in by_size.iter().take(4).flatten() {
             for b in by_size.iter().take(4).flatten() {
                 let t = Term::op(LT, *a, *b);
-                pool.index_lt.entry(pool.memo.values(&t).to_vec()).or_default().push(t);
+                pool.index_lt.entry(pool.memo.class(&t)).or_default().push(t);
             }
         }
         pool
@@ -326,8 +327,9 @@ impl Pool {
 
     /// The pool's terms equal to `pat` (over at most `POOL_VARS` variables) on every input.
     fn equal(&mut self, pat: &Term) -> &[Term] {
+        let class = self.memo.class(pat);
         let index = if matches!(*pat.node(), Node::Op(LT, ..)) { &self.index_lt } else { &self.index };
-        index.get(self.memo.values(pat)).map_or(&[], |g| g.as_slice())
+        index.get(&class).map_or(&[], |g| g.as_slice())
     }
 }
 

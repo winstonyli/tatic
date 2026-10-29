@@ -499,8 +499,7 @@ pub fn stream_laws_are_deterministic_and_open() {
         for (x, y) in &a {
             assert!(within(x, &ops) && within(y, &ops), "{} = {}", x.show(), y.show());
             assert!(c.normalize(job, 4, 3, x).0 != c.normalize(job, 4, 3, y).0, "closed: {} = {}", x.show(), y.show());
-            let vx = r8.values(x).to_vec();
-            assert_eq!(vx, r8.values(y).to_vec(), "{} = {}", x.show(), y.show());
+            assert!(r8.agree(x, y), "{} = {}", x.show(), y.show());
         }
     });
 }
@@ -604,11 +603,11 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
     seeds.iter().for_each(|t| ops_of(*t, &mut grown_ops));
     let leaves = &leaves3();
     let mut memo = ValueMemo::exhaustive(4, 3);
-    let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
+    let leaf_classes: Vec<u32> = leaves.iter().map(|l| memo.class(l)).collect();
     let grow: Vec<Term> = grown_ops
         .iter()
         .flat_map(|&o| if o == SHL1 || o == SHR1 { leaves.iter().map(|a| mk(o, a, &Term::ZERO)).collect::<Vec<_>>() } else { leaves.iter().flat_map(|a| leaves.iter().map(move |b| mk(o, a, b))).collect() })
-        .filter(|g| !leaf_values.contains(&memo.values(g).to_vec()))
+        .filter(|g| !leaf_classes.contains(&memo.class(g)))
         .collect();
     let mut level: hashbrown::HashMap<Term, usize> = seeds.iter().map(|t| (*t, 0)).collect();
     let (mut base, mut i) = (seeds.clone(), 0u64);
@@ -644,8 +643,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
             if c.normalize(job, 4, 3, &a).0 == c.normalize(job, 4, 3, &b).0 {
                 continue;
             }
-            let va = r8.values(&a).to_vec();
-            if va != r8.values(&b) {
+            if !r8.agree(&a, &b) {
                 refuted += 1;
                 continue;
             }

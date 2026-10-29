@@ -752,12 +752,10 @@ pub fn plain_steps_match_the_kernel_gates() {
 /// the group's first member, sorted for a stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
 pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
     let mut memo = ValueMemo::exhaustive(n, nv);
-    let mut groups: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
+    let mut groups: hashbrown::HashMap<(u32, bool), Vec<Term>> = Default::default();
     for t in pool {
         // a comparison (one-bit result) never equals an n-bit term, even when their signatures coincide
-        let mut key = memo.values(&t).to_vec();
-        key.push(matches!(*t.node(), Node::Op(LT, ..)) as u8);
-        groups.entry(key).or_default().push(t);
+        groups.entry((memo.class(&t), matches!(*t.node(), Node::Op(LT, ..)))).or_default().push(t);
     }
     let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0], *t2))).collect();
     conj.sort_by_cached_key(|(a, b)| (a.show(), b.show()));
