@@ -2,7 +2,7 @@
 # fix with the wrapper's size test, which skips the memo for a call the sizes settle; debug info): run
 # 2026-10-28-embeds-prof again. Same rules.txt on all 3 loops as mjv-prof and embeds-prof; the driver's op count is 6
 # higher (42303213), within its run-to-run spread (42302881-42303207 over the five salt-1 arms of the probe, whose
-# sequence builds are the same). Taken at cpu 75%: read shares only.
+# sequence builds are the same). Taken at cpu 55%: read shares only.
 # Frames: docs/runs/2026-10-18/scripts/prof_named.py with PROF_FRAMES=church_bv::rewrite::embeds,
 # church_bv::rewrite::embeds::go,church_bv::rewrite::cut_at,church_bv::rewrite::cut_by,church_bv::rewrite::rewrite,
 # church_bv::rewrite::rewrite_memo.

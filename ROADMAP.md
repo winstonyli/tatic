@@ -49,8 +49,8 @@ results, 2026-10-17 and 2026-10-23).
   each mine its own n = 319 laws (fresh slices: distinct laws per loop matter more than laws per mine): held-out M
   -16.6% at 5x the base's job CPU. n is a price on a curve with no knee, weighed against mining CPU. Cutting a mine
   short loses to a smaller n; a lower join budget in the mines alone (probe, not landed) keeps held-out M at a fraction
-  of the CPU: on salts 1-3, at 100 -19.3% at 1.06x the base's job CPU, at 250 with n 688 -28.5% at 2.84x; on salts
-  1-2 (salt 3 of the newer arms hung in the cycle cut's `embeds`, `PARKED.md`, "The embedding test's worst case"),
-  at 100 with n 688 -28.2% at 1.45x against 250's -27.5% at 2.59x, and at 0 no better than 100 (`docs/tier-cycle.md`, "As the loop's extras", "At every size, and at three
+  of the CPU: on salts 1-3, at 100 -19.3% at 1.06x the base's job CPU, at 250 with n 688 -28.5% at 2.84x, at 100
+  with n 688 -27.8% at 45% of 250's op count (on salts 1-2 1.45x the base's job CPU; salt 3 ran under heavy load),
+  and at 0 no better than 100 (`docs/tier-cycle.md`, "As the loop's extras", "At every size, and at three
   times the count", "Count and slicing" and the bullets after it; rejected designs in `PARKED.md`, "Mine large laws
   after the loop" and "Serve laws of the held-out sizes").

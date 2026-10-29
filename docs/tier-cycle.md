@@ -2338,8 +2338,10 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     | 500, 319 | 5192 (1754/1691/1747) | 450 | 1088 | 1542 s | 3.16 / 13.21 / 3.33 |
     | 250, 319 | 5237 (1737/1690/1810) | 440 | 1152 | 974 s | 1.32 / 5.62 / 1.76 |
     | 100, 319 | 5166 (1730/1668/1768) | 447 | 1140 | 627 s | 0.36 / 2.01 / 0.83 |
+    | 0, 319 (third round) | 5271 (1752/1761/1758) | 469 | 1134 | 534 s | 0.00 / 0.26 / 0.26 |
     | 1000, 688 (fresh 9900, f 0.08) | 4690 (1559/1516/1615) | 431 | 1332 | 8870 s | 20.10 / 87.25 / 17.53 |
     | 250, 688 | 4577 (1533/1492/1552) | 424 | 1389 | 1671 s | 2.98 / 14.15 / 3.94 |
+    | 100, 688 (third round) | 4622 (1501/1495/1626) | 426 | 1475 | 1247 s | 0.80 / 4.78 / 1.79 |
 
     A lower budget in the mines costs no held-out M down to 100, and saves most of the mining. At n 319, 500, 250
     and 100 are lower than 1000 by 148, 103 and 174, against a noise of about 140 for a difference of two arms (1.4 x
@@ -2370,9 +2372,10 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
 
     A third round (runs `2026-10-28-mjv-j0` and `-mjv-j100n688`, set up as above: J0 and J100n688 are J250's bytes
     with `MINE_JOIN_VISIT=0`, and 100 with `EXTRAS_N=688`) tried budget 0, a mine with no join at all, and 100 at n
-    688. Both lost salt 3 to a hang (below), so every arm is recounted here on salts 1-2 from its gate's per-salt lines
-    (base: the A arm of `2026-10-27-xgrid-f9900h2`; bands per 1000 laws from the arms' `held_bands.txt`, the
-    table-only lines left out; the script is `docs/runs/2026-10-28/scripts/s12.sh`):
+    688. Both lost salt 3 to a hang (below; fixed, and salt 3 rerun, which gives the table above its "third round"
+    rows), so every arm is recounted here on salts 1-2 from its gate's per-salt lines (base: the A arm of
+    `2026-10-27-xgrid-f9900h2`; bands per 1000 laws from the arms' `held_bands.txt`, the table-only lines left out;
+    the script, `docs/runs/2026-10-28/scripts/salts.sh`, prints salts 1-2 then salts 1-3):
 
     | Mines' budget, n | Held-out M (salts 1/2) | Loop M | Rules | Job CPU | walk / match / op (G) | Bands 11/13/15/17 |
     |---|---|---|---|---|---|---|
@@ -2414,17 +2417,44 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     and all 40 under `rewrite` called from a mine's
     `Scorer::score_laws` (frames in `docs/runs/2026-10-28/rows/2026-10-28-hang-j0.txt` and `-hang-j100n688.txt`).
     `embeds` (`tests/church_bv/rewrite.rs`) is the cycle cut's homeomorphic-embedding test, run by `cut_at` against
-    the terms on the rewrite path no larger than the term at hand, innermost first, both for the cut itself and for
-    the memo's check of a cached result. It recurses
+    the terms on the rewrite path (before the fix only those no larger than the term at hand), innermost first, both
+    for the cut itself and for the memo's check of a cached result. It recursed
     both on "match at this node" and "skip a node of t", with no memo and no size check inside the recursion, so one
-    pair of subterms can be reached along exponentially many paths. The terms compared are deep: the last sample of
+    pair of subterms could be reached along exponentially many paths. The terms compared are deep: the last sample of
     each rerun holds up to 138 (budget 0) and 496 (100 at n 688) nested `embeds` frames, each one node further down
     `t` (stale stack words count too, but the per-sample counts are steady), so these configurations, on salt 3,
-    reach a rewrite over a hundred nodes deep where the recursion blows up. The code is on main; whether the landed configuration can reach such
-    a rewrite is untested (no sweep at it has hung: the landing gate's three salts and the other 12 salt runs of the
-    first two rounds, `-mjv-j500` and `-mjv-j250` then `-mjv-j100` and `-mjv-j250n688`, passed). The proposed fix is
-    in `PARKED.md`, "The embedding test's worst case". Not measured: salt 3 of
-    these two arms (until `embeds` is fixed), and the budget without extras.
+    reach a rewrite over a hundred nodes deep where the recursion blew up. No sweep at the landed configuration had
+    hung (the landing gate's three salts and the other 12 salt runs of the first two rounds, `-mjv-j500` and
+    `-mjv-j250` then `-mjv-j100` and `-mjv-j250n688`, passed), but the code was on main.
+
+    The fix (a5cb874, 9c09edf). `embeds` decides each pair of subterms once, in a map per top-level call, and settles
+    a pair by size: no term embeds in a smaller one, and between terms of equal size embedding is equality (pointer
+    equality, since terms are hash-consed). A call now takes at most |subterms of `s`| x |subterms of `t`| steps.
+    Most calls are settled by size before any map is made, which keeps the memo's cost down: with a map for every
+    call `embeds` was 1.64% inclusive of a sweep's busy samples, with the size test first 0.51%, against 1.76%
+    before the fix (100 at n 319, salt 1, runs `2026-10-28-embeds-prof`, `-embeds-prof2` and `-mjv-prof`; shares
+    only, all taken under load; frames in `docs/runs/2026-10-28/rows/`). Answers are unchanged: a unit test compares
+    it with the old recursion on all 5.9 M pairs of terms over ADD and AND up to sizes 5 and 7
+    (`embedding_matches_the_plain_recursion`), another needs an answer within 10 s on a pair of chains of one
+    operator that the old code did not give (`embedding_long_chains_finishes`), and each loop chooses the same rules
+    as the old code's run of the same arm and salt (salt 1 at 100, n 319 and n 688). Salt 3 of both arms then ran
+    through (runs `2026-10-28-mjv-j0f` and `-mjv-j100n688f`, the A arm reused): 132 s and 218 s of wall where the
+    hangs had run 1.5-2 h. A profile of salt 3 at 100, n 688 (run `2026-10-28-embeds-prof-n688s3`, beside salt 1's
+    `-embeds-prof-n688s1`) has 8% more busy samples than salt 1, `embeds` at 1.01% against 1.00% and `rewrite` at
+    25.1% against 25.5%: no costly region is left.
+
+    On salts 1-3 (the "third round" rows above) the round's findings hold. Budget 0 is above 100 by 105 (5271 against
+    5166; by salt +22, +93 and -10), within the noise of about 140, with loop M still the highest at n 319 (469
+    against 440-450) and band 11 still the worst (65.4 per 1000 laws against 49.8-57.1, free share .935 against
+    .943-.950); it is -17.6% against the base at 0.91x its job CPU (0.74x on salts 1-2; its salt 3 ran at 87% other
+    load). At n 688, 100 is above 250 by 45 (4622 against
+    4577; by salt -32, +3 and +74), also within the noise, and below 1000 by 68, with loop M 426 against 424 and 431,
+    and the mines choose 6% more rules than at 250. Against the base it is -27.8% (250: -28.5%) at 2.12x the base's
+    job CPU, but salt 3's job CPU is inflated by load: it ran at 80% other load and took 621 s, against 299 and 327 s
+    for salts 1-2 (250 at n 688: 549, 573 and 549 s; budget 0's salt 3 took 214 s at 87%, against 156 and 163 s). The
+    work counts don't depend on load: at n 688, 100's op count is 45-46% of 250's and its walk 26-28% on each of the
+    three salts, so salt 3 costs no more at 100, against 250, than salts 1-2 do, and the salts 1-2 job CPU ratio (56%
+    of 250's) stands. Not measured: the budget without extras.
 
 ## The rewriter and the mined rules
 
