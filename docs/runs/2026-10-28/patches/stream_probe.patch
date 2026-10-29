@@ -1,0 +1,464 @@
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index fbc9b6f..a265eb1 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -610,6 +610,11 @@ impl<W: Word> ValueMemo<W> {
+         &self.blocks[id / self.per][id % self.per * self.len..][..self.len]
+     }
+ 
++    /// PROBE (throwaway): the number of distinct terms with a vector.
++    pub fn filled(&self) -> usize {
++        self.ids.len()
++    }
++
+     /// `t`'s vector's id, made (with its children's) when new.
+     fn fill(&mut self, t: Term) -> usize {
+         if let Some(&id) = self.ids.get(&t) {
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 76804ac..f3bee74 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -730,6 +730,443 @@ pub fn stream_sequence_cost() {
+     println!("SEQUENCE salt {salt}: {} laws; phase 1 window of 300: {}", seq.len(), residue(&seq, 1, 0, 300).len());
+ }
+ 
++// ---- PROBE (throwaway, never committed): where a stream's pool, grouping time and open-law filter go.
++
++/// Adds every term of `roots`, and every subterm of them, to `seen` (what a `ValueMemo` fills for `roots`).
++fn probe_closure(roots: &[Term], seen: &mut HashSet<Term>) {
++    fn go(t: Term, seen: &mut HashSet<Term>) {
++        if seen.insert(t) {
++            if let Node::Op(_, a, b) = *t.node() {
++                go(a, seen);
++                go(b, seen);
++            }
++        }
++    }
++    for t in roots {
++        go(*t, seen);
++    }
++}
++
++/// Named numbers of one stream (counts, seconds), in the order first added.
++#[derive(Default)]
++struct ProbeStats(Vec<(String, f64)>);
++
++impl ProbeStats {
++    fn add(&mut self, k: &str, v: f64) {
++        match self.0.iter_mut().find(|(n, _)| n == k) {
++            Some(e) => e.1 += v,
++            None => self.0.push((k.to_string(), v)),
++        }
++    }
++    fn get(&self, k: &str) -> f64 {
++        self.0.iter().find(|(n, _)| n == k).map_or(0.0, |e| e.1)
++    }
++    fn line(&self) -> String {
++        self.0.iter().map(|(k, v)| if k.starts_with("t_") { format!("{k}={v:.3}") } else { format!("{k}={v:.0}") }).collect::<Vec<_>>().join(" ")
++    }
++}
++
++/// Seconds since the last `lap`.
++struct ProbeLap(std::time::Instant);
++
++impl ProbeLap {
++    fn lap(&mut self) -> f64 {
++        let now = std::time::Instant::now();
++        let d = now.duration_since(self.0).as_secs_f64();
++        self.0 = now;
++        d
++    }
++}
++
++/// A fixed shuffle of the 4096 input indices (Fisher-Yates driven by `mix64`): the first K are the K inputs of a
++/// prefilter, so the sets nest (16 in 64 in 256). Input `i` of `ValueMemo::exhaustive(4, 3)` has variable `v` = bits
++/// `4v..4v+4` of `i`.
++fn probe_picks() -> Vec<usize> {
++    let mut v: Vec<usize> = (0..4096).collect();
++    for i in (1..4096usize).rev() {
++        let j = (tatic::rng::mix64(0x5eed_0000 + i as u64) % (i as u64 + 1)) as usize;
++        v.swap(i, j);
++    }
++    v
++}
++
++/// `pool_conjectures`' grouping in two stages: terms bucketed by their values on the first `k` of `picks` (and the
++/// comparison flag), then only the terms in buckets of more than one are given full 4096-input vectors and grouped.
++/// Returns (survivors, distinct terms the full memo fills, stage 1 seconds, stage 2 seconds, conjectures unsorted).
++fn probe_two_stage(terms: &[Term], picks: &[usize], k: usize) -> (usize, usize, f64, f64, Vec<(Term, Term)>) {
++    let t0 = std::time::Instant::now();
++    let vars: Vec<Box<[u8]>> = (0..3).map(|v| picks[..k].iter().map(|&i| (i >> (4 * v) & 15) as u8).collect()).collect();
++    let mut small = ValueMemo::new(4, k, vars);
++    let mut buckets: hashbrown::HashMap<Vec<u8>, Vec<usize>> = Default::default();
++    for (i, t) in terms.iter().enumerate() {
++        let mut key = small.values(t).to_vec();
++        key.push(matches!(*t.node(), Node::Op(LT, ..)) as u8);
++        buckets.entry(key).or_default().push(i);
++    }
++    let mut survivors: Vec<usize> = buckets.values().filter(|b| b.len() > 1).flatten().copied().collect();
++    survivors.sort_unstable();
++    let t1 = t0.elapsed().as_secs_f64();
++    drop(buckets);
++    drop(small);
++    let t0 = std::time::Instant::now();
++    let mut memo = ValueMemo::exhaustive(4, 3);
++    let mut groups: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
++    for &i in &survivors {
++        let t = terms[i];
++        let mut key = memo.values(&t).to_vec();
++        key.push(matches!(*t.node(), Node::Op(LT, ..)) as u8);
++        groups.entry(key).or_default().push(t);
++    }
++    let conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0], *t2))).collect();
++    (survivors.len(), memo.filled(), t1, t0.elapsed().as_secs_f64(), conj)
++}
++
++/// `stream_laws(ops, salt, budget, levels)` again, with counts and timers: the same steps in the same order (a copy of
++/// its body, `pool_conjectures` inlined); returns its stats, its laws, and the closures of the width-4 pool memo and of
++/// the width-8 memo (terms with a vector in each), and the pool in `pool_conjectures` order.
++fn stream_probe(ops: &[usize], salt: usize, budget: usize, levels: usize, picks: &[usize]) -> (ProbeStats, Vec<(Term, Term)>, Vec<Term>, Vec<Term>, Vec<Term>) {
++    let mut s = ProbeStats::default();
++    let mut lap = ProbeLap(std::time::Instant::now());
++    let c = crate::classes::Classes::get();
++    fn within(t: Term, ops: &[usize]) -> bool {
++        match *t.node() {
++            Node::Op(o, a, b) => ops.contains(&o) && within(a, ops) && within(b, ops),
++            _ => true,
++        }
++    }
++    let mut seeds: Vec<Term> = c.reps().filter(|t| within(*t, ops)).collect();
++    seeds.sort_by_cached_key(|t| t.show());
++    fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
++        if let Node::Op(o, a, b) = *t.node() {
++            out.insert(o);
++            ops_of(a, out);
++            ops_of(b, out);
++        }
++    }
++    fn leaf_count(t: Term) -> usize {
++        match *t.node() {
++            Node::Op(SHL1 | SHR1, a, _) => leaf_count(a),
++            Node::Op(_, a, b) => leaf_count(a) + leaf_count(b),
++            _ => 1,
++        }
++    }
++    fn replaced(t: Term, k: &mut Option<usize>, g: Term) -> Term {
++        match *t.node() {
++            Node::Op(o @ (SHL1 | SHR1), a, b) => Term::op(o, replaced(a, k, g), b),
++            Node::Op(o, a, b) => {
++                let a = replaced(a, k, g);
++                Term::op(o, a, replaced(b, k, g))
++            }
++            _ => match *k {
++                Some(0) => {
++                    *k = None;
++                    g
++                }
++                Some(i) => {
++                    *k = Some(i - 1);
++                    t
++                }
++                None => t,
++            },
++        }
++    }
++    let mut grown_ops = std::collections::BTreeSet::new();
++    seeds.iter().for_each(|t| ops_of(*t, &mut grown_ops));
++    let leaves = &leaves3();
++    let mut memo = ValueMemo::exhaustive(4, 3);
++    let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
++    s.add("t_setup", lap.lap());
++    let grow: Vec<Term> = grown_ops
++        .iter()
++        .flat_map(|&o| if o == SHL1 || o == SHR1 { leaves.iter().map(|a| mk(o, a, &Term::ZERO)).collect::<Vec<_>>() } else { leaves.iter().flat_map(|a| leaves.iter().map(move |b| mk(o, a, b))).collect() })
++        .filter(|g| !leaf_values.contains(&memo.values(g).to_vec()))
++        .collect();
++    s.add("t_grow", lap.lap());
++    let mut level: hashbrown::HashMap<Term, usize> = seeds.iter().map(|t| (*t, 0)).collect();
++    let (mut base, mut i) = (seeds.clone(), 0u64);
++    for l in 1..=levels {
++        let total: usize = base.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
++        let mut next = vec![];
++        for t in &base {
++            for p in 0..leaf_count(*t) {
++                for g in &grow {
++                    i += 1;
++                    if (tatic::rng::mix64(i ^ tatic::rng::mix64(salt as u64 + 13 * l as u64)) % total.max(1) as u64) < budget as u64 {
++                        let w = replaced(*t, &mut Some(p), *g);
++                        if !level.contains_key(&w) {
++                            level.insert(w, l);
++                            next.push(w);
++                        }
++                    }
++                }
++            }
++        }
++        base = next;
++    }
++    s.add("t_growth", lap.lap());
++    let mut terms: Vec<Term> = level.keys().cloned().collect();
++    terms.sort_by_cached_key(|t| (level[t], t.show()));
++    s.add("t_sort", lap.lap());
++    s.add("seeds", seeds.len() as f64);
++    s.add("pool", terms.len() as f64);
++    // pool_conjectures(terms, 4, 3, 0), inlined
++    let (conj, pool_closure) = {
++        let mut pm = ValueMemo::exhaustive(4, 3);
++        let mut groups: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
++        let (mut t_fill, mut t_key, mut t_ins) = (0.0, 0.0, 0.0);
++        lap.lap();
++        for t in &terms {
++            let v = pm.values(t);
++            t_fill += lap.lap();
++            let mut key = v.to_vec();
++            key.push(matches!(*t.node(), Node::Op(LT, ..)) as u8);
++            t_key += lap.lap();
++            groups.entry(key).or_default().push(*t);
++            t_ins += lap.lap();
++        }
++        s.add("t_fill", t_fill);
++        s.add("t_key", t_key);
++        s.add("t_ins", t_ins);
++        let mut cl = HashSet::new();
++        probe_closure(&terms, &mut cl);
++        assert_eq!(cl.len(), pm.filled(), "the pool's closure is what the memo filled");
++        s.add("filled", pm.filled() as f64);
++        s.add("groups", groups.len() as f64);
++        s.add("multi", groups.values().filter(|g| g.len() > 1).count() as f64);
++        s.add("in_multi", groups.values().filter(|g| g.len() > 1).map(|g| g.len()).sum::<usize>() as f64);
++        lap.lap();
++        let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0], *t2))).collect();
++        conj.sort_by_cached_key(|(a, b)| (a.show(), b.show()));
++        s.add("t_conj", lap.lap());
++        (conj, cl.into_iter().collect::<Vec<Term>>())
++    };
++    s.add("conj", conj.len() as f64);
++    // the two-stage grouping, for each prefilter size: same conjectures as the single stage
++    let base_set: HashSet<(Term, Term)> = conj.iter().copied().collect();
++    for k in [16usize, 64, 256] {
++        let (surv, filled, t1, t2, c2) = probe_two_stage(&terms, picks, k);
++        assert!(c2.len() == conj.len() && c2.iter().all(|p| base_set.contains(p)), "two-stage K={k} gives other conjectures than pool_conjectures");
++        s.add(&format!("pre{k}_terms"), surv as f64);
++        s.add(&format!("pre{k}_filled"), filled as f64);
++        s.add(&format!("t_pre{k}a"), t1);
++        s.add(&format!("t_pre{k}b"), t2);
++    }
++    drop(base_set);
++    lap.lap();
++    let laws: Vec<(Term, Term)> = conj.into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
++    s.add("grown", laws.len() as f64);
++    s.add("t_post", lap.lap());
++    let job = &mut Job::new(Setup::process());
++    let mut r8 = width8();
++    s.add("t_osetup", lap.lap());
++    let laws = shuffled(laws, salt);
++    s.add("t_shuf", lap.lap());
++    let (mut out, mut refuted, mut open) = (vec![], 0usize, 0usize);
++    let (mut t_norm, mut t_r8) = (0.0, 0.0);
++    let mut r8_roots: Vec<Term> = vec![];
++    tatic::kernel::scoped(|| {
++        lap.lap();
++        for (a, b) in laws {
++            let same = c.normalize(job, 4, 3, &a).0 == c.normalize(job, 4, 3, &b).0;
++            t_norm += lap.lap();
++            if same {
++                continue;
++            }
++            open += 1;
++            r8_roots.extend([a, b]);
++            let va = r8.values(&a).to_vec();
++            let differ = va != r8.values(&b);
++            t_r8 += lap.lap();
++            if differ {
++                refuted += 1;
++                continue;
++            }
++            out.push((a, b));
++        }
++    });
++    s.add("t_norm", t_norm);
++    s.add("t_r8", t_r8);
++    s.add("open", open as f64);
++    s.add("refuted", refuted as f64);
++    s.add("out", out.len() as f64);
++    let mut r8cl = HashSet::new();
++    probe_closure(&r8_roots, &mut r8cl);
++    assert_eq!(r8cl.len(), r8.filled(), "the width-8 memo's closure");
++    s.add("r8_filled", r8.filled() as f64);
++    let pipe: f64 = ["t_setup", "t_grow", "t_growth", "t_sort", "t_fill", "t_key", "t_ins", "t_conj", "t_post", "t_osetup", "t_shuf", "t_norm", "t_r8"].iter().map(|k| s.get(k)).sum();
++    s.add("t_pipe", pipe);
++    (s, out, pool_closure, r8cl.into_iter().collect(), terms)
++}
++
++/// Per-stream table rows: the totals, then the five largest pools.
++fn probe_table(title: &str, cols: &[String], rows: &[(String, ProbeStats)]) {
++    let fmt = |c: &str, v: f64| if c.starts_with("t_") { format!("{v:.2}") } else { format!("{v:.0}") };
++    println!("TABLE {title}");
++    println!("{:<14}{}", "stream", cols.iter().map(|c| format!("{c:>12}")).collect::<String>());
++    let total: Vec<f64> = cols.iter().map(|c| rows.iter().map(|(_, s)| s.get(c)).sum()).collect();
++    println!("{:<14}{}", "TOTAL", cols.iter().zip(&total).map(|(c, v)| format!("{:>12}", fmt(c, *v))).collect::<String>());
++    let mut order: Vec<usize> = (0..rows.len()).collect();
++    order.sort_by(|&a, &b| rows[b].1.get("pool").total_cmp(&rows[a].1.get("pool")));
++    for &i in order.iter().take(5) {
++        println!("{:<14}{}", rows[i].0, cols.iter().map(|c| format!("{:>12}", fmt(c, rows[i].1.get(c)))).collect::<String>());
++    }
++}
++
++/// The terms of `per_stream` by how many streams hold them; prints what one memo over all of them would save.
++fn probe_cross(label: &str, per_stream: &[Vec<Term>]) -> hashbrown::HashMap<Term, u16> {
++    let mut m: hashbrown::HashMap<Term, u16> = Default::default();
++    for v in per_stream {
++        for t in v {
++            *m.entry(*t).or_default() += 1;
++        }
++    }
++    let sum: usize = per_stream.iter().map(Vec::len).sum();
++    let mut hist = [0usize; 5];
++    for &n in m.values() {
++        hist[match n {
++            1 => 0,
++            2..=4 => 1,
++            5..=9 => 2,
++            10..=19 => 3,
++            _ => 4,
++        }] += 1;
++    }
++    println!(
++        "CROSS {label}: {} streams, sum of per-stream fills {sum}, distinct terms {} ({:.1}% of the fills are repeats), a 4096-byte vector each: {:.2} GB; distinct terms held by 1 / 2-4 / 5-9 / 10-19 / 20+ streams: {hist:?}",
++        per_stream.len(),
++        m.len(),
++        100.0 * (sum - m.len()) as f64 / sum.max(1) as f64,
++        m.len() as f64 * 4096.0 / 1e9
++    );
++    m
++}
++
++fn run_probe(levels_list: Vec<usize>, salt: usize, limit: usize) {
++    let sets = stream_sets();
++    let picks = probe_picks();
++    println!("PROBE picks: first 16 of the fixed shuffle: {:?}", &picks[..16]);
++    // the class table is built at first use and shared by the whole process: keep it out of the first stream's setup time
++    crate::classes::Classes::get();
++    let (mut all_pool, mut all_pool_sum) = (HashSet::new(), 0usize);
++    for &levels in &levels_list {
++        let mut rows: Vec<(String, ProbeStats)> = vec![];
++        let (mut pool_cl, mut r8_cl) = (vec![], vec![]);
++        for ops in sets.iter().take(limit) {
++            let name = ops.iter().map(|o| OP_INFO[*o].name).collect::<Vec<_>>().join(",");
++            let (mut s, out, pc, rc, _) = stream_probe(ops, salt, STREAM_BUDGET, levels, &picks);
++            let t = std::time::Instant::now();
++            let real = stream_laws(ops, salt, STREAM_BUDGET, levels);
++            s.add("t_real", t.elapsed().as_secs_f64());
++            assert!(real == out, "stream {name} (growths {levels}): the probe's laws differ from stream_laws'");
++            println!("PROBE L={levels} {name} {}", s.line());
++            rows.push((name, s));
++            pool_cl.push(pc);
++            r8_cl.push(rc);
++        }
++        println!("PROBE growths {levels}: all {} streams' laws equal stream_laws'", rows.len());
++        let names = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
++        probe_table(&format!("growths {levels}: counts"), &names(&["seeds", "pool", "filled", "groups", "multi", "in_multi", "conj", "grown", "open", "refuted", "out", "r8_filled"]), &rows);
++        let pre: Vec<String> = [16, 64, 256].iter().flat_map(|k| [format!("pre{k}_terms"), format!("pre{k}_filled")]).chain(["in_multi".to_string(), "filled".to_string()]).collect();
++        probe_table(&format!("growths {levels}: prefilter (terms still needing full vectors, distinct terms those fill; in_multi and filled are the floor and the baseline)"), &pre, &rows);
++        let times: Vec<String> = ["t_setup", "t_grow", "t_growth", "t_sort", "t_fill", "t_key", "t_ins", "t_conj", "t_post", "t_osetup", "t_shuf", "t_norm", "t_r8", "t_pipe", "t_real"].iter().map(|x| x.to_string()).collect();
++        probe_table(&format!("growths {levels}: seconds, one thread"), &times, &rows);
++        let pre_t: Vec<String> = [16, 64, 256].iter().flat_map(|k| [format!("t_pre{k}a"), format!("t_pre{k}b")]).chain(["t_fill".to_string(), "t_key".to_string(), "t_ins".to_string()]).collect();
++        probe_table(&format!("growths {levels}: seconds of the two-stage grouping (stage a, b) against the single stage's fill, key, insert"), &pre_t, &rows);
++        let p = probe_cross(&format!("growths {levels}, width-4 pool memos"), &pool_cl);
++        probe_cross(&format!("growths {levels}, width-8 memos"), &r8_cl);
++        all_pool_sum += pool_cl.iter().map(Vec::len).sum::<usize>();
++        all_pool.extend(p.keys().copied());
++    }
++    println!(
++        "CROSS all growth counts {levels_list:?}, width-4 pool memos: sum of every build's fills {all_pool_sum}, distinct terms {} ({:.1}% repeats), {:.2} GB at 4096 bytes each",
++        all_pool.len(),
++        100.0 * (all_pool_sum - all_pool.len()) as f64 / all_pool_sum.max(1) as f64,
++        all_pool.len() as f64 * 4096.0 / 1e9
++    );
++}
++
++/// The probe: salt 1, the loops' growth count and the extras' (the deepest held band's), every stream, one thread.
++/// `PROBE_LEVELS` (comma list) and `PROBE_STREAMS` (first n streams) narrow it.
++#[test]
++#[ignore]
++pub fn stream_group_probe() {
++    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
++    let levels: Vec<usize> = std::env::var("PROBE_LEVELS").map_or_else(|_| vec![STREAM_LEVELS, deep], |s| s.split(',').map(|x| x.parse().unwrap()).collect());
++    let limit: usize = std::env::var("PROBE_STREAMS").ok().map_or(usize::MAX, |s| s.parse().unwrap());
++    println!("PROBE growths {levels:?} (STREAM_LEVELS {STREAM_LEVELS}, deepest held band {deep}), salt 1, budget {STREAM_BUDGET}, streams {}", limit.min(stream_sets().len()));
++    std::thread::Builder::new().stack_size(256 << 20).spawn(move || run_probe(levels, 1, limit)).unwrap().join().unwrap();
++}
++
++/// Does the instrumented copy cost what the real function does? Every `PROBE_STRIDE`-th stream (default 4), at the
++/// growth counts of `PROBE_LEVELS` (default as `stream_group_probe`): the real `stream_laws`, the probe, the real again,
++/// the probe again; seconds of each (the probe's `t_pipe`, which leaves out its two-stage analysis).
++#[test]
++#[ignore]
++pub fn stream_probe_overhead() {
++    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
++    let levels: Vec<usize> = std::env::var("PROBE_LEVELS").map_or_else(|_| vec![STREAM_LEVELS, deep], |s| s.split(',').map(|x| x.parse().unwrap()).collect());
++    let stride: usize = std::env::var("PROBE_STRIDE").ok().map_or(4, |s| s.parse().unwrap());
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (sets, picks) = (stream_sets(), probe_picks());
++            crate::classes::Classes::get();
++            for levels in levels {
++                let mut tot = [0.0f64; 6];
++                for (i, ops) in sets.iter().enumerate().step_by(stride) {
++                    let name = ops.iter().map(|o| OP_INFO[*o].name).collect::<Vec<_>>().join(",");
++                    let t = std::time::Instant::now();
++                    let r1 = stream_laws(ops, 1, STREAM_BUDGET, levels);
++                    let a = t.elapsed().as_secs_f64();
++                    let (s1, o1, _, _, _) = stream_probe(ops, 1, STREAM_BUDGET, levels, &picks);
++                    let t = std::time::Instant::now();
++                    let r2 = stream_laws(ops, 1, STREAM_BUDGET, levels);
++                    let c = t.elapsed().as_secs_f64();
++                    let (s2, o2, _, _, _) = stream_probe(ops, 1, STREAM_BUDGET, levels, &picks);
++                    assert!(r1 == o1 && r2 == o2 && r1 == r2, "stream {i} {name}");
++                    let row = [a, s1.get("t_pipe"), c, s2.get("t_pipe"), s1.get("t_norm"), s2.get("t_norm")];
++                    println!("CHECK L={levels} {name} real1={:.3} probe1={:.3} real2={:.3} probe2={:.3} norm1={:.3} norm2={:.3}", row[0], row[1], row[2], row[3], row[4], row[5]);
++                    tot.iter_mut().zip(row).for_each(|(t, r)| *t += r);
++                }
++                println!("CHECK L={levels} TOTAL real1={:.2} probe1={:.2} real2={:.2} probe2={:.2} norm1={:.2} norm2={:.2}", tot[0], tot[1], tot[2], tot[3], tot[4], tot[5]);
++            }
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
++
++/// Is a stream's 2-growth build the 4-growth build restricted? Per stream (salt 1): the 2-growth pool is a prefix of the
++/// 4-growth pool's order, and the 2-growth laws are, in order, the 4-growth laws with both sides in the 2-growth pool.
++#[test]
++#[ignore]
++pub fn stream_probe_nested() {
++    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (sets, picks) = (stream_sets(), probe_picks());
++            crate::classes::Classes::get();
++            let (mut both, mut n) = (0usize, 0usize);
++            for ops in &sets {
++                let name = ops.iter().map(|o| OP_INFO[*o].name).collect::<Vec<_>>().join(",");
++                let (_, o2, _, _, t2) = stream_probe(ops, 1, STREAM_BUDGET, STREAM_LEVELS, &picks);
++                let (_, o4, _, _, t4) = stream_probe(ops, 1, STREAM_BUDGET, deep, &picks);
++                let in2: HashSet<Term> = t2.iter().copied().collect();
++                let prefix = t4.len() >= t2.len() && t4[..t2.len()] == t2[..];
++                let derived: Vec<(Term, Term)> = o4.iter().filter(|(a, b)| in2.contains(a) && in2.contains(b)).copied().collect();
++                let same = derived == o2;
++                println!("NESTED {name}: pool2 {} pool4 {} prefix {prefix}; laws2 {} laws4 {} laws4 within pool2 {} equal {same}", t2.len(), t4.len(), o2.len(), o4.len(), derived.len());
++                n += 1;
++                both += (prefix && same) as usize;
++            }
++            println!("NESTED {both} of {n} streams have the 2-growth pool as a prefix and the 2-growth laws as the 4-growth laws within it");
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
++
+ /// A law's twin key (the law generator's twin filter, docs/superpowers/specs/2026-10-17-law-generator-design.md §1; on
+ /// the class table since docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §6): the least `a = b` text,
+ /// over the six renamings of x, y, z and both side orders, of the law renamed and then each side's children made

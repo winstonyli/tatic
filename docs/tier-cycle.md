@@ -4876,6 +4876,61 @@ work walk equal, match +10 k of 4.77 G, op -115. Timed (`2026-10-27-cu18-timed-2
 sequence 16.1 to 5.4 s and the sweep's wall 35.5 to 24.6 s (-31%), job CPU 144.9 to 146.6 s; the arm's peak commit
 rises from 1538 to 3074 MB and is still the sequence's.
 
+*Grouping the streams' terms, and the 2-growth build inside the 4-growth one (2026-10-28, probe
+`2026-10-28-stream-probe`).* A copy of `stream_laws` with timers (`docs/runs/2026-10-28/patches/stream_probe.patch`,
+one thread, salt 1; its laws asserted equal to `stream_laws`' for all 56 streams at 2 and 4 growths, in two runs)
+splits a build (the totals, the five largest pools and the figures below, derived by
+`docs/runs/2026-10-28/scripts/stream_probe_derive.py`, are in `docs/runs/2026-10-28/rows/2026-10-28-stream-probe.txt`).
+At 4 growths the 56 streams put 4.32 M terms into `pool_conjectures`, whose memo fills 8.11 M vectors (the terms and
+their subterms); they fall into 2.48 M groups, and 51.9% of the terms are in groups of two or more (52.2% at 2
+growths). That gives 1.84 M conjectures, 1.14 M after the grown-side and three-variable filter, 247 k open, 12.6 k
+refuted at width 8, and 234 k laws. Time, on one thread on a machine loaded by other sessions (55-83% in spot samples;
+shares only, two runs),
+at 4 growths: `pool_conjectures` 52-53% of the build (filling vectors 30-31 points, copying each vector into its key
+and pushing the comparison byte 11-13, the map insert 7, sorting the conjectures 3), the open-law filter 33-35%
+(`Classes::normalize` 28), and growth, sorting and setup 13-14%; at 2 growths `pool_conjectures` is 52-58% and the key
+copy 8-15 points. That is close to the 4-growth build's profile in "A join budget for the mines alone" (grouping 52%,
+fill 31 points, the key copy 9 as realloc and dealloc, the filter 33, the rest 15). Normalize is cheaper the second
+time: 14 of the streams (every fourth) took 4.9-5.4 s of it in the probe's two runs, but 1.4 s when each was built
+again right after a first build of the same stream in the same process (`stream_probe_overhead`: the 14 first builds
+took 19.4 s, the second ones 15.1 s). The likely cause is the process-wide memos `Classes::normalize` reads
+(`VERDICTS`, the class lookups), which a second build of a stream finds full; not tested yet. Three levers, the first
+two measured, the third a structural check:
+
+- *A prefilter.* Group first on 16 fixed inputs and fill full vectors only for terms that share a bucket. It is exact
+  (the same conjectures, asserted), since equal vectors agree on any subset of inputs. But with 52% of the terms in true
+  groups it can skip at most about 48% of the terms and 50% of the fills; 16 inputs come within 2.9 points of that
+  floor on terms and 3.2 on fills (64 inputs within 0.2). At 4 growths the fill, key and insert time fell from 44.9 to
+  21.6 s (run 2: 39.9 to 20.2). Per stream, over the 55 whose single stage takes 0.05 s or more, the ratio's median is
+  0.44-0.45 and the prefilter is slower on 11 (at 2 growths: 0.56-0.57, slower on 7-10 of 50-52). 19 streams keep over
+  90% of their terms even at 16 inputs (add,sub: all 73,671 of its 74,396 terms that are in groups of two or more, 2,530
+  groups).
+- *Vectors shared across streams.* 12.6% of the 8.11 M fills at 4 growths repeat another stream's (19.8% at 2), and a
+  process-wide memo of the 7.09 M distinct terms would take 29 GB at 4096 bytes each. Decided against: the memory buys
+  at most an eighth of the fills (`PARKED.md`, "One value memo shared by the streams").
+- *The 2-growth build is the 4-growth build restricted.* For every one of the 56 streams the 2-growth pool, in
+  `pool_conjectures`' order, is a prefix of the 4-growth pool, and the 2-growth laws are, in order, the 4-growth laws
+  with both sides in that prefix (test `stream_probe_nested`; on 2 streams, and,or and shl1,shr1, both lists are empty).
+  By construction: levels 1 and 2 draw the same terms at the same salt, the pool is sorted by (level, `show`), so a
+  group's first member is the same; the comparison flag is in the group key, the grown-side and three-variable filter
+  and the open-law checks are per law, and conjectures are sorted by their text and `shuffled` orders laws by a hash of
+  the salt and each law's own text, so restricting keeps the order. Not checked: the round-robin merge of the restricted
+  streams (`build_sequence`). A sweep builds both sequences at one salt unless `GEN_DRAW` is set (`window` and
+  `scope_extras` in `tests/church_bv/driver.rs`).
+
+Chosen 2026-10-28: exact value-class ids in `ValueMemo` (`ValueMemo::class`, one id per distinct vector; commit
+`cd7dacb`). The three map keys that copied a 4096-byte vector (`pool_conjectures`, `miner::Pool`'s two indexes) key on
+class ids, the grow filter compares class ids, and the width-8 open-law check compares in place (`ValueMemo::agree`).
+Both sequences stay byte-identical (test `stream_sequences_are_pinned`: 58,125 and 230,801 laws at salt 1). Counted
+on that test (3 runs each on CPU 4, runs `2026-10-28-class-ids-icount-A2` and `-B2`): 490.43 G instructions before,
+466.59 G after (best; -4.9%; medians -4.8%; (median - best) / best 0.0003 and 0.001, one run before at 1.010 of
+its best). A profile of that test after the change (run `2026-10-28-class-ids-prof`, 83,040 busy samples; frames in
+its `named.txt`): `pool_conjectures` 44.0%, of it filling vectors (`zip_op`) 28.6 points and the class lookups 1.5;
+the open-law filter (`scoped`) 36.1%, `verdict` 16.1, `ValueMemo::agree` 9.8; `memset` 3.0% (2.0 points directly under
+`pool_conjectures`, where the fill and its zero-fill are inlined, 0.9 under `agree`). `zip_word` evaluates each byte through `u128` (`Word::get` and `of`; `of`
+alone is 12.4% self). The prefilter's trigger, filling at about a third of a build, is about met (`PARKED.md`, "A
+prefilter before the full value vectors").
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)

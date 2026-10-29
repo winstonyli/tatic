@@ -1,0 +1,143 @@
+# 2026-10-28-stream-probe: probe.log (run 1) tables (totals and the five largest pools) and cross-stream lines,
+# nested.log's total, then figures derived from both runs' per-stream rows and check.log (at the end).
+# Patch: docs/runs/2026-10-28/patches/stream_probe.patch on 3662451; salt 1, budget 20000, one thread, release build,
+# on a machine loaded by other sessions (55-83% in the survey agent's spot samples, not kept), so seconds are shares
+# only; run 2 (probe2.log) repeats the counts exactly.
+TABLE growths 2: counts
+stream               seeds        pool      filled      groups       multi    in_multi        conj       grown        open     refuted         out   r8_filled
+TOTAL               262954     2122408     3268551     1270507      255223     1107124      851901      449962       62864        1675       61189      189012
+or,xor,sub           20314       59976       93641       52001        5382       13357        7975        4906          94           0          94         573
+add,xor,sub          18706       58683       96692       46000        7993       20676       12683        6949         296           0         296        1700
+and,xor,sub          18747       58384       92073       50928        4944       12400        7456        4663          88           0          88         524
+add,or,sub           14806       54253       89202       44657        6229       15825        9596        5710         195           0         195        1097
+and,or,sub           14204       53851       84726       44483        5142       14510        9368        6233          96           0          96         538
+TABLE growths 2: prefilter (terms still needing full vectors, distinct terms those fill; in_multi and filled are the floor and the baseline)
+stream         pre16_termspre16_filled pre64_termspre64_filledpre256_termspre256_filled    in_multi      filled
+TOTAL              1164698     1784563     1110160     1695964     1107343     1691291     1107124     3268551
+or,xor,sub           15847       27915       13416       24158       13357       24044       13357       93641
+add,xor,sub          21485       37885       20679       36762       20676       36753       20676       96692
+and,xor,sub          13800       24642       12442       22484       12400       22414       12400       92073
+add,or,sub           17665       31359       15903       28276       15827       28137       15825       89202
+and,or,sub           18586       32488       14698       25966       14521       25663       14510       84726
+TABLE growths 2: seconds, one thread
+stream             t_setup      t_grow    t_growth      t_sort      t_fill       t_key       t_ins      t_conj      t_post    t_osetup      t_shuf      t_norm        t_r8      t_pipe      t_real
+TOTAL                 1.35        0.01        2.04        1.56       11.05        5.21        3.02        0.88        0.07        0.01        0.70        8.49        0.62       35.00       23.42
+or,xor,sub            0.05        0.00        0.22        0.05        0.27        0.08        0.07        0.01        0.00        0.00        0.01        0.05        0.00        0.81        0.62
+add,xor,sub           0.04        0.00        0.07        0.05        0.38        0.71        0.08        0.02        0.00        0.00        0.01        0.13        0.01        1.51        0.73
+and,xor,sub           0.04        0.00        0.07        0.04        0.28        0.08        0.08        0.01        0.00        0.00        0.01        0.05        0.00        0.66        0.62
+add,or,sub            0.03        0.00        0.06        0.04        0.32        0.07        0.08        0.01        0.00        0.00        0.01        0.08        0.00        0.69        0.60
+and,or,sub            0.03        0.00        0.04        0.04        0.23        0.06        0.07        0.01        0.00        0.00        0.00        0.08        0.00        0.56        0.54
+TABLE growths 2: seconds of the two-stage grouping (stage a, b) against the single stage's fill, key, insert
+stream            t_pre16a    t_pre16b    t_pre64a    t_pre64b   t_pre256a   t_pre256b      t_fill       t_key       t_ins
+TOTAL                 1.25        7.05        1.58        6.62        2.45        6.80       11.05        5.21        3.02
+or,xor,sub            0.04        0.11        0.05        0.09        0.09        0.10        0.27        0.08        0.07
+add,xor,sub           0.05        0.19        0.05        0.18        0.09        0.18        0.38        0.71        0.08
+and,xor,sub           0.03        0.09        0.04        0.08        0.07        0.08        0.28        0.08        0.08
+add,or,sub            0.04        0.14        0.04        0.12        0.06        0.11        0.32        0.07        0.08
+and,or,sub            0.03        0.11        0.03        0.09        0.06        0.10        0.23        0.06        0.07
+CROSS growths 2, width-4 pool memos: 56 streams, sum of per-stream fills 3268551, distinct terms 2622528 (19.8% of the fills are repeats), a 4096-byte vector each: 10.74 GB; distinct terms held by 1 / 2-4 / 5-9 / 10-19 / 20+ streams: [2322310, 247509, 49021, 2756, 932]
+CROSS growths 2, width-8 memos: 56 streams, sum of per-stream fills 189012, distinct terms 152000 (19.6% of the fills are repeats), a 4096-byte vector each: 0.62 GB; distinct terms held by 1 / 2-4 / 5-9 / 10-19 / 20+ streams: [132480, 17828, 1285, 318, 89]
+TABLE growths 4: counts
+stream               seeds        pool      filled      groups       multi    in_multi        conj       grown        open     refuted         out   r8_filled
+TOTAL               262954     4316023     8113204     2477758      400041     2238306     1838265     1139766      246721       12588      234133      755315
+or,xor,sub           20314       99934      189428       86652        8187       21469       13282        8823         227           0         227        1456
+add,xor,sub          18706       98558      195828       78282       11512       31788       20276       12116         839           1         838        5073
+and,xor,sub          18747       98123      186936       85821        7386       19688       12302        8271         227           0         227        1462
+add,or,sub           14806       94230      185965       78436        9288       25082       15794       10145         533           0         533        3275
+and,or,sub           14204       93779      176759       77359        7956       24376       16420       11968         313           0         313        1880
+TABLE growths 4: prefilter (terms still needing full vectors, distinct terms those fill; in_multi and filled are the floor and the baseline)
+stream         pre16_termspre16_filled pre64_termspre64_filledpre256_termspre256_filled    in_multi      filled
+TOTAL              2363183     4337189     2247111     4095076     2238932     4078069     2238306     8113204
+or,xor,sub           25342       50763       21571       43444       21471       43226       21469      189428
+add,xor,sub          32864       64628       31793       62751       31788       62737       31788      195828
+and,xor,sub          21939       44019       19749       39780       19688       39668       19688      186936
+add,or,sub           28403       57288       25196       50151       25088       49915       25082      185965
+and,or,sub           32026       65503       24797       50333       24419       49507       24376      176759
+TABLE growths 4: seconds, one thread
+stream             t_setup      t_grow    t_growth      t_sort      t_fill       t_key       t_ins      t_conj      t_post    t_osetup      t_shuf      t_norm        t_r8      t_pipe      t_real
+TOTAL                 1.41        0.01        6.26        4.15       26.91       11.89        6.14        2.46        0.15        0.01        3.56       25.52        2.52       90.98       71.77
+or,xor,sub            0.04        0.00        0.13        0.09        0.57        0.23        0.14        0.02        0.00        0.00        0.07        0.10        0.00        1.39        1.77
+add,xor,sub           0.04        0.00        0.14        0.08        0.76        0.20        0.15        0.04        0.00        0.00        0.07        0.22        0.02        1.73        1.88
+and,xor,sub           0.04        0.00        0.14        0.09        0.59        0.24        0.14        0.02        0.00        0.00        0.04        0.10        0.00        1.40        1.28
+add,or,sub            0.03        0.00        0.14        0.09        0.75        0.19        0.17        0.02        0.00        0.00        0.05        0.17        0.01        1.62        1.47
+and,or,sub            0.04        0.00        0.12        0.09        0.55        0.19        0.13        0.02        0.00        0.00        0.06        0.19        0.00        1.37        1.21
+TABLE growths 4: seconds of the two-stage grouping (stage a, b) against the single stage's fill, key, insert
+stream            t_pre16a    t_pre16b    t_pre64a    t_pre64b   t_pre256a   t_pre256b      t_fill       t_key       t_ins
+TOTAL                 3.42       18.21        4.41       17.71        6.44       17.34       26.91       11.89        6.14
+or,xor,sub            0.08        0.19        0.09        0.15        0.13        0.19        0.57        0.23        0.14
+add,xor,sub           0.09        0.32        0.09        0.35        0.15        0.30        0.76        0.20        0.15
+and,xor,sub           0.08        0.17        0.15        0.16        0.17        0.17        0.59        0.24        0.14
+add,or,sub            0.09        0.29        0.12        0.24        0.18        0.24        0.75        0.19        0.17
+and,or,sub            0.06        0.23        0.09        0.18        0.13        0.20        0.55        0.19        0.13
+CROSS growths 4, width-4 pool memos: 56 streams, sum of per-stream fills 8113204, distinct terms 7091828 (12.6% of the fills are repeats), a 4096-byte vector each: 29.05 GB; distinct terms held by 1 / 2-4 / 5-9 / 10-19 / 20+ streams: [6609303, 402327, 74566, 3825, 1807]
+CROSS growths 4, width-8 memos: 56 streams, sum of per-stream fills 755315, distinct terms 664455 (12.0% of the fills are repeats), a 4096-byte vector each: 2.72 GB; distinct terms held by 1 / 2-4 / 5-9 / 10-19 / 20+ streams: [615512, 44479, 3649, 636, 179]
+CROSS all growth counts [2, 4], width-4 pool memos: sum of every build's fills 11381755, distinct terms 7091828 (37.7% repeats), 29.05 GB at 4096 bytes each
+NESTED 56 of 56 streams have the 2-growth pool as a prefix and the 2-growth laws as the 4-growth laws within it
+# Derived figures (docs/runs/2026-10-28/scripts/stream_probe_derive.py over the raw folder's probe.log, probe2.log and check.log;
+# check.log is test stream_probe_overhead: 14 streams, each built by stream_laws (real1), the probe (probe1), stream_laws (real2), the probe (probe2)).
+== run 1, 2 growths, 56 streams, t_pipe 35.0 s
+  shares: pool_conjectures 57.6 (fill 31.6, key 14.9, insert 8.6, conjecture sort 2.5), open-law filter 28.2 (normalize 24.3, width 8 1.8), growth+sort+setup 14.1
+  terms in groups of two or more: 52.2% of 2122408
+  16 inputs: terms kept 54.88% (floor 52.16), fills kept 54.60%; fill+key+insert 19.3 s -> 8.3 s
+    streams whose single stage takes 0.05 s or more (52): median two-stage/single 0.560, slower on 7
+    all streams (56): median two-stage/single 0.594, slower on 10
+  64 inputs: terms kept 52.31% (floor 52.16), fills kept 51.89%; fill+key+insert 19.3 s -> 8.2 s
+    streams whose single stage takes 0.05 s or more (52): median two-stage/single 0.525, slower on 9
+    all streams (56): median two-stage/single 0.534, slower on 12
+  256 inputs: terms kept 52.17% (floor 52.16), fills kept 51.74%; fill+key+insert 19.3 s -> 9.3 s
+    streams whose single stage takes 0.05 s or more (52): median two-stage/single 0.575, slower on 12
+    all streams (56): median two-stage/single 0.599, slower on 15
+  streams keeping over 90% of their terms at 16 inputs: 18
+  add,sub: pool 34480, in groups of two or more 34220 in 1495 groups (1755 groups in all), kept at 16 inputs 34220
+  streams with no laws: ['and,or', 'shl1,shr1']
+== run 1, 4 growths, 56 streams, t_pipe 91.0 s
+  shares: pool_conjectures 52.1 (fill 29.6, key 13.1, insert 6.7, conjecture sort 2.7), open-law filter 34.9 (normalize 28.0, width 8 2.8), growth+sort+setup 13.0
+  terms in groups of two or more: 51.9% of 4316023
+  16 inputs: terms kept 54.75% (floor 51.86), fills kept 53.46%; fill+key+insert 44.9 s -> 21.6 s
+    streams whose single stage takes 0.05 s or more (55): median two-stage/single 0.446, slower on 11
+    all streams (56): median two-stage/single 0.454, slower on 12
+  64 inputs: terms kept 52.06% (floor 51.86), fills kept 50.47%; fill+key+insert 44.9 s -> 22.1 s
+    streams whose single stage takes 0.05 s or more (55): median two-stage/single 0.470, slower on 13
+    all streams (56): median two-stage/single 0.513, slower on 14
+  256 inputs: terms kept 51.87% (floor 51.86), fills kept 50.26%; fill+key+insert 44.9 s -> 23.8 s
+    streams whose single stage takes 0.05 s or more (55): median two-stage/single 0.478, slower on 17
+    all streams (56): median two-stage/single 0.482, slower on 18
+  streams keeping over 90% of their terms at 16 inputs: 19
+  add,sub: pool 74396, in groups of two or more 73671 in 2530 groups (3255 groups in all), kept at 16 inputs 73671
+  streams with no laws: ['and,or', 'shl1,shr1']
+== run 2, 2 growths, 56 streams, t_pipe 29.2 s
+  shares: pool_conjectures 52.0 (fill 32.4, key 7.8, insert 8.7, conjecture sort 3.0), open-law filter 32.2 (normalize 27.6, width 8 2.2), growth+sort+setup 15.8
+  terms in groups of two or more: 52.2% of 2122408
+  16 inputs: terms kept 54.88% (floor 52.16), fills kept 54.60%; fill+key+insert 14.3 s -> 7.9 s
+    streams whose single stage takes 0.05 s or more (50): median two-stage/single 0.565, slower on 10
+    all streams (56): median two-stage/single 0.625, slower on 12
+  64 inputs: terms kept 52.31% (floor 52.16), fills kept 51.89%; fill+key+insert 14.3 s -> 7.6 s
+    streams whose single stage takes 0.05 s or more (50): median two-stage/single 0.554, slower on 7
+    all streams (56): median two-stage/single 0.601, slower on 10
+  256 inputs: terms kept 52.17% (floor 52.16), fills kept 51.74%; fill+key+insert 14.3 s -> 8.7 s
+    streams whose single stage takes 0.05 s or more (50): median two-stage/single 0.607, slower on 13
+    all streams (56): median two-stage/single 0.630, slower on 15
+  streams keeping over 90% of their terms at 16 inputs: 18
+  add,sub: pool 34480, in groups of two or more 34220 in 1495 groups (1755 groups in all), kept at 16 inputs 34220
+  streams with no laws: ['and,or', 'shl1,shr1']
+== run 2, 4 growths, 56 streams, t_pipe 79.8 s
+  shares: pool_conjectures 52.9 (fill 31.4, key 11.2, insert 7.4, conjecture sort 2.8), open-law filter 33.2 (normalize 28.0, width 8 3.1), growth+sort+setup 13.9
+  terms in groups of two or more: 51.9% of 4316023
+  16 inputs: terms kept 54.75% (floor 51.86), fills kept 53.46%; fill+key+insert 39.9 s -> 20.2 s
+    streams whose single stage takes 0.05 s or more (55): median two-stage/single 0.441, slower on 11
+    all streams (56): median two-stage/single 0.467, slower on 12
+  64 inputs: terms kept 52.06% (floor 51.86), fills kept 50.47%; fill+key+insert 39.9 s -> 20.4 s
+    streams whose single stage takes 0.05 s or more (55): median two-stage/single 0.487, slower on 12
+    all streams (56): median two-stage/single 0.501, slower on 13
+  256 inputs: terms kept 51.87% (floor 51.86), fills kept 50.26%; fill+key+insert 39.9 s -> 21.9 s
+    streams whose single stage takes 0.05 s or more (55): median two-stage/single 0.501, slower on 16
+    all streams (56): median two-stage/single 0.511, slower on 17
+  streams keeping over 90% of their terms at 16 inputs: 19
+  add,sub: pool 74396, in groups of two or more 73671 in 2530 groups (3255 groups in all), kept at 16 inputs 73671
+  streams with no laws: ['and,or', 'shl1,shr1']
+== check.log 2 growths TOTAL: real1=8.27 probe1=5.68 real2=5.73 probe2=5.71 norm1=0.42 norm2=0.42
+  the 14 checked streams in run 1: normalize 2.28 s, probe 9.49 s
+  the 14 checked streams in run 2: normalize 2.08 s, probe 7.62 s
+== check.log 4 growths TOTAL: real1=19.36 probe1=15.01 real2=15.14 probe2=14.85 norm1=1.45 norm2=1.44
+  the 14 checked streams in run 1: normalize 5.43 s, probe 22.92 s
+  the 14 checked streams in run 2: normalize 4.91 s, probe 19.17 s

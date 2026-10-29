@@ -297,9 +297,14 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   is about 11% of a worker's peak (56 of about 500 MB; the peak is set elsewhere in the first `rule_miner` task), though
   up to a third of its final commit (105 of 305 MB). A word chosen by width (`u8` up to width 8) was rejected as a
   per-width branch. Trigger: worker memory becomes a limit (more workers per lane, or the class table's per-worker
-  memory), or `ValueMemo::fill`'s CPU share (8.8% in the last profile) is worth a sliced evaluator. Evidence:
-  `docs/tier-cycle.md`, "One screen memo and candidate index per process", its size in a sweep (2026-10-23). Status:
-  parked (by decision, 2026-10-23).
+  memory), or `ValueMemo::fill`'s CPU share is worth a sliced evaluator (8.8% in the 2026-10-15 profile after the
+  candidate index, 16.8-18.2% in two other profiles that day). At a mines' join
+  budget of 100, `ValueMemo::fill` is 18.2% of the sweep's busy samples, about 17 points of it under the two stream
+  builds and about 15 of those in `pool_conjectures`' exhaustive width-4 memos (run `2026-10-28-mjv-prof`). Those
+  memos hold 4096 inputs, not the screen's 204, so this design would need 4096-input planes there (not measured).
+  Evidence: `docs/tier-cycle.md`, "One screen memo and candidate index per process", its size in a sweep (2026-10-23),
+  and "Grouping the streams' terms, and the 2-growth build inside the 4-growth one" (2026-10-28). Status: parked (by
+  decision, 2026-10-23).
 - **Contention in the shared screen memo at more than 6 miner threads** — why: wall did not move with CPU; the lock may be the cause, not measured. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("One screen memo and candidate index per process"). Status: parked (untested).
 - **Native Defender real-time-protection check when the service is running** — why: the `Component[2].fEnable` offset was not verified; the service is stopped on this machine, so the tool falls back to one PowerShell. Trigger: verify the offset against `Get-MpComputerStatus` on a machine with the service up (the user's call). Evidence: `docs/tier-cycle.md` ("Survey: workflow time outside the sweep"). Status: parked (untested).
 - **Sweep-worker deferred bugs: unchecked Unix `dup`/`dup2` in `stdio`; case-sensitive `process_start` prefix match; a panic during flush leaves the std handle on a dropped `File`** — why: deferred as minor. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("A persistent worker for the sweep's children"). Status: parked.
@@ -319,13 +324,31 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   share went instead to building the 56 independent streams in parallel (cleanup plan CU18: 16.1 to 5.4 s on 4 threads,
   `docs/tier-cycle.md`, "The streams in parallel"). The 4-growth build is the same shape, and laziness again saves
   at most its filter: 33% of that build at budget 100, about 11% of the sweep, while grouping is 52% of it (about 18%
-  of the sweep: the exhaustive width-4 value vectors and each term's 4097-byte group key) and growth and sorting the
-  rest, all paid in full (`docs/tier-cycle.md`, "A join budget for the mines alone"). Trigger: the filter grows again
+  of the sweep: the exhaustive width-4 value vectors and, until `cd7dacb`, each term's 4097-byte group key) and
+  growth and sorting the rest, all paid in full (`docs/tier-cycle.md`, "A join budget for the mines alone"). Trigger: the filter grows again
   (a costlier open or refutation check), or the 4-growth build's cost matters: met 2026-10-28 if the mines' join
   budget lands at 100. Evidence: runs `2026-10-26-cu14-base-prof` and `2026-10-27-cu17-base-prof` (`PROF_PARENTS`
   split of `stream_laws`, 2026-10-27), `2026-10-28-mjv-prof` (`PROF_THREAD` by the builds' thread ids);
-  `docs/tier-cycle.md`, "One exhaustive check for both". Status: decided against (2026-10-27); held for the join
-  budget's landing, with cheaper grouping the larger lever (2026-10-28).
+  `docs/tier-cycle.md`, "One exhaustive check for both". A probe split the build and found the loops' 2-growth build
+  inside the extras' 4-growth one (`docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside
+  the 4-growth one", run `2026-10-28-stream-probe`): deriving the first from the second is under survey, and value-class
+  ids for grouping were chosen (2026-10-28). Status: decided against (2026-10-27); held for the join budget's landing,
+  with cheaper grouping the larger lever (2026-10-28).
+- **A prefilter before the full value vectors** — what: in `pool_conjectures`, group the terms first by their values
+  on 16 fixed inputs and fill full width-4 vectors only for terms that share a bucket; exact, since equal vectors agree
+  on any subset. Why parked: 52% of a stream's terms are in true groups, so it can skip at most about half the fills;
+  it halved fill, key and insert time in aggregate but was slower on 11 of the 55 streams whose single stage takes
+  0.05 s or more (4 growths), and it adds a second memo and a tunable; value-class ids (one id per distinct vector, no
+  copied keys) were chosen first. Trigger: after the ids land, filling vectors is still about a third of a stream
+  build by a fresh count. Evidence: `docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside
+  the 4-growth one" (run `2026-10-28-stream-probe`, 2026-10-28); after the ids (`cd7dacb`), filling under
+  `pool_conjectures` is 28.6% of the busy samples of building both sequences (`zip_op`; run `2026-10-28-class-ids-prof`).
+  Status: held for the user's call (trigger about met, 2026-10-28).
+- **One value memo shared by the streams** — what: one process-wide exhaustive width-4 memo for every stream's
+  `pool_conjectures` instead of one per stream. Why: only 12.6% of the 8.11 M fills at 4 growths repeat another
+  stream's (19.8% at 2), and the 7.09 M distinct terms would take 29 GB at 4096 bytes each. Trigger: none stated.
+  Evidence: `docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside the 4-growth one" (run
+  `2026-10-28-stream-probe`, 2026-10-28). Status: decided against (2026-10-28).
 - **Binary formats for the sweep's text files: task results (C7's `key<TAB>value` channel), rule libraries (`rules.txt`, `laws_extra_*.txt`), law files (`laws_text`), the `m.tsv` tables** — why: each is KB-sized and written once per task, the payloads are terms already printed as text, the text is the evidence a reader greps and diffs, and a binary form needs a reader for every consumer (scripts included). The lemma cache, the one large and hot store, is already binary (`TLC1`, `tatic::kernel::bin`). Trigger: any of these files reaching MB or showing in a sweep profile (parse or format time). Evidence: the writers in `tests/church_bv/driver.rs` (`laws_extra_*`, `m.tsv`), `laws_text` in `search.rs`, the lemma cache's `TLC1` format in `lemma_cache.rs` (2026-10-21; the prefs and joinability-unit files no longer exist, checked 2026-10-27). Status: parked (by decision, C7 ruling 2026-10-21).
 
 ## Code hygiene
