@@ -715,6 +715,28 @@ fn a_stream_sequence_is_the_same_on_any_thread_count() {
     assert!(parallel == build_sequence(1, 2000, 2, 1));
 }
 
+/// The two sequences a sweep builds at salt 1 (the loops' at `STREAM_LEVELS` growths, the extras' at the deepest held
+/// band's), pinned by length and an FNV-1a digest of their laws' text: a cheaper way to group or filter the streams'
+/// terms must leave them byte-identical (docs/tier-cycle.md, "Grouping the streams' terms, and the 2-growth build inside
+/// the 4-growth one"). Its own run is the workload for counting a build's instructions.
+#[test]
+#[ignore]
+pub fn stream_sequences_are_pinned() {
+    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
+    let pinned = [(STREAM_LEVELS, 58125, 0x7703_133d_0c24_dbb2), (deep, 230801, 0x4bb4_78c5_da79_675b)];
+    let got: Vec<(usize, usize, u64)> = pinned
+        .iter()
+        .map(|&(levels, ..)| {
+            let seq = stream_sequence(1, levels);
+            let text: String = seq.iter().map(|(a, b)| format!("{} = {}\n", a.show(), b.show())).collect();
+            let fnv = text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+            println!("PINNED {levels} growths: {} laws, digest {fnv:#018x}", seq.len());
+            (levels, seq.len(), fnv)
+        })
+        .collect();
+    assert_eq!(got, pinned, "a sequence changed");
+}
+
 /// Phase `phase`'s window of a sequence: its residue class at `STREAM_STRIDE`, `laws` of them from `skip`.
 pub fn residue(seq: &[(Term, Term)], phase: usize, skip: usize, laws: usize) -> Vec<(Term, Term)> {
     seq.iter().skip(phase).step_by(STREAM_STRIDE).skip(skip).take(laws).cloned().collect()
