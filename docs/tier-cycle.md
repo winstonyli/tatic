@@ -4931,6 +4931,15 @@ the open-law filter (`scoped`) 36.1%, `verdict` 16.1, `ValueMemo::agree` 9.8; `m
 alone is 12.4% self). The prefilter's trigger, filling at about a third of a build, is about met (`PARKED.md`, "A
 prefilter before the full value vectors").
 
+*Without the fill's zero-fill (2026-10-28, patch `docs/runs/2026-10-28/patches/zero_fill.patch`): within the noise.*
+`fill` resized the last block with zeros and then overwrote them; the patch has `zip_op` write into the block's spare
+capacity (`MaybeUninit`, then `set_len`), two new `unsafe` blocks. Both sequences stay pinned. Counted as above (runs
+`2026-10-28-zero-fill-icount-C` and `-B`): 460.87 G instructions against 463.66 G for the build before it in the same
+session (best of 3; -0.6%, medians -0.7%), while that build itself counted 466.59 G an hour earlier, so the two
+sessions' counts of one exe differ by 0.6% (the 4 build threads share memos behind locks). Not kept: at most 0.7% of
+the work, and it would be the repo's first `unsafe` over uninitialized memory (`PARKED.md`, "Fill vectors without
+zeroing them first").
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)

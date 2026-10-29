@@ -344,6 +344,13 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   the 4-growth one" (run `2026-10-28-stream-probe`, 2026-10-28); after the ids (`cd7dacb`), filling under
   `pool_conjectures` is 28.6% of the busy samples of building both sequences (`zip_op`; run `2026-10-28-class-ids-prof`).
   Status: held for the user's call (trigger about met, 2026-10-28).
+- **Fill vectors without zeroing them first** — what: `ValueMemo::fill` writes an operator's vector into the block's
+  spare capacity (`MaybeUninit`, then `set_len`) instead of resizing with zeros and overwriting them. Why: the count
+  moved -0.6% (medians -0.7%), the size of the A/A spread between two sessions' counts of one exe, and it adds the
+  repo's first `unsafe` over uninitialized memory (two blocks). Trigger: `memset` grows to several percent of a build,
+  e.g. once `zip_word` is vectorized and the fill itself gets cheaper. Evidence: patch
+  `docs/runs/2026-10-28/patches/zero_fill.patch` (on `cd7dacb`); `docs/tier-cycle.md`, "Without the fill's zero-fill"
+  (runs `2026-10-28-zero-fill-icount-C`, `-B`, 2026-10-28). Status: decided against (2026-10-28).
 - **One value memo shared by the streams** — what: one process-wide exhaustive width-4 memo for every stream's
   `pool_conjectures` instead of one per stream. Why: only 12.6% of the 8.11 M fills at 4 growths repeat another
   stream's (19.8% at 2), and the 7.09 M distinct terms would take 29 GB at 4096 bytes each. Trigger: none stated.
