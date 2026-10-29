@@ -370,15 +370,31 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   copied keys) were chosen first. Trigger: after the ids land, filling vectors is still about a third of a stream
   build by a fresh count. Evidence: `docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside
   the 4-growth one" (run `2026-10-28-stream-probe`, 2026-10-28); after the ids (`cd7dacb`), filling under
-  `pool_conjectures` is 28.6% of the busy samples of building both sequences (`zip_op`; run `2026-10-28-class-ids-prof`).
-  Status: held for the user's call (trigger about met, 2026-10-28).
+  `pool_conjectures` is 28.6% of the busy samples of building both sequences (`zip_op`; run `2026-10-28-class-ids-prof`);
+  with `zip_word` on native bytes it is 8.5% (run `2026-10-28-zipword-prof`). Status: held for the user's call on
+  landing `zip_word` on native bytes (next entry): about met on main's code, not met with that patch (2026-10-28).
+- **Land `zip_word` on native bytes** — what: apply `docs/runs/2026-10-28/patches/zip_word_native.patch` (on 08ff13a,
+  `tests/church_bv/rewrite.rs` only): each operator stated once as `rewrite::word<W: Word>`, replacing `OpInfo::word`, so
+  `zip_word`'s `u8` loops for `add`, `sub` and `shl1` do byte-lane vector arithmetic instead of one byte at a time
+  through `u128`. Both sequences stay pinned; the pin test counts 38.8% fewer instructions (`cargo test --release`).
+  Before landing: run the full `church_bv` suite (the spike ran only the pin test); update the comments that still
+  describe `OpInfo::word` (the doc comment above `zip_word`, and `classes.rs`'s mention of `OP_INFO[o].word`); check
+  `Word::get`'s two remaining callers in `rewrite.rs`. A design point to settle: `word`'s `match` ends in
+  `unreachable!`, so a new operator without an arm fails at run time, where a missing `OpInfo::word` closure failed to
+  compile. Not checked: the `sweep` profile (fat LTO) and wall time. Why held: by decision 2026-10-28, the spike was
+  throwaway and keeping its code is a separate request. Trigger: the user's call. Evidence: `docs/tier-cycle.md`,
+  "`zip_word` on native bytes" (runs `2026-10-28-zipword-*`, 2026-10-28). Status: held for the user's call (2026-10-28).
 - **Fill vectors without zeroing them first** — what: `ValueMemo::fill` writes an operator's vector into the block's
   spare capacity (`MaybeUninit`, then `set_len`) instead of resizing with zeros and overwriting them. Why: the count
   moved -0.6% (medians -0.7%), the size of the A/A spread between two sessions' counts of one exe, and it adds the
   repo's first `unsafe` over uninitialized memory (two blocks). Trigger: `memset` grows to several percent of a build,
   e.g. once `zip_word` is vectorized and the fill itself gets cheaper. Evidence: patch
   `docs/runs/2026-10-28/patches/zero_fill.patch` (on `cd7dacb`); `docs/tier-cycle.md`, "Without the fill's zero-fill"
-  (runs `2026-10-28-zero-fill-icount-C`, `-B`, 2026-10-28). Status: decided against (2026-10-28).
+  (runs `2026-10-28-zero-fill-icount-C`, `-B`, 2026-10-28). With `zip_word` on native bytes, `memset` directly under
+  `pool_conjectures` is 2.8% of the busy samples (run `2026-10-28-zipword-prof`; 2.0 before, the rise from the smaller
+  total: 1,404 samples against 1,661), and the patch's 2.8 G instructions would be about 1% of that build's count.
+  Borderline by samples, not met by instructions; if `zip_word` on native bytes lands, count this patch again on top of
+  it. Status: decided against (2026-10-28).
 - **One value memo shared by the streams** — what: one process-wide exhaustive width-4 memo for every stream's
   `pool_conjectures` instead of one per stream. Why: only 12.6% of the 8.11 M fills at 4 growths repeat another
   stream's (19.8% at 2), and the 7.09 M distinct terms would take 29 GB at 4096 bytes each. Trigger: none stated.

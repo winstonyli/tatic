@@ -4930,9 +4930,9 @@ its best). A profile of that test after the change (run `2026-10-28-class-ids-pr
 the open-law filter (`scoped`) 36.1%, `verdict` 16.1, `ValueMemo::agree` 9.8; `memset` 3.0% (2.0 points directly under
 `pool_conjectures`, where the fill and its zero-fill are inlined, 0.9 under `agree`). `zip_word` evaluates each byte through `u128` (`Word::get` and `of`; `of`
 alone is 12.4% self), and the `u8` loop is not vectorized as byte arithmetic: its hottest block (the `sub` loop, RVA
-0x2f200 in the profiled exe) loads, subtracts and masks one byte at a time in 32-bit registers and packs the 16
+0x2f200 in the profiled exe) loads, subtracts and masks one byte at a time in 32- and 64-bit registers and packs the 16
 results into an xmm register for the store. The prefilter's trigger, filling at about a third of a build, is about met (`PARKED.md`, "A
-prefilter before the full value vectors").
+prefilter before the full value vectors"), unless `zip_word` works on native bytes (below).
 
 *Without the fill's zero-fill (2026-10-28, patch `docs/runs/2026-10-28/patches/zero_fill.patch`): within the noise.*
 `fill` resized the last block with zeros and then overwrote them; the patch has `zip_op` write into the block's spare
@@ -4942,6 +4942,30 @@ session (best of 3; -0.6%, medians -0.7%), while that build itself counted 466.5
 sessions' counts of one exe differ by 0.6% (the 4 build threads share memos behind locks). Not kept: at most 0.7% of
 the work, and it would be the repo's first `unsafe` over uninitialized memory (`PARKED.md`, "Fill vectors without
 zeroing them first").
+
+*`zip_word` on native bytes (spike, 2026-10-28, patch `docs/runs/2026-10-28/patches/zip_word_native.patch` on
+08ff13a; not landed): 38.8% fewer instructions.* Of the eight `u8` loops, only `add`, `sub` and `shl1` did scalar
+arithmetic. The operators were defined on `u128` only (`OpInfo::word`), and the backend did not narrow a 128-bit add,
+subtract or shift to byte lanes: these loops load 16 bytes, spill them to the stack, work one byte at a time in 32- and
+64-bit registers (`sub`: 10 `subl`, 6 `subq`) and pack the results back, 131 instructions per 16 bytes in `sub`, about
+8 a byte. `and`, `or`, `xor` (`andps` and the like), `lt` (`pmaxub`, `pcmpeqb`) and `shr1` (`psrlw`) were already
+vector loops. The patch states each operator once, generic over `Word` (`rewrite::word<W>`, used by `zip_word` for
+both word types and by `Term::interp`), so the `u8` loops do byte arithmetic: `psubb` or `paddb` and `pand`, 13
+instructions per 32 bytes for `add` and `sub`, 11 for `shl1` (`paddb x, x`); the other five loops are instruction for
+instruction unchanged (`docs/runs/2026-10-28/rows/2026-10-28-zipword-disasm.txt`, by
+`docs/runs/2026-10-28/scripts/zw_dis.sh`). Both sequences stay byte-identical (run `2026-10-28-zipword-pin-D`).
+Counted as above, the two exes built in one session (runs `2026-10-28-zipword-icount-M` and `-D2`; `cargo test
+--release`, the `sweep` profile's fat LTO not checked): 466.14 G instructions before, 285.22 G after (best of 3;
+-38.8%, medians -38.6%; (median - best) / best 0.005 and 0.008, one run after at 1.016 of its best). If the saving
+is all in those three loops (the other five and the inlined `u128` fill are the same size before and after;
+`Term::interp`'s code was not compared), they were at least 38.8% of the instructions, against 33.0% of the busy
+samples (`zip_op` inclusive, run `2026-10-28-class-ids-prof`). A profile after the patch (run `2026-10-28-zipword-prof`, a line-tables-only build
+of the same source; frames in `docs/runs/2026-10-28/rows/2026-10-28-zipword-prof.txt`): `zip_op` 10.5%, 8.5 points of
+it under `pool_conjectures` (28.6 before); `pool_conjectures` 30.2%; the open-law filter (`scoped`) 43.3%, `verdict`
+19.0, `ValueMemo::agree` 7.8; `memset` 4.2% self (2.8 points directly under `pool_conjectures`, 2.0 before). The two
+profiles ran at 43% and 3% machine load, so only shares within each compare (busy samples 83,040 and 50,152). Not
+timed. With the patch, filling is about a tenth of the build, below the prefilter's trigger (`PARKED.md`, "A prefilter
+before the full value vectors"); landing it is the user's call (`PARKED.md`, "Land `zip_word` on native bytes").
 
 *Why normalize is slow on a cold stream (2026-10-28, runs `2026-10-28-normalize-cold`, `-twice`, `-twice-all56`,
 `-twice-nolp`, `-once-all56`, `-origins`, `-distinct`).* The 4.9-5.4 s against 1.4 s above compared the probe's
