@@ -104,6 +104,9 @@ lines = [f"busy samples {tot}", "== self (leaf, inlined frames expanded)"]
 lines += [f"  {100*v/tot:5.1f}% {n}" for n, v in selfc.most_common(40)]
 lines += ["== inclusive (church_bv/tatic frames)"]
 lines += [f"  {100*v/tot:5.1f}% {n}" for n, v in incl.most_common(60)]
+# PROF_FRAMES=<frame>,<frame>: these frames' inclusive shares whatever their rank (two decimals, to compare builds)
+for key in filter(None, __import__("os").environ.get("PROF_FRAMES", "").split(",")):
+    lines += [f"== inclusive {key}: {100*incl[key]/tot:.2f}%"]
 # optional leaf substrings: for samples whose leaf contains one, the first two church_bv/tatic frames above it
 for key in sys.argv[3:]:
     by = collections.Counter()

@@ -1,0 +1,118 @@
+# run 2026-10-28-embeds-prof-n688s3: samply, cold:streams salt 3, MINE_JOIN_VISIT=100 EXTRAS_N=688, the build of
+# 2026-10-28-embeds-prof2: the salt that hung before the fix. Same rules.txt on all 3 loops as the gate's salt-3 arm of
+# 2026-10-28-mjv-j100n688f. Taken at cpu 67%, beside embeds-prof-n688s1 (cpu 75%): 827017 busy samples against its
+# 767951 (+8%), embeds 1.01% against 1.00%, rewrite 25.1% against 25.5%: no costly region is left on this salt.
+# Frames: docs/runs/2026-10-18/scripts/prof_named.py with PROF_FRAMES=church_bv::rewrite::embeds,
+# church_bv::rewrite::embeds::go,church_bv::rewrite::cut_at,church_bv::rewrite::cut_by,church_bv::rewrite::rewrite,
+# church_bv::rewrite::rewrite_memo.
+
+## whole sweep
+busy samples 827017
+== self (leaf, inlined frames expanded)
+    3.7% church_bv::rewrite::impl$42::eq
+    3.3% core::core_arch::x86::sse2::_mm_movemask_epi8
+    3.1% _mi_page_malloc_zero
+    3.1% church_bv::rewrite::impl$2::op::closure$0
+    2.8% church_bv::rewrite::match_in
+    2.2% fun_1c010
+    2.0% church_bv::rewrite::Cells::find
+    1.7% church_bv::rewrite::Term::show_into
+    1.6% mi_theap_realloc_zero_aligned
+    1.6% church_bv::rewrite::impl$9::of
+    1.6% hashbrown::util::likely
+    1.6% fun_1e580
+    1.5% church_bv::rewrite::impl$18::get::closure$1
+    1.2% mi_free
+    1.2% core::ptr::write
+    1.1% church_bv::rewrite::subst_sig
+    1.1% hashbrown::raw::RawTableInner::is_bucket_full
+    1.0% church_bv::rewrite::join_walk
+    1.0% mi_free_block_local
+    0.9% fun_2f5fa0
+    0.9% core::num::impl$9::wrapping_add
+    0.9% church_bv::rewrite::zip_word
+    0.9% church_bv::rewrite::Term::occurrences
+    0.9% std::sys::sync::mutex::futex::Mutex::lock
+    0.9% fun_1e490
+    0.9% mi_arena_try_purge
+    0.8% core::ptr::copy_nonoverlapping
+    0.8% church_bv::rewrite::subst_pat
+    0.8% mi_theap_malloc_aligned_at
+    0.7% fun_2f4ed0
+    0.7% church_bv::rewrite::impl$9::get
+    0.7% alloc::vec::Vec::push_mut
+    0.7% foldhash::hash_bytes_long
+    0.7% hashbrown::control::bitmask::BitMask::lowest_set_bit
+    0.7% church_bv::rewrite::rule_weight
+    0.7% foldhash::folded_multiply
+    0.6% alloc::rc::impl$34::drop
+    0.6% church_bv::rewrite::rewrite_memo
+    0.6% church_bv::rewrite::impl$12::exhaustive::closure$0::closure$0
+    0.6% std::sys::sync::mutex::futex::Mutex::unlock
+== inclusive (church_bv/tatic frames)
+   79.1% tatic::kernel::scoped
+   69.9% church_bv::job::Job::spent
+   69.1% church_bv::miner::relay
+   67.6% church_bv::miner::impl$5::pick::closure$9::closure$0
+   67.5% church_bv::miner::impl$5::pick::closure$9::closure$0::closure$0
+   67.5% church_bv::miner::impl$5::pick::closure$9::closure$0::closure$0::closure$0
+   67.1% church_bv::miner::impl$5::pick::closure$9::closure$0::closure$0::closure$0::closure$0
+   67.1% church_bv::miner::impl$5::pick::closure$8
+   67.0% church_bv::miner::impl$5::pick::closure$6
+   66.1% church_bv::miner::Scorer::score_laws
+   63.7% church_bv::job::Job::with_rules
+   59.8% church_bv::miner::impl$4::score_laws::closure$1
+   59.7% church_bv::miner::impl$4::score_laws::closure$1::closure$0
+   58.3% church_bv::job::Job::measured
+   57.1% church_bv::rewrite::rewrite_plan
+   56.6% church_bv::miner::impl$4::score_laws::closure$1::closure$0::closure$0
+   32.6% church_bv::rewrite::prove_eq
+   30.5% church_bv::rewrite::join_or_machine
+   28.2% church_bv::rewrite::join_eq
+   26.2% church_bv::rewrite::join_search
+   25.8% church_bv::rewrite::join_search::closure$3
+   25.1% church_bv::rewrite::rewrite
+   24.6% church_bv::rewrite::rewrite_memo
+   24.4% church_bv::rewrite::join_walk
+   23.5% church_bv::search::stream_laws
+   23.5% church_bv::search::build_sequence::closure$0::closure$0
+   23.4% church_bv::rewrite::rewrite_uncached
+   16.4% church_bv::rewrite::join_search::closure$3::closure$1
+   12.4% church_bv::machine::pool_conjectures
+   11.6% church_bv::rewrite::Term::op
+   10.2% church_bv::rewrite::ValueMemo::fill
+   10.1% church_bv::rewrite::impl$2::op::closure$0
+    8.0% church_bv::rewrite::ValueMemo::values
+    7.7% church_bv::_::__rust_alloc
+    7.2% church_bv::search::stream_laws::closure$10
+    6.7% church_bv::classes::Classes::step
+    6.5% church_bv::rewrite::RuleTable::sorted
+    6.3% church_bv::rewrite::Rules::with_mined
+    6.3% church_bv::rewrite::zip_op
+    6.2% church_bv::rewrite::zip_word
+    6.0% church_bv::classes::Classes::normalize
+    5.6% church_bv::miner::impl$5::pick::closure$8::closure$0
+    5.6% church_bv::_::__rust_realloc
+    5.0% church_bv::rewrite::Term::show_into
+    4.9% church_bv::rewrite::rule_step
+    4.4% church_bv::classes::Classes::lookup
+    4.0% church_bv::rewrite::RuleTable::new
+    4.0% tatic::kernel::grow
+    3.9% church_bv::rewrite::impl$42::eq
+    3.8% church_bv::rewrite::Cells::find
+    3.7% church_bv::rewrite::impl$2::op::closure$0::closure$1
+    3.7% church_bv::rewrite::Term::show
+    3.7% tatic::kernel::with_infer_cache
+    3.7% tatic::kernel::Checker::under
+    3.7% tatic::kernel::Checker::infer_node
+    3.7% tatic::kernel::Checker::infer
+    3.7% tatic::kernel::impl$17::infer_node::closure$0
+    3.7% tatic::kernel::Checker::check
+    3.7% tatic::kernel::impl$17::check::closure$0
+    3.7% tatic::kernel::check_in::closure$0::closure$0::closure$0
+== inclusive church_bv::rewrite::embeds: 1.01%
+== inclusive church_bv::rewrite::embeds::go: 0.39%
+== inclusive church_bv::rewrite::cut_at: 1.15%
+== inclusive church_bv::rewrite::cut_by: 0.38%
+== inclusive church_bv::rewrite::rewrite: 25.12%
+== inclusive church_bv::rewrite::rewrite_memo: 24.57%
