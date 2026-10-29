@@ -4974,7 +4974,8 @@ carries `Words { w8, w128 }`, built by `words!(|x, y, m| body)` from one body ty
 `zip_word<W, O>` takes the row's function for `W` (`Word::pick`) as a constant, so it inlines as the `match` did, and
 `Term::interp` calls the `u128` one through the pointer. `OP_INFO` stays the one place that says what an operator
 computes, and a row without its body fails to compile (E0061, checked by deleting one). A const assert keeps
-`OP_INFO` within the 8 bits the class shape gives the root operator (a ninth row fails with E0080). Because one body
+`OP_INFO` within the 8 bits the class shape gives the root operator (E0080, checked by tightening it to fewer than 8
+with the eight rows; a real ninth row first fails on `OP_INFO`'s declared length and the other eight-entry arrays). Because one body
 now makes both functions, the byte and `u128` loops agree by construction, so the new test
 `operators_match_a_bit_at_a_time` checks every operator through `zip_op` on both word types against a version worked
 out a bit at a time (a ripple carry for `add`, `sub` and `lt`): all pairs of inputs at widths 1 to 8, sampled ones at
@@ -4984,8 +4985,8 @@ out a bit at a time (a ripple carry for `add`, `sub` and `lt`): all pairs of inp
 sequences stay pinned; the eight `u8` loops are instruction for instruction the spike's
 (`docs/runs/2026-10-29/rows/2026-10-29-typedrows-disasm.txt`); the pin test counts the same, typed rows against the
 spike's exe in one session (best 289.78 G against 289.96 G, medians 292.27 and 292.29 G, spreads 0.8-0.9%;
-`docs/runs/2026-10-29/rows/2026-10-29-typedrows-icount.txt`). The spike's exe counted 285.22 G the day before, 1.7%
-lower: only counts from one session compare. A profile after landing (run `2026-10-29-typedrows-prof`, 61,620 busy
+`docs/runs/2026-10-29/rows/2026-10-29-typedrows-icount.txt`). The spike's exe counted 285.22 G the day before, 1.6%
+lower: only counts from one session compare. As for the spike, not timed, and the `sweep` profile (fat LTO) not built. A profile after landing (run `2026-10-29-typedrows-prof`, 61,620 busy
 samples at 13% machine load; frames in `docs/runs/2026-10-29/rows/2026-10-29-typedrows-prof.txt`) has the spike's
 shares within about three points: the open-law filter (`scoped`) 46.5%, `pool_conjectures` 27.7, `verdict` 18.9,
 `Term::show` 10.8, `zip_op` 9.7 (7.5 points under `pool_conjectures`), `ValueMemo::agree` 8.2; the rows' closures appear

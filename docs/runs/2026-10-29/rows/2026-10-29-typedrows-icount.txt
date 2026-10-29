@@ -1,7 +1,8 @@
 # 2026-10-29-typedrows-icount: retired instructions of search::stream_sequences_are_pinned (--exact --ignored), 3 runs
 # each on CPU 4 by ~/.claude/samply/icount.ps1. D = the spike's patch (2026-10-28-zipword D.exe: zip_word and interp_in
 # both through the `word` match); T = typed rows (T.exe, 7637e88: both through a row's function pointer). Best T/D 0.9993,
-# median T/D 0.9999, inside each arm's own spread (0.8-0.9%): the indirect call left in interp_in costs nothing countable.
+# median T/D 0.9999, inside each arm's own spread (0.8-0.9%). The pin test never runs `Term::interp`, so this says
+# nothing about the pointer call left there.
 == D (2026-10-29-typedrows-icount-D)
 run	pid	instructions
 1	57108	293602204136

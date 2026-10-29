@@ -383,22 +383,28 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   `pool_conjectures` is 2.8% of the busy samples (run `2026-10-28-zipword-prof`; 2.0 before, the rise from the smaller
   total: 1,404 samples against 1,661), and the patch's 2.8 G instructions would be about 1% of that build's count.
   Borderline by samples, not met by instructions. `zip_word` on native bytes has since landed (`a63ff57`, 2026-10-29;
-  `memset` under `pool_conjectures` 2.8% again, run `2026-10-29-typedrows-prof`); this patch is not yet counted on top of
-  it. Status: decided against (2026-10-28).
+  `memset` under `pool_conjectures` 2.8% again, run `2026-10-29-typedrows-prof`), so the trigger's example has happened.
+  Status: held for a count of this patch on top of `7637e88` (decided against 2026-10-28 on the count before it).
 - **Operators as an `enum Op`, with their bit-level and kernel forms in the rows** — what: replace the `usize`
   operator ids (`rewrite.rs`'s `ADD` to `SHR1`) with an `enum Op` whose `info()` gives the typed row, so the wildcard
   dispatchers become exhaustive matches and a new operator is a compile error wherever it needs handling; and derive
-  the bit-level forms from the rows instead of restating them: `OpInfo::truth`, `Term::bit`, `machine::term_gb`,
-  `machine::BIT_OPS` (`pos_bit`), `Machine::step`'s `and`, `or` and `xor` arms, and the
-  `good2(&|a, b| and(a, b), &OP_INFO[1].truth)` triples repeated in `witnessed` and in four places in `encoding.rs`. Why
-  parked: by decision 2026-10-29, typed rows alone landed (`7637e88`) and this was surveyed as a separate change. The
+  from the rows what is now restated beside them. Bit-level forms: `OpInfo::truth`, `Term::bit`, `machine::term_gb`,
+  `machine::BIT_OPS` (`pos_bit`), `Machine::step`'s `and`, `or` and `xor` arms, and the `good2(.., &OP_INFO[k].truth)`
+  calls (`witnessed`'s three arms; and/or/xor triples in `encoding.rs`'s `good_ripple`, `good_lt` and `GoodOps::new`;
+  `good_or_bv`'s lone `or`). Kernel forms, the Church-encoded operators and their witness lemmas: `ops_for` (an
+  `[Expr; 8]` in `Node::Op` order, held as `Compiler::ops`) and `witnessed`'s `good_add`, `good_sub`, `good_shl1` and
+  `good_shr1` arms. Also in `Node::Op` order by hand: `zip_op`'s eight `zip_word::<W, k>` entries (its length is tied to
+  `OP_INFO.len()`, the order is not) and the test `operators_match_a_bit_at_a_time`'s `by_bits` (by name, ending in
+  `_ => panic!`). Why parked: by decision 2026-10-29, typed rows alone landed (`7637e88`) and this was surveyed as a
+  separate change. The
   dispatchers today: `witnessed` (`rewrite.rs`) sends every operator but `add`, `sub`, `shl1` and `shr1` to an
   `and`/`or`/`xor` match ending in `_ => xor`, so an `lt` there would be witnessed as `xor`; not reached as far as
   checked, since `lt` terms occur only at roots (`miner.rs`, the pool's doc comment) and a law's arguments are subterms
   below its match. `Machine::step` (`machine.rs`) treats every operator but 1, 2, 3 and 6 as an adder, a subtractor
   when `o >= 4` (`lt` is `sub`'s borrow; `parse` rejects `shr1`); `Machine::last` and `shift_k` use bare 5, 6 and 7;
   `classes::OPS: [usize; 8]` is not tied to `OP_INFO.len()`. A one-byte `Op` would make `Node` 24 bytes instead of 32
-  (its size is asserted in `rewrite.rs`), which changes hashing and memory and needs its own count. Trigger: the user's
+  (its size is asserted in `rewrite.rs`) and each interned node 8 bytes smaller, which moves the addresses terms hash
+  by (`op_hash`) and the memory per term, so it needs its own count. Trigger: the user's
   call, or a ninth operator. Evidence: the call sites above (2026-10-29). Status: parked (by decision, 2026-10-29).
 - **One value memo shared by the streams** — what: one process-wide exhaustive width-4 memo for every stream's
   `pool_conjectures` instead of one per stream. Why: only 12.6% of the 8.11 M fills at 4 growths repeat another
