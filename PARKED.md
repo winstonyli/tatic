@@ -371,20 +371,9 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   build by a fresh count. Evidence: `docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside
   the 4-growth one" (run `2026-10-28-stream-probe`, 2026-10-28); after the ids (`cd7dacb`), filling under
   `pool_conjectures` is 28.6% of the busy samples of building both sequences (`zip_op`; run `2026-10-28-class-ids-prof`);
-  with `zip_word` on native bytes (landed 2026-10-29, `a63ff57`, `7637e88`) it is 7.5% (run `2026-10-29-typedrows-prof`).
+  with `zip_word` on native bytes (landed 2026-10-29, `a63ff57`, `7637e88`) it is 7.5% (run `2026-10-29-typedrows-prof`),
+  and 8.8% (`fill_op`) once the fill stopped zeroing first (`c8c2e68`; run `2026-10-29-zerofill3-prof`).
   Status: parked, trigger not met (2026-10-29).
-- **Fill vectors without zeroing them first** — what: `ValueMemo::fill` writes an operator's vector into the block's
-  spare capacity (`MaybeUninit`, then `set_len`) instead of resizing with zeros and overwriting them. Why parked: it
-  brings four `unsafe` blocks, two of them (in `fill`) the repo's first over uninitialized memory, and landing it
-  needs two checks the patch lacks (an `assert!` in `ValueMemo::new`, a `debug_assert!` in `zip_op`;
-  `docs/tier-cycle.md`, "The zero-fill patch on typed rows"). Trigger: a count of the
-  patch on typed rows beyond the arms' spread. Met: -1.44% best, -1.40% median with the streams built on one thread,
-  where each round spreads 0.16-0.29%; -1.0% best at the default four threads, confirming only the direction. What
-  remains is the user's call whether about 1-1.4% of the pin test's instructions is worth the `unsafe`. Evidence: patch
-  `docs/runs/2026-10-29/patches/zero_fill_on_7637e88.patch` (on `7637e88`); `docs/tier-cycle.md`, "The zero-fill
-  patch on typed rows" (runs `2026-10-29-zerofill2-*`, 2026-10-29). On `cd7dacb` it had counted -0.6%, inside the
-  spread between two sessions' counts ("Without the fill's zero-fill", decided against 2026-10-28). Status: held for
-  the user's call to land it (2026-10-29).
 - **Operators as an `enum Op`, with their bit-level and kernel forms in the rows** — what: replace the `usize`
   operator ids (`rewrite.rs`'s `ADD` to `SHR1`) with an `enum Op` whose `info()` gives the typed row, so the wildcard
   dispatchers become exhaustive matches and a new operator is a compile error wherever it needs handling; and derive

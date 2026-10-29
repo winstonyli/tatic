@@ -4940,9 +4940,9 @@ capacity (`MaybeUninit`, then `set_len`), three new `unsafe` blocks (two in `fil
 the classes' `zip` closure). Both sequences stay pinned. Counted as above (runs
 `2026-10-28-zero-fill-icount-C` and `-B`): 460.87 G instructions against 463.66 G for the build before it in the same
 session (best of 3; -0.6%, medians -0.7%), while that build itself counted 466.59 G an hour earlier, so the two
-sessions' counts of one exe differ by 0.6% (the 4 build threads share memos behind locks). Not kept: at most 0.7% of
-the work, and it would be the repo's first `unsafe` over uninitialized memory (`PARKED.md`, "Fill vectors without
-zeroing them first"). Recounted on typed rows below ("The zero-fill patch on typed rows").
+sessions' counts of one exe differ by 0.6% (the 4 build threads share memos behind locks). Not kept then: at most
+0.7% of the work, and it would be the repo's first `unsafe` over uninitialized memory. Recounted on typed rows and
+landed below ("The zero-fill patch on typed rows", "Landed with both checks").
 
 *`zip_word` on native bytes (spike, 2026-10-28, patch `docs/runs/2026-10-28/patches/zip_word_native.patch` on
 08ff13a; landed 2026-10-29 with typed rows, below): 38.8% fewer instructions.* Of the eight `u8` loops, only `add`, `sub` and `shl1` did scalar
@@ -5020,6 +5020,27 @@ vectors into the block (`extend_from_slice`), so a wrong length would misalign t
 vector instead. All five callers pass `len`-long vectors, and an `assert!` in `new` would close it. Also, `zip_op`
 writes only as many cells as its shortest slice, so the fill's `set_len` is sound only because the children's slices
 are `len` long too (they are cut `[..len]`); a `debug_assert!` on equal lengths in `zip_op` would state that.
+
+*Landed with both checks (2026-10-29, commit `c8c2e68`): no more work than the patch.* `fill` writes into the block's
+spare capacity through `fill_op`, which takes `MaybeUninit` cells and picks the operator's `zip_word` once per call;
+`zip_op` keeps its signature for initialized outputs and casts once to call `fill_op`, so the classes' `zip` closure
+and `operators_match_a_bit_at_a_time` need none of the patch's casts. That leaves three `unsafe` blocks: the fill's
+two (the block split into its written cells and the next `len` uninitialized ones, then `set_len`) and `zip_op`'s
+cast; only the fill's touch uninitialized memory. Both checks are `assert!`s, not `debug_assert!`s, since the counts
+and the streams run release builds: `ValueMemo::new` refuses a variable vector of another length, and `fill_op`
+refuses inputs whose length is not its output's (only then does it write every cell). Each has a `should_panic` test,
+watched failing first (`value_memo_refuses_a_variable_of_another_length`, `zip_op_refuses_a_shorter_input`). The suite
+passes (163) and both sequences stay pinned (runs `2026-10-29-zerofill3-suite`, `-pin`). Counted against the patch's
+exe in one session with `STREAM_THREADS=1`, rounds landed, patch, patch, landed (runs `2026-10-29-zerofill3-icount-*`,
+`docs/runs/2026-10-29/rows/2026-10-29-zerofill3-icount.txt`): 298.36 G instructions against 300.27 G (best of 6;
+-0.6%, medians -0.4%), inside both arms' spreads (pooled (median - best) / best 0.5-0.75%), so the checks and the
+restructuring cost nothing measurable. The patch's exe counted 0.7% (best) and 0.9% (median) above its own counts a
+few hours earlier (`2026-10-29-zerofill2-icount`), so one stream thread does not remove the drift between batches of
+counts; its cause is not known. A profile after landing (run `2026-10-29-zerofill3-prof`, 56,466 busy samples at 8%
+machine load; frames in `docs/runs/2026-10-29/rows/2026-10-29-zerofill3-prof.txt`): `memset` 0.18% (4.1% self after
+typed rows); the open-law filter (`scoped`) 45.4%, `pool_conjectures` 28.4, `verdict` 18.7, `fill_op` 11.7 (8.8 points
+under `pool_conjectures`), `Term::show` 11.0, `ValueMemo::agree` 7.9; `mi_arena_try_purge` 3.8% self, 2.6 points of it
+under `Plan::new`'s allocations, as after typed rows.
 
 *Why normalize is slow on a cold stream (2026-10-28, runs `2026-10-28-normalize-cold`, `-twice`, `-twice-all56`,
 `-twice-nolp`, `-once-all56`, `-origins`, `-distinct`).* The 4.9-5.4 s against 1.4 s above compared the probe's
