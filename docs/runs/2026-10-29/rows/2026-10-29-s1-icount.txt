@@ -1,0 +1,91 @@
+# 2026-10-29-s1-icount, -s1b-icount and -s1c-icount: retired instructions of search::stream_sequences_are_pinned
+# (--exact --ignored), three batches of rounds L1 F1 F2 L2, 3 runs each on CPU 4 by ~/.claude/samply/icount.ps1,
+# STREAM_THREADS=1 from each exe's .env. L = c19ef00 (F1), built from a clean worktree at that commit; F = c19ef00 plus
+# S1, a structural `Term::show_cmp` and the seeds, pool and conjecture sorts by it (tests/church_bv/rewrite.rs,
+# search.rs, machine.rs, job.rs; the exe of the tree whose suite and pins passed, runs 2026-10-29-s1-suite2 and
+# -s1-pin). Both `cargo test --release`, same target dir. Each round launched once the Samply task was Ready and no
+# exclusive CPU lease was live (scratchpad ab_rounds.ps1); Defender real-time off, mimalloc's purge on (the default).
+# CPU load at the rounds' starts 8-42% (other processes, not identified): the noisiest of this day's batches, with
+# spreads (median-best)/best up to 0.019 and max/best up to 1.075, both in the 40%+ rounds.
+# INVALID: s1b-icount-L1 (16:13-16:14, 73 s). Its numbers and pids equal s1-icount-L1's: no new trace was recorded and
+# icount.ps1 re-counted the old one in the reused -Out folder (ic-L1\trace.etl, dated 15:59:45). Cause of the missing
+# recording not found; icount.ps1 parses $Out\trace.etl without checking it is new. Batch s1c wrote fresh folders
+# (ic-s1c-<round>) and checked each trace's time after its round.
+# Per batch, pooled runs (6 each; batch s1b's L is L2 alone, 3 runs):
+#   s1:  best F/L 196.11 / 199.04 = 0.9853 (-1.5%), median 197.49 / 201.52 = 0.9800 (-2.0%)
+#   s1b: best F/L 197.37 / 199.88 = 0.9874 (-1.3%), median 198.41 / 200.92 = 0.9875 (-1.2%)
+#   s1c: best F/L 198.07 / 201.34 = 0.9838 (-1.6%), median 200.39 / 202.84 = 0.9879 (-1.2%)
+# Every batch puts F's best below L's best, by 1.3-1.6%; single runs overlap (s1c F1 run 1, 205.49, is above every L2
+# run). Between batches the same exes drift by up to 1.2% (L best 199.04, 199.88, 201.34), as before.
+== L1 (2026-10-29-s1-icount-L1, 15:57:47-16:00:47, CPU load 16% at start)
+run	pid	instructions
+1	57896	201291659044
+2	61764	201180908331
+3	47620	201749996873
+n 3  best 201,180,908,331  median 201,291,659,044  (median-best)/best 0.00055  max/best 1.00283
+== F1 (2026-10-29-s1-icount-F1, 16:00:50-16:03:36, CPU load 8% at start)
+run	pid	instructions
+1	40548	196858985391
+2	60892	196365080654
+3	54512	196113422848
+n 3  best 196,113,422,848  median 196,365,080,654  (median-best)/best 0.00128  max/best 1.00380
+== F2 (2026-10-29-s1-icount-F2, 16:03:39-16:07:25, CPU load 21% at start)
+run	pid	instructions
+1	13848	198130904668
+2	54628	200852970746
+3	46352	198414255334
+n 3  best 198,130,904,668  median 198,414,255,334  (median-best)/best 0.00143  max/best 1.01374
+== L2 (2026-10-29-s1-icount-L2, 16:07:29-16:12:37, CPU load 40% at start)
+run	pid	instructions
+1	60764	214029678247
+2	61180	202012604361
+3	53532	199043379052
+n 3  best 199,043,379,052  median 202,012,604,361  (median-best)/best 0.01492  max/best 1.07529
+== L1 (2026-10-29-s1b-icount-L1, 16:13:37-16:14:50, CPU load 21% at start) INVALID: s1-icount-L1's trace re-counted
+run	pid	instructions
+1	57896	201291659044
+2	61764	201180908331
+3	47620	201749996873
+n 3  best 201,180,908,331  median 201,291,659,044  (median-best)/best 0.00055  max/best 1.00283
+== F1 (2026-10-29-s1b-icount-F1, 16:14:53-16:18:02, CPU load 11% at start)
+run	pid	instructions
+1	55364	203245222710
+2	8804	200768813551
+3	43736	198542744197
+n 3  best 198,542,744,197  median 200,768,813,551  (median-best)/best 0.01121  max/best 1.02368
+== F2 (2026-10-29-s1b-icount-F2, 16:18:04-16:21:20, CPU load 17% at start)
+run	pid	instructions
+1	24356	198286820369
+2	54888	198134651418
+3	43796	197372796282
+n 3  best 197,372,796,282  median 198,134,651,418  (median-best)/best 0.00386  max/best 1.00463
+== L2 (2026-10-29-s1b-icount-L2, 16:21:22-16:25:17, CPU load 16% at start)
+run	pid	instructions
+1	40944	202148845990
+2	24732	199879027754
+3	51268	200922779497
+n 3  best 199,879,027,754  median 200,922,779,497  (median-best)/best 0.00522  max/best 1.01136
+== L1 (2026-10-29-s1c-icount-L1, 16:29:26-16:35:52, CPU load 42% at start)
+run	pid	instructions
+1	50988	212849391867
+2	58600	207753261212
+3	48004	203880316915
+n 3  best 203,880,316,915  median 207,753,261,212  (median-best)/best 0.01900  max/best 1.04399
+== F1 (2026-10-29-s1c-icount-F1, 16:35:55-16:38:57, CPU load 10% at start)
+run	pid	instructions
+1	56656	205489456138
+2	59028	200198654788
+3	49896	200514901117
+n 3  best 200,198,654,788  median 200,514,901,117  (median-best)/best 0.00158  max/best 1.02643
+== F2 (2026-10-29-s1c-icount-F2, 16:39:00-16:41:51, CPU load 8% at start)
+run	pid	instructions
+1	46728	200600497717
+2	60728	198074410434
+3	25868	200263105004
+n 3  best 198,074,410,434  median 200,263,105,004  (median-best)/best 0.01105  max/best 1.01275
+== L2 (2026-10-29-s1c-icount-L2, 16:41:54-16:44:50, CPU load 10% at start)
+run	pid	instructions
+1	56512	201762011278
+2	40312	201341517254
+3	4020	201807712950
+n 3  best 201,341,517,254  median 201,762,011,278  (median-best)/best 0.00209  max/best 1.00232

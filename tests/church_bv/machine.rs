@@ -758,7 +758,7 @@ pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usiz
         groups.entry((memo.class(&t), matches!(*t.node(), Node::Op(LT, ..)))).or_default().push(t);
     }
     let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0], *t2))).collect();
-    conj.sort_by_cached_key(|(a, b)| (a.show(), b.show()));
+    conj.sort_unstable_by(|(a, b), (c, d)| a.show_cmp(c).then_with(|| b.show_cmp(d)));
     if cap > 0 && conj.len() > cap {
         let stride = conj.len() / cap;
         conj = conj.into_iter().step_by(stride).take(cap).collect();

@@ -1,0 +1,160 @@
+# 2026-10-29-s1-prof: samply profile of search::stream_sequences_are_pinned after S1 (c19ef00 plus S1: a structural
+# `Term::show_cmp`, the seeds, pool and conjecture sorts by it; both sequences, salt 1, STREAM_THREADS 4;
+# CARGO_PROFILE_RELEASE_DEBUG=line-tables-only), docs/runs/2026-10-28/scripts/pin_prof.sh. CPU load 17% at start (18%
+# for 2026-10-29-f1-prof, the profile before), Defender real-time off, purge on. Frames by
+# docs/runs/2026-10-18/scripts/prof_named.py with the PROF_FRAMES of 2026-10-29-f1-prof.txt (normalize as its
+# `closure$0`) plus church_bv::rewrite::Term::show_cmp (0.00%: its frames are named `::show_cmp`,
+# `church_bv::rewrite::impl$8::show_cmp::closure$0` and `::token`, counted by callers.py below), and its PROF_PARENTS;
+# then docs/runs/2026-10-29/scripts/callers.py on the sorts, show_cmp and show. Untimed: busy samples 49,229 against
+# 48,235 (+2.1%) at about the same load.
+# The headline's "0 PINNED lines; 0 ok" is not the test's: the shared Samply task ran this job (16:47:07-16:47:25,
+# pcs.json.gz written 16:47:25) between two of another session's count jobs, and by the time profile.ps1 read the
+# task's last.log the next job (sequin's, an xperf count) had overwritten it, so samply.log holds that job's log. The
+# profile itself is whole (49,229 busy samples, `stream_sequences_are_pinned` on the stack); the pins for this code
+# are run 2026-10-29-s1-pin's.
+# The same splits on 2026-10-29-f1-prof (before): sorts by caller stream_laws 9.52, shuffled 6.21, pool_conjectures
+# 4.87 (union 20.60); their samples holding `Term::show` or `::show_into` (the keys) stream_laws 6.53,
+# pool_conjectures 3.57, shuffled 2.27; holding a `String` compare and no `show` (`--with 'alloc::string::impl$84::cmp'
+# --without church_bv::rewrite::Term::show`) stream_laws 1.64, pool_conjectures 0.80.
+busy samples 49229
+== self (leaf, inlined frames expanded)
+    6.0% ::show_cmp
+    4.4% church_bv::rewrite::zip_word:: (.llvm.14075974790006521664)
+    3.9% church_bv::search::stream_laws
+    3.1% core::mem::maybe_uninit::MaybeUninit::write
+    3.1% church_bv::search::stream_laws::within (.llvm.7396971883247469857)
+    2.8% core::core_arch::x86::sse2::_mm_movemask_epi8
+    2.8% hashbrown::util::likely
+    2.7% mi_arena_try_purge
+    2.7% fun_1e490
+    2.1% foldhash::folded_multiply
+    2.0% church_bv::rewrite::impl$8::show_cmp::token
+    1.9% church_bv::search::stream_laws::leaf_count
+    1.4% _mi_page_malloc_zero
+    1.3% ::find
+    1.2% church_bv::rewrite::impl$11::fill::closure$1
+    1.2% church_bv::rewrite::impl$42::eq
+    1.2% tatic::rng::mix64
+    1.2% std::sys::sync::mutex::futex::Mutex::lock
+    1.1% church_bv::rewrite::impl$2::op::closure$0
+    1.1% ::fill
+    1.0% ::show_into (.llvm.14075974790006521664)
+    1.0% mi_free_block_local
+    1.0% mi_free
+    1.0% mi_theap_malloc_aligned_at
+    1.0% mi_bbitmap_try_find_and_clear_generic
+    0.9% core::iter::adapters::zip::impl$5::next
+    0.8% church_bv::rewrite::impl$3::eq
+    0.8% ::insert
+    0.7% mi_theap_realloc_zero_aligned
+    0.7% church_bv::rewrite::OP_INFO::closure$9
+    0.7% foldhash::hash_bytes_long
+    0.7% hashbrown::control::bitmask::BitMask::lowest_set_bit
+    0.7% hashbrown::raw::RawTableInner::probe_seq
+    0.7% core::ptr::eq
+    0.7% ::normalize
+    0.6% core::num::impl$6::wrapping_add
+    0.6% fun_1bc50
+    0.6% church_bv::search::stream_laws::replaced
+    0.6% church_bv::rewrite::OP_INFO::closure$7
+    0.6% core::mem::replace
+== inclusive (church_bv/tatic frames)
+   99.0% church_bv::search::stream_laws
+   99.0% church_bv::search::build_sequence::closure$0::closure$0
+   37.3% church_bv::search::stream_laws::{closure#12} (.llvm.2152962025446594832)
+   37.3% tatic::kernel::scoped::
+   31.2% church_bv::machine::pool_conjectures::
+   22.7% church_bv::classes::impl$2::normalize::closure$0
+   14.8% church_bv::classes::verdict
+   13.6% church_bv::rewrite::fill_op
+   13.3% church_bv::rewrite::zip_word:: (.llvm.14075974790006521664)
+   10.3% church_bv::machine::tree_encoding
+    9.4% church_bv::machine::moore_encoding
+    9.4% church_bv::machine::tree_encoding::closure$0
+    9.1% church_bv::_::__rust_alloc
+    8.6% church_bv::rewrite::Term::op
+    8.4% church_bv::search::stream_laws::closure$9
+    8.3% church_bv::search::stream_laws::closure$9::closure$0
+    7.6% church_bv::rewrite::impl$2::op::closure$0
+    7.6% church_bv::search::stream_laws::replaced
+    6.6% church_bv::search::shuffled
+    6.5% church_bv::search::shuffled::closure$0
+    5.8% church_bv::rewrite::ValueMemo::agree
+    5.3% church_bv::classes::Classes::rep
+    4.9% church_bv::machine::raw_table
+    4.8% church_bv::rewrite::impl$8::show_cmp::closure$0
+    4.7% church_bv::machine::raw_table::closure$0
+    4.2% church_bv::rewrite::bitwise_holds::closure$0
+    4.2% church_bv::rewrite::bitwise_holds
+    3.5% church_bv::search::stream_laws::closure$0
+    3.4% church_bv::search::stream_laws::within (.llvm.7396971883247469857)
+    2.8% church_bv::rewrite::Term::show
+    2.8% church_bv::machine::pool_conjectures::closure$2
+    2.6% church_bv::classes::impl$1::lookup::closure$1
+    2.3% church_bv::_::__rust_dealloc
+    2.1% church_bv::rewrite::impl$2::op::closure$0::closure$1
+    2.0% church_bv::rewrite::impl$8::show_cmp::token
+    2.0% church_bv::search::stream_laws::leaf_count
+    1.9% church_bv::rewrite::impl$11::class::closure$1
+    1.5% church_bv::rewrite::impl$3::eq
+    1.4% church_bv::machine::try_encoding
+    1.4% church_bv::rewrite::Plan::new
+    1.3% church_bv::rewrite::impl$11::fill::closure$1
+    1.3% church_bv::rewrite::impl$42::eq
+    1.2% tatic::rng::mix64
+    1.2% church_bv::classes::Classes::get
+    1.2% church_bv::classes::impl$1::get::closure$0
+    1.1% church_bv::rewrite::OP_INFO::closure$3
+    1.1% church_bv::_::__rust_realloc
+    1.0% church_bv::machine::pool_conjectures::closure$2::closure$0
+    0.8% church_bv::rewrite::OP_INFO::closure$11
+    0.8% church_bv::machine::moore_encoding::closure$3
+    0.7% church_bv::classes::class_hash
+    0.7% church_bv::machine::Machine::last
+    0.7% church_bv::rewrite::OP_INFO::closure$9
+    0.7% church_bv::task::SharedMemo::lock
+    0.7% church_bv::rewrite::Cells::find
+    0.7% church_bv::rewrite::impl$1::find::closure$0
+    0.6% church_bv::machine::index_of
+    0.6% church_bv::search::stream_sequences_are_pinned::closure$0
+    0.6% church_bv::search::stream_sequences_are_pinned
+    0.6% church_bv::rewrite::impl$2::op::closure$0::closure$0
+== inclusive church_bv::rewrite::ValueMemo::agree: 5.80%
+== inclusive church_bv::classes::verdict: 14.85%
+== inclusive church_bv::rewrite::fill_op: 13.62%
+== inclusive church_bv::machine::pool_conjectures::: 31.19%
+== inclusive church_bv::rewrite::bitwise_holds: 4.23%
+== inclusive church_bv::rewrite::Term::show: 2.83%
+== inclusive church_bv::rewrite::ValueMemo::exhaustive: 0.03%
+== inclusive church_bv::classes::impl$2::normalize::closure$0: 22.72%
+== inclusive church_bv::rewrite::Plan::new: 1.40%
+== inclusive church_bv::search::shuffled: 6.64%
+== inclusive church_bv::rewrite::Term::show_cmp: 0.00%
+== inside church_bv::machine::pool_conjectures::
+   10.5% (leaf)
+   10.2% church_bv::rewrite::fill_op
+    4.0% church_bv::_::__rust_alloc
+    2.8% church_bv::machine::pool_conjectures::closure$2
+    1.9% church_bv::rewrite::impl$11::class::closure$1
+    0.9% church_bv::rewrite::impl$11::fill::closure$1
+== sorts by caller: callers.py with core::slice::sort alloc::slice::impl$0::sort ::sort
+union 19.22%
+  9.60% church_bv::search::stream_laws
+  6.64% church_bv::search::shuffled
+  2.96% church_bv::machine::pool_conjectures::
+  0.01% church_bv::rewrite::Rules::new
+== the sorts' samples holding show_cmp: the same, --with ::show_cmp church_bv::rewrite::impl$8::show_cmp
+union 11.33%
+  8.61% church_bv::search::stream_laws
+  2.72% church_bv::machine::pool_conjectures::
+== all show_cmp samples by caller: callers.py with ::show_cmp church_bv::rewrite::impl$8::show_cmp
+union 11.33%
+  8.18% church_bv::search::stream_laws::closure$9::closure$0
+  1.73% church_bv::machine::pool_conjectures::closure$2
+  0.99% church_bv::machine::pool_conjectures::closure$2::closure$0
+  0.43% church_bv::search::stream_laws::closure$1
+== Term::show by caller: callers.py with church_bv::rewrite::Term::show
+union 2.83%
+  2.35% church_bv::search::shuffled::closure$0
+  0.45% church_bv::search::stream_sequences_are_pinned::closure$0::closure$0
+  0.03% church_bv::classes::impl$2::normalize::closure$0

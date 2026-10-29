@@ -374,10 +374,11 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   the chosen order (F1 for F2, S1 and S2 for S3 and S4), or, for P2 and P3, on whether P1 lands. Trigger: P1 on the
   user's call (land it, scope it, time it first or drop it); F2 when a profile after F1 still shows plans built (met
   2026-10-29: 1.4% of busy samples, from 5.8, plus part of the memo's drop; `docs/tier-cycle.md`, "F1 landed"); S3
-  when one after S1 and S2 still shows the sorts; S4 if S1 or S2 is not built; P2 or P3 if P1 does not land.
-  Evidence: `docs/tier-cycle.md`, "Survey: the open-law filter, `Term::show` and mimalloc's purge" (profile
-  `2026-10-29-zerofill3-prof`, 2026-10-29; the P1 spike's results in its "P1 spike" paragraph). Status: P1 and F2 held
-  for the user's call; S3 and S4 for S1 and S2, P2 and P3 for P1's outcome.
+  when one after S1 and S2 still shows the sorts (after S1, landed 2026-10-29: 12.56 points, the pool sort's 9.60 no
+  less than before; "S1 landed"); S4 if S2 is not built; P2 or P3 if P1 does not land. Evidence: `docs/tier-cycle.md`,
+  "Survey: the open-law filter, `Term::show` and mimalloc's purge" (profile `2026-10-29-zerofill3-prof`, 2026-10-29;
+  the P1 spike's results in its "P1 spike" paragraph). Status: P1 and F2 held for the user's call; S3 and S4 for S2,
+  P2 and P3 for P1's outcome.
 - **A prefilter before the full value vectors** — what: in `pool_conjectures`, group the terms first by their values
   on 16 fixed inputs and fill full width-4 vectors only for terms that share a bucket; exact, since equal vectors agree
   on any subset. Why parked: 52% of a stream's terms are in true groups, so it can skip at most about half the fills;

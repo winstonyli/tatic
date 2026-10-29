@@ -453,17 +453,32 @@ pub fn rule_admission_refuses_wrong_rules() {
     })
 }
 
-/// `show_cmp` is the order of the `show()` text, on every pair of the class table's first 2000 representatives in that
-/// order, constants and variables included.
+/// `show_cmp` is the order of the `show()` text: on every pair of terms to size 3 over all operators, variables and
+/// constants, and on every term to size 5 and every class-table representative, where a sort by it is the text sort
+/// and each term compares below the next in text order.
 #[test]
 pub fn show_cmp_is_the_text_order() {
-    let mut reps: Vec<Term> = crate::classes::Classes::get().reps().collect();
-    reps.sort_by_cached_key(|t| t.show());
-    let ts: Vec<Term> = reps.into_iter().take(2000).chain([Term::ZERO, Term::ONES, Term::v(0), Term::v(2)]).collect();
-    for a in &ts {
-        for b in &ts {
+    use std::cmp::Ordering::{Greater, Less};
+    let leaves: Vec<Term> = (0..VARS.len()).map(Term::v).chain([Term::ZERO, Term::ONES]).collect();
+    let ops = |xs: &[Term], ys: &[Term]| -> Vec<Term> {
+        (0..OP_INFO.len()).flat_map(|o| xs.iter().flat_map(move |&x| ys.iter().map(move |&y| Term::op(o, x, y)))).collect()
+    };
+    let size3 = ops(&leaves, &leaves);
+    let to3: Vec<Term> = leaves.iter().chain(&size3).copied().collect();
+    for a in &to3 {
+        for b in &to3 {
             assert_eq!(a.show_cmp(b), a.show().cmp(&b.show()), "{} vs {}", a.show(), b.show());
         }
+    }
+    let to5: Vec<Term> = to3.iter().copied().chain(ops(&size3, &leaves)).chain(ops(&leaves, &size3)).collect();
+    for mut ts in [to5, crate::classes::Classes::get().reps().collect()] {
+        let mut by_text = ts.clone();
+        by_text.sort_by_cached_key(|t| t.show());
+        for w in by_text.windows(2) {
+            assert_eq!((w[0].show_cmp(&w[1]), w[1].show_cmp(&w[0])), (Less, Greater), "{} vs {}", w[0].show(), w[1].show());
+        }
+        ts.sort_unstable_by(|a, b| a.show_cmp(b));
+        assert!(ts == by_text, "the sort by show_cmp is not the text sort");
     }
 }
 
@@ -564,7 +579,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
         }
     }
     let mut seeds: Vec<Term> = c.reps().filter(|t| within(*t, ops)).collect();
-    seeds.sort_by_cached_key(|t| t.show());
+    seeds.sort_unstable_by(|a, b| a.show_cmp(b));
     fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
         if let Node::Op(o, a, b) = *t.node() {
             out.insert(o);
@@ -632,10 +647,10 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
         base = next;
     }
     // sorted, so the order owes nothing to the map's
-    let mut terms: Vec<Term> = level.keys().cloned().collect();
-    terms.sort_by_cached_key(|t| (level[t], t.show()));
+    let mut terms: Vec<(usize, Term)> = level.iter().map(|(t, l)| (*l, *t)).collect();
+    terms.sort_unstable_by(|(l, a), (m, b)| l.cmp(m).then_with(|| a.show_cmp(b)));
     let laws: Vec<(Term, Term)> =
-        pool_conjectures(terms, 4, 3, 0).into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
+        pool_conjectures(terms.into_iter().map(|(_, t)| t), 4, 3, 0).into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
     let job = &mut Job::new(Setup::process());
     let mut r8 = width8();
     let (mut out, mut refuted) = (vec![], 0usize);

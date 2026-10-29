@@ -5199,7 +5199,8 @@ every term to size 5 and 47k random terms to size 17 by `docs/runs/2026-10-29/sc
   on scattered nodes, which a count does not see, are new. So the saving (5-10 points, an estimate; at most 10.2 =
   8.71 + 3.53 - 2.05 if a comparison costs no less than a `String` compare does now) needs a profile. The test
   `show_cmp_is_the_text_order` checks only the first 2000 representatives in text order; its replacement should
-  compare against every term to size 5 and a sample of all representatives.
+  compare against every term to size 5 and a sample of all representatives. Landed 2026-10-29 ("S1 landed" below):
+  -1.5% in a count and about 1.8 points, all in the conjecture sort; the pool sort costs what it did.
 - **S2.** `shuffled` hashes without a `String`: `show_into` writes through `fmt::Write` into the FNV state, the same
   bytes in the same order, so the same permutation: about 2 (an estimate: 2.02 of `shuffled`'s 3.58 have a mimalloc
   (`mi_`, `_mi_`), `church_bv::_::__rust_` or `alloc::raw_vec::` frame on the stack, 0.35 of them the purge sweep;
@@ -5369,6 +5370,30 @@ charge nothing for the misses' probes and inserts. Shares: the filter 35.6% incl
 drop that is its `Rc`s (counting plans are one shared `Rc`, so their drops would be decrements): its trigger, a profile
 after F1 that still shows plans built, is met, and it waits for the user's call (`PARKED.md`, "Options held behind the
 filter, `show` and purge survey").
+
+*S1 landed (2026-10-29).* `Term::show_cmp` compares two terms by structure: equal operator heads recurse into the
+operands, and the first differing head decides by its token's text, so the order is the `show()` text's with no string
+built. It replaces the version that wrote both terms into two thread-local `String`s (`BUFS`, dropped from
+`hidden_state_is_classified`'s `THREAD_LOCAL` table), and the seeds, pool and conjecture sorts use it
+(`sort_unstable_by`; the pool sort over `(level, term)` items). The test `show_cmp_is_the_text_order` checks it against
+the text order on every pair of terms to size 3, and checks that a sort by it is the text sort, each term below the
+next, on every term to size 5 and on every class-table representative. The church_bv suite passed (165 tests, 30
+ignored; run `2026-10-29-s1-suite2`, after `2026-10-29-s1-suite` failed `hidden_state_is_classified` on the dropped
+static's row) and both sequences stay pinned (run `2026-10-29-s1-pin`). Counts against `c19ef00` in three batches (runs
+`2026-10-29-s1{,b,c}-icount-{L1,F1,F2,L2}`, set up as F4's; `docs/runs/2026-10-29/rows/2026-10-29-s1-icount.txt`;
+s1b's L1 is invalid, a re-count of an old trace): -1.5%, -1.3% and -1.6% at the best runs, single runs overlapping at
+loads up to 42%. The profile after it (run `2026-10-29-s1-prof`, `docs/runs/2026-10-29/rows/2026-10-29-s1-prof.txt`;
+untimed: 49,229 busy samples against 48,235 at about the same load) finds the saving in the conjecture sort alone. By
+caller the sorts are `pool_conjectures` 2.96 (4.87 in `2026-10-29-f1-prof`), `show_cmp` 2.72 of it, where the keys'
+`show` calls were 3.57 and the `String` compares 0.80; and `stream_laws` 9.60 (9.52), `show_cmp` 8.61 of it, where the
+keys were 6.53 and the compares 1.64. So about 1.8 points net, well under the survey's 5-10: in the pool sort the
+structural compare costs what the keys and compares did. A reading, not checked: the pool's terms share long
+prefixes, and the walk chases a pointer per interned node where a `String` compare runs over contiguous bytes, while
+the conjecture sort's pairs often share their left side, which `show_cmp` answers at once by identity. The sorts' 12.56
+points left (the seeds sort 0.43 of them) are what S3 would replace with a minimum per group. Shares: the filter 37.3%
+inclusive (35.6 before), `pool_conjectures` 31.2 (33.3), `verdict` 14.8 (14.3), `Term::show` 2.8 (13.0; `shuffled`
+2.35 and the pin test's digest 0.45, S2's), `shuffled` 6.6 (6.2), `Plan::new` 1.4 (1.4), `mi_arena_try_purge` 2.7 self
+(2.6).
 
 ## The kernel
 

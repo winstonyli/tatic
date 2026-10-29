@@ -655,9 +655,8 @@ fn hidden_finds_thread_locals_process_wide_statics_and_job_swaps() {
 /// or `Job`, so a `driver::worker` task never sees another task's state, nor a job another job's.
 #[test]
 fn hidden_state_is_classified() {
-    const THREAD_LOCAL: [(&str, &str, &str); 7] = [
+    const THREAD_LOCAL: [(&str, &str, &str); 6] = [
         ("rewrite.rs", "OP_CACHE", "op results by operator and operand values"),
-        ("rewrite.rs", "BUFS", "scratch buffers, emptied before each use"),
         ("rewrite.rs", "CLOSED", "memo's closed library terms by key"),
         ("rewrite.rs", "COUNTING", "the one Counting plan, shared"),
         ("encoding.rs", "CONSTANTS", "gen_memo: closed constants by slot"),

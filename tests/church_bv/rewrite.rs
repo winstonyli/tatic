@@ -422,19 +422,26 @@ impl Term {
             }
         }
     }
-    /// `self.show().cmp(&other.show())` without allocating (two reused buffers): the text order the rewriter sorts operands by.
+    /// `self.show().cmp(&other.show())` without the text: the order the rewriter sorts operands by and the stream builds
+    /// sort terms by. Equal heads give equal text up to the operands, so the first differing head in preorder decides by
+    /// its token (a name or constant). A token that is a prefix of another (`x` of `xor`) is followed in the text by `,`,
+    /// `)`, `(` or the end, all below any token character, so the shorter token is the lesser, as `str` compares them.
     pub fn show_cmp(&self, other: &Term) -> std::cmp::Ordering {
-        thread_local! {
-            static BUFS: std::cell::RefCell<(String, String)> = Default::default();
+        fn token(n: Node) -> &'static str {
+            match n {
+                Node::V(i) => VARS[i],
+                Node::Zero => "0",
+                Node::Ones => "-1",
+                Node::Op(o, ..) => OP_INFO[o].name,
+            }
         }
-        BUFS.with(|b| {
-            let (x, y) = &mut *b.borrow_mut();
-            x.clear();
-            y.clear();
-            self.show_into(x);
-            other.show_into(y);
-            x.as_str().cmp(y.as_str())
-        })
+        if self == other {
+            return std::cmp::Ordering::Equal;
+        }
+        match (*self.node(), *other.node()) {
+            (Node::Op(o, a, b), Node::Op(p, c, d)) if o == p => a.show_cmp(&c).then_with(|| b.show_cmp(&d)),
+            (x, y) => token(x).cmp(token(y)),
+        }
     }
     /// The term as an expression, with `vals[i]` for variable `i`.
     pub fn eval(&self, ops: &[Expr], n: usize, vals: &[Expr]) -> Expr {
