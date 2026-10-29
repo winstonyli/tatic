@@ -4931,8 +4931,8 @@ the open-law filter (`scoped`) 36.1%, `verdict` 16.1, `ValueMemo::agree` 9.8; `m
 `pool_conjectures`, where the fill and its zero-fill are inlined, 0.9 under `agree`). `zip_word` evaluates each byte through `u128` (`Word::get` and `of`; `of`
 alone is 12.4% self), and the `u8` loop is not vectorized as byte arithmetic: its hottest block (the `sub` loop, RVA
 0x2f200 in the profiled exe) loads, subtracts and masks one byte at a time in 32- and 64-bit registers and packs the 16
-results into an xmm register for the store. The prefilter's trigger, filling at about a third of a build, is about met (`PARKED.md`, "A
-prefilter before the full value vectors"), unless `zip_word` works on native bytes (below).
+results into an xmm register for the store. The prefilter's trigger, filling at about a third of a build, was about met here (`PARKED.md`, "A
+prefilter before the full value vectors"); with `zip_word` on native bytes (below, landed) filling is about a tenth.
 
 *Without the fill's zero-fill (2026-10-28, patch `docs/runs/2026-10-28/patches/zero_fill.patch`): within the noise.*
 `fill` resized the last block with zeros and then overwrote them; the patch has `zip_op` write into the block's spare
@@ -4944,7 +4944,7 @@ the work, and it would be the repo's first `unsafe` over uninitialized memory (`
 zeroing them first").
 
 *`zip_word` on native bytes (spike, 2026-10-28, patch `docs/runs/2026-10-28/patches/zip_word_native.patch` on
-08ff13a; not landed): 38.8% fewer instructions.* Of the eight `u8` loops, only `add`, `sub` and `shl1` did scalar
+08ff13a; landed 2026-10-29 with typed rows, below): 38.8% fewer instructions.* Of the eight `u8` loops, only `add`, `sub` and `shl1` did scalar
 arithmetic. The operators were defined on `u128` only (`OpInfo::word`), and the backend did not narrow a 128-bit add,
 subtract or shift to byte lanes: these loops load 16 bytes, spill them to the stack, work one byte at a time in 32- and
 64-bit registers (`sub`: 10 `subl`, 6 `subq`) and pack the results back, 131 instructions per 16 bytes in `sub`, about
@@ -4965,7 +4965,34 @@ it under `pool_conjectures` (28.6 before); `pool_conjectures` 30.2%; the open-la
 19.0, `ValueMemo::agree` 7.8; `memset` 4.2% self (2.8 points directly under `pool_conjectures`, 2.0 before). The two
 profiles ran at 43% and 3% machine load, so only shares within each compare (busy samples 83,040 and 50,152). Not
 timed. With the patch, filling is about a tenth of the build, below the prefilter's trigger (`PARKED.md`, "A prefilter
-before the full value vectors"); landing it is the user's call (`PARKED.md`, "Land `zip_word` on native bytes").
+before the full value vectors").
+
+*Landed with typed rows (2026-10-29, commits `a63ff57`, `7637e88`).* The patch's `word` was a `match` on the operator
+ending in `unreachable!`, so an operator without an arm failed at run time where a row without its `OpInfo::word`
+closure had failed to compile; a table row cannot hold one function generic over `Word`. Instead each `OP_INFO` row
+carries `Words { w8, w128 }`, built by `words!(|x, y, m| body)` from one body typed as a `u8` and a `u128` function:
+`zip_word<W, O>` takes the row's function for `W` (`Word::pick`) as a constant, so it inlines as the `match` did, and
+`Term::interp` calls the `u128` one through the pointer. `OP_INFO` stays the one place that says what an operator
+computes, and a row without its body fails to compile (E0061, checked by deleting one). A const assert keeps
+`OP_INFO` within the 8 bits the class shape gives the root operator (a ninth row fails with E0080). Because one body
+now makes both functions, the byte and `u128` loops agree by construction, so the new test
+`operators_match_a_bit_at_a_time` checks every operator through `zip_op` on both word types against a version worked
+out a bit at a time (a ripple carry for `add`, `sub` and `lt`): all pairs of inputs at widths 1 to 8, sampled ones at
+16, 64, 127 and 128 on `u128`, and once from index 1 so the scalar tail runs. With `sub`'s operands swapped it fails
+(`sub 1 0 at width 2 in u8`: 3, not 1) while `value_memo_matches_interp`, which compares the memo with
+`Term::interp`, passes. Checks (runs `2026-10-29-typedrows-*`): the full `church_bv` suite passes (161); both
+sequences stay pinned; the eight `u8` loops are instruction for instruction the spike's
+(`docs/runs/2026-10-29/rows/2026-10-29-typedrows-disasm.txt`); the pin test counts the same, typed rows against the
+spike's exe in one session (best 289.78 G against 289.96 G, medians 292.27 and 292.29 G, spreads 0.8-0.9%;
+`docs/runs/2026-10-29/rows/2026-10-29-typedrows-icount.txt`). The spike's exe counted 285.22 G the day before, 1.7%
+lower: only counts from one session compare. A profile after landing (run `2026-10-29-typedrows-prof`, 61,620 busy
+samples at 13% machine load; frames in `docs/runs/2026-10-29/rows/2026-10-29-typedrows-prof.txt`) has the spike's
+shares within about three points: the open-law filter (`scoped`) 46.5%, `pool_conjectures` 27.7, `verdict` 18.9,
+`Term::show` 10.8, `zip_op` 9.7 (7.5 points under `pool_conjectures`), `ValueMemo::agree` 8.2; the rows' closures appear
+only inlined under `zip_word`. `Plan::new` doubled (6.4% against 3.2), most of the rise in its allocations: mimalloc's
+`mi_arena_try_purge` is 3.8% self, 2.6 points of it under `Plan::new`'s (0.5% in run `2026-10-28-class-ids-prof`,
+under 0.6% in run `2026-10-28-zipword-prof`). The loops are the same, so this reads as the allocator returning memory
+on a timer, not as a change in the code; not counted.
 
 *Why normalize is slow on a cold stream (2026-10-28, runs `2026-10-28-normalize-cold`, `-twice`, `-twice-all56`,
 `-twice-nolp`, `-once-all56`, `-origins`, `-distinct`).* The 4.9-5.4 s against 1.4 s above compared the probe's

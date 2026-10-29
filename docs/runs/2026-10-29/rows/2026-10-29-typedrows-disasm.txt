@@ -1,0 +1,13 @@
+# 2026-10-29-typedrows-disasm: zip_word<u8, O> for the eight operators with typed OP_INFO rows (T.exe, the tree committed
+# as 7637e88, cargo test --release; kept with its PDB in %LOCALAPPDATA%\claude-runs\tatic\2026-10-29-typedrows), by
+# docs/runs/2026-10-28/scripts/zw_dis.sh. Identical, row for row, to the D (after) table of 2026-10-28-zipword-disasm.txt
+# (the spike's `match` on the operator), so the row's function pointer, a constant in each instance, inlines the same way.
+op     bytes  insns  movzbl packedB top vector ops
+add      284     69       3       6 movdqu:6 pand:3 paddb:3 punpcklbw:2 pshuflw:2 pushq:1 
+and      204     53       1       0 movups:6 
+or       204     53       1       0 movups:6 
+xor      204     53       1       0 movups:6 
+sub      284     69       3       6 movdqu:6 psubb:3 pand:3 punpcklbw:2 pshuflw:2 pushq:1 
+lt       254     61       1       9 movdqu:6 pmaxub:3 pcmpeqb:3 pandn:3 movdqa:2 
+shl1     246     63       3       6 movdqu:4 pand:3 paddb:3 punpcklbw:2 pshuflw:2 pshufd:1 
+shr1     225     55       1       6 movdqu:4 psrlw:3 pand:3 movdqa:2 
