@@ -4925,10 +4925,12 @@ Both sequences stay byte-identical (test `stream_sequences_are_pinned`: 58,125 a
 on that test (3 runs each on CPU 4, runs `2026-10-28-class-ids-icount-A2` and `-B2`): 490.43 G instructions before,
 466.59 G after (best; -4.9%; medians -4.8%; (median - best) / best 0.0003 and 0.001, one run before at 1.010 of
 its best). A profile of that test after the change (run `2026-10-28-class-ids-prof`, 83,040 busy samples; frames in
-its `named.txt`): `pool_conjectures` 44.0%, of it filling vectors (`zip_op`) 28.6 points and the class lookups 1.5;
+`docs/runs/2026-10-28/rows/2026-10-28-class-ids-prof.txt`): `pool_conjectures` 44.0%, of it filling vectors (`zip_op`) 28.6 points and the class lookups 1.5;
 the open-law filter (`scoped`) 36.1%, `verdict` 16.1, `ValueMemo::agree` 9.8; `memset` 3.0% (2.0 points directly under
 `pool_conjectures`, where the fill and its zero-fill are inlined, 0.9 under `agree`). `zip_word` evaluates each byte through `u128` (`Word::get` and `of`; `of`
-alone is 12.4% self). The prefilter's trigger, filling at about a third of a build, is about met (`PARKED.md`, "A
+alone is 12.4% self), and the `u8` loop is not vectorized as byte arithmetic: its hottest block (the `sub` loop, RVA
+0x2f200 in the profiled exe) loads, subtracts and masks one byte at a time in 32-bit registers and packs the 16
+results into an xmm register for the store. The prefilter's trigger, filling at about a third of a build, is about met (`PARKED.md`, "A
 prefilter before the full value vectors").
 
 *Without the fill's zero-fill (2026-10-28, patch `docs/runs/2026-10-28/patches/zero_fill.patch`): within the noise.*
