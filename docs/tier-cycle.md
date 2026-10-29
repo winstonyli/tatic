@@ -4893,9 +4893,9 @@ copy 8-15 points. That is close to the 4-growth build's profile in "A join budge
 fill 31 points, the key copy 9 as realloc and dealloc, the filter 33, the rest 15). Normalize is cheaper the second
 time: 14 of the streams (every fourth) took 4.9-5.4 s of it in the probe's two runs, but 1.4 s when each was built
 again right after a first build of the same stream in the same process (`stream_probe_overhead`: the 14 first builds
-took 19.4 s, the second ones 15.1 s). The likely cause is the process-wide memos `Classes::normalize` reads
-(`VERDICTS`, the class lookups), which a second build of a stream finds full; not tested yet. Three levers, the first
-two measured, the third a structural check:
+took 19.4 s, the second ones 15.1 s). Those two figures come from different processes; within one process the gap is
+mostly first-ask misses in the process-wide memos `Classes::normalize` reads (`VERDICTS`, the class lookups), measured
+below in "Why normalize is slow on a cold stream". Three levers, the first two measured, the third a structural check:
 
 - *A prefilter.* Group first on 16 fixed inputs and fill full vectors only for terms that share a bucket. It is exact
   (the same conjectures, asserted), since equal vectors agree on any subset of inputs. But with 52% of the terms in true
@@ -4914,9 +4914,10 @@ two measured, the third a structural check:
   By construction: levels 1 and 2 draw the same terms at the same salt, the pool is sorted by (level, `show`), so a
   group's first member is the same; the comparison flag is in the group key, the grown-side and three-variable filter
   and the open-law checks are per law, and conjectures are sorted by their text and `shuffled` orders laws by a hash of
-  the salt and each law's own text, so restricting keeps the order. Not checked: the round-robin merge of the restricted
-  streams (`build_sequence`). A sweep builds both sequences at one salt unless `GEN_DRAW` is set (`window` and
-  `scope_extras` in `tests/church_bv/driver.rs`).
+  the salt and each law's own text, so restricting keeps the order. The merge of the streams (`build_sequence`) does not
+  commute with restricting, so the 2-growth sequence is not the merged 4-growth one filtered (below, "Deriving the
+  2-growth sequence from the 4-growth build"). A sweep builds both sequences at one salt unless `GEN_DRAW` is set
+  (`window` and `scope_extras` in `tests/church_bv/driver.rs`).
 
 Chosen 2026-10-28: exact value-class ids in `ValueMemo` (`ValueMemo::class`, one id per distinct vector; commit
 `cd7dacb`). The three map keys that copied a 4096-byte vector (`pool_conjectures`, `miner::Pool`'s two indexes) key on
@@ -4941,6 +4942,52 @@ session (best of 3; -0.6%, medians -0.7%), while that build itself counted 466.5
 sessions' counts of one exe differ by 0.6% (the 4 build threads share memos behind locks). Not kept: at most 0.7% of
 the work, and it would be the repo's first `unsafe` over uninitialized memory (`PARKED.md`, "Fill vectors without
 zeroing them first").
+
+*Why normalize is slow on a cold stream (2026-10-28, runs `2026-10-28-normalize-cold`, `-twice`, `-twice-all56`,
+`-twice-nolp`, `-once-all56`, `-origins`, `-distinct`).* The 4.9-5.4 s against 1.4 s above compared the probe's
+56-stream processes with `stream_probe_overhead`'s 14-stream one, on a loaded machine. A probe that counts
+`Classes::normalize`'s work (`docs/runs/2026-10-28/patches/normalize_cold_probe.patch`, on 3662451 with the stream probe,
+before `cd7dacb`; one thread, salt 1, pinned to CFF at BelowNormal, load 16-49%, no CPU lease; figures from
+`docs/runs/2026-10-28/scripts/normalize_cold/`, collected in `docs/runs/2026-10-28/rows/2026-10-28-normalize-cold.txt`)
+builds each of the 14 streams at 4 growths twice in a row. Normalize took 3.73 s cold against 1.03 s repeated in a
+14-stream process, 4.72 against 2.21 s in a 56-stream one, and 4.17 against 1.19 s with large pages off; first-ask
+misses (a class lookup of a term not looked up before, a verdict not evaluated before) are 88%, 84% and 88% of those
+gaps. In the quietest run (all 56 streams once, 4 growths after 2 as a sweep orders them) normalize is 11.76 s of a
+45.97 s build (25.6%). Its misses are 6.78 s (14.8%): lookups 0.63, evaluating verdicts 5.10 (bitwise checks 2.58, of
+it building their exhaustive input memos 1.00; tree searches 2.52), and inserting verdicts with their
+`CLASS_UNUSABLE` lines 1.05 (the print 1.04 for 10,236 lines, about 100 µs a line). Its hits are 4.98 s, 187 ns a node
+over 26.64 M node visits (9.5 per distinct argument). A miss is a term no earlier build asked: the 4-growth builds ask
+again every one of the 240,332 terms the 2-growth builds missed first, and the same 14 streams built inside a 56-stream
+process take 14% fewer lookup misses and 28% fewer verdict evaluations than alone. The rest of the spread is the hit
+path, 156-437 ns a node between runs; in run `-twice-all56` builds that took 10,000 page faults or more ran it at
+678-802 ns a node against 228-275 for builds under 1,000 (time-weighted, a few builds at 3-4 µs dominate), while
+normalize itself took 4 of the 4.99 M faults. That mechanism is not tested. The shares are of a build before `cd7dacb`
+(4.9% less work); the miss times do not depend on it. Levers, none built (`PARKED.md`, "Cheaper first asks in the
+stream builds"): batching the `CLASS_UNUSABLE` lines (1.04 s, 2.3% of the build); building `bitwise_holds`' exhaustive
+inputs once per process (1.00 s, 2.2%); a normal-form memo per term in `stream_laws` (cleanup plan CU16, decided
+against 2026-10-27), which would remove most of the hit path (4.98 s, 10.8%); verdicts and lookups carried across
+processes (5.73 s, needs a stored format). Not measured: `carry_cap` reads `CARRY_CAP` through `Setup::var` (a
+string-keyed map and a lock) on each of the 4.49 M steps that have a representative.
+
+*Deriving the 2-growth sequence from the 4-growth build (survey, 2026-10-28; nothing built).* A sweep's parent builds
+both before any loop starts, the 2-growth one first (`scope_extras` calls `served_laws`, hence `window`, before
+`stream_sequence` at `held_levels`; `tests/church_bv/driver.rs`), on 4 threads each; its children read law files and
+build nothing. Filtering the merged 4-growth sequence to depth 2 does not give the 2-growth one: `build_sequence`
+merges round-robin by position within each stream, and a stream's 4-growth list is 1.5-7.0 times its 2-growth list
+(median 3.0 over the 54 non-empty streams), so positions differ. (Streams [x1 at depth 3, x2, x3] and [y1, y2 at depth
+3] merge to x1 y1 x2 y2 x3, which filters to y1 x2 x3, while the restricted streams merge to x2 y1 x3.) An exact
+derivation keeps each stream's list with each law's depth (`level[a].max(level[b])`, already computed in
+`stream_laws`) and merges the restricted lists, each of which is the stream's 2-growth list by the nesting above. The
+saving is bounded by the 2-growth build: 6.5 of the 22.8 s both builds took under samply in run
+`2026-10-28-class-ids-prof` (after `cd7dacb`), and 12.4% of the busy samples at a join budget of 100 (run
+`2026-10-28-mjv-prof`, before it). Part of that only moves into the 4-growth build, which asks again every term the
+2-growth build missed first (above): on 14 streams a first 2-growth build took 8.27 s against 5.73 s repeated
+(`stream_probe_overhead`), so about 69% of it is saved outright; not counted. It saves nothing where the two salts
+differ (`GEN_DRAW` set), in processes that build only 2 growths (`ABLATE=gen`, `LOOP_MODE=none`, `ROUNDS=0`), or
+when the shallow sequence is asked first; `regenerate_held` would go from four builds to two (salt 1 at 2 growths
+stays). The nesting was probed only at salt 1, on 3662451's copy of the build. Options: `PARKED.md`, "Derive the
+2-growth sequence from the 4-growth build". Found on the way: `scope_extras` builds the 4-growth sequence even with
+`EXTRAS_N=0`, where it takes no law from it.
 
 ## The kernel
 

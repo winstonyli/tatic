@@ -1,0 +1,135 @@
+# Cold normalize probe (2026-10-28): figures derived from the runs' out.log by docs/runs/2026-10-28/scripts/normalize_cold/an*.py
+# (python -P anN.py <run id> [args] < /dev/null; the scripts read %LOCALAPPDATA%\claude-runs\tatic\<run id>\out.log).
+# Probe: docs/runs/2026-10-28/patches/normalize_cold_probe.patch on 3662451 (includes stream_probe.patch), test search::normalize_cold_probe.
+# Runs: A = 2026-10-28-normalize-cold, B = -twice, C = -twice-all56, E = -twice-nolp, F = -once-all56, D = -origins, G = -distinct (rows in docs/runs.md).
+
+## an6.py 2026-10-28-normalize-cold-once-all56 4
+L=4 stride 1: 56 streams, 26.64 M nodes, build 45.97 s, normalize 11.76 s (25.6% of build), misses 6.78 s (14.8% of build; lookup 0.63, verdict eval 5.10, insert+print 1.05 of which print 1.04), hit part 4.98 s = 187 ns/node, faults 8725
+
+## an6.py 2026-10-28-normalize-cold-once-all56 2
+L=2 stride 1: 56 streams, 9.33 M nodes, build 16.36 s, normalize 4.12 s (25.2% of build), misses 3.09 s (18.9% of build; lookup 0.32, verdict eval 2.41, insert+print 0.36 of which print 0.35), hit part 1.03 s = 111 ns/node, faults 154
+
+## an6.py 2026-10-28-normalize-cold 4
+L=4 stride 1: 56 streams, 26.64 M nodes, build 59.53 s, normalize 15.84 s (26.6% of build), misses 8.69 s (14.6% of build; lookup 0.90, verdict eval 6.25, insert+print 1.54 of which print 0.00), hit part 7.16 s = 269 ns/node, faults 320247
+
+## an6.py 2026-10-28-normalize-cold-twice-all56 4
+L=4 stride 1: 56 streams, 26.64 M nodes, build 75.24 s, normalize 21.46 s (28.5% of build), misses 9.82 s (13.1% of build; lookup 1.09, verdict eval 6.91, insert+print 1.82 of which print 0.00), hit part 11.64 s = 437 ns/node, faults 2389418
+
+## an3.py 2026-10-28-normalize-cold-twice 0 4 1
+stream            nodes |   cold   miss    hit  ns/n      pf |   warm  ns/n      pf |    c-w | cold s warm s
+add,and          305126 |  0.093  0.034  0.059   192      15 |  0.065   213       1 |  0.028 |   0.94   0.92
+add,xor          293300 |  0.127  0.066  0.061   208       1 |  0.050   172       4 |  0.077 |   1.03   1.06
+add,or,xor       170840 |  0.088  0.045  0.043   253      20 |  0.023   134       0 |  0.065 |   1.02   0.92
+add,and,sub      236424 |  0.175  0.114  0.061   258       0 |  0.040   170       1 |  0.135 |   1.33   1.08
+xor,sub          279020 |  0.132  0.069  0.063   226       0 |  0.047   170       0 |  0.085 |   1.03   0.95
+add,shl1         863078 |  0.372  0.172  0.200   232       0 |  0.188   217       0 |  0.185 |   1.47   1.28
+add,or,shl1      215654 |  0.077  0.034  0.043   201       0 |  0.043   199       0 |  0.034 |   0.99   0.93
+and,xor,shl1     676296 |  0.475  0.313  0.162   239       0 |  0.099   146       0 |  0.376 |   1.13   0.75
+and,sub,shl1     166610 |  0.082  0.048  0.034   206       0 |  0.030   180      10 |  0.052 |   0.91   0.87
+and,shr1         915956 |  0.215  0.103  0.112   122       0 |  0.096   104       0 |  0.119 |   0.54   0.43
+and,or,shr1      997792 |  0.711  0.509  0.202   203       0 |  0.129   130       0 |  0.581 |   1.20   0.63
+or,xor,shr1      608076 |  0.539  0.394  0.145   238       0 |  0.092   152       0 |  0.446 |   1.12   0.64
+or,sub,shr1      112586 |  0.096  0.073  0.023   203       5 |  0.020   176       1 |  0.076 |   0.98   0.85
+and,shl1,shr1    786656 |  0.547  0.396  0.152   193       0 |  0.110   140       0 |  0.437 |   1.07   0.60
+TOTAL nodes 6627414 cold 3.73 miss 2.37 hitpart 1.36 warm 1.03 cold-warm 2.70 secs 14.76 / 11.91
+
+## an3.py 2026-10-28-normalize-cold-twice-all56 0 4 4
+stream            nodes |   cold   miss    hit  ns/n      pf |   warm  ns/n      pf |    c-w | cold s warm s
+add,and          305126 |  0.113  0.029  0.084   276      21 |  0.055   179       1 |  0.059 |   1.54   0.91
+add,xor          293300 |  0.117  0.053  0.064   219       0 |  0.044   151       0 |  0.073 |   0.98   0.89
+add,or,xor       170840 |  0.085  0.035  0.051   297    1660 |  0.044   255    3931 |  0.042 |   1.58   1.22
+add,and,sub      236424 |  0.179  0.084  0.094   400   22014 |  0.065   274   25637 |  0.114 |   1.57   1.47
+xor,sub          279020 |  0.142  0.052  0.089   321    1664 |  0.099   355    3560 |  0.043 |   1.17   1.12
+add,shl1         863078 |  0.342  0.119  0.222   258       0 |  0.226   262       0 |  0.116 |   1.43   1.23
+add,or,shl1      215654 |  0.074  0.024  0.050   234   38513 |  0.061   282    9263 |  0.013 |   0.93   0.89
+and,xor,shl1     676296 |  0.317  0.179  0.138   205       0 |  0.099   146       0 |  0.218 |   0.98   0.73
+and,sub,shl1     166610 |  0.091  0.039  0.052   311   92956 |  0.596  3575   97337 | -0.505 |   1.17   1.74
+and,shr1         915956 |  0.308  0.106  0.203   221       0 |  0.192   209       0 |  0.117 |   1.05   0.59
+and,or,shr1      997792 |  0.898  0.538  0.360   361   21831 |  0.277   277   23394 |  0.621 |   1.65   0.97
+or,xor,shr1      608076 |  1.192  0.312  0.880  1447   84754 |  0.192   316   91112 |  0.999 |   2.07   0.99
+or,sub,shr1      112586 |  0.106  0.073  0.033   291  134131 |  0.026   235  200225 |  0.079 |   1.51   1.47
+and,shl1,shr1    786656 |  0.753  0.468  0.285   362    9101 |  0.233   296   11772 |  0.520 |   1.56   0.92
+TOTAL nodes 6627414 cold 4.72 miss 2.11 hitpart 2.61 warm 2.21 cold-warm 2.51 secs 19.18 / 15.14
+
+## an3.py 2026-10-28-normalize-cold-twice-nolp 0 4 1
+stream            nodes |   cold   miss    hit  ns/n      pf |   warm  ns/n      pf |    c-w | cold s warm s
+add,and          305126 |  0.092  0.034  0.058   190  280873 |  0.056   185  232509 |  0.035 |   1.10   1.06
+add,xor          293300 |  0.132  0.064  0.068   231  247669 |  0.060   204  274513 |  0.073 |   1.22   1.12
+add,or,xor       170840 |  0.071  0.036  0.035   202  334515 |  0.033   192  336853 |  0.038 |   1.21   1.18
+add,and,sub      236424 |  0.179  0.107  0.072   304  342944 |  0.050   212  334466 |  0.129 |   1.56   1.31
+xor,sub          279020 |  0.144  0.071  0.073   261  287267 |  0.059   210  259552 |  0.085 |   1.26   1.11
+add,shl1         863078 |  0.398  0.181  0.217   252  134595 |  0.181   209  102830 |  0.217 |   1.65   1.30
+add,or,shl1      215654 |  0.083  0.036  0.047   217  237631 |  0.048   220  239197 |  0.036 |   1.14   1.14
+and,xor,shl1     676296 |  0.513  0.336  0.177   261  159885 |  0.122   181  203163 |  0.391 |   1.32   0.92
+and,sub,shl1     166610 |  0.089  0.048  0.041   249  126229 |  0.027   162  104245 |  0.062 |   1.04   0.97
+and,shr1         915956 |  0.240  0.113  0.127   138     128 |  0.104   114   47610 |  0.136 |   0.60   0.55
+and,or,shr1      997792 |  0.833  0.589  0.244   245  101866 |  0.149   149  148574 |  0.685 |   1.45   0.78
+or,xor,shr1      608076 |  0.615  0.441  0.174   286   99783 |  0.126   208  168215 |  0.488 |   1.25   0.84
+or,sub,shr1      112586 |  0.115  0.085  0.031   271  121252 |  0.025   222  109744 |  0.090 |   1.04   0.94
+and,shl1,shr1    786656 |  0.665  0.472  0.193   246    7646 |  0.150   191   82686 |  0.515 |   1.21   0.73
+TOTAL nodes 6627414 cold 4.17 miss 2.61 hitpart 1.56 warm 1.19 cold-warm 2.98 secs 17.02 / 13.94
+
+## an3.py 2026-10-28-normalize-cold 2 4 4
+stream            nodes |   cold   miss    hit  ns/n      pf |   warm  ns/n      pf |    c-w | cold s warm s
+add,and          305126 |  0.107  0.022  0.085   279      21 |  0.090   296   49223 |  0.017 |   1.05   1.02
+add,xor          293300 |  0.085  0.044  0.041   140       1 |  0.743  2533   59695 | -0.658 |   0.76   1.76
+add,or,xor       170840 |  0.040  0.019  0.022   127       0 |  0.051   298  105214 | -0.011 |   0.73   1.04
+add,and,sub      236424 |  0.102  0.057  0.045   192       6 |  0.064   271  100846 |  0.038 |   1.14   1.19
+xor,sub          279020 |  0.102  0.039  0.063   224       0 |  0.074   264   65262 |  0.028 |   0.84   0.98
+add,shl1         863078 |  0.423  0.146  0.277   321       0 |  0.262   304       0 |  0.161 |   1.59   1.35
+add,or,shl1      215654 |  0.090  0.029  0.061   283       0 |  0.065   303   65312 |  0.025 |   1.03   1.06
+and,xor,shl1     676296 |  0.306  0.164  0.141   209       0 |  0.420   620       0 | -0.114 |   1.06   1.08
+and,sub,shl1     166610 |  0.089  0.039  0.050   300       1 |  0.047   284   71920 |  0.041 |   0.99   0.96
+and,shr1         915956 |  0.299  0.106  0.193   211       0 |  0.170   186       0 |  0.129 |   0.97   0.56
+and,or,shr1      997792 |  0.808  0.495  0.314   315       0 |  0.459   460       0 |  0.350 |   1.35   1.00
+or,xor,shr1      608076 |  0.477  0.271  0.206   339       0 |  0.153   251       0 |  0.324 |   1.07   0.75
+or,sub,shr1      112586 |  0.460  0.080  0.380  3378   59704 |  0.479  4255    1986 | -0.019 |   1.47   1.46
+and,shl1,shr1    786656 |  0.607  0.382  0.225   286       0 |  0.272   345       0 |  0.336 |   1.17   1.03
+TOTAL nodes 6627414 cold 4.00 miss 1.89 hitpart 2.10 warm 3.35 cold-warm 0.65 secs 15.23 / 15.25
+
+## an8.py 2026-10-28-normalize-cold-twice 2026-10-28-normalize-cold-twice-all56
+2026-10-28-normalize-cold-twice {'LK_MISS': 123412, 'V_MISS': 38766, 'TE_SEARCH': 18851, 'BW_N': 16998}
+2026-10-28-normalize-cold-twice-all56 {'LK_MISS': 106092, 'V_MISS': 28006, 'TE_SEARCH': 13053, 'BW_N': 12125}
+
+## an4.py 2026-10-28-normalize-cold-twice-all56 4
+L=4 pf < 1000    cold (pass 1)      :  25 builds,  17.38 M nodes, normalize  10.24 s, misses  5.45 s, hit part   275 ns/node, faults 838
+L=4 pf < 1000    warm (pass 2 or 0) :  24 builds,  16.78 M nodes, normalize   3.83 s, misses  0.00 s, hit part   228 ns/node, faults 3
+L=4 pf >= 10000  cold (pass 1)      :  27 builds,   8.02 M nodes, normalize  10.24 s, misses  3.81 s, hit part   802 ns/node, faults 2376155
+L=4 pf >= 10000  warm (pass 2 or 0) :  26 builds,   8.39 M nodes, normalize   5.69 s, misses  0.00 s, hit part   678 ns/node, faults 2568390
+
+## an5.py 2026-10-28-normalize-cold-twice-all56 4
+builds 110 pf total 4985838 PF_NORM total 4
+fit: hit part = 325 ns/node + -7878.74 us per fault inside normalize
+rms residual per build 0.195 s of mean hit part 0.196 s
+pf>=10000 builds: private_mb min 2344 max 3331; pf<1000 builds: private_mb min 2049 max 2546
+PF_NORM / pf in the heavy builds: 0.000
+
+## an7.py 2026-10-28-normalize-cold-origins
+salt 1 L=2: 56 streams, 374543 distinct terms asked in total (summed over streams), LK_MISS 240332
+    O_OWN                           240332   64.2%
+    O_SAMESTREAM                         0    0.0%
+    O_OTHERSTREAM_SAMELEVEL         134211   35.8%
+    O_OTHERSTREAM_OTHERLEVEL             0    0.0%
+    O_OTHERSALT                          0    0.0%
+salt 1 L=4: 56 streams, 898361 distinct terms asked in total (summed over streams), LK_MISS 391770
+    O_OWN                           391770   43.6%
+    O_SAMESTREAM                    240332   26.8%
+    O_OTHERSTREAM_SAMELEVEL          48486    5.4%
+    O_OTHERSTREAM_OTHERLEVEL        217773   24.2%
+    O_OTHERSALT                          0    0.0%
+salt 2 L=2: 56 streams, 374208 distinct terms asked in total (summed over streams), LK_MISS 91567
+    O_OWN                            91567   24.5%
+    O_SAMESTREAM                         0    0.0%
+    O_OTHERSTREAM_SAMELEVEL           3579    1.0%
+    O_OTHERSTREAM_OTHERLEVEL             0    0.0%
+    O_OTHERSALT                     279062   74.6%
+salt 2 L=4: 56 streams, 896440 distinct terms asked in total (summed over streams), LK_MISS 276843
+    O_OWN                           276843   30.9%
+    O_SAMESTREAM                     91567   10.2%
+    O_OTHERSTREAM_SAMELEVEL           8204    0.9%
+    O_OTHERSTREAM_OTHERLEVEL          8481    0.9%
+    O_OTHERSALT                     511345   57.0%
+
+## an9.py 2026-10-28-normalize-cold-distinct
+L=2: 56 builds, node visits 9332914, distinct normalize arguments 1015617 (9.2 visits each), distinct lookup keys 374543 (24.9 visits each)
+L=4: 56 builds, node visits 26642412, distinct normalize arguments 2796968 (9.5 visits each), distinct lookup keys 898361 (29.7 visits each)

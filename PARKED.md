@@ -331,9 +331,37 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   split of `stream_laws`, 2026-10-27), `2026-10-28-mjv-prof` (`PROF_THREAD` by the builds' thread ids);
   `docs/tier-cycle.md`, "One exhaustive check for both". A probe split the build and found the loops' 2-growth build
   inside the extras' 4-growth one (`docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside
-  the 4-growth one", run `2026-10-28-stream-probe`): deriving the first from the second is under survey, and value-class
-  ids for grouping were chosen (2026-10-28). Status: decided against (2026-10-27); held for the join budget's landing,
-  with cheaper grouping the larger lever (2026-10-28).
+  the 4-growth one", run `2026-10-28-stream-probe`; deriving the first from the second is the entry "Derive the 2-growth
+  sequence from the 4-growth build"), and value-class ids for grouping were chosen (2026-10-28). The normal-form memo
+  would remove most of normalize's hit path, 4.98 s (10.8%) of a quiet one-thread 4-growth build before `cd7dacb`
+  (`docs/tier-cycle.md`, "Why normalize is slow on a cold stream"). Status: decided against (2026-10-27); held for the
+  join budget's landing, with cheaper grouping the larger lever (2026-10-28).
+- **Derive the 2-growth sequence from the 4-growth build** — what: keep each stream's 4-growth list with each law's
+  depth and merge the lists restricted to depth 2, instead of building the 2-growth sequence separately; filtering the
+  merged 4-growth sequence is not exact. Design options (the user's call): (a) one memo per salt holding the
+  depth-tagged lists at the deepest depth asked so far, `stream_sequence(salt, levels)` unchanged as a view, callers
+  asking for the deep sequence first (`scope_extras`, `regenerate_held`, the pin test); (b) the same lists always built
+  at the deepest band's depth, so the memo is keyed by the salt alone and no order matters, while processes that need
+  only 2 growths (and both salts under `GEN_DRAW`) pay a 4-growth build (2.3-2.7 times the 2-growth one); (c) a call
+  that takes every depth at once (`stream_sequences(salt, &[2, 4])`), hoisted into `sweep` and `from_env`; (d) leave
+  the two builds. Related, one line: `scope_extras` builds the 4-growth sequence even with `EXTRAS_N=0`. Why held: a
+  change to `stream_sequence`'s memo and `stream_laws`' return type, and its net saving is not counted (at most the
+  2-growth build, 6.5 of 22.8 s under samply, about 69% of it once the cold-memo fill that moves into the 4-growth
+  build is taken off). Trigger: the user picks a design; the first step is a per-stream test that the restricted
+  4-growth list equals the 2-growth list at several salts, then a count of the pin test before and after. Evidence:
+  `docs/tier-cycle.md`, "Deriving the 2-growth sequence from the 4-growth build" and "Grouping the streams' terms, and
+  the 2-growth build inside the 4-growth one" (2026-10-28). Status: held for the user's call (2026-10-28).
+- **Cheaper first asks in the stream builds** — what: the once-per-process work `Classes::normalize` does for a term
+  it has not seen (6.78 s, 14.8% of a quiet one-thread 4-growth build before `cd7dacb`). Pieces, each exact: write the
+  `CLASS_UNUSABLE` lines in one batch rather than one `println` each (1.04 s, about 100 µs a line); build
+  `bitwise_holds`' fifteen exhaustive input sets once per process rather than per call (1.00 s at 4 growths, 0.58 s at
+  2); take the `CARRY_CAP` read (`Setup::var`: a string-keyed map and a lock) off the path of each of the 4.49 M steps
+  that have a representative (not measured); carry verdicts
+  and lookups across processes (5.73 s, needs a stored format and its invalidation). Why held: found by a probe on
+  one thread, not yet weighed against the sweep (the two builds were 46% of the busy samples at a join budget of 100,
+  run `2026-10-28-mjv-prof`) or counted. Trigger: the user's call, or a count of the pin test showing normalize's misses still above about
+  10% of a build after `cd7dacb`. Evidence: `docs/tier-cycle.md`, "Why normalize is slow on a cold stream" (runs
+  `2026-10-28-normalize-cold*`, 2026-10-28). Status: held for the user's call (2026-10-28).
 - **A prefilter before the full value vectors** — what: in `pool_conjectures`, group the terms first by their values
   on 16 fixed inputs and fill full width-4 vectors only for terms that share a bucket; exact, since equal vectors agree
   on any subset. Why parked: 52% of a stream's terms are in true groups, so it can skip at most about half the fills;

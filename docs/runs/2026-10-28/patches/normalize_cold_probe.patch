@@ -1,0 +1,851 @@
+diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
+index 05ef70d..27059e7 100644
+--- a/tests/church_bv/classes.rs
++++ b/tests/church_bv/classes.rs
+@@ -351,6 +351,45 @@ impl Classes {
+     /// The representative of `t`'s class, `t` itself included, when the table knows the class; `None` otherwise, and for
+     /// a term over a variable other than x, y, z. Pure: no proof. One memo holds every term asked (spec §5).
+     pub fn lookup(&self, t: &Term) -> Option<Term> {
++        // PROBE (throwaway): the same lookup with counters, `get` then `insert` so a miss is timed whole
++        use nprobe::{add, tsc, K};
++        if t.max_var() >= 3 {
++            add(K::LK_NOVAR, 1);
++            return None;
++        }
++        add(K::LK_ASK, 1);
++        if nprobe::O_ON.load(std::sync::atomic::Ordering::Relaxed) {
++            nprobe::ask(t);
++        }
++        let (values, reps) = &mut *self.memos.lock().unwrap_or_else(|e| e.into_inner());
++        if let Some(r) = reps.get(t) {
++            return *r;
++        }
++        let t0 = tsc();
++        let f0 = values[0].filled();
++        let mut vals = vec![];
++        for m in values.iter_mut() {
++            vals.extend_from_slice(m.values(t));
++        }
++        let t1 = tsc();
++        let r = self.map.get(&class_hash(&vals, matches!(*t.node(), Node::Op(LT, ..)))).copied();
++        reps.insert(*t, r);
++        let t2 = tsc();
++        add(K::LK_MISS, 1);
++        add(K::LK_MISS_T, t2 - t0);
++        add(K::LK_VAL_T, t1 - t0);
++        add(K::LK_FILLED, (values[0].filled() - f0) as u64);
++        if let Some(c) = r {
++            add(K::LK_SOME, 1);
++            if c != *t {
++                add(K::LK_REPNE, 1);
++            }
++        }
++        r
++    }
++
++    #[allow(dead_code)]
++    fn lookup_orig(&self, t: &Term) -> Option<Term> {
+         if t.max_var() >= 3 {
+             return None;
+         }
+@@ -437,17 +476,40 @@ impl Classes {
+     /// `rep(t)` when that replacement has a proof at width `n` and its representative is over the context's `k` variables,
+     /// with its plan (`Plan::Law`, or the shared `Plan::Counting` while counting); counted in `job.table_steps`.
+     pub fn step(&self, job: &mut Job, n: usize, k: usize, t: &Term) -> Option<(Term, PlanRc)> {
++        // PROBE (throwaway): the same step with counters
++        use nprobe::{add, tsc, K};
+         let r = self.rep(t)?;
++        add(K::STEP_REP, 1);
+         if r.max_var() >= k {
++            add(K::STEP_KVAR, 1);
+             return None;
+         }
+         let key = (n, carry_cap(job), *t, r);
+         let v = match VERDICTS.get(&key) {
+-            Some(v) => v,
++            Some(v) => {
++                add(K::V_HIT, 1);
++                v
++            }
+             None => {
++                let t0 = tsc();
+                 let v = verdict(job, n, t, &r);
+-                if VERDICTS.insert(key, v.clone()) && v.is_none() {
++                let t1 = tsc();
++                let fresh = VERDICTS.insert(key, v.clone());
++                let tp = tsc();
++                if fresh && v.is_none() {
+                     println!("CLASS_UNUSABLE {} = {}", t.show(), r.show());
++                    add(K::V_PRINT_N, 1);
++                    add(K::V_PRINT_T, tsc() - tp);
++                }
++                let t2 = tsc();
++                let bw = t.add_free() && r.add_free();
++                add(K::V_MISS, 1);
++                add(K::V_EVAL_T, t1 - t0);
++                add(K::V_INS_T, t2 - t1);
++                add(if bw { K::VB_N } else { K::VT_N }, 1);
++                add(if bw { K::VB_T } else { K::VT_T }, t1 - t0);
++                if v.is_some() {
++                    add(if bw { K::VB_SOME } else { K::VT_SOME }, 1);
+                 }
+                 v
+             }
+@@ -458,6 +520,13 @@ impl Classes {
+ 
+     /// `t` with `step` taken at every node, bottom-up, and its plan: `Cong` per changed node, `Trans` per replacement.
+     pub fn normalize(&self, job: &mut Job, n: usize, k: usize, t: &Term) -> (Term, PlanRc) {
++        nprobe::add(nprobe::K::NODE, 1);
++        if nprobe::O_ON.load(std::sync::atomic::Ordering::Relaxed) {
++            nprobe::ask_orig(t);
++        }
++        if matches!(*t.node(), Node::Op(..)) {
++            nprobe::add(nprobe::K::NODE_OP, 1);
++        }
+         let (t1, p1) = match *t.node() {
+             Node::Op(o, a, b) => {
+                 let ((a1, pa), (b1, pb)) = (self.normalize(job, n, k, &a), self.normalize(job, n, k, &b));
+@@ -907,3 +976,87 @@ fn rewrite_replaces_a_node_past_the_table_only_with_a_proof() {
+         job.lemmas.ck("past the table's size", &p, &s);
+     });
+ }
++
++// ---- PROBE (throwaway, never committed): what `Classes::normalize` spends, by memo and by miss kind. Single-thread
++// counters (load and store, no lock prefix); the `*_T` counters are TSC ticks. `ask` (O mode, off by default) records,
++// per build, which earlier build first asked each distinct term `lookup` is given.
++pub mod nprobe {
++    use super::*;
++    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
++    macro_rules! counters {
++        ($($n:ident),* $(,)?) => {
++            #[allow(non_camel_case_types)]
++            #[derive(Clone, Copy)]
++            pub enum K { $($n),* }
++            pub const NAMES: &[&str] = &[$(stringify!($n)),*];
++        };
++    }
++    counters!(
++        NODE, NODE_OP, LK_NOVAR, LK_ASK, LK_MISS, LK_MISS_T, LK_VAL_T, LK_FILLED, LK_SOME, LK_REPNE, STEP_REP, STEP_KVAR, V_HIT, V_MISS, V_EVAL_T,
++        V_INS_T, VB_N, VB_T, VB_SOME, VT_N, VT_T, VT_SOME, BW_N, BW_EXH_T, BW_AGREE_T, TE_CALL, TE_PLAUS, TE_PARSE, TE_LAST, TE_CAP, TE_HIT, TE_SEARCH,
++        TE_SEARCH_T, TE_SEARCH_SOME, NORM_T, NORM_LAWS, PF_NORM, V_PRINT_N, V_PRINT_T, O_ORIG, O_OWN, O_SAMESTREAM, O_OTHERSTREAM_SAMELEVEL, O_OTHERSTREAM_OTHERLEVEL, O_OTHERSALT
++    );
++    pub static C: [AtomicU64; NAMES.len()] = [const { AtomicU64::new(0) }; NAMES.len()];
++    #[inline]
++    pub fn add(k: K, v: u64) {
++        let c = &C[k as usize];
++        c.store(c.load(Relaxed) + v, Relaxed);
++    }
++    #[inline]
++    pub fn tsc() -> u64 {
++        // SAFETY: reads the time-stamp counter
++        unsafe { core::arch::x86_64::_rdtsc() }
++    }
++    pub fn snap() -> Vec<u64> {
++        C.iter().map(|c| c.load(Relaxed)).collect()
++    }
++
++    pub static O_ON: AtomicBool = AtomicBool::new(false);
++    thread_local! {
++        static ORIGIN: std::cell::RefCell<hashbrown::HashMap<Term, u32>> = Default::default();
++        static SEEN: std::cell::RefCell<hashbrown::HashSet<Term>> = Default::default();
++        static SEEN_ORIG: std::cell::RefCell<hashbrown::HashSet<Term>> = Default::default();
++        static CUR: std::cell::Cell<u32> = const { std::cell::Cell::new(0) };
++        static BUILDS: std::cell::RefCell<Vec<(usize, usize, usize)>> = Default::default();
++    }
++    /// A new build (stream index, growths, salt) starts: its serial is the origin of every term first asked in it.
++    pub fn begin(stream: usize, levels: usize, salt: usize) {
++        BUILDS.with(|b| {
++            let mut b = b.borrow_mut();
++            b.push((stream, levels, salt));
++            CUR.set(b.len() as u32 - 1);
++        });
++        SEEN.with(|s| s.borrow_mut().clear());
++        SEEN_ORIG.with(|s| s.borrow_mut().clear());
++    }
++    /// `t` is a `normalize` call's argument: counts the distinct ones per build (what a per-build memo of `normalize` would hold).
++    pub fn ask_orig(t: &Term) {
++        if SEEN_ORIG.with(|s| s.borrow_mut().insert(*t)) {
++            add(K::O_ORIG, 1);
++        }
++    }
++    /// `t` is asked of `lookup`: on its first ask in this build, counts which build asked it first.
++    pub fn ask(t: &Term) {
++        if !SEEN.with(|s| s.borrow_mut().insert(*t)) {
++            return;
++        }
++        let cur = CUR.get();
++        let o = ORIGIN.with(|m| *m.borrow_mut().entry(*t).or_insert(cur));
++        let k = if o == cur {
++            K::O_OWN
++        } else {
++            let (os, ol, osalt) = BUILDS.with(|b| b.borrow()[o as usize]);
++            let (cs, cl, csalt) = BUILDS.with(|b| b.borrow()[cur as usize]);
++            if osalt != csalt {
++                K::O_OTHERSALT
++            } else if os == cs {
++                K::O_SAMESTREAM
++            } else if ol == cl {
++                K::O_OTHERSTREAM_SAMELEVEL
++            } else {
++                K::O_OTHERSTREAM_OTHERLEVEL
++            }
++        };
++        add(k, 1);
++    }
++}
+diff --git a/tests/church_bv/machine.rs b/tests/church_bv/machine.rs
+index 7ce406b..a14555e 100644
+--- a/tests/church_bv/machine.rs
++++ b/tests/church_bv/machine.rs
+@@ -353,22 +353,33 @@ pub struct TreeEnc {
+ /// Whether `t1 = t2` (two sum trees of add-free leaves over `k` good vectors) has a carry encoding, and which: found by
+ /// `moore_encoding`, first over all carry states, then over the reachable ones; `None` when there is none. Builds no kernel terms.
+ pub fn tree_encoding(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::sync::Arc<TreeEnc>> {
++    // PROBE (throwaway): counters at each exit
++    use crate::classes::nprobe::{add, tsc, K};
++    add(K::TE_CALL, 1);
+     // the cheap screens are not cached
+     if !t1.plausibly_equals(t2, n, k) {
++        add(K::TE_PLAUS, 1);
+         return None;
+     }
+-    let (m1, m2) = (Machine::parse(t1)?, Machine::parse(t2)?);
++    let (Some(m1), Some(m2)) = (Machine::parse(t1), Machine::parse(t2)) else {
++        add(K::TE_PARSE, 1);
++        return None;
++    };
+     if m1.last() != m2.last() {
++        add(K::TE_LAST, 1);
+         return None;
+     }
+     let cs = [m1.carries(), m2.carries()];
+     if cs[0].max(cs[1]) > carry_cap(job) || cs[0] + cs[1] == 0 {
++        add(K::TE_CAP, 1);
+         return None;
+     }
+     let key = (n, k, *t1, *t2);
+     if let Some(hit) = TREE_ENCS.get(&key) {
++        add(K::TE_HIT, 1);
+         return hit;
+     }
++    let ts0 = tsc();
+     // the search runs unlocked: two threads may both search a pair, and find the same encoding
+     let attempt = |reach: Option<&Reach>| moore_encoding(&m1, &m2, k, reach);
+     // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
+@@ -383,6 +394,11 @@ pub fn tree_encoding(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Opt
+         }
+     }
+     .map(std::sync::Arc::new);
++    add(K::TE_SEARCH, 1);
++    add(K::TE_SEARCH_T, tsc() - ts0);
++    if found.is_some() {
++        add(K::TE_SEARCH_SOME, 1);
++    }
+     TREE_ENCS.insert(key, found.clone());
+     found
+ }
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index fbc9b6f..7c68a1e 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -610,6 +610,11 @@ impl<W: Word> ValueMemo<W> {
+         &self.blocks[id / self.per][id % self.per * self.len..][..self.len]
+     }
+ 
++    /// PROBE (throwaway): the number of distinct terms with a vector.
++    pub fn filled(&self) -> usize {
++        self.ids.len()
++    }
++
+     /// `t`'s vector's id, made (with its children's) when new.
+     fn fill(&mut self, t: Term) -> usize {
+         if let Some(&id) = self.ids.get(&t) {
+@@ -678,10 +683,18 @@ impl ValueMemo<u8> {
+ /// value vectors per width: a recursive `interp` pair per input was a quarter of a sweep's samples in `verdict` alone
+ /// (docs/tier-cycle.md, "One exhaustive check for both").
+ pub fn bitwise_holds(a: &Term, b: &Term, k: usize) -> bool {
++    // PROBE (throwaway): time the per-call exhaustive memos apart from the comparison
++    use crate::classes::nprobe::{add, tsc, K};
++    add(K::BW_N, 1);
+     (1..=5).all(|w| {
++        let t0 = tsc();
+         let mut memo = ValueMemo::exhaustive(w, k);
++        let t1 = tsc();
+         let len = memo.len;
+-        memo.first_difference(a, b, len).is_none()
++        let r = memo.first_difference(a, b, len).is_none();
++        add(K::BW_EXH_T, t1 - t0);
++        add(K::BW_AGREE_T, tsc() - t1);
++        r
+     })
+ }
+ 
+diff --git a/tests/church_bv/search.rs b/tests/church_bv/search.rs
+index 76804ac..c22fd38 100644
+--- a/tests/church_bv/search.rs
++++ b/tests/church_bv/search.rs
+@@ -641,7 +641,14 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) ->
+     let (mut out, mut refuted) = (vec![], 0usize);
+     tatic::kernel::scoped(|| {
+         for (a, b) in shuffled(laws, salt) {
+-            if c.normalize(job, 4, 3, &a).0 == c.normalize(job, 4, 3, &b).0 {
++            // PROBE (throwaway): the two normalizations timed in ticks
++            let pf0 = probe_mem().0;
++            let tn = crate::classes::nprobe::tsc();
++            let same = c.normalize(job, 4, 3, &a).0 == c.normalize(job, 4, 3, &b).0;
++            crate::classes::nprobe::add(crate::classes::nprobe::K::NORM_T, crate::classes::nprobe::tsc() - tn);
++            crate::classes::nprobe::add(crate::classes::nprobe::K::PF_NORM, (probe_mem().0 - pf0) as u64);
++            crate::classes::nprobe::add(crate::classes::nprobe::K::NORM_LAWS, 1);
++            if same {
+                 continue;
+             }
+             let va = r8.values(&a).to_vec();
+@@ -730,6 +737,443 @@ pub fn stream_sequence_cost() {
+     println!("SEQUENCE salt {salt}: {} laws; phase 1 window of 300: {}", seq.len(), residue(&seq, 1, 0, 300).len());
+ }
+ 
++// ---- PROBE (throwaway, never committed): where a stream's pool, grouping time and open-law filter go.
++
++/// Adds every term of `roots`, and every subterm of them, to `seen` (what a `ValueMemo` fills for `roots`).
++fn probe_closure(roots: &[Term], seen: &mut HashSet<Term>) {
++    fn go(t: Term, seen: &mut HashSet<Term>) {
++        if seen.insert(t) {
++            if let Node::Op(_, a, b) = *t.node() {
++                go(a, seen);
++                go(b, seen);
++            }
++        }
++    }
++    for t in roots {
++        go(*t, seen);
++    }
++}
++
++/// Named numbers of one stream (counts, seconds), in the order first added.
++#[derive(Default)]
++struct ProbeStats(Vec<(String, f64)>);
++
++impl ProbeStats {
++    fn add(&mut self, k: &str, v: f64) {
++        match self.0.iter_mut().find(|(n, _)| n == k) {
++            Some(e) => e.1 += v,
++            None => self.0.push((k.to_string(), v)),
++        }
++    }
++    fn get(&self, k: &str) -> f64 {
++        self.0.iter().find(|(n, _)| n == k).map_or(0.0, |e| e.1)
++    }
++    fn line(&self) -> String {
++        self.0.iter().map(|(k, v)| if k.starts_with("t_") { format!("{k}={v:.3}") } else { format!("{k}={v:.0}") }).collect::<Vec<_>>().join(" ")
++    }
++}
++
++/// Seconds since the last `lap`.
++struct ProbeLap(std::time::Instant);
++
++impl ProbeLap {
++    fn lap(&mut self) -> f64 {
++        let now = std::time::Instant::now();
++        let d = now.duration_since(self.0).as_secs_f64();
++        self.0 = now;
++        d
++    }
++}
++
++/// A fixed shuffle of the 4096 input indices (Fisher-Yates driven by `mix64`): the first K are the K inputs of a
++/// prefilter, so the sets nest (16 in 64 in 256). Input `i` of `ValueMemo::exhaustive(4, 3)` has variable `v` = bits
++/// `4v..4v+4` of `i`.
++fn probe_picks() -> Vec<usize> {
++    let mut v: Vec<usize> = (0..4096).collect();
++    for i in (1..4096usize).rev() {
++        let j = (tatic::rng::mix64(0x5eed_0000 + i as u64) % (i as u64 + 1)) as usize;
++        v.swap(i, j);
++    }
++    v
++}
++
++/// `pool_conjectures`' grouping in two stages: terms bucketed by their values on the first `k` of `picks` (and the
++/// comparison flag), then only the terms in buckets of more than one are given full 4096-input vectors and grouped.
++/// Returns (survivors, distinct terms the full memo fills, stage 1 seconds, stage 2 seconds, conjectures unsorted).
++fn probe_two_stage(terms: &[Term], picks: &[usize], k: usize) -> (usize, usize, f64, f64, Vec<(Term, Term)>) {
++    let t0 = std::time::Instant::now();
++    let vars: Vec<Box<[u8]>> = (0..3).map(|v| picks[..k].iter().map(|&i| (i >> (4 * v) & 15) as u8).collect()).collect();
++    let mut small = ValueMemo::new(4, k, vars);
++    let mut buckets: hashbrown::HashMap<Vec<u8>, Vec<usize>> = Default::default();
++    for (i, t) in terms.iter().enumerate() {
++        let mut key = small.values(t).to_vec();
++        key.push(matches!(*t.node(), Node::Op(LT, ..)) as u8);
++        buckets.entry(key).or_default().push(i);
++    }
++    let mut survivors: Vec<usize> = buckets.values().filter(|b| b.len() > 1).flatten().copied().collect();
++    survivors.sort_unstable();
++    let t1 = t0.elapsed().as_secs_f64();
++    drop(buckets);
++    drop(small);
++    let t0 = std::time::Instant::now();
++    let mut memo = ValueMemo::exhaustive(4, 3);
++    let mut groups: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
++    for &i in &survivors {
++        let t = terms[i];
++        let mut key = memo.values(&t).to_vec();
++        key.push(matches!(*t.node(), Node::Op(LT, ..)) as u8);
++        groups.entry(key).or_default().push(t);
++    }
++    let conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0], *t2))).collect();
++    (survivors.len(), memo.filled(), t1, t0.elapsed().as_secs_f64(), conj)
++}
++
++/// `stream_laws(ops, salt, budget, levels)` again, with counts and timers: the same steps in the same order (a copy of
++/// its body, `pool_conjectures` inlined); returns its stats, its laws, and the closures of the width-4 pool memo and of
++/// the width-8 memo (terms with a vector in each), and the pool in `pool_conjectures` order.
++fn stream_probe(ops: &[usize], salt: usize, budget: usize, levels: usize, picks: &[usize]) -> (ProbeStats, Vec<(Term, Term)>, Vec<Term>, Vec<Term>, Vec<Term>) {
++    let mut s = ProbeStats::default();
++    let mut lap = ProbeLap(std::time::Instant::now());
++    let c = crate::classes::Classes::get();
++    fn within(t: Term, ops: &[usize]) -> bool {
++        match *t.node() {
++            Node::Op(o, a, b) => ops.contains(&o) && within(a, ops) && within(b, ops),
++            _ => true,
++        }
++    }
++    let mut seeds: Vec<Term> = c.reps().filter(|t| within(*t, ops)).collect();
++    seeds.sort_by_cached_key(|t| t.show());
++    fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
++        if let Node::Op(o, a, b) = *t.node() {
++            out.insert(o);
++            ops_of(a, out);
++            ops_of(b, out);
++        }
++    }
++    fn leaf_count(t: Term) -> usize {
++        match *t.node() {
++            Node::Op(SHL1 | SHR1, a, _) => leaf_count(a),
++            Node::Op(_, a, b) => leaf_count(a) + leaf_count(b),
++            _ => 1,
++        }
++    }
++    fn replaced(t: Term, k: &mut Option<usize>, g: Term) -> Term {
++        match *t.node() {
++            Node::Op(o @ (SHL1 | SHR1), a, b) => Term::op(o, replaced(a, k, g), b),
++            Node::Op(o, a, b) => {
++                let a = replaced(a, k, g);
++                Term::op(o, a, replaced(b, k, g))
++            }
++            _ => match *k {
++                Some(0) => {
++                    *k = None;
++                    g
++                }
++                Some(i) => {
++                    *k = Some(i - 1);
++                    t
++                }
++                None => t,
++            },
++        }
++    }
++    let mut grown_ops = std::collections::BTreeSet::new();
++    seeds.iter().for_each(|t| ops_of(*t, &mut grown_ops));
++    let leaves = &leaves3();
++    let mut memo = ValueMemo::exhaustive(4, 3);
++    let leaf_values: Vec<Vec<u8>> = leaves.iter().map(|l| memo.values(l).to_vec()).collect();
++    s.add("t_setup", lap.lap());
++    let grow: Vec<Term> = grown_ops
++        .iter()
++        .flat_map(|&o| if o == SHL1 || o == SHR1 { leaves.iter().map(|a| mk(o, a, &Term::ZERO)).collect::<Vec<_>>() } else { leaves.iter().flat_map(|a| leaves.iter().map(move |b| mk(o, a, b))).collect() })
++        .filter(|g| !leaf_values.contains(&memo.values(g).to_vec()))
++        .collect();
++    s.add("t_grow", lap.lap());
++    let mut level: hashbrown::HashMap<Term, usize> = seeds.iter().map(|t| (*t, 0)).collect();
++    let (mut base, mut i) = (seeds.clone(), 0u64);
++    for l in 1..=levels {
++        let total: usize = base.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
++        let mut next = vec![];
++        for t in &base {
++            for p in 0..leaf_count(*t) {
++                for g in &grow {
++                    i += 1;
++                    if (tatic::rng::mix64(i ^ tatic::rng::mix64(salt as u64 + 13 * l as u64)) % total.max(1) as u64) < budget as u64 {
++                        let w = replaced(*t, &mut Some(p), *g);
++                        if !level.contains_key(&w) {
++                            level.insert(w, l);
++                            next.push(w);
++                        }
++                    }
++                }
++            }
++        }
++        base = next;
++    }
++    s.add("t_growth", lap.lap());
++    let mut terms: Vec<Term> = level.keys().cloned().collect();
++    terms.sort_by_cached_key(|t| (level[t], t.show()));
++    s.add("t_sort", lap.lap());
++    s.add("seeds", seeds.len() as f64);
++    s.add("pool", terms.len() as f64);
++    // pool_conjectures(terms, 4, 3, 0), inlined
++    let (conj, pool_closure) = {
++        let mut pm = ValueMemo::exhaustive(4, 3);
++        let mut groups: hashbrown::HashMap<Vec<u8>, Vec<Term>> = Default::default();
++        let (mut t_fill, mut t_key, mut t_ins) = (0.0, 0.0, 0.0);
++        lap.lap();
++        for t in &terms {
++            let v = pm.values(t);
++            t_fill += lap.lap();
++            let mut key = v.to_vec();
++            key.push(matches!(*t.node(), Node::Op(LT, ..)) as u8);
++            t_key += lap.lap();
++            groups.entry(key).or_default().push(*t);
++            t_ins += lap.lap();
++        }
++        s.add("t_fill", t_fill);
++        s.add("t_key", t_key);
++        s.add("t_ins", t_ins);
++        let mut cl = HashSet::new();
++        probe_closure(&terms, &mut cl);
++        assert_eq!(cl.len(), pm.filled(), "the pool's closure is what the memo filled");
++        s.add("filled", pm.filled() as f64);
++        s.add("groups", groups.len() as f64);
++        s.add("multi", groups.values().filter(|g| g.len() > 1).count() as f64);
++        s.add("in_multi", groups.values().filter(|g| g.len() > 1).map(|g| g.len()).sum::<usize>() as f64);
++        lap.lap();
++        let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0], *t2))).collect();
++        conj.sort_by_cached_key(|(a, b)| (a.show(), b.show()));
++        s.add("t_conj", lap.lap());
++        (conj, cl.into_iter().collect::<Vec<Term>>())
++    };
++    s.add("conj", conj.len() as f64);
++    // the two-stage grouping, for each prefilter size: same conjectures as the single stage
++    let base_set: HashSet<(Term, Term)> = conj.iter().copied().collect();
++    for k in [16usize, 64, 256] {
++        let (surv, filled, t1, t2, c2) = probe_two_stage(&terms, picks, k);
++        assert!(c2.len() == conj.len() && c2.iter().all(|p| base_set.contains(p)), "two-stage K={k} gives other conjectures than pool_conjectures");
++        s.add(&format!("pre{k}_terms"), surv as f64);
++        s.add(&format!("pre{k}_filled"), filled as f64);
++        s.add(&format!("t_pre{k}a"), t1);
++        s.add(&format!("t_pre{k}b"), t2);
++    }
++    drop(base_set);
++    lap.lap();
++    let laws: Vec<(Term, Term)> = conj.into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
++    s.add("grown", laws.len() as f64);
++    s.add("t_post", lap.lap());
++    let job = &mut Job::new(Setup::process());
++    let mut r8 = width8();
++    s.add("t_osetup", lap.lap());
++    let laws = shuffled(laws, salt);
++    s.add("t_shuf", lap.lap());
++    let (mut out, mut refuted, mut open) = (vec![], 0usize, 0usize);
++    let (mut t_norm, mut t_r8) = (0.0, 0.0);
++    let mut r8_roots: Vec<Term> = vec![];
++    tatic::kernel::scoped(|| {
++        lap.lap();
++        for (a, b) in laws {
++            let same = c.normalize(job, 4, 3, &a).0 == c.normalize(job, 4, 3, &b).0;
++            t_norm += lap.lap();
++            if same {
++                continue;
++            }
++            open += 1;
++            r8_roots.extend([a, b]);
++            let va = r8.values(&a).to_vec();
++            let differ = va != r8.values(&b);
++            t_r8 += lap.lap();
++            if differ {
++                refuted += 1;
++                continue;
++            }
++            out.push((a, b));
++        }
++    });
++    s.add("t_norm", t_norm);
++    s.add("t_r8", t_r8);
++    s.add("open", open as f64);
++    s.add("refuted", refuted as f64);
++    s.add("out", out.len() as f64);
++    let mut r8cl = HashSet::new();
++    probe_closure(&r8_roots, &mut r8cl);
++    assert_eq!(r8cl.len(), r8.filled(), "the width-8 memo's closure");
++    s.add("r8_filled", r8.filled() as f64);
++    let pipe: f64 = ["t_setup", "t_grow", "t_growth", "t_sort", "t_fill", "t_key", "t_ins", "t_conj", "t_post", "t_osetup", "t_shuf", "t_norm", "t_r8"].iter().map(|k| s.get(k)).sum();
++    s.add("t_pipe", pipe);
++    (s, out, pool_closure, r8cl.into_iter().collect(), terms)
++}
++
++/// Per-stream table rows: the totals, then the five largest pools.
++fn probe_table(title: &str, cols: &[String], rows: &[(String, ProbeStats)]) {
++    let fmt = |c: &str, v: f64| if c.starts_with("t_") { format!("{v:.2}") } else { format!("{v:.0}") };
++    println!("TABLE {title}");
++    println!("{:<14}{}", "stream", cols.iter().map(|c| format!("{c:>12}")).collect::<String>());
++    let total: Vec<f64> = cols.iter().map(|c| rows.iter().map(|(_, s)| s.get(c)).sum()).collect();
++    println!("{:<14}{}", "TOTAL", cols.iter().zip(&total).map(|(c, v)| format!("{:>12}", fmt(c, *v))).collect::<String>());
++    let mut order: Vec<usize> = (0..rows.len()).collect();
++    order.sort_by(|&a, &b| rows[b].1.get("pool").total_cmp(&rows[a].1.get("pool")));
++    for &i in order.iter().take(5) {
++        println!("{:<14}{}", rows[i].0, cols.iter().map(|c| format!("{:>12}", fmt(c, rows[i].1.get(c)))).collect::<String>());
++    }
++}
++
++/// The terms of `per_stream` by how many streams hold them; prints what one memo over all of them would save.
++fn probe_cross(label: &str, per_stream: &[Vec<Term>]) -> hashbrown::HashMap<Term, u16> {
++    let mut m: hashbrown::HashMap<Term, u16> = Default::default();
++    for v in per_stream {
++        for t in v {
++            *m.entry(*t).or_default() += 1;
++        }
++    }
++    let sum: usize = per_stream.iter().map(Vec::len).sum();
++    let mut hist = [0usize; 5];
++    for &n in m.values() {
++        hist[match n {
++            1 => 0,
++            2..=4 => 1,
++            5..=9 => 2,
++            10..=19 => 3,
++            _ => 4,
++        }] += 1;
++    }
++    println!(
++        "CROSS {label}: {} streams, sum of per-stream fills {sum}, distinct terms {} ({:.1}% of the fills are repeats), a 4096-byte vector each: {:.2} GB; distinct terms held by 1 / 2-4 / 5-9 / 10-19 / 20+ streams: {hist:?}",
++        per_stream.len(),
++        m.len(),
++        100.0 * (sum - m.len()) as f64 / sum.max(1) as f64,
++        m.len() as f64 * 4096.0 / 1e9
++    );
++    m
++}
++
++fn run_probe(levels_list: Vec<usize>, salt: usize, limit: usize) {
++    let sets = stream_sets();
++    let picks = probe_picks();
++    println!("PROBE picks: first 16 of the fixed shuffle: {:?}", &picks[..16]);
++    // the class table is built at first use and shared by the whole process: keep it out of the first stream's setup time
++    crate::classes::Classes::get();
++    let (mut all_pool, mut all_pool_sum) = (HashSet::new(), 0usize);
++    for &levels in &levels_list {
++        let mut rows: Vec<(String, ProbeStats)> = vec![];
++        let (mut pool_cl, mut r8_cl) = (vec![], vec![]);
++        for ops in sets.iter().take(limit) {
++            let name = ops.iter().map(|o| OP_INFO[*o].name).collect::<Vec<_>>().join(",");
++            let (mut s, out, pc, rc, _) = stream_probe(ops, salt, STREAM_BUDGET, levels, &picks);
++            let t = std::time::Instant::now();
++            let real = stream_laws(ops, salt, STREAM_BUDGET, levels);
++            s.add("t_real", t.elapsed().as_secs_f64());
++            assert!(real == out, "stream {name} (growths {levels}): the probe's laws differ from stream_laws'");
++            println!("PROBE L={levels} {name} {}", s.line());
++            rows.push((name, s));
++            pool_cl.push(pc);
++            r8_cl.push(rc);
++        }
++        println!("PROBE growths {levels}: all {} streams' laws equal stream_laws'", rows.len());
++        let names = |v: &[&str]| v.iter().map(|x| x.to_string()).collect::<Vec<String>>();
++        probe_table(&format!("growths {levels}: counts"), &names(&["seeds", "pool", "filled", "groups", "multi", "in_multi", "conj", "grown", "open", "refuted", "out", "r8_filled"]), &rows);
++        let pre: Vec<String> = [16, 64, 256].iter().flat_map(|k| [format!("pre{k}_terms"), format!("pre{k}_filled")]).chain(["in_multi".to_string(), "filled".to_string()]).collect();
++        probe_table(&format!("growths {levels}: prefilter (terms still needing full vectors, distinct terms those fill; in_multi and filled are the floor and the baseline)"), &pre, &rows);
++        let times: Vec<String> = ["t_setup", "t_grow", "t_growth", "t_sort", "t_fill", "t_key", "t_ins", "t_conj", "t_post", "t_osetup", "t_shuf", "t_norm", "t_r8", "t_pipe", "t_real"].iter().map(|x| x.to_string()).collect();
++        probe_table(&format!("growths {levels}: seconds, one thread"), &times, &rows);
++        let pre_t: Vec<String> = [16, 64, 256].iter().flat_map(|k| [format!("t_pre{k}a"), format!("t_pre{k}b")]).chain(["t_fill".to_string(), "t_key".to_string(), "t_ins".to_string()]).collect();
++        probe_table(&format!("growths {levels}: seconds of the two-stage grouping (stage a, b) against the single stage's fill, key, insert"), &pre_t, &rows);
++        let p = probe_cross(&format!("growths {levels}, width-4 pool memos"), &pool_cl);
++        probe_cross(&format!("growths {levels}, width-8 memos"), &r8_cl);
++        all_pool_sum += pool_cl.iter().map(Vec::len).sum::<usize>();
++        all_pool.extend(p.keys().copied());
++    }
++    println!(
++        "CROSS all growth counts {levels_list:?}, width-4 pool memos: sum of every build's fills {all_pool_sum}, distinct terms {} ({:.1}% repeats), {:.2} GB at 4096 bytes each",
++        all_pool.len(),
++        100.0 * (all_pool_sum - all_pool.len()) as f64 / all_pool_sum.max(1) as f64,
++        all_pool.len() as f64 * 4096.0 / 1e9
++    );
++}
++
++/// The probe: salt 1, the loops' growth count and the extras' (the deepest held band's), every stream, one thread.
++/// `PROBE_LEVELS` (comma list) and `PROBE_STREAMS` (first n streams) narrow it.
++#[test]
++#[ignore]
++pub fn stream_group_probe() {
++    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
++    let levels: Vec<usize> = std::env::var("PROBE_LEVELS").map_or_else(|_| vec![STREAM_LEVELS, deep], |s| s.split(',').map(|x| x.parse().unwrap()).collect());
++    let limit: usize = std::env::var("PROBE_STREAMS").ok().map_or(usize::MAX, |s| s.parse().unwrap());
++    println!("PROBE growths {levels:?} (STREAM_LEVELS {STREAM_LEVELS}, deepest held band {deep}), salt 1, budget {STREAM_BUDGET}, streams {}", limit.min(stream_sets().len()));
++    std::thread::Builder::new().stack_size(256 << 20).spawn(move || run_probe(levels, 1, limit)).unwrap().join().unwrap();
++}
++
++/// Does the instrumented copy cost what the real function does? Every `PROBE_STRIDE`-th stream (default 4), at the
++/// growth counts of `PROBE_LEVELS` (default as `stream_group_probe`): the real `stream_laws`, the probe, the real again,
++/// the probe again; seconds of each (the probe's `t_pipe`, which leaves out its two-stage analysis).
++#[test]
++#[ignore]
++pub fn stream_probe_overhead() {
++    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
++    let levels: Vec<usize> = std::env::var("PROBE_LEVELS").map_or_else(|_| vec![STREAM_LEVELS, deep], |s| s.split(',').map(|x| x.parse().unwrap()).collect());
++    let stride: usize = std::env::var("PROBE_STRIDE").ok().map_or(4, |s| s.parse().unwrap());
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (sets, picks) = (stream_sets(), probe_picks());
++            crate::classes::Classes::get();
++            for levels in levels {
++                let mut tot = [0.0f64; 6];
++                for (i, ops) in sets.iter().enumerate().step_by(stride) {
++                    let name = ops.iter().map(|o| OP_INFO[*o].name).collect::<Vec<_>>().join(",");
++                    let t = std::time::Instant::now();
++                    let r1 = stream_laws(ops, 1, STREAM_BUDGET, levels);
++                    let a = t.elapsed().as_secs_f64();
++                    let (s1, o1, _, _, _) = stream_probe(ops, 1, STREAM_BUDGET, levels, &picks);
++                    let t = std::time::Instant::now();
++                    let r2 = stream_laws(ops, 1, STREAM_BUDGET, levels);
++                    let c = t.elapsed().as_secs_f64();
++                    let (s2, o2, _, _, _) = stream_probe(ops, 1, STREAM_BUDGET, levels, &picks);
++                    assert!(r1 == o1 && r2 == o2 && r1 == r2, "stream {i} {name}");
++                    let row = [a, s1.get("t_pipe"), c, s2.get("t_pipe"), s1.get("t_norm"), s2.get("t_norm")];
++                    println!("CHECK L={levels} {name} real1={:.3} probe1={:.3} real2={:.3} probe2={:.3} norm1={:.3} norm2={:.3}", row[0], row[1], row[2], row[3], row[4], row[5]);
++                    tot.iter_mut().zip(row).for_each(|(t, r)| *t += r);
++                }
++                println!("CHECK L={levels} TOTAL real1={:.2} probe1={:.2} real2={:.2} probe2={:.2} norm1={:.2} norm2={:.2}", tot[0], tot[1], tot[2], tot[3], tot[4], tot[5]);
++            }
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
++
++/// Is a stream's 2-growth build the 4-growth build restricted? Per stream (salt 1): the 2-growth pool is a prefix of the
++/// 4-growth pool's order, and the 2-growth laws are, in order, the 4-growth laws with both sides in the 2-growth pool.
++#[test]
++#[ignore]
++pub fn stream_probe_nested() {
++    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (sets, picks) = (stream_sets(), probe_picks());
++            crate::classes::Classes::get();
++            let (mut both, mut n) = (0usize, 0usize);
++            for ops in &sets {
++                let name = ops.iter().map(|o| OP_INFO[*o].name).collect::<Vec<_>>().join(",");
++                let (_, o2, _, _, t2) = stream_probe(ops, 1, STREAM_BUDGET, STREAM_LEVELS, &picks);
++                let (_, o4, _, _, t4) = stream_probe(ops, 1, STREAM_BUDGET, deep, &picks);
++                let in2: HashSet<Term> = t2.iter().copied().collect();
++                let prefix = t4.len() >= t2.len() && t4[..t2.len()] == t2[..];
++                let derived: Vec<(Term, Term)> = o4.iter().filter(|(a, b)| in2.contains(a) && in2.contains(b)).copied().collect();
++                let same = derived == o2;
++                println!("NESTED {name}: pool2 {} pool4 {} prefix {prefix}; laws2 {} laws4 {} laws4 within pool2 {} equal {same}", t2.len(), t4.len(), o2.len(), o4.len(), derived.len());
++                n += 1;
++                both += (prefix && same) as usize;
++            }
++            println!("NESTED {both} of {n} streams have the 2-growth pool as a prefix and the 2-growth laws as the 4-growth laws within it");
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
++
+ /// A law's twin key (the law generator's twin filter, docs/superpowers/specs/2026-10-17-law-generator-design.md §1; on
+ /// the class table since docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §6): the least `a = b` text,
+ /// over the six renamings of x, y, z and both side orders, of the law renamed and then each side's children made
+@@ -1124,3 +1568,104 @@ pub fn read_laws(path: &str) -> Vec<(Term, Term)> {
+ pub fn read_named_laws(path: &str) -> Vec<(String, Term, Term)> {
+     read_laws(path).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect()
+ }
++
++// ---- PROBE (throwaway, never committed): why a stream's `Classes::normalize` costs more the first time (docs/tier-cycle.md,
++// "Grouping the streams' terms, and the 2-growth build inside the 4-growth one").
++
++/// The process's memory counters (kernel32): page faults so far, private bytes, working set.
++fn probe_mem() -> (u32, usize, usize) {
++    #[repr(C)]
++    struct Counters {
++        cb: u32,
++        page_faults: u32,
++        peak_ws: usize,
++        ws: usize,
++        quota: [usize; 4],
++        pagefile: usize,
++        peak_pagefile: usize,
++        private: usize,
++    }
++    #[link(name = "kernel32")]
++    unsafe extern "system" {
++        fn GetCurrentProcess() -> isize;
++        fn K32GetProcessMemoryInfo(h: isize, c: *mut Counters, cb: u32) -> i32;
++    }
++    let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, page_faults: 0, peak_ws: 0, ws: 0, quota: [0; 4], pagefile: 0, peak_pagefile: 0, private: 0 };
++    // SAFETY: `c` is a `PROCESS_MEMORY_COUNTERS_EX` of the size passed
++    let ok = unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
++    assert!(ok != 0, "GetProcessMemoryInfo failed");
++    (c.page_faults, c.private, c.ws)
++}
++
++/// Builds the streams one after another on one thread, as `stream_group_probe` did, with `Classes::normalize`'s counters
++/// (`classes::nprobe`) read around each build: pass 1 is the cold one (each stream after the builds before it), pass 2 and
++/// later repeat the same builds. Env: `PROBE_LEVELS` (comma list; default the loops' and the extras' growths),
++/// `PROBE_PASSES` (2), `PROBE_SALTS` (1), `PROBE_STREAMS_IDX` (comma list of stream indices; default all 56),
++/// `PROBE_TWICE=1` (each build is followed at once by a repeat, printed as pass 0), `PROBE_O=1` (also count, per build,
++/// which earlier build first asked each distinct term; slows the hit path, so no timings from it),
++/// `PROBE_MEM_CAP_GB` (12; the test stops when its private bytes pass it).
++#[test]
++#[ignore]
++pub fn normalize_cold_probe() {
++    use crate::classes::nprobe as np;
++    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
++    let list = |k: &str, d: Vec<usize>| std::env::var(k).map_or(d.clone(), |s| s.split(',').map(|x| x.parse().unwrap()).collect::<Vec<usize>>());
++    let levels = list("PROBE_LEVELS", vec![STREAM_LEVELS, deep]);
++    let salts = list("PROBE_SALTS", vec![1]);
++    let only: Option<Vec<usize>> = std::env::var("PROBE_STREAMS_IDX").ok().map(|s| s.split(',').map(|x| x.parse().unwrap()).collect());
++    let passes: usize = std::env::var("PROBE_PASSES").ok().map_or(2, |s| s.parse().unwrap());
++    let twice = std::env::var("PROBE_TWICE").is_ok_and(|s| s == "1");
++    let omode = std::env::var("PROBE_O").is_ok_and(|s| s == "1");
++    let cap: f64 = std::env::var("PROBE_MEM_CAP_GB").ok().map_or(12.0, |s| s.parse().unwrap());
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let sets = stream_sets();
++            crate::classes::Classes::get();
++            np::O_ON.store(omode, std::sync::atomic::Ordering::Relaxed);
++            println!("NP config levels {levels:?} salts {salts:?} passes {passes} twice {twice} omode {omode} streams {:?} cap {cap} GB", only);
++            let (tsc0, clock0) = (np::tsc(), std::time::Instant::now());
++            let mut first: std::collections::HashMap<(usize, usize, usize), (usize, u64)> = Default::default();
++            let mut build = |pass: usize, salt: usize, lv: usize, i: usize, ops: &Vec<usize>| -> bool {
++                let name = ops.iter().map(|o| OP_INFO[*o].name).collect::<Vec<_>>().join(",");
++                np::begin(i, lv, salt);
++                let (pf0, _, _) = probe_mem();
++                let s0 = np::snap();
++                let t = std::time::Instant::now();
++                let laws = stream_laws(ops, salt, STREAM_BUDGET, lv);
++                let secs = t.elapsed().as_secs_f64();
++                let s1 = np::snap();
++                let (pf1, private, ws) = probe_mem();
++                let fnv = laws.iter().fold(0xcbf2_9ce4_8422_2325u64, |h, (a, b)| format!("{} = {}", a.show(), b.show()).bytes().fold(h, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3)));
++                let same = *first.entry((salt, lv, i)).or_insert((laws.len(), fnv)) == (laws.len(), fnv);
++                let d: Vec<String> = np::NAMES.iter().enumerate().filter(|(j, _)| s1[*j] != s0[*j]).map(|(j, n)| format!("{n}={}", s1[j] - s0[j])).collect();
++                println!("NP pass={pass} salt={salt} L={lv} i={i} ops={name} laws={} same={same} secs={secs:.3} pf={} private_mb={} ws_mb={} {}", laws.len(), pf1 - pf0, private >> 20, ws >> 20, d.join(" "));
++                assert!(same, "stream {name} gave other laws the second time");
++                if private as f64 > cap * 1e9 {
++                    println!("NP ABORT: private bytes {} MB past the cap", private >> 20);
++                    return false;
++                }
++                true
++            };
++            'all: for pass in 1..=passes {
++                for &salt in &salts {
++                    for &lv in &levels {
++                        for (i, ops) in sets.iter().enumerate() {
++                            if only.as_ref().is_some_and(|o| !o.contains(&i)) {
++                                continue;
++                            }
++                            if !build(pass, salt, lv, i, ops) || (twice && !build(0, salt, lv, i, ops)) {
++                                break 'all;
++                            }
++                        }
++                    }
++                }
++            }
++            let hz = (np::tsc() - tsc0) as f64 / clock0.elapsed().as_secs_f64();
++            println!("NP HZ {hz:.0}");
++            println!("NP memo_len {:?}", crate::classes::Classes::memo_len());
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
