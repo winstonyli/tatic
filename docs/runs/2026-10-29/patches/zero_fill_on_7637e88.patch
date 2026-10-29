@@ -1,0 +1,75 @@
+diff --git a/tests/church_bv/classes.rs b/tests/church_bv/classes.rs
+index 044b152..9c5b220 100644
+--- a/tests/church_bv/classes.rs
++++ b/tests/church_bv/classes.rs
+@@ -227,6 +227,8 @@ impl Classes {
+         // a run at a time, so each loop has its operator and mask fixed (called per element through a function pointer it
+         // was 65% of a build: docs/tier-cycle.md, "What a build spends")
+         let zip = |o: usize, out: &mut [u8], a: &[u8], b: &[u8]| {
++            // SAFETY: `zip_op` only writes initialized values
++            let out: &mut [std::mem::MaybeUninit<u8>] = unsafe { &mut *(out as *mut [u8] as *mut _) };
+             for r in runs.windows(2) {
+                 let s = r[0].0..r[1].0;
+                 zip_op(o, &mut out[s.clone()], &a[s.clone()], &b[s], r[0].1);
+diff --git a/tests/church_bv/rewrite.rs b/tests/church_bv/rewrite.rs
+index a856531..a854fd2 100644
+--- a/tests/church_bv/rewrite.rs
++++ b/tests/church_bv/rewrite.rs
+@@ -586,16 +586,17 @@ pub struct ValueMemo<W: Word> {
+ /// `out[i] = op(x[i], y[i])` for operator `O`: its function for `W` is a constant here, so it inlines into the loop (called
+ /// through the pointer per element it was about 4% of a sweep, docs/tier-cycle.md, "Profile at a7b0719"), and the `u8`
+ /// loops work on byte lanes ("`zip_word` on native bytes").
+-fn zip_word<W: Word, const O: usize>(out: &mut [W], x: &[W], y: &[W], mask: u128) {
++fn zip_word<W: Word, const O: usize>(out: &mut [std::mem::MaybeUninit<W>], x: &[W], y: &[W], mask: u128) {
+     let (op, mask) = (W::pick(const { &OP_INFO[O].words }), W::of(mask));
+     for ((o, x), y) in out.iter_mut().zip(x).zip(y) {
+-        *o = op(*x, *y, mask);
++        o.write(op(*x, *y, mask));
+     }
+ }
+ 
+-/// `out[i] = op(x[i], y[i])` for operator `o` at one width's `mask`: `zip_word` picked once per call.
+-pub fn zip_op<W: Word>(o: usize, out: &mut [W], x: &[W], y: &[W], mask: u128) {
+-    let zips: [fn(&mut [W], &[W], &[W], u128); OP_INFO.len()] =
++/// `out[i] = op(x[i], y[i])` for operator `o` at one width's `mask`: `zip_word` picked once per call. It writes every
++/// cell of `out`, which may start uninitialized.
++pub fn zip_op<W: Word>(o: usize, out: &mut [std::mem::MaybeUninit<W>], x: &[W], y: &[W], mask: u128) {
++    let zips: [fn(&mut [std::mem::MaybeUninit<W>], &[W], &[W], u128); OP_INFO.len()] =
+         [zip_word::<W, 0>, zip_word::<W, 1>, zip_word::<W, 2>, zip_word::<W, 3>, zip_word::<W, 4>, zip_word::<W, 5>, zip_word::<W, 6>, zip_word::<W, 7>];
+     zips[o](out, x, y, mask);
+ }
+@@ -676,15 +677,22 @@ impl<W: Word> ValueMemo<W> {
+                 let (a, b) = children.unwrap();
+                 let mask = self.mask;
+                 let off = self.blocks[last].len();
+-                self.blocks[last].resize(off + len, W::of(0));
+                 // the children's vectors sit in earlier blocks or earlier in the last one
+                 let (done, tail) = self.blocks.split_at_mut(last);
+-                let (before, out) = tail[0].split_at_mut(off);
++                let block = &mut tail[0];
++                let base = block.as_mut_ptr();
++                // SAFETY: the block was made with capacity `per * len` and is not full, so cells `off..off + len` are
++                // its spare capacity: disjoint from its first `off` cells (`before`) and from the other blocks; `zip_op`
++                // writes all `len` of them before `set_len` covers them.
++                let (before, out) = unsafe {
++                    (std::slice::from_raw_parts(base, off), std::slice::from_raw_parts_mut(base.add(off).cast(), len))
++                };
+                 let at = |id: usize| -> &[W] {
+                     let block: &[W] = if id / per == last { before } else { &done[id / per] };
+                     &block[id % per * len..][..len]
+                 };
+                 zip_op(o, out, at(a), at(b), mask);
++                unsafe { block.set_len(off + len) };
+             }
+         }
+         self.ids.insert(t, id);
+@@ -4342,7 +4350,8 @@ fn operators_match_a_bit_at_a_time() {
+         // from 1 the length is odd, so the loop's scalar tail runs after its vector body
+         for s in [0, 1] {
+             let mut out = vec![W::of(0); x.len() - s];
+-            zip_op(o, &mut out, &x[s..], &y[s..], low_bits(n));
++            // SAFETY: `zip_op` only writes initialized values
++            zip_op(o, unsafe { &mut *(&mut out[..] as *mut [W] as *mut _) }, &x[s..], &y[s..], low_bits(n));
+             for (i, v) in out.iter().enumerate() {
+                 let (a, b) = (xs[s + i], ys[s + i]);
+                 assert_eq!(v.get(), by_bits(o, a, b, n), "{} {a} {b} at width {n} in {}", OP_INFO[o].name, std::any::type_name::<W>());

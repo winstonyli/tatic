@@ -1,0 +1,20 @@
+# 2026-10-29-zerofill2-disasm: zip_word<u8, O> for the eight operators in B.exe (0237d36, the code of 7637e88) and C.exe
+# (B with docs/runs/2026-10-29/patches/zero_fill_on_7637e88.patch), both cargo test --release, kept with their PDBs in
+# %LOCALAPPDATA%\claude-runs\tatic\2026-10-29-zerofill2. Table by docs/runs/2026-10-28/scripts/zw_dis.sh, the same for
+# B and C and row for row the one in 2026-10-29-typedrows-disasm.txt. Bodies compared by
+# docs/runs/2026-10-29/scripts/zw_diff.sh (addresses masked); its results are below the table.
+op     bytes  insns  movzbl packedB top vector ops
+add      284     69       3       6 movdqu:6 pand:3 paddb:3 punpcklbw:2 pshuflw:2 pushq:1 
+and      204     53       1       0 movups:6 
+or       204     53       1       0 movups:6 
+xor      204     53       1       0 movups:6 
+sub      284     69       3       6 movdqu:6 psubb:3 pand:3 punpcklbw:2 pshuflw:2 pushq:1 
+lt       254     61       1       9 movdqu:6 pmaxub:3 pcmpeqb:3 pandn:3 movdqa:2 
+shl1     246     63       3       6 movdqu:4 pand:3 paddb:3 punpcklbw:2 pshuflw:2 pshufd:1 
+shr1     225     55       1       6 movdqu:4 psrlw:3 pand:3 movdqa:2 
+== zw_diff.sh B.exe against each (exit 0 = all eight the same)
+C.exe (zero-fill patch):                     8 same, 0 differ, 476 instructions; exit 0
+T.exe (2026-10-29-typedrows, 7637e88):       8 same, 0 differ, 476 instructions; exit 0
+D.exe (2026-10-28-zipword, the spike):       8 same, 0 differ, 476 instructions; exit 0
+M.exe (2026-10-28-zipword, before the spike): differs: add, shl1, sub; 5 same, 3 differ; exit 1 (the negative check:
+  the three loops the spike changed, and only those)

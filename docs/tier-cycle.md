@@ -4936,12 +4936,13 @@ prefilter before the full value vectors"); with `zip_word` on native bytes (belo
 
 *Without the fill's zero-fill (2026-10-28, patch `docs/runs/2026-10-28/patches/zero_fill.patch`): within the noise.*
 `fill` resized the last block with zeros and then overwrote them; the patch has `zip_op` write into the block's spare
-capacity (`MaybeUninit`, then `set_len`), two new `unsafe` blocks. Both sequences stay pinned. Counted as above (runs
+capacity (`MaybeUninit`, then `set_len`), three new `unsafe` blocks (two in `fill`, one cast of initialized bytes in
+the classes' `zip` closure). Both sequences stay pinned. Counted as above (runs
 `2026-10-28-zero-fill-icount-C` and `-B`): 460.87 G instructions against 463.66 G for the build before it in the same
 session (best of 3; -0.6%, medians -0.7%), while that build itself counted 466.59 G an hour earlier, so the two
 sessions' counts of one exe differ by 0.6% (the 4 build threads share memos behind locks). Not kept: at most 0.7% of
 the work, and it would be the repo's first `unsafe` over uninitialized memory (`PARKED.md`, "Fill vectors without
-zeroing them first").
+zeroing them first"). Recounted on typed rows below ("The zero-fill patch on typed rows").
 
 *`zip_word` on native bytes (spike, 2026-10-28, patch `docs/runs/2026-10-28/patches/zip_word_native.patch` on
 08ff13a; landed 2026-10-29 with typed rows, below): 38.8% fewer instructions.* Of the eight `u8` loops, only `add`, `sub` and `shl1` did scalar
@@ -4994,6 +4995,31 @@ only inlined under `zip_word`. `Plan::new` doubled (6.4% against 3.2), most of t
 `mi_arena_try_purge` is 3.8% self, 2.6 points of it under `Plan::new`'s (0.5% in run `2026-10-28-class-ids-prof`,
 under 0.6% in run `2026-10-28-zipword-prof`). The loops are the same, so this reads as the allocator returning memory
 on a timer, not as a change in the code; not counted.
+
+*The zero-fill patch on typed rows (2026-10-29, patch `docs/runs/2026-10-29/patches/zero_fill_on_7637e88.patch`):
+-1.4% with the streams built on one thread.* The patch above ("Without the fill's zero-fill") rebased onto `7637e88`.
+It keeps that patch's three `unsafe` blocks (the fill's two and a cast of initialized bytes in the classes' `zip`
+closure) and adds the same cast where the new test `operators_match_a_bit_at_a_time` calls `zip_op`; only the fill's
+two touch uninitialized memory. The full `church_bv` suite passes (161), both sequences stay pinned (runs
+`2026-10-29-zerofill2-suite`, `-pin`), and the eight `u8` loops are instruction for instruction the same with and
+without it, as in the typed rows and the spike (addresses masked; `docs/runs/2026-10-29/scripts/zw_diff.sh`,
+`docs/runs/2026-10-29/rows/2026-10-29-zerofill2-disasm.txt`). Counted as above (the pin test, 3 runs per round on
+CPU 4) with `STREAM_THREADS=1` (default 4, "The streams in parallel"), set in `B.exe.env` and `C.exe.env` because
+the elevated count task runs the exe in its own environment (`Setup::process`, `tests/church_bv/job.rs`); a direct
+run of the unpatched exe printed `ENV STREAM_THREADS=1` and "on 1 threads". Two rounds, unpatched then patched and
+then the reverse (runs `2026-10-29-zerofill2-icount-*`, `docs/runs/2026-10-29/rows/2026-10-29-zerofill2-icount.txt`):
+298.10 G instructions with the patch against 302.46 G without (best of 6; -1.44%, medians -1.40%). The arms' ranges
+are 1.9 G apart, and each round of 3 spreads 0.16-0.29%. At the default four threads, one round each in the same
+session: 288.98 G against 291.96 G (best of 3; -1.0%, medians -2.0%). Four-thread rounds spread 0.2-1.1%, though
+(this unpatched one 1.1%), and that unpatched round counted 0.75% above the same code's 289.78 G earlier the same day
+(typed rows, above), so four threads confirm only the direction. The profile after typed rows has `memset` at 4.1%
+self, 2.8 points directly under `pool_conjectures` (run `2026-10-29-typedrows-prof`). Not timed. Landing it needs
+two checks first. `ValueMemo::new` does not check that each variable's vector is `len` long, and `fill` copies those
+vectors into the block (`extend_from_slice`), so a wrong length would misalign the block, and the patch's write of
+`len` cells could then run past the block's capacity: an out-of-bounds write from safe code, where `resize` grew the
+vector instead. All five callers pass `len`-long vectors, and an `assert!` in `new` would close it. Also, `zip_op`
+writes only as many cells as its shortest slice, so the fill's `set_len` is sound only because the children's slices
+are `len` long too (they are cut `[..len]`); a `debug_assert!` on equal lengths in `zip_op` would state that.
 
 *Why normalize is slow on a cold stream (2026-10-28, runs `2026-10-28-normalize-cold`, `-twice`, `-twice-all56`,
 `-twice-nolp`, `-once-all56`, `-origins`, `-distinct`).* The 4.9-5.4 s against 1.4 s above compared the probe's

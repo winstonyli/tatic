@@ -374,17 +374,17 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   with `zip_word` on native bytes (landed 2026-10-29, `a63ff57`, `7637e88`) it is 7.5% (run `2026-10-29-typedrows-prof`).
   Status: parked, trigger not met (2026-10-29).
 - **Fill vectors without zeroing them first** — what: `ValueMemo::fill` writes an operator's vector into the block's
-  spare capacity (`MaybeUninit`, then `set_len`) instead of resizing with zeros and overwriting them. Why: the count
-  moved -0.6% (medians -0.7%), the size of the A/A spread between two sessions' counts of one exe, and it adds the
-  repo's first `unsafe` over uninitialized memory (two blocks). Trigger: `memset` grows to several percent of a build,
-  e.g. once `zip_word` is vectorized and the fill itself gets cheaper. Evidence: patch
-  `docs/runs/2026-10-28/patches/zero_fill.patch` (on `cd7dacb`); `docs/tier-cycle.md`, "Without the fill's zero-fill"
-  (runs `2026-10-28-zero-fill-icount-C`, `-B`, 2026-10-28). With `zip_word` on native bytes, `memset` directly under
-  `pool_conjectures` is 2.8% of the busy samples (run `2026-10-28-zipword-prof`; 2.0 before, the rise from the smaller
-  total: 1,404 samples against 1,661), and the patch's 2.8 G instructions would be about 1% of that build's count.
-  Borderline by samples, not met by instructions. `zip_word` on native bytes has since landed (`a63ff57`, 2026-10-29;
-  `memset` under `pool_conjectures` 2.8% again, run `2026-10-29-typedrows-prof`), so the trigger's example has happened.
-  Status: held for a count of this patch on top of `7637e88` (decided against 2026-10-28 on the count before it).
+  spare capacity (`MaybeUninit`, then `set_len`) instead of resizing with zeros and overwriting them. Why parked: it
+  brings four `unsafe` blocks, two of them (in `fill`) the repo's first over uninitialized memory, and landing it
+  needs two checks the patch lacks (an `assert!` in `ValueMemo::new`, a `debug_assert!` in `zip_op`;
+  `docs/tier-cycle.md`, "The zero-fill patch on typed rows"). Trigger: a count of the
+  patch on typed rows beyond the arms' spread. Met: -1.44% best, -1.40% median with the streams built on one thread,
+  where each round spreads 0.16-0.29%; -1.0% best at the default four threads, confirming only the direction. What
+  remains is the user's call whether about 1-1.4% of the pin test's instructions is worth the `unsafe`. Evidence: patch
+  `docs/runs/2026-10-29/patches/zero_fill_on_7637e88.patch` (on `7637e88`); `docs/tier-cycle.md`, "The zero-fill
+  patch on typed rows" (runs `2026-10-29-zerofill2-*`, 2026-10-29). On `cd7dacb` it had counted -0.6%, inside the
+  spread between two sessions' counts ("Without the fill's zero-fill", decided against 2026-10-28). Status: held for
+  the user's call to land it (2026-10-29).
 - **Operators as an `enum Op`, with their bit-level and kernel forms in the rows** — what: replace the `usize`
   operator ids (`rewrite.rs`'s `ADD` to `SHR1`) with an `enum Op` whose `info()` gives the typed row, so the wildcard
   dispatchers become exhaustive matches and a new operator is a compile error wherever it needs handling; and derive

@@ -1,0 +1,52 @@
+# 2026-10-29-zerofill2-icount: retired instructions of search::stream_sequences_are_pinned (--exact --ignored), 3 runs
+# each on CPU 4 by ~/.claude/samply/icount.ps1. B = 0237d36 (the code of 7637e88, typed rows); C = B with
+# docs/runs/2026-10-29/patches/zero_fill_on_7637e88.patch (fill writes into the block's spare capacity, no zero-fill).
+# Both `cargo test --release`, built in one session; their eight zip_word<u8, O> bodies are instruction for
+# instruction the same (2026-10-29-zerofill2-disasm.txt).
+# One thread: STREAM_THREADS=1 from B.exe.env and C.exe.env (the elevated count task runs the exe in its own
+# environment; a direct run of B.exe printed "ENV STREAM_THREADS=1" and "on 1 threads"). Rounds in the order B1 C1 C2
+# B2r. B2 itself failed between C1 and C2 (xperf -i: 0x8000ffff on its trace, started 4 s after C1 ended) and was rerun
+# last as B2r.
+# Pooled (6 runs each): best C/B 298.10 / 302.46 = 0.9856 (-1.44%), median 299.03 / 303.28 = 0.9860 (-1.40%), 4.25-4.36 G fewer;
+# B 302.46-304.15 G, C 298.10-300.59 G: the ranges do not overlap. Each round of 3 spreads (median-best)/best
+# 0.0016-0.0029 (pooled: B 0.0027, C 0.0031); four-thread rounds spread 0.0017-0.0113 (B4, C4 below; D, T in
+# 2026-10-29-typedrows-icount.txt).
+# Four threads (the default): B4.exe and C4.exe are copies of B.exe and C.exe without an .env, one round each, B4 then
+# C4. Best C/B 288.98 / 291.96 = 0.9898 (-1.02%, 2.98 G fewer), median 289.47 / 295.26 = 0.9804 (-1.96%); B4 spreads
+# 1.1% (max/best 1.032), so only the direction counts here; C4's max is 2.18 G under B4's best.
+== B1 (2026-10-29-zerofill2-icount-B1)
+run	pid	instructions
+1	32300	303960761144
+2	10988	303455332526
+3	56408	304153503922
+n 3  best 303,455,332,526  median 303,960,761,144  (median-best)/best 0.00167  max/best 1.00230
+== C1 (2026-10-29-zerofill2-icount-C1)
+run	pid	instructions
+1	51196	299103944148
+2	21988	298266828074
+3	20484	300586619069
+n 3  best 298,266,828,074  median 299,103,944,148  (median-best)/best 0.00281  max/best 1.00778
+== B2r (2026-10-29-zerofill2-icount-B2r)
+run	pid	instructions
+1	58116	302464095622
+2	32728	302939332654
+3	60264	303105156170
+n 3  best 302,464,095,622  median 302,939,332,654  (median-best)/best 0.00157  max/best 1.00212
+== C2 (2026-10-29-zerofill2-icount-C2)
+run	pid	instructions
+1	57204	299319527317
+2	59080	298103075299
+3	49364	298954600752
+n 3  best 298,103,075,299  median 298,954,600,752  (median-best)/best 0.00286  max/best 1.00408
+== B4 (2026-10-29-zerofill2-icount-B4)
+run	pid	instructions
+1	46424	301390572807
+2	60056	295263330457
+3	9464	291956610399
+n 3  best 291,956,610,399  median 295,263,330,457  (median-best)/best 0.01133  max/best 1.03231
+== C4 (2026-10-29-zerofill2-icount-C4)
+run	pid	instructions
+1	54340	289776431308
+2	37872	288975179772
+3	43524	289465455309
+n 3  best 288,975,179,772  median 289,465,455,309  (median-best)/best 0.00170  max/best 1.00277
