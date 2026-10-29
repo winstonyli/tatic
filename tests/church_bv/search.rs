@@ -496,9 +496,10 @@ pub fn stream_laws_are_deterministic_and_open() {
     let job = &mut Job::new(Setup::process());
     let mut r8 = width8();
     tatic::kernel::scoped(|| {
+        let memo = &mut crate::classes::NormalForms::default();
         for (x, y) in &a {
             assert!(within(x, &ops) && within(y, &ops), "{} = {}", x.show(), y.show());
-            assert!(c.normalize(job, 4, 3, x).0 != c.normalize(job, 4, 3, y).0, "closed: {} = {}", x.show(), y.show());
+            assert!(c.normalize(job, 4, 3, x, memo).0 != c.normalize(job, 4, 3, y, memo).0, "closed: {} = {}", x.show(), y.show());
             assert!(r8.agree(x, y), "{} = {}", x.show(), y.show());
         }
     });
@@ -639,8 +640,9 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
     let mut r8 = width8();
     let (mut out, mut refuted) = (vec![], 0usize);
     tatic::kernel::scoped(|| {
+        let memo = &mut crate::classes::NormalForms::default();
         for (a, b) in shuffled(laws, salt) {
-            if c.normalize(job, 4, 3, &a).0 == c.normalize(job, 4, 3, &b).0 {
+            if c.normalize(job, 4, 3, &a, memo).0 == c.normalize(job, 4, 3, &b, memo).0 {
                 continue;
             }
             if !r8.agree(&a, &b) {

@@ -1,0 +1,37 @@
+# 2026-10-29-f1-icount: retired instructions of search::stream_sequences_are_pinned (--exact --ignored), 3 runs
+# each on CPU 4 by ~/.claude/samply/icount.ps1, STREAM_THREADS=1 from each exe's .env. L = 37e1e64 (F3), rebuilt from
+# a clean worktree at that commit (15:31); F = 37e1e64 plus F1, a normal-form memo per `stream_laws` call
+# (`Classes::normalize` takes a `NormalForms` map and answers an operator node asked again from it; tests/church_bv/
+# classes.rs and search.rs; built 15:32 from the tree whose suite and pins passed, runs 2026-10-29-f1-suite and
+# -f1-pin). Both `cargo test --release`, same target dir.
+# Rounds L1 F1 F2 L2, 15:33-15:46, each launched once the Samply task was Ready and no exclusive CPU lease was live
+# (scratchpad f1_rounds.ps1); CPU load 5-14% at each round's start (other processes, not identified), Defender
+# real-time off, mimalloc's purge on (the default).
+# Pooled (6 runs each): best F/L 197.96 / 239.49 = 0.8266 (-17.3%), median 199.20 / 240.14 = 0.8295 (-17.1%). Every F
+# run counts below every L run (F max 200.09, L min 239.49). Spreads (median-best)/best F 0.0063, L 0.0027; round
+# medians L 240.05, 240.24, F 198.43, 199.69. The F3 batch's F exe (the same code, built before the commit) counted
+# best 243.11 G in the 2026-10-29-f3-icount batch (15:05-15:20, load 6-14%): -1.5% from one batch to the next.
+== L1 (2026-10-29-f1-icount-L1, 15:33:18-15:36:41, CPU load 5% at start)
+run	pid	instructions
+1	24724	241327377376
+2	61268	239490451682
+3	40592	240050564973
+n 3  best 239,490,451,682  median 240,050,564,973  (median-best)/best 0.00234  max/best 1.00767
+== F1 (2026-10-29-f1-icount-F1, 15:36:43-15:39:35, CPU load 5% at start)
+run	pid	instructions
+1	58184	198963179029
+2	61384	197958256031
+3	55952	198426308423
+n 3  best 197,958,256,031  median 198,426,308,423  (median-best)/best 0.00236  max/best 1.00508
+== F2 (2026-10-29-f1-icount-F2, 15:39:38-15:42:32, CPU load 14% at start)
+run	pid	instructions
+1	20948	199432245645
+2	19416	199692152371
+3	62124	200091804912
+n 3  best 199,432,245,645  median 199,692,152,371  (median-best)/best 0.00130  max/best 1.00331
+== L2 (2026-10-29-f1-icount-L2, 15:42:35-15:45:48, CPU load 6% at start)
+run	pid	instructions
+1	23496	240257442236
+2	1032	240238860427
+3	44028	239817825368
+n 3  best 239,817,825,368  median 240,238,860,427  (median-best)/best 0.00176  max/best 1.00183

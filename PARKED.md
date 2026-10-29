@@ -309,7 +309,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Native Defender real-time-protection check when the service is running** — why: the `Component[2].fEnable` offset was not verified; the service is stopped on this machine, so the tool falls back to one PowerShell. Trigger: verify the offset against `Get-MpComputerStatus` on a machine with the service up (the user's call). Evidence: `docs/tier-cycle.md` ("Survey: workflow time outside the sweep"). Status: parked (untested).
 - **Sweep-worker deferred bugs: unchecked Unix `dup`/`dup2` in `stdio`; case-sensitive `process_start` prefix match; a panic during flush leaves the std handle on a dropped `File`** — why: deferred as minor. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("A persistent worker for the sweep's children"). Status: parked.
 - **A shorter quiet wait before each `runs time` round (`--quiet-secs` 10 against 60)** — why: the waits were 37 of `lazy-quiet`'s 69 minutes, but an A/A at 10 s under a busier machine gave 1 clean round of 9 (run `2026-10-19-lazy-aa-q10`), which cannot be told apart from the load having changed since. Trigger: A/B wall time matters again; the test is the two waits alternating in one session (an A/A at each), comparing clean rounds per hour and the noise around each run order's mean. Evidence: `docs/tier-cycle.md`, "A shorter quiet wait before each round", verified 2026-10-19. Status: parked.
-- **Build the stream sequence lazily, only as far as it is read; memoize normal forms in its filter** — what: a sweep
+- **Build the stream sequence lazily, only as far as it is read** — what: a sweep
   reads only positions under about 1200 of the loops' 58125-law sequence (phases 1-3's first 300 laws, stride 4) and,
   since 66a9810, about the first 2600 of the extras' 230801-law 4-growth one (salt 1, until 6 × 319 laws pass the
   filter); the 4-growth build took 28.4 s on 4 threads (4 × 28.4 s is about 12% of salt 1's 959 s of job CPU, an
@@ -317,15 +317,15 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   budget of 100 it was profiled: 34.0% of the sweep's busy samples, and the 2-growth build 12.4% more (run
   `2026-10-28-mjv-prof`). Before 66a9810 the extras read phase 0's first 1650 of the 2-growth one. `stream_laws`
   filters (class-table normal forms, width-8 values) after `shuffled(laws, salt)`, so lazy streams stopped at the read
-  prefix give identical laws (cleanup plan CU17); a memo of normal forms per term in the same filter was CU16. Why not
-  (2026-10-27; for the memo, superseded: see the status): growing and grouping a stream's terms (`pool_conjectures`)
-  is paid in full either way, and since the per-tuple `verdict` loop went (CU15) the filter is 2.6% of a base sweep's
-  samples against 5.8% for grouping; the sequence as a whole fell from 109.5 to 23.3 s and is 10.6%. Either lever
-  saved at most that 2.6% then (the memo's figure is replaced by F1's in the survey named in the status; the lazy
-  build's stands), and the lazy one changes `stream_sequence`'s interface (a length per caller, or a locked lazy
-  type). The sequence's wall share went instead to building the 56 independent streams in parallel (cleanup plan
-  CU18: 16.1 to 5.4 s on 4 threads, `docs/tier-cycle.md`, "The streams in parallel"). The 4-growth build is the same
-  shape, and laziness again saves at most its filter: 33% of that build at budget 100, about 11% of the sweep, while
+  prefix give identical laws (cleanup plan CU17); a memo of normal forms in the same filter (CU16) landed 2026-10-29
+  as F1 (`docs/tier-cycle.md`, "F1 landed"). Why not (2026-10-27): growing and grouping a stream's terms
+  (`pool_conjectures`) is paid in full either way, and since the per-tuple `verdict` loop went (CU15) the filter is
+  2.6% of a base sweep's samples against 5.8% for grouping; the sequence as a whole fell from 109.5 to 23.3 s and is
+  10.6%. The lazy build saved at most that 2.6% then, and it changes `stream_sequence`'s interface (a length per
+  caller, or a locked lazy type). The sequence's wall share went instead to building the 56 independent streams in
+  parallel (cleanup plan CU18: 16.1 to 5.4 s on 4 threads, `docs/tier-cycle.md`, "The streams in parallel"). The
+  4-growth build is the same shape, and laziness again saves at most its filter: 33% of that build at budget 100, about
+  11% of the sweep, while
   grouping is 52% of it (about 18% of the sweep: the exhaustive width-4 value vectors and, until `cd7dacb`, each
   term's 4097-byte group key) and growth and sorting the rest, all paid in full (`docs/tier-cycle.md`, "A join budget
   for the mines alone"). Trigger: the filter grows again (a costlier open or refutation check), or the 4-growth
@@ -335,12 +335,10 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   both". A probe split the build and found the loops' 2-growth build inside the extras' 4-growth one
   (`docs/tier-cycle.md`, "Grouping the streams' terms, and the 2-growth build inside the 4-growth one", run
   `2026-10-28-stream-probe`; deriving the first from the second is the entry "Derive the 2-growth sequence from the
-  4-growth build"), and value-class ids for grouping were chosen (2026-10-28). The normal-form memo would remove most
-  of normalize's hit path, 4.98 s (10.8%) of a quiet one-thread 4-growth build before `cd7dacb` (`docs/tier-cycle.md`,
-  "Why normalize is slow on a cold stream"). Status: the lazy build decided against (2026-10-27), held for the join
-  budget's landing with cheaper grouping the larger lever (2026-10-28); the normal-form memo (F1) next in the order
-  chosen 2026-10-29, after F4 and F3 landed (`docs/tier-cycle.md`, "Survey: the open-law filter, `Term::show` and
-  mimalloc's purge"), reversing the 2026-10-27 call before the join budget lands.
+  4-growth build"), and value-class ids for grouping were chosen (2026-10-28). Since F1 the filter is 35.6% of the pin
+  test's busy samples against 43.1 before (runs `2026-10-29-f1-prof`, `-f3-prof`), so a lazy build saves less.
+  Status: decided against (2026-10-27), held for the join budget's landing with cheaper grouping the larger lever
+  (2026-10-28).
 - **Derive the 2-growth sequence from the 4-growth build** — what: keep each stream's 4-growth list with each law's
   depth and merge the lists restricted to depth 2, instead of building the 2-growth sequence separately; filtering the
   merged 4-growth sequence is not exact. Design options (the user's call): (a) one memo per salt holding the
@@ -374,11 +372,12 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   purge expiry current. Why held: P1's spike tied on the best counts and gave a time direction from untimed pairs
   only, and landing it keeps memory after the class build; each other one's size depends on an option before it in
   the chosen order (F1 for F2, S1 and S2 for S3 and S4), or, for P2 and P3, on whether P1 lands. Trigger: P1 on the
-  user's call (land it, scope it, time it first or drop it); F2 when a profile after F1 still shows plans built; S3
+  user's call (land it, scope it, time it first or drop it); F2 when a profile after F1 still shows plans built (met
+  2026-10-29: 1.4% of busy samples, from 5.8, plus part of the memo's drop; `docs/tier-cycle.md`, "F1 landed"); S3
   when one after S1 and S2 still shows the sorts; S4 if S1 or S2 is not built; P2 or P3 if P1 does not land.
   Evidence: `docs/tier-cycle.md`, "Survey: the open-law filter, `Term::show` and mimalloc's purge" (profile
-  `2026-10-29-zerofill3-prof`, 2026-10-29; the P1 spike's results in its "P1 spike" paragraph). Status: P1 held for
-  the user's call; F2 held for F1, S3 and S4 for S1 and S2, P2 and P3 for P1's outcome.
+  `2026-10-29-zerofill3-prof`, 2026-10-29; the P1 spike's results in its "P1 spike" paragraph). Status: P1 and F2 held
+  for the user's call; S3 and S4 for S1 and S2, P2 and P3 for P1's outcome.
 - **A prefilter before the full value vectors** — what: in `pool_conjectures`, group the terms first by their values
   on 16 fixed inputs and fill full width-4 vectors only for terms that share a bucket; exact, since equal vectors agree
   on any subset. Why parked: 52% of a stream's terms are in true groups, so it can skip at most about half the fills;

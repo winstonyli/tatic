@@ -5065,10 +5065,10 @@ normalize itself took 4 of the 4.99 M faults. That mechanism is not tested. The 
 (4.9% less work); the miss times do not depend on it. Levers, none built then (`PARKED.md`, "Cheaper first asks in
 the stream builds"): batching the `CLASS_UNUSABLE` lines (1.04 s, 2.3% of the build); building `bitwise_holds`'
 exhaustive inputs once per process (1.00 s, 2.2%; F3 in the survey below, landed 2026-10-29); a normal-form memo per
-term in `stream_laws` (cleanup plan CU16, decided against 2026-10-27, now F1 below), which would remove most of the
-hit path (4.98 s, 10.8%); verdicts and lookups carried across processes (5.73 s, needs a stored format). Not
-measured: `carry_cap` reads `CARRY_CAP` through `Setup::var` (a string-keyed map and a lock) on each of the 4.49 M
-steps that have a representative.
+term in `stream_laws` (cleanup plan CU16, decided against 2026-10-27, F1 below, landed 2026-10-29), which would
+remove most of the hit path (4.98 s, 10.8%); verdicts and lookups carried across processes (5.73 s, needs a stored
+format). Not measured: `carry_cap` reads `CARRY_CAP` through `Setup::var` (a string-keyed map and a lock) on each of
+the 4.49 M steps that have a representative.
 
 *Deriving the 2-growth sequence from the 4-growth build (survey, 2026-10-28; nothing built).* A sweep's parent builds
 both before any loop starts, the 2-growth one first (`scope_extras` calls `served_laws`, hence `window`, before
@@ -5147,8 +5147,8 @@ plan unread, so no memo or reordering of this work can change the laws. Options,
   already took, and nothing wraps `normalize` in `steps_if_closed` (its one non-test user, the kernel-check task, and
   its tests wrap `rewrite_plan`, which takes class-table steps itself, or bare inserts). A memo shared across
   `steps_if_closed` calls would change it: a closed law's call would not retake the steps an earlier open law's call
-  took and dropped. It is the memo half of `PARKED.md`, "Build the stream sequence lazily, only as far as it is read;
-  memoize normal forms in its filter" (cleanup plan CU16).
+  took and dropped. It was the memo half of `PARKED.md`, "Build the stream sequence lazily, only as far as it is
+  read" (cleanup plan CU16). Landed 2026-10-29 ("F1 landed" below): -17.3% in a count.
 - **F2.** Counting mode for the filter (`job.with_rules(job.rules().counting(true), ..)`, as the test
   `counting_and_compiling_agree` runs it; "Scoring builds no plans"): at most the plans built (6.14, 3.0 of it the
   purge sweep P1 also removes) and the plans' drops (about 0.8: the `Rc` drops, 0.18 inside `normalize` and 0.63
@@ -5344,6 +5344,31 @@ between batches is not load alone. The profile after it (run `2026-10-29-f3-prof
 `ValueMemo::exhaustive` 0.04% inclusive (4.2 before), `bitwise_holds` 3.6 (7.7), `verdict` 13.2 (16.8); the filter
 43.1 (43.2), `pool_conjectures` 28.9 (30.1), `Term::show` 12.0 (11.0), `shuffled` 6.2 (4.0), `Plan::new` 5.8 (6.7),
 `mi_arena_try_purge` 4.5 self (4.3), `SharedMemo::lock` 1.2 (1.2).
+
+*F1 landed (2026-10-29).* `Classes::normalize` takes a `NormalForms` map (an operator term to its normal form and plan)
+and answers an operator node asked again from it; a leaf is stepped, not looked up. `stream_laws` makes one per call
+inside its `scoped` closure; the tests that call `normalize` pass their own, one per rules mode in
+`counting_and_compiling_agree`, since the plans are the job's. The test `normal_forms_are_memoized_per_operator_node`
+(a term asked again gets the memo's plan, by `Rc::ptr_eq`; each normal form equals a fresh memo's; the memo holds every
+operator subterm asked and no leaf) failed to build before the change. The church_bv suite passed (165 tests, 30
+ignored; run `2026-10-29-f1-suite`) and both sequences stay pinned (run `2026-10-29-f1-pin`, whose lines equal F3's pin
+run's once sorted, the 14,536 `CLASS_UNUSABLE` lines included). Counts against `37e1e64` in one batch (runs
+`2026-10-29-f1-icount-{L1,F1,F2,L2}`, set up as F4's, L rebuilt from a clean worktree at that commit;
+`docs/runs/2026-10-29/rows/2026-10-29-f1-icount.txt`): -17.3% at the best runs (197.96 G against 239.49) and -17.1% at
+the pooled medians (199.20 against 240.14), every F run below every L run, each arm's two round medians within 0.64%.
+The profile after it (run `2026-10-29-f1-prof`, `docs/runs/2026-10-29/rows/2026-10-29-f1-prof.txt`; untimed: 48,235
+busy samples at 18% load against 53,184 at 6%) splits the filter (`filter_split.py`, on both profiles; sample counts
+from its shares, so about): the work on every visit 4,460 samples against 10,100 in `2026-10-29-f3-prof` (plans built
+670 against 3,070, lookup hits 1,230 against 3,530, the walk and the rest 2,530 against 3,370), first asks 8,070
+against 8,300, and the closure's drops 760 against 310, now mostly the memo's table (`hashbrown::raw::impl$17::drop`,
+1.56%). Net of the drops that is 5,190 samples, 9.8% of the earlier profile's, inside the survey's 9.1-12.2 for both
+builds; the work on every visit kept 44% of its samples, not the 30% of visits that remain, since the survey's figures
+charge nothing for the misses' probes and inserts. Shares: the filter 35.6% inclusive (43.1 before),
+`pool_conjectures` 33.3 (28.9), `verdict` 14.3 (13.2), `Term::show` 13.0 (12.0), `shuffled` 6.2 (6.2), `Plan::new` 1.4
+(5.8), `mi_arena_try_purge` 2.6 self (4.5). F2's bound is now the plans built, 1.4 points, and the part of the memo's
+drop that is its `Rc`s (counting plans are one shared `Rc`, so their drops would be decrements): its trigger, a profile
+after F1 that still shows plans built, is met, and it waits for the user's call (`PARKED.md`, "Options held behind the
+filter, `show` and purge survey").
 
 ## The kernel
 

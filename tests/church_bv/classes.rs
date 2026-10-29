@@ -456,21 +456,29 @@ impl Classes {
         Some((r, Plan::law(job, v.kind, v.lhs, v.rhs, v.args)))
     }
 
-    /// `t` with `step` taken at every node, bottom-up, and its plan: `Cong` per changed node, `Trans` per replacement.
-    pub fn normalize(&self, job: &mut Job, n: usize, k: usize, t: &Term) -> (Term, PlanRc) {
-        let (t1, p1) = match *t.node() {
-            Node::Op(o, a, b) => {
-                let ((a1, pa), (b1, pb)) = (self.normalize(job, n, k, &a), self.normalize(job, n, k, &b));
-                if (a1, b1) == (a, b) { (*t, Plan::refl(job, t)) } else { (Term::op(o, a1, b1), Plan::cong(job, o, pa, pb)) }
-            }
-            _ => (*t, Plan::refl(job, t)),
-        };
-        match self.step(job, n, k, &t1) {
+    /// `t` with `step` taken at every node, bottom-up, and its plan: `Cong` per changed node, `Trans` per replacement. An
+    /// operator node's result is kept in `memo` and read back when asked again (`stream_laws` asks for a group's head once
+    /// per conjecture; docs/tier-cycle.md, "F1 landed"); a leaf is stepped, not looked up.
+    pub fn normalize(&self, job: &mut Job, n: usize, k: usize, t: &Term, memo: &mut NormalForms) -> (Term, PlanRc) {
+        let step = |job: &mut Job, t1: Term, p1: PlanRc| match self.step(job, n, k, &t1) {
             Some((r, p)) => (r, Plan::trans(job, p1, p)),
             None => (t1, p1),
+        };
+        let Node::Op(o, a, b) = *t.node() else { return step(job, *t, Plan::refl(job, t)) };
+        if let Some((r, p)) = memo.get(t) {
+            return (*r, p.clone());
         }
+        let ((a1, pa), (b1, pb)) = (self.normalize(job, n, k, &a, memo), self.normalize(job, n, k, &b, memo));
+        let (t1, p1) = if (a1, b1) == (a, b) { (*t, Plan::refl(job, t)) } else { (Term::op(o, a1, b1), Plan::cong(job, o, pa, pb)) };
+        let out = step(job, t1, p1);
+        memo.insert(*t, out.clone());
+        out
     }
 }
+
+/// `Classes::normalize`'s results by operator term, for one width, context and job: the plans are the job's (real, or the
+/// shared `Plan::Counting` while counting), and its `table_steps` already hold the steps they took.
+pub type NormalForms = hashbrown::HashMap<Term, (Term, PlanRc)>;
 
 /// The key refinement's refuter (R8 of the plan): 4096 pseudo-random width-8 inputs, every width-4 input, every width-3
 /// input, then the screen's width-8 inputs.
@@ -718,16 +726,39 @@ fn counting_and_compiling_agree() {
         let c = Classes::get();
         let rules = job.rules().counting(true);
         let (na, nb, plan) = job.with_rules(rules, |job| {
-            let ((na, pa), (nb, _)) = (c.normalize(job, 4, 3, &a), c.normalize(job, 4, 3, &b));
+            let memo = &mut NormalForms::default();
+            let ((na, pa), (nb, _)) = (c.normalize(job, 4, 3, &a, memo), c.normalize(job, 4, 3, &b, memo));
             (na, nb, pa)
         });
         assert!(matches!(*plan, Plan::Counting));
         assert_eq!(na.show(), nb.show(), "the law meets while counting");
-        let ((ma, pa), (mb, pb)) = (c.normalize(job, 4, 3, &a), c.normalize(job, 4, 3, &b));
+        let memo = &mut NormalForms::default();
+        let ((ma, pa), (mb, pb)) = (c.normalize(job, 4, 3, &a, memo), c.normalize(job, 4, 3, &b, memo));
         assert_eq!((ma.show(), mb.show()), (na.show(), nb.show()));
         let plan = Plan::trans(job, pa, Plan::sym(job, pb));
         let (p, s) = law_proof(job, 4, 3, &a, &b, &plan);
         job.lemmas.ck("counted law", &p, &s);
+    });
+}
+
+/// One memo across calls: each term gets the normal form a fresh memo gives, a term asked again gets the plan the memo
+/// holds, and the memo holds every operator subterm asked and no leaf.
+#[test]
+fn normal_forms_are_memoized_per_operator_node() {
+    let ts = ["add(sub(add(x, y), y), and(z, or(z, x)))", "add(and(x, or(x, y)), z)", "sub(add(x, y), y)"].map(parse_term);
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        let c = Classes::get();
+        let mut memo = NormalForms::default();
+        for t in &ts {
+            let (m, p) = c.normalize(job, 4, 3, t, &mut memo);
+            assert_eq!(m.show(), c.normalize(job, 4, 3, t, &mut NormalForms::default()).0.show(), "{}", t.show());
+            assert!(PlanRc::ptr_eq(&p, &c.normalize(job, 4, 3, t, &mut memo).1), "{}: not read from the memo", t.show());
+        }
+        let mut subs = vec![];
+        ts.iter().for_each(|t| t.subterms(&mut subs));
+        let shows = |ts: &mut dyn Iterator<Item = Term>| ts.map(|t| t.show()).collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(shows(&mut memo.keys().copied()), shows(&mut subs.into_iter().filter(|s| matches!(*s.node(), Node::Op(..)))));
     });
 }
 
