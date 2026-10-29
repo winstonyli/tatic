@@ -48,6 +48,7 @@ fn sh_op(o: usize, a: u64, b: u64) -> u64 {
 const fn side_bit(o: usize, side: usize, c: usize) -> u64 {
     1 << (8 + ((o * 2 + side) * CLASSES + c) % 53)
 }
+const _: () = assert!(OP_INFO.len() <= 8, "the shape has bits 0..8 for the operator at the root");
 const V_SHAPE: u64 = 1 << 61;
 const ONES_SHAPE: u64 = 1 << 62;
 const ZERO_SHAPE: u64 = 1 << 63;
@@ -338,34 +339,41 @@ pub struct OpInfo {
     pub prec: i32,
     /// the operator on single bits (bitwise ops only)
     pub truth: fn(bool, bool) -> bool,
-    /// the operator on `n`-bit words, `mask` = 2^n - 1
-    pub word: fn(u128, u128, u128) -> u128,
 }
-const fn info(
-    name: &'static str,
-    carries: bool,
-    bitwise: bool,
-    shift: bool,
-    prec: i32,
-    truth: fn(bool, bool) -> bool,
-    word: fn(u128, u128, u128) -> u128,
-) -> OpInfo {
-    OpInfo { name, carries, bitwise, shift, prec, truth, word }
+const fn info(name: &'static str, carries: bool, bitwise: bool, shift: bool, prec: i32, truth: fn(bool, bool) -> bool) -> OpInfo {
+    OpInfo { name, carries, bitwise, shift, prec, truth }
 }
-/// Every fact about an operator, indexed as `Node::Op` (the one place that says which ops carry, are bitwise or shift).
 fn no_truth(_: bool, _: bool) -> bool {
     panic!("not a bitwise operator")
 }
+/// The facts about each operator, indexed as `Node::Op` (the one place that says which ops carry, are bitwise or
+/// shift); what each one computes is `word`.
 pub const OP_INFO: [OpInfo; 8] = [
-    info("add", true, false, false, 6, no_truth, |x, y, m| x.wrapping_add(y) & m),
-    info("and", false, true, false, 3, |a, b| a && b, |x, y, _| x & y),
-    info("or", false, true, false, 2, |a, b| a || b, |x, y, _| x | y),
-    info("xor", false, true, false, 4, |a, b| a != b, |x, y, _| x ^ y),
-    info("sub", true, false, false, 5, no_truth, |x, y, m| x.wrapping_sub(y) & m),
-    info("lt", true, false, false, 1, no_truth, |x, y, _| (x < y) as u128),
-    info("shl1", true, false, true, 0, no_truth, |x, _, m| (x << 1) & m),
-    info("shr1", false, false, true, 0, no_truth, |x, _, _| x >> 1),
+    info("add", true, false, false, 6, no_truth),
+    info("and", false, true, false, 3, |a, b| a && b),
+    info("or", false, true, false, 2, |a, b| a || b),
+    info("xor", false, true, false, 4, |a, b| a != b),
+    info("sub", true, false, false, 5, no_truth),
+    info("lt", true, false, false, 1, no_truth),
+    info("shl1", true, false, true, 0, no_truth),
+    info("shr1", false, false, true, 0, no_truth),
 ];
+/// Operator `o` on `n`-bit words held in any `Word`, `mask` = 2^n - 1: what each operator computes, said once for the
+/// byte vectors, the screen's `u128`s and `Term::interp`.
+#[inline(always)]
+pub fn word<W: Word>(o: usize, x: W, y: W, mask: W) -> W {
+    match o {
+        ADD => x.wrapping_add(y) & mask,
+        AND => x & y,
+        OR => x | y,
+        XOR => x ^ y,
+        SUB => x.wrapping_sub(y) & mask,
+        LT => W::of((x < y) as u128),
+        SHL1 => (x << 1) & mask,
+        SHR1 => x >> 1,
+        _ => unreachable!("operator {o}"),
+    }
+}
 /// `\a _. a << 1`, the Church operator of `Term` index 6.
 pub fn shl1_op(n: usize) -> Expr {
     lam(bv_ty(n), lam(bv_ty(n), app(shift_bv(n, 1, true), var(1))))
@@ -455,7 +463,7 @@ impl Term {
             Node::Ones => mask,
             Node::Op(o, a, b) => {
                 let (x, y) = (a.interp_in(mask, vals, nodes), b.interp_in(mask, vals, nodes));
-                (OP_INFO[o].word)(x, y, mask)
+                word(o, x, y, mask)
             }
         }
     }
@@ -521,10 +529,22 @@ impl Term {
     }
 }
 
-/// How `ValueMemo` stores a value: one byte for exhaustive signatures (width at most 8), `u128` for the screen.
-pub trait Word: Copy + Eq + std::hash::Hash {
+/// How `ValueMemo` stores a value: one byte for exhaustive signatures (width at most 8), `u128` for the screen. The
+/// operators work on it natively (`word`), so a loop over bytes stays byte arithmetic.
+pub trait Word:
+    Copy
+    + Ord
+    + std::hash::Hash
+    + std::ops::BitAnd<Output = Self>
+    + std::ops::BitOr<Output = Self>
+    + std::ops::BitXor<Output = Self>
+    + std::ops::Shl<u32, Output = Self>
+    + std::ops::Shr<u32, Output = Self>
+{
     fn of(x: u128) -> Self;
     fn get(self) -> u128;
+    fn wrapping_add(self, y: Self) -> Self;
+    fn wrapping_sub(self, y: Self) -> Self;
 }
 
 impl Word for u8 {
@@ -534,6 +554,12 @@ impl Word for u8 {
     fn get(self) -> u128 {
         self as u128
     }
+    fn wrapping_add(self, y: u8) -> u8 {
+        u8::wrapping_add(self, y)
+    }
+    fn wrapping_sub(self, y: u8) -> u8 {
+        u8::wrapping_sub(self, y)
+    }
 }
 
 impl Word for u128 {
@@ -542,6 +568,12 @@ impl Word for u128 {
     }
     fn get(self) -> u128 {
         self
+    }
+    fn wrapping_add(self, y: u128) -> u128 {
+        u128::wrapping_add(self, y)
+    }
+    fn wrapping_sub(self, y: u128) -> u128 {
+        u128::wrapping_sub(self, y)
     }
 }
 
@@ -567,12 +599,13 @@ pub struct ValueMemo<W: Word> {
     hasher: hashbrown::DefaultHashBuilder,
 }
 
-/// `out[i] = op(x[i], y[i])` for operator `O`: its `word` is a constant here, so it inlines into the loop (called through
-/// the pointer per element it was about 4% of a sweep, docs/tier-cycle.md, "Profile at a7b0719").
+/// `out[i] = word(O, x[i], y[i], mask)`: `O` is a constant here, so `word` folds to one operator inlined into a loop on
+/// `W` itself, and the `u8` loops work on byte lanes (docs/tier-cycle.md, "`zip_word` on native bytes"; called through
+/// a pointer per element it was about 4% of a sweep, "Profile at a7b0719").
 fn zip_word<W: Word, const O: usize>(out: &mut [W], x: &[W], y: &[W], mask: u128) {
-    let word = const { OP_INFO[O].word };
+    let mask = W::of(mask);
     for ((o, x), y) in out.iter_mut().zip(x).zip(y) {
-        *o = W::of(word(x.get(), y.get(), mask));
+        *o = word(O, *x, *y, mask);
     }
 }
 
@@ -679,7 +712,7 @@ impl<W: Word> ValueMemo<W> {
         assert!(tries <= self.len, "{tries} tries over {} inputs", self.len);
         let (a, b) = (self.fill(*a), self.fill(*b));
         let (x, y) = (self.vector(a), self.vector(b));
-        (0..tries).find(|&i| x[i].get() != y[i].get())
+        (0..tries).find(|&i| x[i] != y[i])
     }
 
     /// Whether `a` and `b` agree on every input.
@@ -4288,6 +4321,69 @@ fn value_memo_matches_interp() {
     for t in ts.iter().filter(|t| t.max_var() < 2) {
         let want: Vec<u8> = (0..64u128).map(|i| t.interp(3, &[i & 7, i >> 3]) as u8).collect();
         assert_eq!(memo.values(t), want, "{}", t.show());
+    }
+}
+
+/// Every operator through `zip_op`, on byte and `u128` vectors, against the operator worked out a bit at a time (a ripple
+/// carry for add, sub and lt): all pairs of inputs at widths 1 to 8, sampled ones at wider widths on `u128` only.
+#[test]
+fn operators_match_a_bit_at_a_time() {
+    fn by_bits(o: usize, x: u128, y: u128, n: usize) -> u128 {
+        let bit = |v: u128, i: usize| i < n && v >> i & 1 == 1;
+        let name = OP_INFO[o].name;
+        // add, and x - y as x + !y + 1, whose carry out says x >= y
+        let mut carry = name == "sub" || name == "lt";
+        let mut out = 0;
+        for i in 0..n {
+            let (a, b) = (bit(x, i), bit(y, i) != (name == "sub" || name == "lt"));
+            let r = match name {
+                "add" | "sub" | "lt" => {
+                    let s = (a != b) != carry;
+                    carry = a && b || carry && a != b;
+                    s
+                }
+                "and" => a && b,
+                "or" => a || b,
+                "xor" => a != b,
+                "shl1" => i > 0 && bit(x, i - 1),
+                "shr1" => bit(x, i + 1),
+                _ => panic!("no bit-at-a-time {name}"),
+            };
+            out |= (r as u128) << i;
+        }
+        if name == "lt" { !carry as u128 } else { out }
+    }
+    fn check<W: Word>(o: usize, n: usize, xs: &[u128], ys: &[u128]) {
+        let (x, y): (Vec<W>, Vec<W>) = (xs.iter().map(|&v| W::of(v)).collect(), ys.iter().map(|&v| W::of(v)).collect());
+        // from 1 the length is odd, so the loop's scalar tail runs after its vector body
+        for s in [0, 1] {
+            let mut out = vec![W::of(0); x.len() - s];
+            zip_op(o, &mut out, &x[s..], &y[s..], low_bits(n));
+            for (i, v) in out.iter().enumerate() {
+                let (a, b) = (xs[s + i], ys[s + i]);
+                assert_eq!(v.get(), by_bits(o, a, b, n), "{} {a} {b} at width {n} in {}", OP_INFO[o].name, std::any::type_name::<W>());
+            }
+        }
+    }
+    for o in 0..OP_INFO.len() {
+        for n in 1..=8 {
+            let (xs, ys): (Vec<u128>, Vec<u128>) = (0..1u128 << 2 * n).map(|i| (i & low_bits(n), i >> n)).unzip();
+            check::<u8>(o, n, &xs, &ys);
+            check::<u128>(o, n, &xs, &ys);
+        }
+        for n in [16, 64, 127, 128] {
+            let m = low_bits(n);
+            let mut seed = 0x9e37_79b9_7f4a_7c15u128;
+            let vals: Vec<u128> = [0, 1, 2, m - 1, m, m >> 1, (m >> 1) + 1]
+                .into_iter()
+                .chain((0..25).map(|_| {
+                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    seed.reverse_bits() & m
+                }))
+                .collect();
+            let (xs, ys): (Vec<u128>, Vec<u128>) = vals.iter().flat_map(|&a| vals.iter().map(move |&b| (a, b))).unzip();
+            check::<u128>(o, n, &xs, &ys);
+        }
     }
 }
 

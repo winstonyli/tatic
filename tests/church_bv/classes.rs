@@ -224,7 +224,7 @@ impl Classes {
                 _ => runs.windows(2).flat_map(|r| std::iter::repeat_n(r[0].1 as u8, r[1].0 - r[0].0)).collect(),
             }
         };
-        // a run at a time, so each loop has its operator and mask fixed (called per element through `OP_INFO[o].word` it
+        // a run at a time, so each loop has its operator and mask fixed (called per element through a function pointer it
         // was 65% of a build: docs/tier-cycle.md, "What a build spends")
         let zip = |o: usize, out: &mut [u8], a: &[u8], b: &[u8]| {
             for r in runs.windows(2) {
