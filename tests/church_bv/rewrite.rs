@@ -2079,6 +2079,11 @@ fn embeds(s: &Term, t: &Term) -> bool {
         seen.insert((s, t), e);
         e
     }
+    // the cut's path holds mostly terms larger than `t`, settled here without a map: with a map (and its hasher's seed)
+    // for every call `embeds` was 1.64% of a sweep, without 0.51% (runs `2026-10-28-embeds-prof` and `-embeds-prof2`)
+    if s.size() >= t.size() {
+        return s == t;
+    }
     go(*s, *t, &mut hashbrown::HashMap::new())
 }
 
