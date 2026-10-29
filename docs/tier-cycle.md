@@ -5062,13 +5062,13 @@ process take 14% fewer lookup misses and 28% fewer verdict evaluations than alon
 path, 156-437 ns a node between runs; in run `-twice-all56` builds that took 10,000 page faults or more ran it at
 678-802 ns a node against 228-275 for builds under 1,000 (time-weighted, a few builds at 3-4 µs dominate), while
 normalize itself took 4 of the 4.99 M faults. That mechanism is not tested. The shares are of a build before `cd7dacb`
-(4.9% less work); the miss times do not depend on it. Levers, none built (`PARKED.md`, "Cheaper first asks in the
-stream builds"): batching the `CLASS_UNUSABLE` lines (1.04 s, 2.3% of the build); building `bitwise_holds`' exhaustive
-inputs once per process (1.00 s, 2.2%; F3 in the survey below); a normal-form memo per term in `stream_laws` (cleanup
-plan CU16, decided against 2026-10-27, now F1 below), which would remove most of the hit path (4.98 s, 10.8%);
-verdicts and lookups carried across processes (5.73 s, needs a stored format). Not measured: `carry_cap` reads
-`CARRY_CAP` through `Setup::var` (a string-keyed map and a lock) on each of the 4.49 M steps that have a
-representative.
+(4.9% less work); the miss times do not depend on it. Levers, none built then (`PARKED.md`, "Cheaper first asks in
+the stream builds"): batching the `CLASS_UNUSABLE` lines (1.04 s, 2.3% of the build); building `bitwise_holds`'
+exhaustive inputs once per process (1.00 s, 2.2%; F3 in the survey below, landed 2026-10-29); a normal-form memo per
+term in `stream_laws` (cleanup plan CU16, decided against 2026-10-27, now F1 below), which would remove most of the
+hit path (4.98 s, 10.8%); verdicts and lookups carried across processes (5.73 s, needs a stored format). Not
+measured: `carry_cap` reads `CARRY_CAP` through `Setup::var` (a string-keyed map and a lock) on each of the 4.49 M
+steps that have a representative.
 
 *Deriving the 2-growth sequence from the 4-growth build (survey, 2026-10-28; nothing built).* A sweep's parent builds
 both before any loop starts, the 2-growth one first (`scope_extras` calls `served_laws`, hence `window`, before
@@ -5159,6 +5159,7 @@ plan unread, so no memo or reordering of this work can change the laws. Options,
   measured them at 1.00 s of a 45.97 s one-thread build (2.2%, "Why normalize is slow on a cold stream"), so expect a
   count saving nearer that 2.2% than these 4.26 points of time at 4 threads. Both callers gain (`verdict` and
   `prove_eq`'s per-position step). It is one piece of `PARKED.md`, "Cheaper first asks in the stream builds".
+  Landed 2026-10-29 ("F3 landed" below): -13.3% in a count, far above this estimate.
 - **F4.** `first_difference` compares the slices whole first (`x[..tries] == y[..tries]`, a `memcmp` for `u8` and
   `u128`) and scans only where they differ: the compare loops are 3.09 (bitwise 1.80, refuter 1.29). Not tried before.
   Landed 2026-10-29 ("F4 landed" below).
@@ -5323,6 +5324,26 @@ above). The profile after it (run `2026-10-29-f4-prof`, `docs/runs/2026-10-29/ro
 about 1,560 and 840 samples, together 4.2% of the earlier profile's, though its total was lower: the survey's 3.09
 points for the compare loops was too narrow. The rest of the gap to the count's 7.9% is a reading, not checked: a tight
 scalar loop retires many instructions per cycle, so its share of instructions exceeds its share of time.
+
+*F3 landed (2026-10-29).* `ValueMemo::exhaustive` takes its inputs from a `SharedMemo` keyed by width and variable
+count (`EXHAUSTIVE_INPUTS`, the pattern of `stream_sequence`'s `MEMO` and `machine.rs`'s `TREE_ENCS`), built once per
+process and shared as an `Arc<[Box<[u8]>]>`, so every caller gains: `bitwise_holds` (up to five widths per call), the
+refuter's `e4` and `e3`, `pool_conjectures` and the miner's pool. `ValueMemo::new` takes that `Arc`; a static slice
+would have needed an entry on `job.rs`'s `PROCESS_WIDE` list or leaked the other callers' inputs. The test
+`exhaustive_inputs_are_built_once` failed before the change (two calls, two allocations); the church_bv suite passed
+(164 tests, 30 ignored; run `2026-10-29-f3-suite`) and both sequences stay pinned (run `2026-10-29-f3-pin`). Counts
+against `cc95d83` in one batch (runs `2026-10-29-f3-icount-{L1,F1,F2,L2}`, set up as F4's;
+`docs/runs/2026-10-29/rows/2026-10-29-f3-icount.txt`): -13.3% at the best runs (243.11 G against 280.54) and at the
+pooled medians (244.02 against 281.39), every F run below every L run, each arm's two round medians within 0.33%. The
+survey expected nearer 2.2% (the probe's 1.00 s of a 45.97 s one-thread build). A reading, not checked: the inputs are
+a tight loop over up to 37,448 entries per variable (widths 1-5 at three variables), which retires many more
+instructions per sample than the filter's hashing and pointer chasing. The same L exe counted 274.66 G best in F4's
+batch about 1.5 hours earlier, +2.1% now at lower load (6-14% at the rounds' starts against 18-30%), so the drift
+between batches is not load alone. The profile after it (run `2026-10-29-f3-prof`,
+`docs/runs/2026-10-29/rows/2026-10-29-f3-prof.txt`; untimed: 53,184 busy samples at 6% load against 59,291 at 13%):
+`ValueMemo::exhaustive` 0.04% inclusive (4.2 before), `bitwise_holds` 3.6 (7.7), `verdict` 13.2 (16.8); the filter
+43.1 (43.2), `pool_conjectures` 28.9 (30.1), `Term::show` 12.0 (11.0), `shuffled` 6.2 (4.0), `Plan::new` 5.8 (6.7),
+`mi_arena_try_purge` 4.5 self (4.3), `SharedMemo::lock` 1.2 (1.2).
 
 ## The kernel
 

@@ -484,7 +484,7 @@ impl Refuter {
     const TESTS: usize = 4096;
     fn new() -> Refuter {
         let mut seed = 0x6a09_e667_f3bc_c908u128;
-        let tvars: Vec<Box<[u8]>> = (0..3)
+        let tvars: std::sync::Arc<[Box<[u8]>]> = (0..3)
             .map(|_| {
                 (0..Self::TESTS)
                     .map(|_| {

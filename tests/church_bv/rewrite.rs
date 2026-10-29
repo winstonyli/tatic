@@ -570,7 +570,7 @@ pub struct ValueMemo<W: Word> {
     mask: u128,
     len: usize,
     /// `vars[v][i]`: variable `v` on input `i`.
-    vars: Vec<Box<[W]>>,
+    vars: std::sync::Arc<[Box<[W]>]>,
     /// Each term's vector's id: vector `id` is the `id % per`-th of block `id / per`.
     ids: hashbrown::HashMap<Term, usize>,
     /// Vectors per block.
@@ -624,7 +624,7 @@ fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R)
 }
 
 impl<W: Word> ValueMemo<W> {
-    pub fn new(n: usize, len: usize, vars: Vec<Box<[W]>>) -> Self {
+    pub fn new(n: usize, len: usize, vars: std::sync::Arc<[Box<[W]>]>) -> Self {
         // `fill` copies these into blocks of whole `len`-long vectors, and writes an operator's vector after them
         if let Some(v) = vars.iter().find(|v| v.len() != len) {
             panic!("variable vector of length {}, not {len}", v.len());
@@ -732,13 +732,17 @@ impl<W: Word> ValueMemo<W> {
     }
 }
 
+/// `exhaustive`'s inputs by width and variable count, built once per process: `bitwise_holds` asks for up to five widths
+/// on every call (docs/tier-cycle.md, "F3 landed").
+static EXHAUSTIVE_INPUTS: crate::task::SharedMemo<(usize, usize), std::sync::Arc<[Box<[u8]>]>> = crate::task::SharedMemo::new();
+
 impl ValueMemo<u8> {
     /// Every width-`n` input over `nv` variables (variable `v` is bits `n*v..` of the input's index), one byte per value.
     pub fn exhaustive(n: usize, nv: usize) -> Self {
         assert!(n <= 8, "exhaustive values hold one byte per input");
         let len = 1usize << (n * nv);
-        let vars = (0..nv).map(|v| (0..len).map(|i| (i >> (n * v) & low_bits(n) as usize) as u8).collect()).collect();
-        ValueMemo::new(n, len, vars)
+        let build = || (0..nv).map(|v| (0..len).map(|i| (i >> (n * v) & low_bits(n) as usize) as u8).collect()).collect();
+        ValueMemo::new(n, len, EXHAUSTIVE_INPUTS.with((n, nv), build, |vars| vars.clone()))
     }
 }
 
@@ -4331,6 +4335,15 @@ fn value_memo_matches_interp() {
     }
 }
 
+/// `exhaustive`'s inputs are built once per width and variable count and shared (`bitwise_holds` asks for five widths
+/// on every call).
+#[test]
+fn exhaustive_inputs_are_built_once() {
+    let (a, b, c) = (ValueMemo::exhaustive(3, 2), ValueMemo::exhaustive(3, 2), ValueMemo::exhaustive(3, 3));
+    assert_eq!(a.vars.as_ptr(), b.vars.as_ptr());
+    assert_ne!(a.vars.as_ptr(), c.vars.as_ptr());
+}
+
 /// Every operator through `zip_op`, on byte and `u128` vectors, against the operator worked out a bit at a time (a ripple
 /// carry for add, sub and lt): all pairs of inputs at widths 1 to 8, sampled ones at wider widths on `u128` only.
 #[test]
@@ -4398,7 +4411,7 @@ fn operators_match_a_bit_at_a_time() {
 #[test]
 #[should_panic(expected = "variable vector of length 3, not 4")]
 fn value_memo_refuses_a_variable_of_another_length() {
-    ValueMemo::<u8>::new(8, 4, vec![vec![0; 4].into_boxed_slice(), vec![0; 3].into_boxed_slice()]);
+    ValueMemo::<u8>::new(8, 4, [vec![0; 4].into_boxed_slice(), vec![0; 3].into_boxed_slice()].into());
 }
 
 /// `fill_op` writes every cell of its output only when its inputs are as long.

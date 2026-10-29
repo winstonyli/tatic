@@ -535,7 +535,7 @@ pub const STREAM_STRIDE: usize = 4;
 /// The 4096 pseudo-random width-8 inputs an open law must agree on (the probe's): width 4 only conjectured it.
 fn width8() -> ValueMemo<u8> {
     let mut seed = 0x6a09_e667_f3bc_c908u128;
-    let vars: Vec<Box<[u8]>> = (0..3)
+    let vars: std::sync::Arc<[Box<[u8]>]> = (0..3)
         .map(|_| {
             (0..4096)
                 .map(|_| {
