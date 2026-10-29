@@ -339,41 +339,39 @@ pub struct OpInfo {
     pub prec: i32,
     /// the operator on single bits (bitwise ops only)
     pub truth: fn(bool, bool) -> bool,
+    /// the operator on `n`-bit words, `mask` = 2^n - 1
+    pub words: Words,
 }
-const fn info(name: &'static str, carries: bool, bitwise: bool, shift: bool, prec: i32, truth: fn(bool, bool) -> bool) -> OpInfo {
-    OpInfo { name, carries, bitwise, shift, prec, truth }
+/// One operator on words as a byte (exhaustive values, width at most 8) and as a `u128` (the screen, `Term::interp`): a
+/// row cannot hold one function generic over `Word`, and a byte loop given the `u128` one stays `u128` arithmetic.
+pub struct Words {
+    pub w8: fn(u8, u8, u8) -> u8,
+    pub w128: fn(u128, u128, u128) -> u128,
+}
+/// `Words` from one body over `x`, `y` and `mask`, written once and typed twice.
+macro_rules! words {
+    (|$x:pat_param, $y:pat_param, $m:pat_param| $body:expr) => {
+        Words { w8: |$x: u8, $y: u8, $m: u8| -> u8 { $body }, w128: |$x: u128, $y: u128, $m: u128| -> u128 { $body } }
+    };
+}
+const fn info(name: &'static str, carries: bool, bitwise: bool, shift: bool, prec: i32, truth: fn(bool, bool) -> bool, words: Words) -> OpInfo {
+    OpInfo { name, carries, bitwise, shift, prec, truth, words }
 }
 fn no_truth(_: bool, _: bool) -> bool {
     panic!("not a bitwise operator")
 }
-/// The facts about each operator, indexed as `Node::Op` (the one place that says which ops carry, are bitwise or
-/// shift); what each one computes is `word`.
+/// Every fact about an operator, indexed as `Node::Op` (the one place that says what each computes and which ops carry,
+/// are bitwise or shift).
 pub const OP_INFO: [OpInfo; 8] = [
-    info("add", true, false, false, 6, no_truth),
-    info("and", false, true, false, 3, |a, b| a && b),
-    info("or", false, true, false, 2, |a, b| a || b),
-    info("xor", false, true, false, 4, |a, b| a != b),
-    info("sub", true, false, false, 5, no_truth),
-    info("lt", true, false, false, 1, no_truth),
-    info("shl1", true, false, true, 0, no_truth),
-    info("shr1", false, false, true, 0, no_truth),
+    info("add", true, false, false, 6, no_truth, words!(|x, y, m| x.wrapping_add(y) & m)),
+    info("and", false, true, false, 3, |a, b| a && b, words!(|x, y, _| x & y)),
+    info("or", false, true, false, 2, |a, b| a || b, words!(|x, y, _| x | y)),
+    info("xor", false, true, false, 4, |a, b| a != b, words!(|x, y, _| x ^ y)),
+    info("sub", true, false, false, 5, no_truth, words!(|x, y, m| x.wrapping_sub(y) & m)),
+    info("lt", true, false, false, 1, no_truth, words!(|x, y, _| (x < y) as _)),
+    info("shl1", true, false, true, 0, no_truth, words!(|x, _, m| (x << 1) & m)),
+    info("shr1", false, false, true, 0, no_truth, words!(|x, _, _| x >> 1)),
 ];
-/// Operator `o` on `n`-bit words held in any `Word`, `mask` = 2^n - 1: what each operator computes, said once for the
-/// byte vectors, the screen's `u128`s and `Term::interp`.
-#[inline(always)]
-pub fn word<W: Word>(o: usize, x: W, y: W, mask: W) -> W {
-    match o {
-        ADD => x.wrapping_add(y) & mask,
-        AND => x & y,
-        OR => x | y,
-        XOR => x ^ y,
-        SUB => x.wrapping_sub(y) & mask,
-        LT => W::of((x < y) as u128),
-        SHL1 => (x << 1) & mask,
-        SHR1 => x >> 1,
-        _ => unreachable!("operator {o}"),
-    }
-}
 /// `\a _. a << 1`, the Church operator of `Term` index 6.
 pub fn shl1_op(n: usize) -> Expr {
     lam(bv_ty(n), lam(bv_ty(n), app(shift_bv(n, 1, true), var(1))))
@@ -463,7 +461,7 @@ impl Term {
             Node::Ones => mask,
             Node::Op(o, a, b) => {
                 let (x, y) = (a.interp_in(mask, vals, nodes), b.interp_in(mask, vals, nodes));
-                word(o, x, y, mask)
+                (OP_INFO[o].words.w128)(x, y, mask)
             }
         }
     }
@@ -529,22 +527,12 @@ impl Term {
     }
 }
 
-/// How `ValueMemo` stores a value: one byte for exhaustive signatures (width at most 8), `u128` for the screen. The
-/// operators work on it natively (`word`), so a loop over bytes stays byte arithmetic.
-pub trait Word:
-    Copy
-    + Ord
-    + std::hash::Hash
-    + std::ops::BitAnd<Output = Self>
-    + std::ops::BitOr<Output = Self>
-    + std::ops::BitXor<Output = Self>
-    + std::ops::Shl<u32, Output = Self>
-    + std::ops::Shr<u32, Output = Self>
-{
+/// How `ValueMemo` stores a value: one byte for exhaustive signatures (width at most 8), `u128` for the screen.
+pub trait Word: Copy + Eq + std::hash::Hash {
     fn of(x: u128) -> Self;
     fn get(self) -> u128;
-    fn wrapping_add(self, y: Self) -> Self;
-    fn wrapping_sub(self, y: Self) -> Self;
+    /// The operator's function on this type.
+    fn pick(w: &Words) -> fn(Self, Self, Self) -> Self;
 }
 
 impl Word for u8 {
@@ -554,11 +542,9 @@ impl Word for u8 {
     fn get(self) -> u128 {
         self as u128
     }
-    fn wrapping_add(self, y: u8) -> u8 {
-        u8::wrapping_add(self, y)
-    }
-    fn wrapping_sub(self, y: u8) -> u8 {
-        u8::wrapping_sub(self, y)
+    #[inline(always)]
+    fn pick(w: &Words) -> fn(u8, u8, u8) -> u8 {
+        w.w8
     }
 }
 
@@ -569,11 +555,9 @@ impl Word for u128 {
     fn get(self) -> u128 {
         self
     }
-    fn wrapping_add(self, y: u128) -> u128 {
-        u128::wrapping_add(self, y)
-    }
-    fn wrapping_sub(self, y: u128) -> u128 {
-        u128::wrapping_sub(self, y)
+    #[inline(always)]
+    fn pick(w: &Words) -> fn(u128, u128, u128) -> u128 {
+        w.w128
     }
 }
 
@@ -599,13 +583,13 @@ pub struct ValueMemo<W: Word> {
     hasher: hashbrown::DefaultHashBuilder,
 }
 
-/// `out[i] = word(O, x[i], y[i], mask)`: `O` is a constant here, so `word` folds to one operator inlined into a loop on
-/// `W` itself, and the `u8` loops work on byte lanes (docs/tier-cycle.md, "`zip_word` on native bytes"; called through
-/// a pointer per element it was about 4% of a sweep, "Profile at a7b0719").
+/// `out[i] = op(x[i], y[i])` for operator `O`: its function for `W` is a constant here, so it inlines into the loop (called
+/// through the pointer per element it was about 4% of a sweep, docs/tier-cycle.md, "Profile at a7b0719"), and the `u8`
+/// loops work on byte lanes ("`zip_word` on native bytes").
 fn zip_word<W: Word, const O: usize>(out: &mut [W], x: &[W], y: &[W], mask: u128) {
-    let mask = W::of(mask);
+    let (op, mask) = (W::pick(const { &OP_INFO[O].words }), W::of(mask));
     for ((o, x), y) in out.iter_mut().zip(x).zip(y) {
-        *o = word(O, *x, *y, mask);
+        *o = op(*x, *y, mask);
     }
 }
 
