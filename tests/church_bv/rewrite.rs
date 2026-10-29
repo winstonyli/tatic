@@ -2121,8 +2121,9 @@ fn cut_at(path: &[Term], t: &Term) -> Option<usize> {
 }
 
 /// `embeds` on chains of one operator: `s` is y under 50 `add(_, x)` nodes and `t` is z under 60, so `s` does not embed,
-/// and the plain recursion tries every way to place `s`'s 50 nodes among `t`'s 60 (about C(60, 10) = 7.5e10 calls). A
-/// sweep's mine spun on such a pair for hours (docs/tier-cycle.md, "The hang"). With y at the bottom of both, `s` embeds.
+/// and the plain recursion, coupling or skipping at each of `t`'s 60 nodes, makes about 3 x 2^60 = 3.5e18 calls. A
+/// sweep's mine spun on such a pair for hours (docs/tier-cycle.md, "The hang"). With y at the bottom of both, `s` embeds
+/// (the plain recursion finds it in 111 calls: this half checks the answer, not the speed).
 #[test]
 fn embedding_long_chains_finishes() {
     let chain = |leaf, n| (0..n).fold(Term::v(leaf), |c, _| Term::op(ADD, c, Term::v(0)));
