@@ -5316,10 +5316,13 @@ batch (runs `2026-10-29-f4-icount-{L1,F1,F2,L2}`, rounds L F F L of 3 runs at on
 `docs/runs/2026-10-29/rows/2026-10-29-f4-icount.txt`): -7.9% at the best runs (274.66 G against 298.23), -10.1% at the
 pooled medians (275.54 against 306.35), every F run below every L run. L's round medians drifted 2.3% (308.51 then
 301.46 G) and F's 0.26% (275.03, 275.74), both with purge on, so purging does not widen every pair of rounds (P1 spike
-above). The survey gave the compare loops 3.09 points of busy samples; a reading, not checked: a tight scalar loop
-retires many instructions per cycle, so its share of instructions exceeds its share of time, and a sample share
-understates what removing such a loop saves in a count. Time is not measured here; the profile after this landing
-shows it.
+above). The profile after it (run `2026-10-29-f4-prof`, `docs/runs/2026-10-29/rows/2026-10-29-f4-prof.txt`; untimed:
+59,291 busy samples at 13% load against 56,466 at 8%): `ValueMemo::agree` 4.9% inclusive (7.9 before), `bitwise_holds`
+7.7 (9.6), `verdict` 16.8 (18.7), the filter 43.2 (45.4); `pool_conjectures` 30.1 (28.4), `Term::show` 11.0 (11.0),
+`ValueMemo::exhaustive` (F3's target) 4.2 (4.3), `mi_arena_try_purge` 4.3 self (3.8). `agree` and `bitwise_holds` lost
+about 1,560 and 840 samples, together 4.2% of the earlier profile's, though its total was lower: the survey's 3.09
+points for the compare loops was too narrow. The rest of the gap to the count's 7.9% is a reading, not checked: a tight
+scalar loop retires many instructions per cycle, so its share of instructions exceeds its share of time.
 
 ## The kernel
 
