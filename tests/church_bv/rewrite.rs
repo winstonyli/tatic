@@ -586,16 +586,23 @@ pub struct ValueMemo<W: Word> {
 /// `out[i] = op(x[i], y[i])` for operator `O`: its function for `W` is a constant here, so it inlines into the loop (called
 /// through the pointer per element it was about 4% of a sweep, docs/tier-cycle.md, "Profile at a7b0719"), and the `u8`
 /// loops work on byte lanes ("`zip_word` on native bytes").
-fn zip_word<W: Word, const O: usize>(out: &mut [W], x: &[W], y: &[W], mask: u128) {
+fn zip_word<W: Word, const O: usize>(out: &mut [std::mem::MaybeUninit<W>], x: &[W], y: &[W], mask: u128) {
     let (op, mask) = (W::pick(const { &OP_INFO[O].words }), W::of(mask));
     for ((o, x), y) in out.iter_mut().zip(x).zip(y) {
-        *o = op(*x, *y, mask);
+        o.write(op(*x, *y, mask));
     }
 }
 
-/// `out[i] = op(x[i], y[i])` for operator `o` at one width's `mask`: `zip_word` picked once per call.
+/// `out[i] = op(x[i], y[i])` for operator `o` at one width's `mask`.
 pub fn zip_op<W: Word>(o: usize, out: &mut [W], x: &[W], y: &[W], mask: u128) {
-    let zips: [fn(&mut [W], &[W], &[W], u128); OP_INFO.len()] =
+    // SAFETY: `fill_op` writes only initialized values, so `out` stays initialized
+    fill_op(o, unsafe { &mut *(out as *mut [W] as *mut [std::mem::MaybeUninit<W>]) }, x, y, mask);
+}
+
+/// `zip_op` into cells that may start uninitialized: `zip_word` picked once per call. It writes every cell of `out`.
+fn fill_op<W: Word>(o: usize, out: &mut [std::mem::MaybeUninit<W>], x: &[W], y: &[W], mask: u128) {
+    assert!(x.len() == out.len() && y.len() == out.len(), "zip inputs of lengths {} and {} into {}", x.len(), y.len(), out.len());
+    let zips: [fn(&mut [std::mem::MaybeUninit<W>], &[W], &[W], u128); OP_INFO.len()] =
         [zip_word::<W, 0>, zip_word::<W, 1>, zip_word::<W, 2>, zip_word::<W, 3>, zip_word::<W, 4>, zip_word::<W, 5>, zip_word::<W, 6>, zip_word::<W, 7>];
     zips[o](out, x, y, mask);
 }
@@ -618,6 +625,10 @@ fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R)
 
 impl<W: Word> ValueMemo<W> {
     pub fn new(n: usize, len: usize, vars: Vec<Box<[W]>>) -> Self {
+        // `fill` copies these into blocks of whole `len`-long vectors, and writes an operator's vector after them
+        if let Some(v) = vars.iter().find(|v| v.len() != len) {
+            panic!("variable vector of length {}, not {len}", v.len());
+        }
         let per = (VALUE_BLOCK / (len * std::mem::size_of::<W>())).max(1);
         let (classes, class_of, hasher) = Default::default();
         ValueMemo { mask: low_bits(n), len, vars, ids: Default::default(), per, blocks: vec![], classes, class_of, hasher }
@@ -676,15 +687,22 @@ impl<W: Word> ValueMemo<W> {
                 let (a, b) = children.unwrap();
                 let mask = self.mask;
                 let off = self.blocks[last].len();
-                self.blocks[last].resize(off + len, W::of(0));
                 // the children's vectors sit in earlier blocks or earlier in the last one
                 let (done, tail) = self.blocks.split_at_mut(last);
-                let (before, out) = tail[0].split_at_mut(off);
+                let block = &mut tail[0];
+                let base = block.as_mut_ptr();
+                // SAFETY: the block was made with capacity `per * len` and is not full, so cells `off..off + len` are
+                // its spare capacity: disjoint from its first `off` cells (`before`) and from the other blocks; `fill_op`
+                // writes all `len` of them before `set_len` covers them.
+                let (before, out) = unsafe {
+                    (std::slice::from_raw_parts(base, off), std::slice::from_raw_parts_mut(base.add(off).cast(), len))
+                };
                 let at = |id: usize| -> &[W] {
                     let block: &[W] = if id / per == last { before } else { &done[id / per] };
                     &block[id % per * len..][..len]
                 };
-                zip_op(o, out, at(a), at(b), mask);
+                fill_op(o, out, at(a), at(b), mask);
+                unsafe { block.set_len(off + len) };
             }
         }
         self.ids.insert(t, id);
@@ -4369,6 +4387,20 @@ fn operators_match_a_bit_at_a_time() {
             check::<u128>(o, n, &xs, &ys);
         }
     }
+}
+
+/// A variable's vector of another length would misalign the memo's blocks, and `fill` could then write past one.
+#[test]
+#[should_panic(expected = "variable vector of length 3, not 4")]
+fn value_memo_refuses_a_variable_of_another_length() {
+    ValueMemo::<u8>::new(8, 4, vec![vec![0; 4].into_boxed_slice(), vec![0; 3].into_boxed_slice()]);
+}
+
+/// `fill_op` writes every cell of its output only when its inputs are as long.
+#[test]
+#[should_panic(expected = "zip inputs of lengths 4 and 3 into 4")]
+fn zip_op_refuses_a_shorter_input() {
+    zip_op(0, &mut [0u8; 4], &[1; 4], &[2; 3], low_bits(8));
 }
 
 /// Two terms get one value class exactly when they agree on every input, asked in any order (pairs that agree here:
