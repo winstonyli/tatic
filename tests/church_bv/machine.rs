@@ -285,6 +285,20 @@ pub fn mimalloc_defaults_to_large_pages() {
     }
 }
 
+/// The process turns mimalloc's purge off (`purge_delay` is option 15 in v3's list, -1 for never; `Setup::process` sets it): fails if
+/// that stops. Measured in docs/tier-cycle.md ("P1 timed").
+#[test]
+#[cfg(all(windows, target_env = "msvc"))]
+pub fn mimalloc_defaults_to_no_purge() {
+    unsafe extern "C" {
+        fn mi_option_get(option: std::ffi::c_int) -> std::ffi::c_long;
+    }
+    let job = &Job::new(Setup::process());
+    if job.setup().var("MIMALLOC_PURGE_DELAY").is_none() {
+        assert_eq!(unsafe { mi_option_get(15) }, -1);
+    }
+}
+
 /// `pages_text` is what the driver appends to its machine-state line.
 #[test]
 fn pages_text_has_both_fields() {

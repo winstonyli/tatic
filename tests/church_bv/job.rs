@@ -32,11 +32,31 @@ pub struct Setup {
     pub lemmas: crate::lemma_cache::TaskCache,
 }
 
+/// Turns mimalloc's purge off (`purge_delay`, option 15 in v3's list, to -1: freed pages stay mapped) unless `setup` names
+/// `MIMALLOC_PURGE_DELAY`: -7.3% job CPU at one pinned thread, 8 of 8 rounds, peak memory unchanged (docs/tier-cycle.md,
+/// "P1 timed"). Set here, not by a compile-time define as `.cargo/config.toml` does for the large-page options, because v3's
+/// default is a literal with no define; the purge expiry is read as pages are freed, so a set after load takes effect.
+fn purge_off_unless_set(setup: &Setup) {
+    unsafe extern "C" {
+        fn mi_option_set(option: std::ffi::c_int, value: std::ffi::c_long);
+    }
+    if setup.var("MIMALLOC_PURGE_DELAY").is_none() {
+        unsafe { mi_option_set(15, -1) };
+    }
+}
+
 impl Setup {
-    /// The one-test process's setup: the process's environment and `<exe>.env`, no task pairs, no result file.
+    /// The one-test process's setup: the process's environment and `<exe>.env`, no task pairs, no result file. First use also
+    /// turns the purge off (`purge_off_unless_set`).
     pub fn process() -> Arc<Setup> {
         static PROCESS_SETUP: OnceLock<Arc<Setup>> = OnceLock::new();
-        PROCESS_SETUP.get_or_init(|| Arc::new(Setup::from_env(merge_env(process_env(), exe_env().as_deref(), &[])))).clone()
+        PROCESS_SETUP
+            .get_or_init(|| {
+                let setup = Setup::from_env(merge_env(process_env(), exe_env().as_deref(), &[]));
+                purge_off_unless_set(&setup);
+                Arc::new(setup)
+            })
+            .clone()
     }
 
     /// A `driver::worker` task's setup: the process's environment with the task's `pairs` over it, results to `results`.
