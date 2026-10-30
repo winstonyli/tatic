@@ -377,7 +377,10 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   measured saving left to complete. Trigger: the F2-exe rerun of the three arms (falsifier in "P1 timed again") brings the -7.3% back and the
   landed build falls short of it, or peak memory grows; then P2 or P3. Evidence: `docs/tier-cycle.md`, "Survey: the
   open-law filter, `Term::show` and mimalloc's purge" (profile `2026-10-29-zerofill3-prof`, 2026-10-29), its "P1 spike"
-  paragraph, "P1 timed" (run `2026-10-30-purge-time3`) and "P1 timed again" (run `2026-10-30-p1-time2`). Status: P1 landed (equivalent to the env var, saving not reproduced on the current base); P2 and P3 held.
+  paragraph, "P1 timed" (run `2026-10-30-purge-time3`) and "P1 timed again" (run `2026-10-30-p1-time2`). Status: P1 landed (equivalent to the env var, saving not reproduced on the current base); P2 and P3 held. Also parked: a
+  timed four-thread P1 A/B (`purge_time_land.sh <old> <new> 8 4 3300`); 14 launches on 2026-10-30 (`2026-10-30-p1-time4t{,2..14}`) were all
+  refused by the quiet-machine gate (other sessions' `manifold` and `rustc` jobs, games), so the only four-thread evidence is the untimed
+  spike (-10.6%). Trigger: a quiet machine (`run.ps1 -Timed` accepted).
 - **A prefilter before the full value vectors** — what: in `pool_conjectures`, group the terms first by their values
   on 16 fixed inputs and fill full width-4 vectors only for terms that share a bucket; exact, since equal vectors agree
   on any subset. Why parked: 52% of a stream's terms are in true groups, so it can skip at most about half the fills;
