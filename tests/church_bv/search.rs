@@ -778,33 +778,78 @@ fn a_stream_sequence_is_the_same_on_any_thread_count() {
     assert!(parallel == build_sequence(1, 2000, 2, 1));
 }
 
+/// FNV-1a 64 of the laws' text, one `lhs = rhs` line each: what the pinned sequences are pinned by.
+fn laws_digest(laws: &[(Term, Term)]) -> u64 {
+    use std::fmt::Write;
+    Fnv::of(|h| {
+        laws.iter().try_for_each(|(a, b)| {
+            a.show_into(h)?;
+            h.write_str(" = ")?;
+            b.show_into(h)?;
+            h.write_str("
+")
+        })
+    })
+}
+
+/// The sequences at the loops' and the extras' growth counts (`STREAM_LEVELS`, and the deepest held band's), built at each
+/// pinned salt and checked against the pinned length and digest of their laws' text.
+fn assert_sequences_pinned(pinned: [(usize, usize, usize, u64); 2]) {
+    let got: Vec<(usize, usize, usize, u64)> = pinned
+        .iter()
+        .map(|&(salt, levels, ..)| {
+            let seq = stream_sequence(salt, levels);
+            let fnv = laws_digest(&seq);
+            println!("PINNED salt {salt}, {levels} growths: {} laws, digest {fnv:#018x}", seq.len());
+            (salt, levels, seq.len(), fnv)
+        })
+        .collect();
+    assert_eq!(got, pinned, "a sequence changed");
+}
+
 /// The two sequences a sweep builds at salt 1 (the loops' at `STREAM_LEVELS` growths, the extras' at the deepest held
-/// band's), pinned by length and an FNV-1a digest of their laws' text: a cheaper way to group or filter the streams'
-/// terms must leave them byte-identical (docs/tier-cycle.md, "Grouping the streams' terms, and the 2-growth build inside
-/// the 4-growth one"). Its own run is the workload for counting a build's instructions.
+/// band's), pinned by length and an FNV-1a digest of their laws' text: a cheaper way to group, order or filter the
+/// streams' terms must leave them byte-identical (docs/tier-cycle.md, "Grouping the streams' terms, and the 2-growth build
+/// inside the 4-growth one"). Its own run is the workload for counting a build's instructions.
 #[test]
 #[ignore]
 pub fn stream_sequences_are_pinned() {
     let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
-    let pinned = [(STREAM_LEVELS, 58125, 0x7703_133d_0c24_dbb2), (deep, 230801, 0x4bb4_78c5_da79_675b)];
-    let got: Vec<(usize, usize, u64)> = pinned
+    assert_sequences_pinned([(1, STREAM_LEVELS, 58125, 0x7703_133d_0c24_dbb2), (1, deep, 230801, 0x4bb4_78c5_da79_675b)]);
+}
+
+/// The same two sequences at salt 0, the order a bare `loop_stream` or `rule_miner` run (`RULEMINER_SHUFFLE` unset) gets.
+#[test]
+#[ignore]
+pub fn stream_sequences_are_pinned_at_salt_0() {
+    let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
+    assert_sequences_pinned([(0, STREAM_LEVELS, 58440, 0x4a7d_c226_0672_672b), (0, deep, 230399, 0x8966_904d_38ac_dd30)]);
+}
+
+/// Small streams (a pair, 2000 terms a level over 2 levels; a triple, 4000 over 3) at salts 0, 1 and the held salt, pinned
+/// by length and digest: the guard every suite run carries beside the ignored `stream_sequences_are_pinned` and
+/// `stream_sequences_are_pinned_at_salt_0`, which pin the loops' scale.
+#[test]
+pub fn small_streams_are_pinned() {
+    const HELD: usize = crate::classes::HELD_SALT;
+    const PAIR: (&[usize], usize, usize) = (&[ADD, SHR1], 2000, 2);
+    const TRIPLE: (&[usize], usize, usize) = (&[ADD, SUB, SHL1], 4000, 3);
+    let pinned: [(usize, (&[usize], usize, usize), usize, u64); 6] = [
+        (0, PAIR, 199, 0x1201_43b8_61ec_c526),
+        (1, PAIR, 200, 0x9a5d_e4a5_acf0_86c9),
+        (HELD, PAIR, 170, 0xc7e5_8bda_80cc_fcb1),
+        (0, TRIPLE, 521, 0xe70f_82ea_e9e3_73a5),
+        (1, TRIPLE, 442, 0x779f_6033_c943_06fc),
+        (HELD, TRIPLE, 468, 0x9304_50b2_3cd1_95f9),
+    ];
+    let got: Vec<(usize, (&[usize], usize, usize), usize, u64)> = pinned
         .iter()
-        .map(|&(levels, ..)| {
-            let seq = stream_sequence(1, levels);
-            let fnv = Fnv::of(|h| {
-                use std::fmt::Write;
-                seq.iter().try_for_each(|(a, b)| {
-                    a.show_into(h)?;
-                    h.write_str(" = ")?;
-                    b.show_into(h)?;
-                    h.write_str("\n")
-                })
-            });
-            println!("PINNED {levels} growths: {} laws, digest {fnv:#018x}", seq.len());
-            (levels, seq.len(), fnv)
+        .map(|&(salt, (ops, budget, levels), ..)| {
+            let laws = stream_laws(ops, salt, budget, levels);
+            (salt, (ops, budget, levels), laws.len(), laws_digest(&laws))
         })
         .collect();
-    assert_eq!(got, pinned, "a sequence changed");
+    assert_eq!(got, pinned, "a small stream changed");
 }
 
 /// Phase `phase`'s window of a sequence: its residue class at `STREAM_STRIDE`, `laws` of them from `skip`.
