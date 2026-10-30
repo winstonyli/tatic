@@ -371,7 +371,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   2026-10-29: S4, presizing `show`'s `String` (`Term::show` is 0.03% after S2). Landed, no longer held: S3, the sorts
   (2026-10-29; `docs/tier-cycle.md`, "S3 landed": 0.63% of busy samples remain, the seeds sort's, which stays since its
   order picks the terms the growth samples); F2, a plan-free `normalize` for the open-law filter (2026-10-30; "F2
-  landed": -2.4% in a count). Why held: P1 is timed (2026-10-30, env var only: -7.3% job CPU
+  landed": -2.4% in a count). Also landed: `Term`'s `Ord` as the text order, `show_cmp` deleted and the string-keyed sorts converted (2026-10-30; "Ord landed": +0.09% in a count, no speedup claimed). Why held: P1 is timed (2026-10-30, env var only: -7.3% job CPU
   at one pinned thread, 8 of 8 rounds, peak memory unchanged; `docs/tier-cycle.md`, "P1 timed"), but landing it is a
   choice about the harness's allocator behaviour for every church_bv process, so it waits for the user; P2 and P3 depend
   on whether P1 lands. Trigger: P1 on the user's call (land it in the harness, scope it to some processes, time it at

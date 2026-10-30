@@ -5201,7 +5201,7 @@ every term to size 5 and 47k random terms to size 17 by `docs/runs/2026-10-29/sc
   8.71 + 3.53 - 2.05 if a comparison costs no less than a `String` compare does now) needs a profile. The test
   `show_cmp_is_the_text_order` checks only the first 2000 representatives in text order; its replacement should
   compare against every term to size 5 and a sample of all representatives. Landed 2026-10-29 ("S1 landed" below):
-  -1.5% in a count and about 1.8 points, all in the conjecture sort; the pool sort costs what it did.
+  -1.5% in a count and about 1.8 points, all in the conjecture sort; the pool sort costs what it did. `show_cmp` itself became `Term`'s `Ord` and the miner's and tests' string-keyed sorts followed ("Ord landed" below).
 - **S2.** `shuffled` hashes without a `String`: `show_into` writes through `fmt::Write` into the FNV state, the same
   bytes in the same order, so the same permutation: about 2 (an estimate: 2.02 of `shuffled`'s 3.58 have a mimalloc
   (`mi_`, `_mi_`), `church_bv::_::__rust_` or `alloc::raw_vec::` frame on the stack, 0.35 of them the purge sweep;
@@ -5485,6 +5485,19 @@ plus the memo's drops. The profile after it (run `2026-10-30-f2-prof`, `docs/run
 untimed: 42,500 busy samples against 42,266): the filter 35.3% inclusive (39.4), `normalize` 30.9 (33.1); the work on
 every visit 9.36 (12.69), with plans built 0 (1.50), lookup hits 3.37 (3.84), the walk and the rest 5.71 (7.29), the
 closure's drops 0.28; first asks 21.56 (20.44), work F2 does not touch, whose samples rose 6% at the same busy total.
+
+*Ord landed (2026-10-30).* `Term`'s `Ord` is the order of its `show()` text, compared without building it (the first differing head in
+preorder decides by its token; a variable past `VARS` sorts after `z`, by index, since `show` cannot print it), and
+`show_cmp` and the structural `Ord` are gone: S1's comparator became the one order. Commit one (`54302c7`) swapped it
+and its callers; commit two converted the string-keyed sites to terms: `run_order` (rule table and miner ranking),
+the miner's candidate sort, `twin_key` (now `Option<(Term, Term)>`, the least pair under the order) and the driver's
+filter set, and the classes test's pair sort. The `show`-based oracles stay. Both commits kept the suite (167 passed,
+31 ignored), the four pins, `held_*.txt` and the gate (rules same in 3 of 3 loops, M 145, held 1774, equal work) as they
+were (runs `2026-10-30-ord-*`, `-ord2-*`). It is not a speedup: counts on the stream pin are +0.18% for commit one and
++0.087% for commit two (`docs/runs/2026-10-30/rows/2026-10-30-ord1-icount.txt`, `-ord2-icount.txt`), the price of a
+tuple-token compare and uncached sort keys; the gain is one order, no strings in the sorts and `show_cmp`'s test and
+buffers deleted. The miner's sorts have no count: the one miner test tried is 26 M, start-up sized. No profile was
+taken after it (the change is under 0.2% and nothing in the cleanup queue depends on the shares).
 
 ## The kernel
 

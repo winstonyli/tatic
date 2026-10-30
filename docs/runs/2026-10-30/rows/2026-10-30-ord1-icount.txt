@@ -1,0 +1,8 @@
+ord1 (item 16 commit one, Term's Ord = text order): stream pin test, retired instructions, 3 runs per round, CPU 4, load under 25%.
+L = cdbc6b9 (show_cmp), F = 54302c7. Rounds L1 F1 F2 L2; runs 2026-10-30-ord1-icount-{L1,F1,F2,L2}.
+round  best            median          (median-best)/best
+L1     158,698,680,715 158,702,611,203 0.00002
+F1     158,974,617,057 158,991,620,443 0.00011
+F2     158,995,969,632 159,031,925,552 0.00023
+L2     158,685,450,898 158,689,984,347 0.00003
+F over L: +0.18% (best 158.975 G vs 158.685 G; arms do not overlap). Cost of the tuple-token compare; the pinned outputs are identical.

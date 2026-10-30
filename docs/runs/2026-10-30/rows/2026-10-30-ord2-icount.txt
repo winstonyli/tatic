@@ -1,0 +1,12 @@
+ord2 (item 16 commit two, string-keyed sites on Term's Ord): retired instructions, 3 runs per round, CPU 4, load under 25%.
+L = 54302c7 (commit one), F = commit two. Rounds L1 F1 F2 L2; runs 2026-10-30-ord2-icount-* and ord2m-icount-*.
+stream pin (search::stream_sequences_are_pinned, ignored; 159 G, a real workload):
+round  best             median           (median-best)/best
+L1     158,960,989,256  158,968,826,719  0.00005
+F1     159,099,819,634  159,138,195,184  0.00024
+F2     159,100,647,264  159,109,954,347  0.00006
+L2     158,962,186,605  159,003,459,824  0.00026
+F over L: +0.087% (best 159.100 G vs 158.961 G; arms do not overlap).
+miner proxy (miner::a_round_never_offers_a_chosen_rule, --test-threads=1): 25.86 M (L) vs 25.97-26.12 M (F), +0.4..1.0%,
+but 26 M is start-up sized (ICOUNT.md: a count must be the size of the real workload), so it says nothing about the miner's sorts.
+The gate's work counts (walk, match, op) are equal to within 0.00001% (match -668, op +319 of 8.56 G and 1.96 G).
