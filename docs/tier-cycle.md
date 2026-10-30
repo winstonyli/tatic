@@ -5519,6 +5519,14 @@ now. Unexplained: why -7.3% became 0 between the F2 build and this one (the defa
 F2 exe (`2026-10-30-purge-time3`'s build), where the saving was seen, on a quiet machine; if it returns there, the
 purge cost moved with the allocation pattern, not with the machine.
 
+*cargo-mutants spike (2026-10-30, test-suite trimming survey).* cargo-mutants 27.1.0 on `src/kernel/spaces.rs` (112 mutants),
+one shard of 20 (6 mutants), `-- --lib` as the test command, `--jobs 1`, pinned to CFF at BelowNormal (run
+`2026-10-30-mutants-spaces-probe`, exit 3 = timeouts). Baseline 209 s build + 26 s lib tests. 6 mutants took 14 min: 3 caught,
+1 unviable, 2 timeouts (`INDEX_MASK`'s `- 1` mutated to `+ 1` or `/ 1`, `spaces.rs:24`; each cost the auto-set 131 s
+timeout), 0 missed. A rebuild is 31-37 s per mutant, so the whole module is roughly 2.5 h at `--jobs 1` (an extrapolation from
+6 mutants, not measured). Feasible for one module as a before/after check on a trim, not for the whole crate; `--in-diff`
+cannot drive it for a test-only diff.
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)
