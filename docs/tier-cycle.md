@@ -5504,8 +5504,20 @@ set, in the harness for every church_bv process (a compile-time define does not 
 arena options in `.cargo/config.toml`); `machine::mimalloc_defaults_to_no_purge` failed at 1000 first. The suite (168), the
 four pins and `held_*.txt` stayed as they were. The size is not re-measured: the count A/B reads +0.3% (best of 3; purge cost is
 kernel time, not instructions), and the gate's job CPU swings 4% with arm order, more than the 7% it would have to show
-(`docs/runs/2026-10-30/rows/2026-10-30-p1land.txt`). So the -7.3% of "P1 timed" (env var) stands as the evidence; a timed
-confirmation of the in-code set waits for a quiet machine (`run.ps1 -Timed`).
+(`docs/runs/2026-10-30/rows/2026-10-30-p1land.txt`).
+
+*P1 timed again (2026-10-30, the landed build).* The same pin on CPU 8 with three arms (A commit two, B the P1 build, A2
+commit two with the env var), `run.ps1 -Timed` run `2026-10-30-p1-time2`
+(`docs/runs/2026-10-30/rows/2026-10-30-p1time-land.txt`). It ended at its 1 h cap with 3 clean rounds of 8 (the machine
+was shared; round 3 ran at 18% other load, 29 s a run against 22). Job CPU medians: A 22.64 s, B 22.58, A2 22.45. **The
+env var shows no effect on this base**: A2 - A is +0.08 s (-0.19, +0.08, +0.53 by round), wall +0.07 s, where
+"P1 timed" read -1.90 s (-7.3%) in 8 of 8 rounds. B - A is +0.30 s (-0.06, +0.64, +0.30), inside the spread of the
+A/A-sized differences here (about ±0.5 s), so landed and env var agree with each other and with zero. Peak process memory
+is 2562 MB in all 9 runs (2564-2568 before). So the in-code set is equivalent to the env var, and neither shows a saving
+now. Unexplained: why -7.3% became 0 between the F2 build and this one (the default arm's job CPU went from 26 to 22 s with the
+`Term`-order commits in between, or machine state); with 3 clean rounds the null itself is thin. Falsifier: rerun the three arms on the
+F2 exe (`2026-10-30-purge-time3`'s build), where the saving was seen, on a quiet machine; if it returns there, the
+purge cost moved with the allocation pattern, not with the machine.
 
 ## The kernel
 

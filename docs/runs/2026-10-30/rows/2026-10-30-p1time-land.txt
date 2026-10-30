@@ -1,0 +1,30 @@
+# 2026-10-30-p1-time2: `runs time` (docs/runs/2026-10-30/scripts/purge_time_land.sh, through run.ps1 -Timed) over three arms of
+# search::stream_sequences_are_pinned --exact --ignored at STREAM_THREADS=1 on CPU 8: A = the commit-two exe (default purge),
+# B = the P1 build (purge off in Setup::process, no env var), A2 = the commit-two exe with MIMALLOC_PURGE_DELAY=-1.
+# Ended at the 1 h cap with 3 clean rounds of 8 (exit 0). An earlier launch (p1-time) was refused: cpu8 5.1%, another session's xperf.
+# Rounds 1-2 ran at other_pct 6%; round 3 at 18% (a game was running), all three arms 29 s there against 22 s before.
+# Peak process memory 2562 MB in all 9 runs.
+== summary.txt
+clean 3 rounds: [1, 2, 3]
+A: jobcpu median=22.641 best=21.688 wall median=22.728 best=21.719
+B: jobcpu median=22.578 best=22.328 wall median=22.643 best=22.412
+A2: jobcpu median=22.453 best=21.766 wall median=22.477 best=21.794
+B - A jobcpu: median +0.297, won 1/3: r1 -0.062, r2 +0.641, r3 +0.297
+B - A jobcpu over the two orders: +0.379 (B first +0.641 in 1, second +0.117 in 2), running second -0.262
+B - A wall: median +0.298, won 1/3: r1 -0.086, r2 +0.692, r3 +0.298
+B - A wall over the two orders: +0.399 (B first +0.692 in 1, second +0.106 in 2), running second -0.293
+A2 - A jobcpu: median +0.078, won 1/3: r1 -0.188, r2 +0.078, r3 +0.531
+A2 - A jobcpu over the two orders: +0.059 (A2 first +0.305 in 2, second -0.188 in 1), running second -0.246
+A2 - A wall: median +0.074, won 1/3: r1 -0.252, r2 +0.074, r3 +0.478
+A2 - A wall over the two orders: +0.012 (A2 first +0.276 in 2, second -0.252 in 1), running second -0.264
+== runs.tsv
+arm	round	position	start	wall_s	jobcpu_s	procs	stragglers	peakws_mb	other_pct	exit	clean
+A	1	1	1793390315	22.73	22.641	1	0	7	9.6	0	true
+B	1	2	1793390338	22.64	22.578	1	0	7	9.7	0	true
+A2	1	3	1793390361	22.48	22.453	1	0	7	8.6	0	true
+B	2	1	1793390443	22.41	22.328	1	0	7	9.0	0	true
+A2	2	2	1793390466	21.79	21.766	1	0	7	6.2	0	true
+A	2	3	1793390488	21.72	21.688	1	0	7	5.5	0	true
+A2	3	1	1793393627	29.55	29.328	1	0	7	17.7	0	true
+A	3	2	1793393657	29.07	28.797	1	0	7	15.9	0	true
+B	3	3	1793393686	29.37	29.094	1	0	7	16.6	0	true

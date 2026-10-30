@@ -371,12 +371,13 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   2026-10-29: S4, presizing `show`'s `String` (`Term::show` is 0.03% after S2). Landed, no longer held: S3, the sorts
   (2026-10-29; `docs/tier-cycle.md`, "S3 landed": 0.63% of busy samples remain, the seeds sort's, which stays since its
   order picks the terms the growth samples); F2, a plan-free `normalize` for the open-law filter (2026-10-30; "F2
-  landed": -2.4% in a count). Also landed: `Term`'s `Ord` as the text order, `show_cmp` deleted and the string-keyed sorts converted (2026-10-30; "Ord landed": +0.09% in a count, no speedup claimed). P1 landed 2026-10-30 in the harness, on the user's call ("P1 landed": the in-code set is untimed; "P1 timed" is the env var: -7.3% job CPU at one
-  pinned thread, 8 of 8 rounds, peak memory unchanged). Why held (P2, P3): they matter only if purge-off leaves a gap, so they wait for a
-  timed confirmation of the in-code set on a quiet machine. Trigger: that timed run (`run.ps1 -Timed`) shows less than the env var's -7.3%, or peak
-  memory growing; then P2 or P3. Evidence: `docs/tier-cycle.md`, "Survey: the
+  landed": -2.4% in a count). Also landed: `Term`'s `Ord` as the text order, `show_cmp` deleted and the string-keyed sorts converted (2026-10-30; "Ord landed": +0.09% in a count, no speedup claimed). P1 landed 2026-10-30 in the harness, on the user's call ("P1 timed": the env var read -7.3% job CPU at one
+  pinned thread, 8 of 8 rounds, peak memory unchanged; "P1 timed again": on the current base the env var and the landed build both read
+  about zero, 3 clean rounds, peak memory unchanged). Why held (P2, P3): they matter only if purge-off leaves a gap, and there is no
+  measured saving left to complete. Trigger: the F2-exe rerun of the three arms (falsifier in "P1 timed again") brings the -7.3% back and the
+  landed build falls short of it, or peak memory grows; then P2 or P3. Evidence: `docs/tier-cycle.md`, "Survey: the
   open-law filter, `Term::show` and mimalloc's purge" (profile `2026-10-29-zerofill3-prof`, 2026-10-29), its "P1 spike"
-  paragraph and "P1 timed" (run `2026-10-30-purge-time3`). Status: P1 landed; P2 and P3 held for the timed confirmation.
+  paragraph, "P1 timed" (run `2026-10-30-purge-time3`) and "P1 timed again" (run `2026-10-30-p1-time2`). Status: P1 landed (equivalent to the env var, saving not reproduced on the current base); P2 and P3 held.
 - **A prefilter before the full value vectors** — what: in `pool_conjectures`, group the terms first by their values
   on 16 fixed inputs and fill full width-4 vectors only for terms that share a bucket; exact, since equal vectors agree
   on any subset. Why parked: 52% of a stream's terms are in true groups, so it can skip at most about half the fills;
