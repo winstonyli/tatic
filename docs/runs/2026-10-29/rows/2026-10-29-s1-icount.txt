@@ -8,9 +8,17 @@
 # CPU load at the rounds' starts 8-42% (other processes, not identified): the noisiest of this day's batches, with
 # spreads (median-best)/best up to 0.019 and max/best up to 1.075, both in the 40%+ rounds.
 # INVALID: s1b-icount-L1 (16:13-16:14, 73 s). Its numbers and pids equal s1-icount-L1's: no new trace was recorded and
-# icount.ps1 re-counted the old one in the reused -Out folder (ic-L1\trace.etl, dated 15:59:45). Cause of the missing
-# recording not found; icount.ps1 parses $Out\trace.etl without checking it is new. Batch s1c wrote fresh folders
-# (ic-s1c-<round>) and checked each trace's time after its round.
+# icount.ps1 re-counted the old one in the reused -Out folder (ic-L1\trace.etl, dated 15:59:45); icount.ps1 parses
+# $Out\trace.etl without checking it is new. Batch s1c wrote fresh folders (ic-s1c-<round>) and checked each trace's
+# time after its round.
+# Cause, from the sequin session's report (2026-10-29; not checked on this round): the Samply task drops a start while
+# it runs (IgnoreNew) and job.json, status.json and last.log are shared, so a round launched during sequin's job read
+# sequin's finished status and counted the old trace. ~/.claude/samply/profile.ps1 now serialises jobs (mutex, job
+# ids). Sequin's three failed batches (16:04, 16:07, 16:43) fall inside s1-icount-F2 (16:03-16:07), the start of
+# s1-icount-L2 (16:07, its 40% load and 214.03 G first run) and s1c-icount-L2 (16:41-16:44, three tight runs); the
+# verdict does not rest on them: the F/L best ratios of the quiet rounds alone are s1 L1/F1 (15:57-16:03) 196.11 /
+# 201.18 = 0.9748, s1b F2/L2 (16:18-16:25) 197.37 / 199.88 = 0.9874, and no batch has F's best above L's.
+# The same cause explains s1-prof's headline (a log read off the shared task, see 2026-10-29-s1-prof.txt).
 # Per batch, pooled runs (6 each; batch s1b's L is L2 alone, 3 runs):
 #   s1:  best F/L 196.11 / 199.04 = 0.9853 (-1.5%), median 197.49 / 201.52 = 0.9800 (-2.0%)
 #   s1b: best F/L 197.37 / 199.88 = 0.9874 (-1.3%), median 198.41 / 200.92 = 0.9875 (-1.2%)
