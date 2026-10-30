@@ -4,8 +4,7 @@ use std::{cmp::Reverse, collections::BinaryHeap, rc::Rc};
 /// A hash-consed term: a pointer to its one node. Leaves are statics, `Op` nodes are interned (`Term::op`) and never
 /// freed, so equal terms are the same pointer: `==` and `Hash` take the address, and clone is a copy. Each node also
 /// carries what is computed bottom-up once, when it is made: its size, the set of its variables and its shape.
-/// `show()` is for text (files, logs, lemma names) and the text orders. `Ord` is structural (`V < Zero < Ones < Op`,
-/// then fields), the order the derived one gave; it only makes canonical keys (a sorted rule set).
+/// `show()` is for text (files, logs, lemma names). `Ord` is the order of that text, without building it.
 #[derive(Clone, Copy)]
 pub struct Term(&'static Interned);
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -294,21 +293,28 @@ impl std::hash::Hash for Term {
         self.addr().hash(h)
     }
 }
+/// `self.show().cmp(&other.show())` without the text: the order the rewriter sorts operands by, the stream builds sort
+/// terms by and the run-time rules and mined files are kept in. Equal heads give equal text up to the operands, so the
+/// first differing head in preorder decides by its token (a name or constant). A token that is a prefix of another (`x`
+/// of `xor`) is followed in the text by `,`, `)`, `(` or the end, all below any token character, so the shorter token is
+/// the lesser, as `str` compares them. A variable past `VARS` (renamed apart) has no text; it sorts after `z`, by index.
 impl Ord for Term {
     fn cmp(&self, other: &Term) -> std::cmp::Ordering {
+        fn token(n: Node) -> (&'static str, usize) {
+            match n {
+                Node::V(i) if i < VARS.len() => (VARS[i], 0),
+                Node::V(i) => ("z", i + 1 - VARS.len()),
+                Node::Zero => ("0", 0),
+                Node::Ones => ("-1", 0),
+                Node::Op(o, ..) => (OP_INFO[o].name, 0),
+            }
+        }
         if self == other {
             return std::cmp::Ordering::Equal;
         }
-        let rank = |n: &Node| match n {
-            Node::V(_) => 0,
-            Node::Zero => 1,
-            Node::Ones => 2,
-            Node::Op(..) => 3,
-        };
         match (*self.node(), *other.node()) {
-            (Node::V(i), Node::V(j)) => i.cmp(&j),
-            (Node::Op(o, a, b), Node::Op(p, c, d)) => o.cmp(&p).then_with(|| a.cmp(&c)).then_with(|| b.cmp(&d)),
-            (x, y) => rank(&x).cmp(&rank(&y)),
+            (Node::Op(o, a, b), Node::Op(p, c, d)) if o == p => a.cmp(&c).then_with(|| b.cmp(&d)),
+            (x, y) => token(x).cmp(&token(y)),
         }
     }
 }
@@ -421,27 +427,6 @@ impl Term {
                 b.show_into(out)?;
                 out.write_char(')')
             }
-        }
-    }
-    /// `self.show().cmp(&other.show())` without the text: the order the rewriter sorts operands by and the stream builds
-    /// sort terms by. Equal heads give equal text up to the operands, so the first differing head in preorder decides by
-    /// its token (a name or constant). A token that is a prefix of another (`x` of `xor`) is followed in the text by `,`,
-    /// `)`, `(` or the end, all below any token character, so the shorter token is the lesser, as `str` compares them.
-    pub fn show_cmp(&self, other: &Term) -> std::cmp::Ordering {
-        fn token(n: Node) -> &'static str {
-            match n {
-                Node::V(i) => VARS[i],
-                Node::Zero => "0",
-                Node::Ones => "-1",
-                Node::Op(o, ..) => OP_INFO[o].name,
-            }
-        }
-        if self == other {
-            return std::cmp::Ordering::Equal;
-        }
-        match (*self.node(), *other.node()) {
-            (Node::Op(o, a, b), Node::Op(p, c, d)) if o == p => a.show_cmp(&c).then_with(|| b.show_cmp(&d)),
-            (x, y) => token(x).cmp(token(y)),
         }
     }
     /// The term as an expression, with `vals[i]` for variable `i`.
@@ -1950,10 +1935,10 @@ pub fn rule_step(job: &mut Job, t: &Term) -> Option<(Term, PlanRc)> {
         if inst == *t {
             return None;
         }
-        // a permutative rule (ordered rewriting): only when the instance goes down in the order on `show()` strings
+        // a permutative rule (ordered rewriting): only when the instance goes down in the term order (that of the `show()` text)
         // (a path order on every tied instance, the removed `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`,
         // `PERM_ORDER=tie`, never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
-        if r.permutative && inst.show_cmp(t).is_ge() {
+        if r.permutative && inst >= *t {
             return None;
         }
         Some(sub)
@@ -2396,7 +2381,7 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
             _ => None,
         };
         let before = match (constant(&b2), constant(&a2)) {
-            (None, None) => b2.show_cmp(&a2).is_lt(),
+            (None, None) => b2 < a2,
             (None, Some(_)) => true,
             (Some(_), None) => false,
             (Some(cb), Some(ca)) => cb < ca,
@@ -2419,7 +2404,7 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
         // (p + q) + r = p + (q + r)
         Some((sum(&p, &sum(&q, &b2)), assoc(job, &p, &q, &b2)))
     } else if let (false, Node::Op(ADD, bp, bq)) = (job.setup().ablated("assoc") || job.setup().ablated("comm"), *b2.node()) {
-        if bp.show_cmp(&a2).is_lt() {
+        if bp < a2 {
             // a + (b + c) = (a + b) + c = (b + a) + c = b + (a + c)
             let (a_, b_, c_) = (&a2, &bp, &bq);
             let swapped = Plan::cong(job, ADD, comm(job, a_, b_), Plan::refl(job, c_));
@@ -2427,7 +2412,7 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
         } else {
             None
         }
-    } else if !job.setup().ablated("comm") && b2.show_cmp(&a2).is_lt() {
+    } else if !job.setup().ablated("comm") && b2 < a2 {
         Some((sum(&b2, &a2), comm(job, &a2, &b2)))
     } else {
         None
@@ -4479,20 +4464,7 @@ fn bitwise_holds_is_the_per_tuple_check() {
     }
     assert!(held > ts.len(), "some pairs other than a term with itself hold");
 }
-
-#[test]
-fn term_order_is_the_old_derived_order() {
-    let mut ts: Vec<Term> = PIN_SOURCE.iter().map(|s| parse_term(s)).collect();
-    ts.sort();
-    let got: Vec<String> = ts.iter().map(|t| t.show()).collect();
-    assert_eq!(got, PINNED);
-    for t in &ts {
-        assert!(parse_term(&t.show()) == *t);
-    }
-    // variables past VARS (renamed apart) sort by index, before every other leaf
-    assert!(Term::v(9) < Term::v(10) && Term::v(63) < Term::ZERO && Term::ZERO < Term::ONES);
-}
-/// Terms in no particular order; `PINNED` is their sort under the old derived `Ord`, captured at main's HEAD.
+/// Sample terms in no particular order (leaves, every operator, shared and permuted subterms).
 const PIN_SOURCE: [&str; 38] = [
     "add(x, add(y, z))", "x", "and(add(x, y), -1)", "-1", "add(y, x)", "q", "xor(x, -1)", "0", "add(x, y)",
     "add(add(x, y), z)", "add(x, x)", "and(x, y)", "or(x, 0)", "sub(-1, x)", "lt(x, y)", "shl1(x, x)", "shr1(y, y)",
@@ -4500,44 +4472,4 @@ const PIN_SOURCE: [&str; 38] = [
     "or(and(x, y), and(x, z))", "sub(add(x, y), y)", "sub(x, sub(x, y))", "lt(sub(x, y), 0)", "shl1(add(x, y), x)",
     "add(shl1(x, x), 0)", "add(0, x)", "add(-1, x)", "add(u, v)", "add(w, p)", "and(-1, 0)", "y",
     "xor(xor(x, y), xor(z, u))", "xor(xor(x, y), xor(z, v))", "add(add(add(x, y), z), u)", "add(x, add(y, add(z, u)))",
-];
-const PINNED: [&str; 38] = [
-    "x",
-    "y",
-    "q",
-    "0",
-    "-1",
-    "add(x, x)",
-    "add(x, y)",
-    "add(x, add(y, z))",
-    "add(x, add(y, add(z, u)))",
-    "add(y, x)",
-    "add(u, v)",
-    "add(w, p)",
-    "add(0, x)",
-    "add(-1, x)",
-    "add(add(x, y), y)",
-    "add(add(x, y), z)",
-    "add(add(x, z), y)",
-    "add(add(add(x, y), z), u)",
-    "add(shl1(x, x), 0)",
-    "and(x, y)",
-    "and(-1, 0)",
-    "and(add(x, y), 0)",
-    "and(add(x, y), -1)",
-    "or(x, 0)",
-    "or(and(x, y), and(x, z))",
-    "xor(x, -1)",
-    "xor(and(x, y), or(x, y))",
-    "xor(and(x, y), or(y, x))",
-    "xor(xor(x, y), xor(z, u))",
-    "xor(xor(x, y), xor(z, v))",
-    "sub(x, sub(x, y))",
-    "sub(-1, x)",
-    "sub(add(x, y), y)",
-    "lt(x, y)",
-    "lt(sub(x, y), 0)",
-    "shl1(x, x)",
-    "shl1(add(x, y), x)",
-    "shr1(y, y)",
 ];

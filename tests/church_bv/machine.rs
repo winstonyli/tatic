@@ -749,7 +749,7 @@ pub fn plain_steps_match_the_kernel_gates() {
 // ---- Comparison (search note section 20): `lt a b` is the final borrow of the chain for `a - b`, a `Bool0` result.
 
 /// The conjectures of a term pool of `(rank, term)`: terms with equal values on every width-`n` tuple of `nv` variables are
-/// paired with the group's head, its least member by `(rank, show_cmp)` whatever order the pool arrives in. They come in no
+/// paired with the group's head, its least member by `(rank, Ord)` whatever order the pool arrives in. They come in no
 /// particular order (a map's): `search::shuffled` orders them.
 pub fn pool_conjectures(pool: impl IntoIterator<Item = (usize, Term)>, n: usize, nv: usize) -> Vec<(Term, Term)> {
     use hashbrown::hash_map::Entry;
@@ -764,7 +764,7 @@ pub fn pool_conjectures(pool: impl IntoIterator<Item = (usize, Term)>, n: usize,
             }
             Entry::Occupied(mut e) => {
                 let (head, rest) = e.get_mut();
-                if rank.cmp(&head.0).then_with(|| t.show_cmp(&head.1)).is_lt() {
+                if (rank, t) < (head.0, head.1) {
                     rest.push(std::mem::replace(head, (rank, t)).1);
                 } else {
                     rest.push(t);
@@ -775,7 +775,7 @@ pub fn pool_conjectures(pool: impl IntoIterator<Item = (usize, Term)>, n: usize,
     groups.values().flat_map(|((_, h), rest)| rest.iter().map(move |t| (*h, *t))).collect()
 }
 
-/// A group's head is its least member by `(rank, show_cmp)` whatever order the pool arrives in: the pool as given,
+/// A group's head is its least member by `(rank, Ord)` whatever order the pool arrives in: the pool as given,
 /// reversed and rotated gives one set of conjectures, and each pairs a head below its partner (the ranks, here a term's
 /// size mod 3, put the head above its partner's text in some).
 #[test]
@@ -796,9 +796,9 @@ pub fn pool_conjecture_heads_are_the_least_whatever_the_pool_order() {
     assert!(conj(reversed) == base && conj(rotated) == base, "the conjectures depend on the pool's order");
     let rank: hashbrown::HashMap<Term, usize> = pool.iter().map(|&(r, t)| (t, r)).collect();
     for (h, t) in &base {
-        assert!(rank[h].cmp(&rank[t]).then_with(|| h.show_cmp(t)).is_lt(), "{} is not below {}", h.show(), t.show());
+        assert!((rank[h], h) < (rank[t], t), "{} is not below {}", h.show(), t.show());
     }
-    assert!(base.iter().any(|(h, t)| h.show_cmp(t) == Greater), "no rank put a head above its partner's text");
+    assert!(base.iter().any(|(h, t)| h.cmp(t) == Greater), "no rank put a head above its partner's text");
 }
 
 #[test]

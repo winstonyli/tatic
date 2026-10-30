@@ -74,7 +74,7 @@ impl std::fmt::Write for Fnv {
 }
 
 /// `laws` in the order of the `Fnv` of the salt and each law's text (deterministic across runs), then of the text itself
-/// (`show_cmp` of the sides): a total order, so the result owes nothing to the order given (the conjectures arrive in a
+/// (`Ord` of the sides): a total order, so the result owes nothing to the order given (the conjectures arrive in a
 /// map's). Salt 0 has no hash, so the text order.
 pub fn shuffled(laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
     use std::fmt::Write;
@@ -90,7 +90,7 @@ pub fn shuffled(laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
         })
     };
     let mut keyed: Vec<(u64, (Term, Term))> = laws.into_iter().map(|(a, b)| (key(&a, &b), (a, b))).collect();
-    keyed.sort_unstable_by(|(k, (a, b)), (m, (c, d))| k.cmp(m).then_with(|| a.show_cmp(c)).then_with(|| b.show_cmp(d)));
+    keyed.sort_unstable_by(|(k, (a, b)), (m, (c, d))| k.cmp(m).then_with(|| a.cmp(c)).then_with(|| b.cmp(d)));
     keyed.into_iter().map(|(_, law)| law).collect()
 }
 
@@ -517,11 +517,11 @@ pub fn rule_admission_refuses_wrong_rules() {
     })
 }
 
-/// `show_cmp` is the order of the `show()` text: on every pair of terms to size 3 over all operators, variables and
+/// `Term`'s `Ord` is the order of the `show()` text: on every pair of terms to size 3 over all operators, variables and
 /// constants, and on every term to size 5 and every class-table representative, where a sort by it is the text sort
-/// and each term compares below the next in text order.
+/// and each term compares below the next in text order. A variable past `VARS` has no text; it sorts after `z`, by index.
 #[test]
-pub fn show_cmp_is_the_text_order() {
+pub fn term_order_is_the_text_order() {
     use std::cmp::Ordering::{Greater, Less};
     let leaves: Vec<Term> = (0..VARS.len()).map(Term::v).chain([Term::ZERO, Term::ONES]).collect();
     let ops = |xs: &[Term], ys: &[Term]| -> Vec<Term> {
@@ -531,18 +531,21 @@ pub fn show_cmp_is_the_text_order() {
     let to3: Vec<Term> = leaves.iter().chain(&size3).copied().collect();
     for a in &to3 {
         for b in &to3 {
-            assert_eq!(a.show_cmp(b), a.show().cmp(&b.show()), "{} vs {}", a.show(), b.show());
+            assert_eq!(a.cmp(b), a.show().cmp(&b.show()), "{} vs {}", a.show(), b.show());
         }
     }
+    let past = [Term::v(VARS.len()), Term::v(VARS.len() + 1), Term::v(40)];
+    assert!(past.windows(2).all(|w| w[0] < w[1]), "past VARS, by index");
+    assert!(past.iter().all(|&p| to3.iter().all(|&t| t < p)), "past VARS, after every term to size 3 with a text (z the last)");
     let to5: Vec<Term> = to3.iter().copied().chain(ops(&size3, &leaves)).chain(ops(&leaves, &size3)).collect();
     for mut ts in [to5, crate::classes::Classes::get().reps().collect()] {
         let mut by_text = ts.clone();
         by_text.sort_by_cached_key(|t| t.show());
         for w in by_text.windows(2) {
-            assert_eq!((w[0].show_cmp(&w[1]), w[1].show_cmp(&w[0])), (Less, Greater), "{} vs {}", w[0].show(), w[1].show());
+            assert_eq!((w[0].cmp(&w[1]), w[1].cmp(&w[0])), (Less, Greater), "{} vs {}", w[0].show(), w[1].show());
         }
-        ts.sort_unstable_by(|a, b| a.show_cmp(b));
-        assert!(ts == by_text, "the sort by show_cmp is not the text sort");
+        ts.sort_unstable();
+        assert!(ts == by_text, "the sort by Ord is not the text sort");
     }
 }
 
@@ -643,7 +646,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
         }
     }
     let mut seeds: Vec<Term> = c.reps().filter(|t| within(*t, ops)).collect();
-    seeds.sort_unstable_by(|a, b| a.show_cmp(b));
+    seeds.sort_unstable();
     fn ops_of(t: Term, out: &mut std::collections::BTreeSet<usize>) {
         if let Node::Op(o, a, b) = *t.node() {
             out.insert(o);
