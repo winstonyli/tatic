@@ -1,0 +1,12 @@
+P1 landed in code (Setup::process sets mimalloc option 15 to -1 unless MIMALLOC_PURGE_DELAY is set). Untimed checks, machine shared
+with other sessions (load 21-33%, sojourn and others); L = ord2 exe (default purge), F = P1.
+count A/B, stream pin, best of 3 (runs 2026-10-30-p1c-icount-{L1,F1,L2}): L 159.203 G, 159.095 G; F 159.589 G (+0.3%, F's own
+spread 0.25% median, 0.5% max). A single run per round (p1b) read L 161.96 G then 159.85 G, F 160.56 G: load, not P1.
+Retired instructions do not show the purge's cost, which is kernel time in page faults and refills, not instructions.
+gate, sequential, no cache (runs 2026-10-30-p1-gate, -p1-gate2): M 145 and held 1774 in both arms, work equal to 1e-6.
+  gate  A (first)     B (second)
+  1     L 673.11 s    F 645.83 s      (F -4.1%)
+  2     F 648.45 s    L 622.14 s      (F +4.2%)
+The second arm is 4% cheaper in both orders, so the gate's job CPU cannot show P1's 7%; no effect is claimed from these.
+The effect rests on "P1 timed" (env var, run 2026-10-30-purge-time3: -7.3% job CPU, 8 of 8 rounds); the in-code set is the same
+option value (test machine::mimalloc_defaults_to_no_purge).

@@ -5499,6 +5499,14 @@ tuple-token compare and uncached sort keys; the gain is one order, no strings in
 buffers deleted. The miner's sorts have no count: the one miner test tried is 26 M, start-up sized. No profile was
 taken after it (the change is under 0.2% and nothing in the cleanup queue depends on the shares).
 
+*P1 landed (2026-10-30).* `Setup::process` sets mimalloc's `purge_delay` (option 15) to -1 on first use unless `MIMALLOC_PURGE_DELAY` is
+set, in the harness for every church_bv process (a compile-time define does not exist for it in v3, unlike the large-page and
+arena options in `.cargo/config.toml`); `machine::mimalloc_defaults_to_no_purge` failed at 1000 first. The suite (168), the
+four pins and `held_*.txt` stayed as they were. The size is not re-measured: the count A/B reads +0.3% (best of 3; purge cost is
+kernel time, not instructions), and the gate's job CPU swings 4% with arm order, more than the 7% it would have to show
+(`docs/runs/2026-10-30/rows/2026-10-30-p1land.txt`). So the -7.3% of "P1 timed" (env var) stands as the evidence; a timed
+confirmation of the in-code set waits for a quiet machine (`run.ps1 -Timed`).
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)
