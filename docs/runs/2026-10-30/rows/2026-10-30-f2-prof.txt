@@ -1,0 +1,20 @@
+# 2026-10-30-f2-prof: samply profile of search::stream_sequences_are_pinned after F2 (89e7fe0 plus F2: `Classes::normalize`
+# returns a `Term`, no plan built and no step counted; `VERDICTS` holds `Arc<Verdict>`); both sequences, salt 1,
+# STREAM_THREADS 4; CARGO_PROFILE_RELEASE_DEBUG=line-tables-only), docs/runs/2026-10-28/scripts/pin_prof.sh; run ended
+# 2026-10-30T00:23:29, exit 0. Defender real-time off, purge on. Frames by docs/runs/2026-10-18/scripts/prof_named.py with
+# the PROF_FRAMES of 2026-10-29-s3b-prof.txt (plus the names `normalize`, `replacement` and `step`) and its PROF_PARENTS;
+# then docs/runs/2026-10-29/scripts/filter_split.py. The PDB must sit beside bv_prof.exe (the run folder does not
+# copy it; the first prof_named call failed on 1 symbol block for 4,047 addresses until it did). Untimed: busy samples
+# 42,500 against 42,266 in 2026-10-29-s3c-prof; shares within a profile are what is read.
+# Filter (stream_laws::{closure#10}) 35.27% of busy samples (39.37 in s3c-prof; 14,988 samples against 16,641):
+#   shuffle 1.97 (1.9 before)
+#   normalize 30.92 (33.13): first ask 21.56 (20.44), every visit 9.36 (12.69)
+#     first ask: lookup 3.28 (3.29), verdict tree search 12.51 (11.86), bitwise filling 5.24 (4.85), bitwise comparing 0.14,
+#       building exhaustive inputs 0.06, other 0.33
+#     every visit: lookup hits 3.37 (3.84), plans built 0 (1.50; `Plan::new` 0.00% inclusive), walk and the rest 5.71
+#       (7.29), drops 0.28 (the memo's table; the `Rc` drops are gone)
+#   refuter 2.33 (comparing 0.35, filling 1.98); closure rest 0.05
+# The first ask is work F2 does not touch, and its samples rose 6% (9,163 against 8,639) at the same busy total: load
+# and thread timing, not the change (a reading, not checked). Net of it the every-visit samples fell from 5,364 to 3,978.
+# Other frames (inclusive, s3c-prof in brackets): pool_conjectures 37.4 (33.8; the filter shrank), verdict 18.3 (17.2),
+# fill_op 19.1 (18.5), shuffled 2.0 (1.9), Mutex::lock 1.7 (1.6), mi_arena_try_purge 1.1 self.

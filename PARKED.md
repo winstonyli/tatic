@@ -366,18 +366,16 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   misses still above about 10% of a build after `cd7dacb`. Evidence: `docs/tier-cycle.md`, "Why normalize is slow on
   a cold stream" (runs `2026-10-28-normalize-cold*`, 2026-10-28). Status: held for the user's call (2026-10-28).
 - **Options held behind the filter, `show` and purge survey** — what: P1, mimalloc's purge off in the harness
-  (`mi_option_set(15, -1)`, spiked and reverted: `docs/runs/2026-10-29/patches/purge_spike_on_ab9eeba.patch`); F2,
-  counting mode for the open-law filter; P2, `arena_reserve` at 256 MiB; P3, a mimalloc patch that keeps the purge
-  expiry current. Decided against 2026-10-29: S4, presizing `show`'s `String` (`Term::show` is 0.03% after S2).
-  Landed 2026-10-29, no longer held: S3, the sorts (`docs/tier-cycle.md`, "S3 landed": 0.63% of busy samples
-  remain, the seeds sort's, which stays since its order picks the terms the growth samples). Why held: P1's spike tied
-  on the best counts and gave a time direction from untimed pairs only, and landing it keeps memory after the class
-  build; F2's size depended on the options before it (F1, S1, S2 and S3, all landed), and P2 and P3 on whether P1
-  lands. Trigger: P1 on the user's call (land it, scope it, time it first or drop it); F2 when a profile after F1
-  still shows plans built (met 2026-10-29: 1.4% of busy samples, from 5.8, plus part of the memo's drop;
-  `docs/tier-cycle.md`, "F1 landed"); P2 or P3 if P1 does not land. Evidence: `docs/tier-cycle.md`, "Survey: the
+  (`mi_option_set(15, -1)`, spiked and reverted: `docs/runs/2026-10-29/patches/purge_spike_on_ab9eeba.patch`);
+  P2, `arena_reserve` at 256 MiB; P3, a mimalloc patch that keeps the purge expiry current. Decided against
+  2026-10-29: S4, presizing `show`'s `String` (`Term::show` is 0.03% after S2). Landed, no longer held: S3, the sorts
+  (2026-10-29; `docs/tier-cycle.md`, "S3 landed": 0.63% of busy samples remain, the seeds sort's, which stays since its
+  order picks the terms the growth samples); F2, a plan-free `normalize` for the open-law filter (2026-10-30; "F2
+  landed": -2.4% in a count). Why held: P1's spike tied on the best counts and gave a time direction from untimed pairs only, and landing it keeps memory after the class
+  build; P2 and P3 depend on whether P1 lands. Trigger: P1 on the user's call (land it, scope it, time it first or
+  drop it); P2 or P3 if P1 does not land. Evidence: `docs/tier-cycle.md`, "Survey: the
   open-law filter, `Term::show` and mimalloc's purge" (profile `2026-10-29-zerofill3-prof`, 2026-10-29; the P1 spike's
-  results in its "P1 spike" paragraph). Status: P1 and F2 held for the user's call; P2 and P3 for P1's outcome.
+  results in its "P1 spike" paragraph). Status: P1 held for the user's call; P2 and P3 for P1's outcome.
 - **A prefilter before the full value vectors** — what: in `pool_conjectures`, group the terms first by their values
   on 16 fixed inputs and fill full width-4 vectors only for terms that share a bucket; exact, since equal vectors agree
   on any subset. Why parked: 52% of a stream's terms are in true groups, so it can skip at most about half the fills;

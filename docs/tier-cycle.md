@@ -5153,7 +5153,8 @@ plan unread, so no memo or reordering of this work can change the laws. Options,
   `counting_and_compiling_agree` runs it; "Scoring builds no plans"): at most the plans built (6.14, 3.0 of it the
   purge sweep P1 also removes) and the plans' drops (about 0.8: the `Rc` drops, 0.18 inside `normalize` and 0.63
   after it). Once F1 lands the plans built scale with the visits that remain: at most 1.8 at equal cost per visit
-  (less if a memo hit builds no plan), 0.9 with P1's sweep gone.
+  (less if a memo hit builds no plan), 0.9 with P1's sweep gone. Landed 2026-10-30 ("F2 landed" below), as a
+  plan-free `normalize` rather than counting mode: -2.4% in a count.
 - **F3.** `bitwise_holds`' exhaustive inputs built once per process, shared by the threads and keyed by `(w, k)` (a
   `OnceLock`; `ValueMemo` owns its `vars`, so they would sit behind an `Arc` or a static slice): 4.26. The probe above
   measured them at 1.00 s of a 45.97 s one-thread build (2.2%, "Why normalize is slow on a cold stream"), so expect a
@@ -5371,8 +5372,8 @@ charge nothing for the misses' probes and inserts. Shares: the filter 35.6% incl
 `pool_conjectures` 33.3 (28.9), `verdict` 14.3 (13.2), `Term::show` 13.0 (12.0), `shuffled` 6.2 (6.2), `Plan::new` 1.4
 (5.8), `mi_arena_try_purge` 2.6 self (4.5). F2's bound is now the plans built, 1.4 points, and the part of the memo's
 drop that is its `Rc`s (counting plans are one shared `Rc`, so their drops would be decrements): its trigger, a profile
-after F1 that still shows plans built, is met, and it waits for the user's call (`PARKED.md`, "Options held behind the
-filter, `show` and purge survey").
+after F1 that still shows plans built, is met (landed 2026-10-30, "F2 landed" below, which also replaced this
+paragraph's `NormalForms` of terms and plans with terms alone).
 
 *S1 landed (2026-10-29).* `Term::show_cmp` compares two terms by structure: equal operator heads recurse into the
 operands, and the first differing head decides by its token's text, so the order is the `show()` text's with no string
@@ -5452,6 +5453,26 @@ share of time. One thing to watch, not a finding: `fill_op`'s inclusive samples 
 7,489 and 7,806 of the busy samples), which may be the `ValueMemo` filling in growth order instead of text order (cache
 locality) or the three loads; the instruction counts cannot show it, and the profiles are untimed, so a timed A/B
 (`run.ps1 -Timed`) would be the check if the S3 time saving ever matters.
+
+*F2 landed (2026-10-30).* `Classes::normalize` returns a `Term` (its `NormalForms` is a `HashMap<Term, Term>`) and takes
+`&Job`: the filter reads only the normal form, and the production rewriter takes `step`, not `normalize`, so the plans
+`normalize` built (`Cong` per changed node, `Trans` per replacement, the memo's `Rc`s) had no reader. `step` and
+`normalize` share a plan-free `Classes::replacement` (the representative, the width and variable checks, the `VERDICTS`
+lookup or build); `step` keeps the `table_steps` insert and `Plan::law`. Two changes beyond the survey's counting mode,
+which it subsumes: `normalize` counts no step in `table_steps` (the filter's job is a throwaway, and the F1 survey bullet
+found no `steps_if_closed` around `normalize`; every non-test caller is that filter), and `VERDICTS` holds `Arc<Verdict>`, so a hit copies no argument `Vec`. The
+test `counting_and_compiling_agree` now checks `step` under counting rules (the same representative, the shared
+`Plan::Counting`) and that `normalize` counts nothing; `normal_forms_are_memoized_per_operator_node` plants an entry in
+the memo and checks it comes back, instead of `Rc::ptr_eq` on a plan. The church_bv suite passed (168 tests, 31
+ignored; run `2026-10-29-f2-suite`), both salt-1 sequences and the salt-0 pair stay pinned (runs `2026-10-29-f2-pin`,
+`-f2-pin0`) and `regenerate_held` left `held_*.txt` identical (`-f2-held`). Counts against `89e7fe0` in one batch (runs
+`2026-10-30-f2-icount-{L1,F1,F2,L2}`; `docs/runs/2026-10-30/rows/2026-10-30-f2-icount.txt`): -2.4% at the best runs
+(168.19 G against 172.30) and -2.9% at the pooled medians (169.76 against 174.75). The arms overlap, unlike S3's: 5 of
+the 36 F-L pairs have F above L, so the direction holds and the size is a few percent, the survey's 1.8 points at most
+plus the memo's drops. The profile after it (run `2026-10-30-f2-prof`, `docs/runs/2026-10-30/rows/2026-10-30-f2-prof.txt`;
+untimed: 42,500 busy samples against 42,266): the filter 35.3% inclusive (39.4), `normalize` 30.9 (33.1); the work on
+every visit 9.36 (12.69), with plans built 0 (1.50), lookup hits 3.37 (3.84), the walk and the rest 5.71 (7.29), the
+closure's drops 0.28; first asks 21.56 (20.44), work F2 does not touch, whose samples rose 6% at the same busy total.
 
 ## The kernel
 

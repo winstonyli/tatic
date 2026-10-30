@@ -6,7 +6,7 @@
 
 use super::*;
 use super::rewrite::{zip_op, Node};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use crate::task::SharedMemo;
 
 /// The operators in enumeration order; `shl1` and `shr1` are unary, enumerated with the second operand `0`.
@@ -392,7 +392,6 @@ impl Classes {
 }
 
 /// How a replacement `u -> r` is proved (spec §3, R2, R3): its prover, the law's sides over `V(0..)` and its arguments.
-#[derive(Clone)]
 struct Verdict {
     kind: LawKind,
     lhs: Term,
@@ -402,7 +401,7 @@ struct Verdict {
 
 /// Replacements' verdicts by (width, carry cap, u, r). Pure: a verdict depends only on its key (`tree_encoding` reads the
 /// carry cap before its own memo).
-static VERDICTS: SharedMemo<(usize, usize, Term, Term), Option<Verdict>> = SharedMemo::new();
+static VERDICTS: SharedMemo<(usize, usize, Term, Term), Option<Arc<Verdict>>> = SharedMemo::new();
 
 /// The verdict on `u -> r` at width `n`: `Bitwise` when neither side has `add`, `sub` or `lt` and they agree at widths
 /// 1..=5; else `Tree` when `tree_encoding` finds a carry encoding with each `shr1` node a fresh variable (decision 3);
@@ -434,9 +433,9 @@ fn verdict(job: &Job, n: usize, u: &Term, r: &Term) -> Option<Verdict> {
 }
 
 impl Classes {
-    /// `rep(t)` when that replacement has a proof at width `n` and its representative is over the context's `k` variables,
-    /// with its plan (`Plan::Law`, or the shared `Plan::Counting` while counting); counted in `job.table_steps`.
-    pub fn step(&self, job: &mut Job, n: usize, k: usize, t: &Term) -> Option<(Term, PlanRc)> {
+    /// `rep(t)` and its verdict when that replacement has a proof at width `n` and its representative is over the context's
+    /// `k` variables; the verdict is shared, not copied, out of the memo.
+    fn replacement(&self, job: &Job, n: usize, k: usize, t: &Term) -> Option<(Term, Arc<Verdict>)> {
         let r = self.rep(t)?;
         if r.max_var() >= k {
             return None;
@@ -445,40 +444,42 @@ impl Classes {
         let v = match VERDICTS.get(&key) {
             Some(v) => v,
             None => {
-                let v = verdict(job, n, t, &r);
+                let v = verdict(job, n, t, &r).map(Arc::new);
                 if VERDICTS.insert(key, v.clone()) && v.is_none() {
                     println!("CLASS_UNUSABLE {} = {}", t.show(), r.show());
                 }
                 v
             }
         }?;
-        job.table_steps.insert((*t, r));
-        Some((r, Plan::law(job, v.kind, v.lhs, v.rhs, v.args)))
+        Some((r, v))
     }
 
-    /// `t` with `step` taken at every node, bottom-up, and its plan: `Cong` per changed node, `Trans` per replacement. An
-    /// operator node's result is kept in `memo` and read back when asked again (`stream_laws` asks for a group's head once
-    /// per conjecture; docs/tier-cycle.md, "F1 landed"); a leaf is stepped, not looked up.
-    pub fn normalize(&self, job: &mut Job, n: usize, k: usize, t: &Term, memo: &mut NormalForms) -> (Term, PlanRc) {
-        let step = |job: &mut Job, t1: Term, p1: PlanRc| match self.step(job, n, k, &t1) {
-            Some((r, p)) => (r, Plan::trans(job, p1, p)),
-            None => (t1, p1),
-        };
-        let Node::Op(o, a, b) = *t.node() else { return step(job, *t, Plan::refl(job, t)) };
-        if let Some((r, p)) = memo.get(t) {
-            return (*r, p.clone());
+    /// `rep(t)` when that replacement has a proof at width `n` and its representative is over the context's `k` variables,
+    /// with its plan (`Plan::Law`, or the shared `Plan::Counting` while counting); counted in `job.table_steps`.
+    pub fn step(&self, job: &mut Job, n: usize, k: usize, t: &Term) -> Option<(Term, PlanRc)> {
+        let (r, v) = self.replacement(job, n, k, t)?;
+        job.table_steps.insert((*t, r));
+        Some((r, Plan::law(job, v.kind, v.lhs, v.rhs, v.args.clone())))
+    }
+
+    /// `t` with the table's replacement taken at every node, bottom-up: what `step` would reach, with no plan built and no
+    /// step counted. An operator node's result is kept in `memo` and read back when asked again (`stream_laws` asks for a
+    /// group's head once per conjecture; docs/tier-cycle.md, "F1 landed"); a leaf is replaced, not looked up.
+    pub fn normalize(&self, job: &Job, n: usize, k: usize, t: &Term, memo: &mut NormalForms) -> Term {
+        let Node::Op(o, a, b) = *t.node() else { return self.replacement(job, n, k, t).map_or(*t, |(r, _)| r) };
+        if let Some(r) = memo.get(t) {
+            return *r;
         }
-        let ((a1, pa), (b1, pb)) = (self.normalize(job, n, k, &a, memo), self.normalize(job, n, k, &b, memo));
-        let (t1, p1) = if (a1, b1) == (a, b) { (*t, Plan::refl(job, t)) } else { (Term::op(o, a1, b1), Plan::cong(job, o, pa, pb)) };
-        let out = step(job, t1, p1);
-        memo.insert(*t, out.clone());
+        let (a1, b1) = (self.normalize(job, n, k, &a, memo), self.normalize(job, n, k, &b, memo));
+        let t1 = if (a1, b1) == (a, b) { *t } else { Term::op(o, a1, b1) };
+        let out = self.replacement(job, n, k, &t1).map_or(t1, |(r, _)| r);
+        memo.insert(*t, out);
         out
     }
 }
 
-/// `Classes::normalize`'s results by operator term, for one width, context and job: the plans are the job's (real, or the
-/// shared `Plan::Counting` while counting), and its `table_steps` already hold the steps they took.
-pub type NormalForms = hashbrown::HashMap<Term, (Term, PlanRc)>;
+/// `Classes::normalize`'s results by operator term, for one width and context.
+pub type NormalForms = hashbrown::HashMap<Term, Term>;
 
 /// The key refinement's refuter (R8 of the plan): 4096 pseudo-random width-8 inputs, every width-4 input, every width-3
 /// input, then the screen's width-8 inputs.
@@ -715,8 +716,8 @@ fn steps_compile_to_checked_proofs() {
     });
 }
 
-/// Counting takes the same steps (the verdict is decided the same way, R3) and builds no plan; the law it closes then
-/// compiles to a checked proof (spec "Testing": counting and compiling agree).
+/// Counting takes the same steps (the verdict is decided the same way, R3) and builds no plan; `normalize` reaches the
+/// term `step` does at every node and counts and builds nothing (spec "Testing": counting and compiling agree).
 #[test]
 fn counting_and_compiling_agree() {
     let (a, b) = (parse_term("add(sub(add(x, y), y), and(z, or(z, x)))"), parse_term("add(and(x, or(x, y)), z)"));
@@ -724,24 +725,23 @@ fn counting_and_compiling_agree() {
     tatic::kernel::scoped(|| {
         let c = Classes::get();
         let rules = job.rules().counting(true);
-        let (na, nb, plan) = job.with_rules(rules, |job| {
-            let memo = &mut NormalForms::default();
-            let ((na, pa), (nb, _)) = (c.normalize(job, 4, 3, &a, memo), c.normalize(job, 4, 3, &b, memo));
-            (na, nb, pa)
-        });
-        assert!(matches!(*plan, Plan::Counting));
-        assert_eq!(na.show(), nb.show(), "the law meets while counting");
+        for s in ["sub(add(x, y), y)", "and(x, or(x, y))", "shr1(x, y)"] {
+            let t = parse_term(s);
+            let counted = job.with_rules(rules.clone(), |job| c.step(job, 4, 3, &t));
+            let (r, plan) = counted.unwrap_or_else(|| panic!("{s}: no counted step"));
+            assert!(matches!(*plan, Plan::Counting), "{s}");
+            assert_eq!(c.step(job, 4, 3, &t).map(|(r, _)| r.show()), Some(r.show()), "{s}");
+        }
         let memo = &mut NormalForms::default();
-        let ((ma, pa), (mb, pb)) = (c.normalize(job, 4, 3, &a, memo), c.normalize(job, 4, 3, &b, memo));
-        assert_eq!((ma.show(), mb.show()), (na.show(), nb.show()));
-        let plan = Plan::trans(job, pa, Plan::sym(job, pb));
-        let (p, s) = law_proof(job, 4, 3, &a, &b, &plan);
-        job.lemmas.ck("counted law", &p, &s);
+        let before = job.table_steps.len();
+        let (na, nb) = (c.normalize(job, 4, 3, &a, memo), c.normalize(job, 4, 3, &b, memo));
+        assert_eq!(na.show(), nb.show(), "the law meets");
+        assert_eq!(job.table_steps.len(), before, "normalize counts no step");
     });
 }
 
-/// One memo across calls: each term gets the normal form a fresh memo gives, a term asked again gets the plan the memo
-/// holds, and the memo holds every operator subterm asked and no leaf.
+/// One memo across calls: each term gets the normal form a fresh memo gives, a term asked again is read from the memo (a
+/// planted entry comes back), and the memo holds every operator subterm asked and no leaf.
 #[test]
 fn normal_forms_are_memoized_per_operator_node() {
     let ts = ["add(sub(add(x, y), y), and(z, or(z, x)))", "add(and(x, or(x, y)), z)", "sub(add(x, y), y)"].map(parse_term);
@@ -750,9 +750,11 @@ fn normal_forms_are_memoized_per_operator_node() {
         let c = Classes::get();
         let mut memo = NormalForms::default();
         for t in &ts {
-            let (m, p) = c.normalize(job, 4, 3, t, &mut memo);
-            assert_eq!(m.show(), c.normalize(job, 4, 3, t, &mut NormalForms::default()).0.show(), "{}", t.show());
-            assert!(PlanRc::ptr_eq(&p, &c.normalize(job, 4, 3, t, &mut memo).1), "{}: not read from the memo", t.show());
+            let m = c.normalize(job, 4, 3, t, &mut memo);
+            assert_eq!(m.show(), c.normalize(job, 4, 3, t, &mut NormalForms::default()).show(), "{}", t.show());
+            memo.insert(*t, Term::ONES);
+            assert!(c.normalize(job, 4, 3, t, &mut memo) == Term::ONES, "{}: not read from the memo", t.show());
+            memo.insert(*t, m);
         }
         let mut subs = vec![];
         ts.iter().for_each(|t| t.subterms(&mut subs));
