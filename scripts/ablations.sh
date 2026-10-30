@@ -29,8 +29,8 @@ gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines
   # run.ps1 names the folder <date>-<name>, adding -2, -3 to a name an earlier driver run already used: ours is the new one
   folders() { ls -d "$runs_root"/*-"$name" "$runs_root"/*-"$name"-[0-9]* 2>/dev/null; }
   before=$(folders)
-  ARM_CACHE=$(cygpath -w "$runs_root/arm-cache") JOBS=4 powershell -NoProfile -File "$wrap" -Kind gate -Name "$name" \
-    -Command "start /b /wait /belownormal /affinity CFF bash scripts/streams_ab.sh $a $b $*" < /dev/null > /dev/null 2>&1 &
+  ARM_CACHE=$(cygpath -w "$runs_root/arm-cache") JOBS=4 powershell -NoProfile -File "$wrap" -Kind gate -Name "$name" -Affinity CFF \
+    -Command "bash scripts/streams_ab.sh $a $b $*" < /dev/null > /dev/null 2>&1 &
   pid=$!
   while kill -0 $pid 2>/dev/null; do
     ping -n $((${POLL_S:-30} + 1)) 127.0.0.1 > /dev/null

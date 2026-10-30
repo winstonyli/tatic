@@ -146,7 +146,7 @@ echo 0 > "$T/tally/s1_A/failed"; out=$(RUN_DIR=$T/tally tally 1 2); ok "no arm f
 # salt lines of a VARIANT
 mkdir -p "$T/home/.claude/runs" "$T/fake"
 cat > "$T/home/.claude/runs/run.ps1" <<'EOF'
-param($Kind, $Name, $Command)
+param($Kind, $Name, $Affinity, $Command)
 $base = "$env:LOCALAPPDATA\claude-runs\tatic\2026-01-01-$Name"; $d = $base; $i = 2
 while (Test-Path $d) { $d = "$base-$i"; $i++ }
 New-Item -ItemType Directory -Force $d | Out-Null

@@ -11,4 +11,6 @@ the history (`git tag -n99`).
   `status: draft | active | done | "superseded-by: <file>"`; it overrides any older "Status:" line in the body.
 - Long runs launch through `~/.claude/runs/run.ps1` (raw output in `%LOCALAPPDATA%\claude-runs\tatic`, one row each in
   `docs/runs.md`); `runs dir` and `kk.sh` then write into that run's folder. Curated rows behind the doc's sections are
-  in `docs/runs/<date>/`.
+  in `docs/runs/<date>/`. Pin a recorded run with `run.ps1 -Affinity CFF`, not `start /wait /affinity` in `-Command`;
+  rows before 2026-10-30 launched that way (about 130 of them, e.g. `2026-10-29-s1-suite`) can show a false exit 0, so
+  read the headline.
