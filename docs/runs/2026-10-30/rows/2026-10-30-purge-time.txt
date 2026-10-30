@@ -1,0 +1,51 @@
+# 2026-10-30-purge-time3: `runs time` (docs/runs/2026-10-30/scripts/purge_time.sh, through run.ps1 -Timed) over three arms of
+# search::stream_sequences_are_pinned --exact --ignored at STREAM_THREADS=1 on CPU 8 (--affinity 100), 8 clean rounds:
+# A = the default purge (1 s), B = MIMALLOC_PURGE_DELAY=-1 in the environment (no code change), A2 = the default again (an
+# A/A). The exe is the F2 build (1a37507's code; f2-exes F.exe). Wrapper conditions: cpu 11%, Defender real-time off,
+# CPU lease held, quiet total 18.2% / cpu8 2.3% / cpu9 2.9% at the start; each run's other_pct 4-16%. Two earlier
+# launches of the same script are rows too: 2026-10-30-purge-time (exit 127: the script's runs.exe path had three `..`
+# where four were needed) and -purge-time2 (refused: cpu8 6.5% over the 5% limit, another session's job). The env var
+# takes effect: with MIMALLOC_VERBOSE=1 the exe prints `option 'purge_delay': -1` (run 2026-10-30-purge-off-envcheck).
+# Peak memory is the tool's own: peakproc_mb 2564-2568 in all 24 runs (no difference between arms); peakws_mb median 1885
+# (A), 1896 (B: +11 MB, +0.6%; three of its rounds near 1928, +43 MB), 1884 (A2).
+# Also with purge off (set MIMALLOC_PURGE_DELAY=-1 before the gate's start): the suite passed, 168 / 31 ignored (run
+# 2026-10-30-purge-off-suite), and both salt-1 and salt-0 pins passed (-purge-off-pin, -purge-off-pin0).
+== summary.txt
+clean 8 rounds: [1, 2, 3, 4, 5, 6, 7, 8]
+A: jobcpu median=25.969 best=24.984 wall median=26.192 best=25.145
+B: jobcpu median=24.445 best=23.391 wall median=24.777 best=23.577
+A2: jobcpu median=26.312 best=25.812 wall median=26.978 best=26.043
+B - A jobcpu: median -1.898, won 8/8: r1 -5.016, r2 -0.875, r3 -2.203, r4 -2.562, r5 -0.875, r6 -2.406, r7 -1.594, r8 -0.719
+B - A jobcpu over the two orders: -1.790 (B first -0.823 in 3, second -2.756 in 5), running second -0.967
+B - A wall: median -1.789, won 8/8: r1 -5.287, r2 -0.967, r3 -2.009, r4 -3.244, r5 -1.186, r6 -2.048, r7 -1.568, r8 -0.640
+B - A wall over the two orders: -1.881 (B first -0.931 in 3, second -2.831 in 5), running second -0.950
+A2 - A jobcpu: median +0.344, won 3/8: r1 -1.031, r2 +0.922, r3 -0.203, r4 -0.625, r5 +0.453, r6 +0.234, r7 +0.859, r8 +1.250
+A2 - A jobcpu over the two orders: +0.133 (A2 first +0.531 in 5, second -0.266 in 3), running second -0.398
+A2 - A wall: median +0.214, won 3/8: r1 -1.170, r2 +0.946, r3 -0.155, r4 -7.458, r5 +0.278, r6 +0.150, r7 +0.957, r8 +1.199
+A2 - A wall over the two orders: -1.037 (A2 first +0.484 in 5, second -2.557 in 3), running second -1.520
+== runs.tsv (arm, round, wall_s, jobcpu_s, peakproc_mb, peakws_mb, other_pct, exit, clean)
+arm	round	wall_s	jobcpu_s	peakproc_mb	peakws_mb	other_pct	exit	clean
+A	1	30.18	29.594	2566	1886	16.1	0	true
+B	1	24.90	24.578	2565	1895	11.1	0	true
+A2	1	29.01	28.562	2565	1880	13.6	0	true
+B	2	24.66	24.406	2565	1896	6.1	0	true
+A2	2	26.57	26.203	2564	1885	8.2	0	true
+A	2	25.62	25.281	2566	1874	6.4	0	true
+A2	3	26.04	25.812	2567	1887	11.2	0	true
+A	3	26.20	26.016	2566	1890	7.8	0	true
+B	3	24.19	23.812	2565	1928	7.9	0	true
+A	4	44.69	27.047	2568	1875	12.0	0	true
+B	4	41.45	24.484	2565	1896	11.3	0	true
+A2	4	37.23	26.422	2567	1877	11.1	0	true
+B	5	26.10	25.828	2565	1928	14.7	0	true
+A2	5	27.57	27.156	2566	1886	13.5	0	true
+A	5	27.29	26.703	2566	1883	9.7	0	true
+A2	6	26.30	26.156	2567	1883	8.1	0	true
+A	6	26.15	25.922	2564	1885	11.0	0	true
+B	6	24.11	23.516	2565	1895	11.0	0	true
+A	7	25.14	24.984	2566	1885	4.2	0	true
+B	7	23.58	23.391	2565	1927	4.8	0	true
+A2	7	26.10	25.844	2567	1887	7.8	0	true
+B	8	25.55	25.188	2565	1895	8.8	0	true
+A2	8	27.39	27.156	2565	1881	8.9	0	true
+A	8	26.19	25.906	2566	1888	6.6	0	true

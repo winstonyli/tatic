@@ -5313,6 +5313,18 @@ one stream thread (-5.8%, the pin runs back to back), 14.41 against 16.12 s at f
 both give a direction only, and a time claim needs a timed A/B. P1 itself is held for the user's call (`PARKED.md`,
 "Options held behind the filter, `show` and purge survey").
 
+*P1 timed (2026-10-30, env var only, no code change).* The F2 build (`1a37507`'s code) at one stream thread pinned to
+CPU 8, three arms alternated over 8 clean rounds by `runs time` under `run.ps1 -Timed` (run `2026-10-30-purge-time3`;
+`docs/runs/2026-10-30/rows/2026-10-30-purge-time.txt`): A the default purge, B `MIMALLOC_PURGE_DELAY=-1`, A2 the default
+again. Job CPU medians 25.97 s (A), 24.45 (B), 26.31 (A2); B - A median -1.90 s (-7.3%), B ahead in 8 of 8 rounds,
+in either order (-0.82 s running first, -2.76 second); wall -1.79 s (-6.8%). The A/A reads +0.34 s (+1.3%), ahead in 3
+of 8 rounds, within -1.03 to +1.25 s; B's rounds run -0.72 to -5.02 s, five of them past the A/A's -1.03 and the
+other three (-0.72 to -0.88) inside it, all eight on B's side. Memory
+cost on this workload: peak process memory 2564-2568 MB in all 24 runs, peak working set 1896 MB (B) against 1885
+(A): +11 MB, three of B's rounds near 1928. With purge off the suite passed (168 tests, 31 ignored) and both salt
+pins held (runs `2026-10-30-purge-off-{suite,pin,pin0}`). Not measured: four stream threads (the untimed spike gave
+-10.6% there), processes that run longer than the pin test (the miner, sweeps), `MIMALLOC_ARENA_RESERVE` (P2) on top.
+
 *F4 landed (2026-10-29).* `first_difference` compares the vectors' first `tries` entries whole (`x == y` on the two
 slices, a `memcmp`) and scans for the first differing input only when they differ. The test `value_memo_matches_interp`
 now also runs 2 tries (the corners alone, where many distinct terms agree), so a version that compares past `tries`
