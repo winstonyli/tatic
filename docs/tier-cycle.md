@@ -5206,7 +5206,8 @@ every term to size 5 and 47k random terms to size 17 by `docs/runs/2026-10-29/sc
   (`mi_`, `_mi_`), `church_bv::_::__rust_` or `alloc::raw_vec::` frame on the stack, 0.35 of them the purge sweep;
   with purge off those are 1.21 of 2.80 (run `2026-10-29-purge-spike-prof`), so after P1 nearer 1.2; the walk and
   the hash stay). If the test's digest also streams into its FNV state, up to 0.35 there (its 0.59 less the walk and
-  the multiply; 0.20 by the same frames).
+  the multiply; 0.20 by the same frames). Landed 2026-10-29 ("S2 landed" below), with `classes::text_hash` on the same
+  writer: -2.2% in a count (one quiet pair) and 5.0 points of time share, above the estimate.
 - **S3.** Drop the conjecture sort by making `shuffled` a total order (hash, then text), and take each group's head as
   its minimum instead of sorting the pool; the seeds sort stays, since its order picks the terms the growth samples.
   At salt 0, `RULEMINER_SHUFFLE`'s default, `shuffled` keeps the conjecture sort's order, so there the conjecture
@@ -5221,7 +5222,8 @@ every term to size 5 and 47k random terms to size 17 by `docs/runs/2026-10-29/sc
 - **S4.** Presize `show`'s `String` to `5 * size - 3` (an upper bound, reached by terms of only shifts and `-1`): about
   2.5-2.9 (an estimate: the 2.95 of `show`'s samples holding a mimalloc or `church_bv::_::__rust_` frame, less the
   0.25 of the first allocation, which presizing keeps; the 4.09 holding `::reserve::do_reserve_and_handle` include
-  the growth logic too and are an upper bound), mostly covered by S1 and S2.
+  the growth logic too and are an upper bound), mostly covered by S1 and S2. Decided against 2026-10-29: after S1 and
+  S2, `Term::show` is 0.03% of the pin test (run `2026-10-29-s2-prof`); what calls it now is outside this workload.
 
 Rejected: caching each term's text (about 0.7 GB, an estimate); a structural hash in `shuffled`, which changes the
 permutation and so both pinned sequences.
@@ -5394,6 +5396,30 @@ points left (the seeds sort 0.43 of them) are what S3 would replace with a minim
 inclusive (35.6 before), `pool_conjectures` 31.2 (33.3), `verdict` 14.8 (14.3), `Term::show` 2.8 (13.0; `shuffled`
 2.35 and the pin test's digest 0.45, S2's), `shuffled` 6.6 (6.2), `Plan::new` 1.4 (1.4), `mi_arena_try_purge` 2.7 self
 (2.6).
+
+*S2 landed (2026-10-29).* `Term::show_into` is public and writes through `fmt::Write`; `search::Fnv`, an FNV-1a 64
+`fmt::Write` with `Fnv::of(|h| ...)`, takes the three hand-rolled FNV folds: `shuffled`'s hash of `{salt}|{lhs} = {rhs}`,
+the pin test's digest, and `classes::text_hash` (which joins its trimmed lines by `\n` without building the join). No
+text is built for any of them; `show` is `show_into` on a `String`. The test `shuffled_orders_by_the_fnv_of_the_law_text`
+(`Fnv` of `"a"` and of pieces against FNV-1a's value for the whole; `shuffled` at salts 1, 2 and 7 over laws on every
+term to size 3 against the same sort keyed by the text) failed to build before the change. The church_bv suite passed
+(166 tests, 30 ignored; run `2026-10-29-s2-suite`) and both sequences stay pinned, the pin run's lines equal S1's once
+sorted (run `2026-10-29-s2-pin`). Counts against `b9fe5a3` (runs `2026-10-29-s2-icount-*` and `-s2b-icount-L1`;
+`docs/runs/2026-10-29/rows/2026-10-29-s2-icount.txt`): -2.2% at the best runs of the quiet pair (191.66 G against
+195.89; 6-7% load) and -1.7% against a second quiet L round (195.05), every F run below every L run; a second pair at
+27-33% load, from a game another user process had started, counted F2 2.0% above L2 and is not used (counts rise with
+load, the purge being time-based), and the batch meant to repeat the pair stopped when the load gate (under 15%)
+stayed shut for 30 minutes. So F has one quiet round, not the two the other items had; its direction and size are
+beyond the noise of the quiet rounds (0.25-0.40% spreads) but not repeated. The profile after it (run
+`2026-10-29-s2-prof`, `docs/runs/2026-10-29/rows/2026-10-29-s2-prof.txt`; untimed, 9% load against 17%) shows the time
+saving: `shuffled` 1.63% inclusive (6.64 before), `Term::show` 0.03 (2.83); what remains of `shuffled` is the walk
+(`show_into` 1.45 under its closure) and the hash (`write_str` 0.77), and the digest's `show_into` 0.29 (0.45). The
+time share fell by 5.0 points where the count fell by 2.2% and the survey expected about 2: the `String`s' cost was
+allocation stalls (`mimalloc`, 2.02 of `shuffled`'s 3.58 in the survey) more than instructions, as it read. Absolute
+busy-sample totals are not comparable between profiles at different loads (50,071 against 49,229 here; 53,184 at 6%
+load against 48,235 at 18% across F1, whose count fell 17%): shares within a profile are what is read. The sorts that
+remain are `stream_laws`' 9.95 and `pool_conjectures`' 3.03 (union 14.63 with `shuffled`'s 1.63). `mi_arena_try_purge`
+1.5 self (2.7).
 
 ## The kernel
 

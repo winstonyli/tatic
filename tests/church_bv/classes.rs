@@ -585,11 +585,10 @@ pub fn held_levels(band: usize) -> usize {
 
 /// FNV-1a 64 of a text's trimmed lines joined by `\n`: the same for any line endings.
 fn text_hash(text: &str) -> u64 {
-    let mut h = 0xcbf2_9ce4_8422_2325u64;
-    for b in text.lines().map(str::trim).collect::<Vec<_>>().join("\n").bytes() {
-        h = (h ^ b as u64).wrapping_mul(0x0100_0000_01b3);
-    }
-    h
+    use std::fmt::Write;
+    crate::search::Fnv::of(|h| {
+        text.lines().map(str::trim).enumerate().try_for_each(|(i, l)| if i == 0 { h.write_str(l) } else { write!(h, "\n{l}") })
+    })
 }
 
 fn held_header(band: usize) -> String {

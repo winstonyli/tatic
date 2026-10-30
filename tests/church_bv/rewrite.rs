@@ -404,21 +404,22 @@ pub const VARS: [&str; 8] = ["x", "y", "z", "u", "v", "w", "p", "q"];
 impl Term {
     pub fn show(&self) -> String {
         let mut s = String::new();
-        self.show_into(&mut s);
+        self.show_into(&mut s).expect("a String takes any text");
         s
     }
-    fn show_into(&self, out: &mut String) {
+    /// `show`'s text, written into `out`: a `String`, or `search::Fnv` to hash it without building it.
+    pub fn show_into(&self, out: &mut impl std::fmt::Write) -> std::fmt::Result {
         match *self.node() {
-            Node::V(i) => out.push_str(VARS[i]),
-            Node::Zero => out.push('0'),
-            Node::Ones => out.push_str("-1"),
+            Node::V(i) => out.write_str(VARS[i]),
+            Node::Zero => out.write_char('0'),
+            Node::Ones => out.write_str("-1"),
             Node::Op(o, a, b) => {
-                out.push_str(OP_INFO[o].name);
-                out.push('(');
-                a.show_into(out);
-                out.push_str(", ");
-                b.show_into(out);
-                out.push(')');
+                out.write_str(OP_INFO[o].name)?;
+                out.write_char('(')?;
+                a.show_into(out)?;
+                out.write_str(", ")?;
+                b.show_into(out)?;
+                out.write_char(')')
             }
         }
     }

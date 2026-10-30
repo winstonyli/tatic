@@ -1,0 +1,46 @@
+# 2026-10-29-s2-icount and -s2b-icount: retired instructions of search::stream_sequences_are_pinned (--exact --ignored),
+# rounds of 3 runs each on CPU 4 by ~/.claude/samply/icount.ps1, STREAM_THREADS=1 from each exe's .env. L = b9fe5a3 (S1;
+# the s1 batches' F.exe, byte-identical, not rebuilt); F = b9fe5a3 plus S2, `Term::show_into` over `fmt::Write` and
+# `search::Fnv` for `shuffled`'s per-law hash, the pin digest and `classes::text_hash` (tests/church_bv/rewrite.rs,
+# search.rs, classes.rs; built 16:58 from the tree whose suite and pins passed, runs 2026-10-29-s2-suite and -s2-pin).
+# Both `cargo test --release`, same target dir. Defender real-time off, mimalloc's purge on (the default).
+# Batch s2 (rounds L1 F1 F2 L2, 17:04-17:36) waited for the Samply task to be Ready and no exclusive CPU lease
+# (scratchpad ab_rounds.ps1, fresh -Out folders, trace time checked). Its first pair ran at 6-7% load; the second
+# (17:24-17:36) at 33% and 27% start load, from a game another user process had started (not stopped), which counted
+# F2 2.0% above L2 and 4.6% above F1: counts rise with load (the purge is time-based), so that pair is not used.
+# Batch s2b was to repeat the rounds with the gate at CPU load under 15%; its L1 ran at 6%, then the gate never opened
+# (load 22-34% for over 30 min) and the batch was stopped, F1, F2 and L2 not run.
+# Quiet rounds only: best F/L 191.66 / 195.89 = 0.9784 (-2.2%) against s2 L1, 191.66 / 195.05 = 0.9826 (-1.7%) against
+# s2b L1 (the two L rounds 0.4% apart); medians 192.42 / 196.37 = 0.9799 (-2.0%) and 192.42 / 195.49 = 0.9843 (-1.6%).
+# Every F run (191.66-192.81) is below every quiet L run (195.05-202.41; s2b L1 run 1, 202.41, is a +3.8% outlier at 6%
+# load). F has one quiet round, not two.
+== L1 (2026-10-29-s2-icount-L1, 17:04:42-17:07:32, CPU load 6% at start)
+run	pid	instructions
+1	51912	195885008250
+2	58364	196369984090
+3	61492	196537458609
+n 3  best 195,885,008,250  median 196,369,984,090  (median-best)/best 0.00248  max/best 1.00333
+== F1 (2026-10-29-s2-icount-F1, 17:08:36-17:11:22, CPU load 7% at start)
+run	pid	instructions
+1	57028	192811531792
+2	52104	191657422982
+3	2716	192419748158
+n 3  best 191,657,422,982  median 192,419,748,158  (median-best)/best 0.00398  max/best 1.00602
+== F2 (2026-10-29-s2-icount-F2, 17:24:01-17:30:38, CPU load 33% at start)
+run	pid	instructions
+1	3356	203531467808
+2	52128	200404981709
+3	52416	202037031060
+n 3  best 200,404,981,709  median 202,037,031,060  (median-best)/best 0.00814  max/best 1.01560
+== L2 (2026-10-29-s2-icount-L2, 17:31:43-17:36:03, CPU load 27% at start)
+run	pid	instructions
+1	39072	201967332292
+2	14048	198638264189
+3	61676	196394326911
+n 3  best 196,394,326,911  median 198,638,264,189  (median-best)/best 0.01143  max/best 1.02838
+== L1 (2026-10-29-s2b-icount-L1, 18:17:01-18:20:07, CPU load 6% at start)
+run	pid	instructions
+1	58396	202405655465
+2	62224	195490985270
+3	29484	195048103853
+n 3  best 195,048,103,853  median 195,490,985,270  (median-best)/best 0.00227  max/best 1.03772

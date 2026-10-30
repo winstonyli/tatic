@@ -55,10 +55,36 @@ impl Gates for GoodOps {
     }
 }
 
-/// `laws` reordered by a hash of the salt and each law's text (FNV-1a: deterministic across runs); salt 0 keeps the order.
+/// FNV-1a 64 of the text written into it (`write!`, `Term::show_into`), so a text is hashed without being built:
+/// `shuffled`'s order, the pin test's digest, the held files' key hash.
+pub struct Fnv(u64);
+impl Fnv {
+    /// The hash of the text `write` writes.
+    pub fn of(write: impl FnOnce(&mut Fnv) -> std::fmt::Result) -> u64 {
+        let mut h = Fnv(0xcbf2_9ce4_8422_2325);
+        write(&mut h).expect("an Fnv takes any text");
+        h.0
+    }
+}
+impl std::fmt::Write for Fnv {
+    fn write_str(&mut self, s: &str) -> std::fmt::Result {
+        self.0 = s.bytes().fold(self.0, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+        Ok(())
+    }
+}
+
+/// `laws` reordered by the `Fnv` of the salt and each law's text (deterministic across runs); salt 0 keeps the order.
 pub fn shuffled(mut laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
+    use std::fmt::Write;
     if salt != 0 {
-        laws.sort_by_cached_key(|(a, b)| format!("{salt}|{} = {}", a.show(), b.show()).bytes().fold(0xcbf29ce484222325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100000001b3)));
+        laws.sort_by_cached_key(|(a, b)| {
+            Fnv::of(|h| {
+                write!(h, "{salt}|")?;
+                a.show_into(h)?;
+                h.write_str(" = ")?;
+                b.show_into(h)
+            })
+        });
     }
     laws
 }
@@ -73,6 +99,28 @@ pub fn shuffle_is_a_fixed_permutation() {
     assert!(a != sorted && a != b);
     let set = |v: &Vec<(Term, Term)>| v.iter().cloned().collect::<hashbrown::HashSet<_>>();
     assert!(set(&a) == set(&sorted) && set(&b) == set(&sorted) && a.len() == sorted.len(), "a permutation");
+}
+
+/// `Fnv` is FNV-1a 64 of the text written into it, and `shuffled`'s order is that hash's of each law's text
+/// `{salt}|{lhs} = {rhs}`: the order the pinned sequences were built in, when the text was built first. Over laws whose
+/// sides are every term to size 3 (all operators, variables and constants).
+#[test]
+pub fn shuffled_orders_by_the_fnv_of_the_law_text() {
+    use std::fmt::Write;
+    let fnv1a = |s: &str| s.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+    assert_eq!(Fnv::of(|h| h.write_str("a")), 0xaf63_dc4c_8601_ec8c, "FNV-1a 64 of \"a\"");
+    assert_eq!(Fnv::of(|h| h.write_str("ab").and_then(|()| h.write_str("c"))), fnv1a("abc"), "pieces hash as the whole");
+    let leaves: &[Term] = &(0..VARS.len()).map(Term::v).chain([Term::ZERO, Term::ONES]).collect::<Vec<_>>();
+    let to3: Vec<Term> = (0..OP_INFO.len())
+        .flat_map(|o| leaves.iter().flat_map(move |&x| leaves.iter().map(move |&y| Term::op(o, x, y))))
+        .chain(leaves.iter().copied())
+        .collect();
+    let laws: Vec<(Term, Term)> = to3.iter().copied().zip(to3.iter().rev().copied()).collect();
+    for salt in [1, 2, 7] {
+        let mut by_text = laws.clone();
+        by_text.sort_by_cached_key(|(a, b)| fnv1a(&format!("{salt}|{} = {}", a.show(), b.show())));
+        assert!(shuffled(laws.clone(), salt) == by_text, "salt {salt}");
+    }
 }
 
 /// The law-sequence variable `k` from `env` as a number, as `Setup::or` reads one (`job::parsed`).
@@ -743,8 +791,15 @@ pub fn stream_sequences_are_pinned() {
         .iter()
         .map(|&(levels, ..)| {
             let seq = stream_sequence(1, levels);
-            let text: String = seq.iter().map(|(a, b)| format!("{} = {}\n", a.show(), b.show())).collect();
-            let fnv = text.bytes().fold(0xcbf2_9ce4_8422_2325u64, |h, c| (h ^ c as u64).wrapping_mul(0x100_0000_01b3));
+            let fnv = Fnv::of(|h| {
+                use std::fmt::Write;
+                seq.iter().try_for_each(|(a, b)| {
+                    a.show_into(h)?;
+                    h.write_str(" = ")?;
+                    b.show_into(h)?;
+                    h.write_str("\n")
+                })
+            });
             println!("PINNED {levels} growths: {} laws, digest {fnv:#018x}", seq.len());
             (levels, seq.len(), fnv)
         })
