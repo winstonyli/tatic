@@ -252,12 +252,12 @@ fn candidates(laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)], extra: &[(T
         cands.retain(|(l, _)| !in_force.contains(l));
         println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
     }
-    // per left side, the smallest right side only, ties by `show()`. Scoring every right side instead (each left side's rival
+    // per left side, the smallest right side only, ties by `Term`'s order. Scoring every right side instead (each left side's rival
     // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle.md)
     // an identity (a pattern's pool group holds the pattern itself) never gains, and as the smallest right side it would displace
     // its left side's real candidates
     cands.retain(|(l, r)| l != r);
-    cands.sort_by_cached_key(|(l, r)| (l.size(), l.show(), r.size(), r.show()));
+    cands.sort_by_key(|(l, r)| (l.size(), *l, r.size(), *r));
     cands.dedup();
     // rivals: the other right sides of each left side; a round's winner gives way to a rival that gains more on the same laws
     // (`Rounds::pick`; docs/tier-cycle.md, "Preferences and rival orientations in the miner")
@@ -687,10 +687,10 @@ impl<'a> Rounds<'a> {
         // 1000 per affected uncovered straggler, `guard_w` per affected uncovered guard law and the affected stragglers' whole size
         // a candidate can only rewrite a term where it comes before the rule that fired (`Fired::preempted_by`; the trace was
         // made without the candidate)
-        // the run-time order of every rule in play, ranked once (`run_order` builds strings)
+        // the run-time order of every rule in play, ranked once
         let t0 = Instant::now();
         let mut ranked: Vec<(Term, Term)> = scorer.base.iter().chain(chosen).chain(provable.iter()).cloned().collect();
-        ranked.sort_by_cached_key(|(l, r)| run_order(l, r));
+        ranked.sort_by_key(|(l, r)| run_order(l, r));
         let rank: hashbrown::HashMap<(Term, Term), usize> = ranked.into_iter().enumerate().map(|(i, r)| (r, i)).collect();
         // every law's trace at once (`TraceIndex`: a term shared by many laws' traces is matched once), the candidates split
         // over the scoring threads; each candidate's laws are the same whichever thread finds them

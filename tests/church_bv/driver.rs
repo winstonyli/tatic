@@ -651,7 +651,7 @@ fn skeleton(l: &(Term, Term)) -> String {
 /// from equalities of its subterms, which may be served laws), is no twin of a law in `served` or `held` (so no held-out
 /// law reaches a mine) and has no served law's skeleton.
 fn filter(served: &[(Term, Term)], held: &[(Term, Term)]) -> impl Fn(&(Term, Term)) -> bool {
-    let keys: hashbrown::HashSet<String> = served.iter().chain(held).filter_map(|(a, b)| twin_key(a, b)).collect();
+    let keys: hashbrown::HashSet<(Term, Term)> = served.iter().chain(held).filter_map(|(a, b)| twin_key(a, b)).collect();
     let skels: hashbrown::HashSet<String> = served.iter().map(skeleton).collect();
     move |l| twin_key(&l.0, &l.1).is_some_and(|k| !keys.contains(&k)) && !skels.contains(&skeleton(l))
 }

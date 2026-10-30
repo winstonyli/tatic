@@ -1354,7 +1354,7 @@ pub struct RuleTable {
 impl RuleTable {
     /// `new` with `mined` in `run_order` (`Rules::new`).
     fn sorted(setup: &Setup, mut mined: Vec<(Term, Term)>) -> RuleTable {
-        mined.sort_by_cached_key(|(l, r)| run_order(l, r));
+        mined.sort_by_key(|(l, r)| run_order(l, r));
         RuleTable::new(setup, mined)
     }
 
@@ -1377,8 +1377,8 @@ impl RuleTable {
 }
 
 /// The run-time rules' order key (`RuleTable::sorted`).
-pub fn run_order(l: &Term, r: &Term) -> (std::cmp::Reverse<usize>, String, String) {
-    (std::cmp::Reverse(l.size()), l.show(), r.show())
+pub fn run_order(l: &Term, r: &Term) -> (std::cmp::Reverse<usize>, Term, Term) {
+    (std::cmp::Reverse(l.size()), *l, *r)
 }
 
 /// The first rule that fired on a term `rule_step` was asked about (`RewriteState::trace`): none, a built-in rule (tried before every

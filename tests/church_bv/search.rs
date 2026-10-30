@@ -887,12 +887,12 @@ pub fn stream_sequence_cost() {
 }
 
 /// A law's twin key (the law generator's twin filter, docs/superpowers/specs/2026-10-17-law-generator-design.md §1; on
-/// the class table since docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §6): the least `a = b` text,
-/// over the six renamings of x, y, z and both side orders, of the law renamed and then each side's children made
+/// the class table since docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §6): the least `(a, b)`
+/// (`Term`'s order, that of the `a = b` text) over the six renamings of x, y, z and both side orders, of the law renamed and then each side's children made
 /// canonical (renaming first, since a representative is not preserved by renaming). A side's root is kept: canonicalizing
 /// it too would make every law trivial whose sides are of one class, which every true law within the table's size is.
 /// `None` if the sides are then one term (the law is trivial).
-pub fn twin_key(a: &Term, b: &Term) -> Option<String> {
+pub fn twin_key(a: &Term, b: &Term) -> Option<(Term, Term)> {
     let c = crate::classes::Classes::get();
     let side = |t: Term| match *t.node() {
         Node::Op(o, x, y) => Term::op(o, c.canonical(&x), c.canonical(&y)),
@@ -909,10 +909,10 @@ pub fn twin_key(a: &Term, b: &Term) -> Option<String> {
             _ => t,
         }
     }
-    let mut best: Option<String> = None;
+    let mut best: Option<(Term, Term)> = None;
     for p in &PERMS {
         for (l, r) in [(a, b), (b, a)] {
-            let s = format!("{} = {}", side(renamed(*l, p)).show(), side(renamed(*r, p)).show());
+            let s = (side(renamed(*l, p)), side(renamed(*r, p)));
             if best.as_ref().is_none_or(|k| s < *k) {
                 best = Some(s);
             }
@@ -928,12 +928,12 @@ pub fn twin_key(a: &Term, b: &Term) -> Option<String> {
 pub fn twin_keys_rename_normalize_below_roots_and_keep_them() {
     let p = parse_term;
     let swap = twin_key(&p("sub(or(y, x), y)"), &p("and(y, z)"));
-    assert_eq!(twin_key(&p("sub(or(x, y), x)"), &p("and(x, z)")), swap, "renaming x and y");
+    assert!(twin_key(&p("sub(or(x, y), x)"), &p("and(x, z)")) == swap, "renaming x and y");
     assert!(swap.is_some());
-    assert_eq!(twin_key(&p("add(sub(y, y), x)"), &p("add(0, x)")), None, "sides equal below their roots");
+    assert!(twin_key(&p("add(sub(y, y), x)"), &p("add(0, x)")).is_none(), "sides equal below their roots");
     assert!(twin_key(&p("sub(y, y)"), &p("and(x, 0)")).is_some(), "a side's root stays");
     assert!(twin_key(&p("add(add(x, y), z)"), &p("add(x, add(y, z))")).is_some(), "a law within one class");
-    assert_eq!(twin_key(&p("and(or(x, sub(y, 0)), z)"), &p("z")), twin_key(&p("and(or(x, y), z)"), &p("z")), "padding below the root");
+    assert!(twin_key(&p("and(or(x, sub(y, 0)), z)"), &p("z")) == twin_key(&p("and(or(x, y), z)"), &p("z")), "padding below the root");
 }
 
 /// `x`, `y`, `z`, `0` and `-1`.

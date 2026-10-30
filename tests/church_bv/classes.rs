@@ -811,7 +811,7 @@ fn held_out_replacements_prove() {
     tatic::kernel::scoped(|| {
         let t0 = std::time::Instant::now();
         let mut pairs: Vec<_> = pairs.into_iter().collect();
-        pairs.sort_by_cached_key(|(u, r)| (u.show(), r.show()));
+        pairs.sort();
         let (mut by_prover, mut unusable, mut refuter) = (std::collections::BTreeMap::<&str, usize>::new(), vec![], Refuter::new());
         for (u, r) in &pairs {
             let Some((r1, plan)) = c.step(job, 4, 3, u) else {
