@@ -140,7 +140,7 @@ fn num_stops_at_an_unparsable_value() {
 pub fn laws_survive_a_law_file() {
     let leaves = &leaves3();
     let pool: Vec<Term> = (0..6).flat_map(|o| leaves.iter().flat_map(move |&a| leaves.iter().map(move |&b| Term::op(o, a, b)))).collect();
-    let laws: Vec<(String, Term, Term)> = pool_conjectures(pool, 4, STREAM_VARS, 60).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect();
+    let laws: Vec<(String, Term, Term)> = pool_conjectures(pool.into_iter().map(|t| (0, t)), 4, STREAM_VARS, 60).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect();
     assert!(laws.len() >= 20, "{} laws", laws.len());
     let path = std::env::temp_dir().join(format!("law_file_{}.txt", std::process::id()));
     std::fs::write(&path, laws_text(&laws)).unwrap();
@@ -674,6 +674,8 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
         .filter(|g| !leaf_classes.contains(&memo.class(g)))
         .collect();
     let mut level: hashbrown::HashMap<Term, usize> = seeds.iter().map(|t| (*t, 0)).collect();
+    // the pool, in growth order: a term's rank is its level, and a group's head the least by (level, text)
+    let mut pool: Vec<(usize, Term)> = seeds.iter().map(|t| (0, *t)).collect();
     let (mut base, mut i) = (seeds.clone(), 0u64);
     for l in 1..=levels {
         let total: usize = base.iter().map(|t| leaf_count(*t)).sum::<usize>() * grow.len();
@@ -687,6 +689,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
                         if !level.contains_key(&w) {
                             level.insert(w, l);
                             next.push(w);
+                            pool.push((l, w));
                         }
                     }
                 }
@@ -694,11 +697,8 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
         }
         base = next;
     }
-    // sorted, so the order owes nothing to the map's
-    let mut terms: Vec<(usize, Term)> = level.iter().map(|(t, l)| (*l, *t)).collect();
-    terms.sort_unstable_by(|(l, a), (m, b)| l.cmp(m).then_with(|| a.show_cmp(b)));
     let laws: Vec<(Term, Term)> =
-        pool_conjectures(terms.into_iter().map(|(_, t)| t), 4, 3, 0).into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
+        pool_conjectures(pool, 4, 3, 0).into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
     let job = &mut Job::new(Setup::process());
     let mut r8 = width8();
     let (mut out, mut refuted) = (vec![], 0usize);

@@ -1,0 +1,38 @@
+# 2026-10-29-s3b-icount: retired instructions of search::stream_sequences_are_pinned (--exact --ignored), rounds L1 F1 F2 L2
+# of 3 runs each on CPU 4 by ~/.claude/samply/icount.ps1 (fresh -Out folders, trace time checked by the batch script),
+# STREAM_THREADS=1 from each exe's .env. L = 8f7c2bb (S3 step 0: the same ordering code as 5f52111, plus the salt-0 and
+# small-stream pins); F = 8f7c2bb plus S3b, the pool kept in growth order as (level, term) and `pool_conjectures` taking
+# each group's head as its least member by (rank, show_cmp) instead of sorting the pool first (tests/church_bv/machine.rs,
+# search.rs; the exe of the tree whose suite and pins passed, runs 2026-10-29-s3b-suite, -s3b-pin and -s3b-pin0). Both
+# `cargo test --release`, same target dir. Each round launched once the Samply task was Ready, no exclusive CPU lease was
+# live and CPU load was under 25% (scratchpad ab_rounds.ps1 -MaxLoad 25); Defender real-time off, mimalloc's purge on.
+# CPU load at the rounds' starts 26%, 12%, 22%, 12% (other processes, not identified); the load gate held F2 back for 12
+# minutes (F1 ended 22:19, F2 started 22:31).
+# Pooled runs (6 each): best F/L 179.46 / 198.13 = 0.9057 (-9.4%), median 180.78 / 199.81 = 0.9048 (-9.5%). Every F run
+# (179.46-183.71) is below every L run (198.13-202.72); spreads (median-best)/best 0.0004-0.0100, max/best up to 1.024,
+# the largest in the 22% round. The cost of the saving is the pool sort (8.85 points of busy samples in the S2 profile)
+# less the head scan that replaces it, so the size is of the order the profile gave, not the survey's "about 7".
+== L1 (2026-10-29-s3b-icount-L1, 22:10:47-22:14:46, CPU load 26% at start)
+run	pid	instructions
+1	63448	202716826727
+2	53904	199778341954
+3	8992	199850601154
+n 3  best 199,778,341,954  median 199,850,601,154  (median-best)/best 0.00036  max/best 1.01471
+== F1 (2026-10-29-s3b-icount-F1, 22:15:50-22:19:04, CPU load 12% at start)
+run	pid	instructions
+1	45568	181947619567
+2	54328	180320435567
+3	5140	179924299946
+n 3  best 179,924,299,946  median 180,320,435,567  (median-best)/best 0.00220  max/best 1.01125
+== F2 (2026-10-29-s3b-icount-F2, 22:31:47-22:36:12, CPU load 22% at start)
+run	pid	instructions
+1	60904	183705982193
+2	63312	181244906875
+3	32116	179459389751
+n 3  best 179,459,389,751  median 181,244,906,875  (median-best)/best 0.00995  max/best 1.02366
+== L2 (2026-10-29-s3b-icount-L2, 22:40:35-22:43:37, CPU load 12% at start)
+run	pid	instructions
+1	19544	201863630151
+2	58912	198134157394
+3	59888	198365043088
+n 3  best 198,134,157,394  median 198,365,043,088  (median-best)/best 0.00117  max/best 1.01882

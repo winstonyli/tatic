@@ -748,22 +748,63 @@ pub fn plain_steps_match_the_kernel_gates() {
 
 // ---- Comparison (search note section 20): `lt a b` is the final borrow of the chain for `a - b`, a `Bool0` result.
 
-/// The conjectures of a term pool: terms with equal values on every width-`n` tuple of `nv` variables are paired with
-/// the group's first member, sorted for a stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
-pub fn pool_conjectures(pool: impl IntoIterator<Item = Term>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
+/// The conjectures of a term pool of `(rank, term)`: terms with equal values on every width-`n` tuple of `nv` variables are
+/// paired with the group's head, its least member by `(rank, show_cmp)` whatever order the pool arrives in; sorted for a
+/// stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
+pub fn pool_conjectures(pool: impl IntoIterator<Item = (usize, Term)>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
+    use hashbrown::hash_map::Entry;
     let mut memo = ValueMemo::exhaustive(n, nv);
-    let mut groups: hashbrown::HashMap<(u32, bool), Vec<Term>> = Default::default();
-    for t in pool {
+    // per group: its head and the rest (a Vec that stays unallocated for a singleton)
+    let mut groups: hashbrown::HashMap<(u32, bool), ((usize, Term), Vec<Term>)> = Default::default();
+    for (rank, t) in pool {
         // a comparison (one-bit result) never equals an n-bit term, even when their signatures coincide
-        groups.entry((memo.class(&t), matches!(*t.node(), Node::Op(LT, ..)))).or_default().push(t);
+        match groups.entry((memo.class(&t), matches!(*t.node(), Node::Op(LT, ..)))) {
+            Entry::Vacant(e) => {
+                e.insert(((rank, t), vec![]));
+            }
+            Entry::Occupied(mut e) => {
+                let (head, rest) = e.get_mut();
+                if rank.cmp(&head.0).then_with(|| t.show_cmp(&head.1)).is_lt() {
+                    rest.push(std::mem::replace(head, (rank, t)).1);
+                } else {
+                    rest.push(t);
+                }
+            }
+        }
     }
-    let mut conj: Vec<(Term, Term)> = groups.values().filter(|g| g.len() > 1).flat_map(|g| g[1..].iter().map(|t2| (g[0], *t2))).collect();
+    let mut conj: Vec<(Term, Term)> = groups.values().flat_map(|((_, h), rest)| rest.iter().map(move |t| (*h, *t))).collect();
     conj.sort_unstable_by(|(a, b), (c, d)| a.show_cmp(c).then_with(|| b.show_cmp(d)));
     if cap > 0 && conj.len() > cap {
         let stride = conj.len() / cap;
         conj = conj.into_iter().step_by(stride).take(cap).collect();
     }
     conj
+}
+
+/// A group's head is its least member by `(rank, show_cmp)` whatever order the pool arrives in: the pool as given,
+/// reversed and rotated gives one set of conjectures, and each pairs a head below its partner (the ranks, here a term's
+/// size mod 3, put the head above its partner's text in some).
+#[test]
+pub fn pool_conjecture_heads_are_the_least_whatever_the_pool_order() {
+    use std::cmp::Ordering::Greater;
+    let leaves: &[Term] = &(0..3).map(Term::v).chain([Term::ZERO, Term::ONES]).collect::<Vec<_>>();
+    let pool: Vec<(usize, Term)> = (0..6)
+        .flat_map(|o| leaves.iter().flat_map(move |&a| leaves.iter().map(move |&b| Term::op(o, a, b))))
+        .chain(leaves.iter().copied())
+        .map(|t| (t.size() % 3, t))
+        .collect();
+    let conj = |p: Vec<(usize, Term)>| pool_conjectures(p, 4, 3, 0).into_iter().collect::<hashbrown::HashSet<_>>();
+    let base = conj(pool.clone());
+    assert!(base.len() > 100, "{} conjectures", base.len());
+    let (mut reversed, mut rotated) = (pool.clone(), pool.clone());
+    reversed.reverse();
+    rotated.rotate_left(pool.len() / 3);
+    assert!(conj(reversed) == base && conj(rotated) == base, "the conjectures depend on the pool's order");
+    let rank: hashbrown::HashMap<Term, usize> = pool.iter().map(|&(r, t)| (t, r)).collect();
+    for (h, t) in &base {
+        assert!(rank[h].cmp(&rank[t]).then_with(|| h.show_cmp(t)).is_lt(), "{} is not below {}", h.show(), t.show());
+    }
+    assert!(base.iter().any(|(h, t)| h.show_cmp(t) == Greater), "no rank put a head above its partner's text");
 }
 
 #[test]
