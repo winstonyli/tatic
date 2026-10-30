@@ -73,36 +73,49 @@ impl std::fmt::Write for Fnv {
     }
 }
 
-/// `laws` reordered by the `Fnv` of the salt and each law's text (deterministic across runs); salt 0 keeps the order.
-pub fn shuffled(mut laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
+/// `laws` in the order of the `Fnv` of the salt and each law's text (deterministic across runs), then of the text itself
+/// (`show_cmp` of the sides): a total order, so the result owes nothing to the order given (the conjectures arrive in a
+/// map's). Salt 0 has no hash, so the text order.
+pub fn shuffled(laws: Vec<(Term, Term)>, salt: usize) -> Vec<(Term, Term)> {
     use std::fmt::Write;
-    if salt != 0 {
-        laws.sort_by_cached_key(|(a, b)| {
-            Fnv::of(|h| {
-                write!(h, "{salt}|")?;
-                a.show_into(h)?;
-                h.write_str(" = ")?;
-                b.show_into(h)
-            })
-        });
-    }
-    laws
+    let key = |a: &Term, b: &Term| {
+        if salt == 0 {
+            return 0;
+        }
+        Fnv::of(|h| {
+            write!(h, "{salt}|")?;
+            a.show_into(h)?;
+            h.write_str(" = ")?;
+            b.show_into(h)
+        })
+    };
+    let mut keyed: Vec<(u64, (Term, Term))> = laws.into_iter().map(|(a, b)| (key(&a, &b), (a, b))).collect();
+    keyed.sort_unstable_by(|(k, (a, b)), (m, (c, d))| k.cmp(m).then_with(|| a.show_cmp(c)).then_with(|| b.show_cmp(d)));
+    keyed.into_iter().map(|(_, law)| law).collect()
 }
 
-/// `shuffled`: a permutation of the given order, fixed per salt, different between salts; salt 0 keeps the order.
+/// `shuffled`: the given laws in an order fixed per salt whatever order they come in, different between salts; salt 0 is
+/// the text order.
 #[test]
 pub fn shuffle_is_a_fixed_permutation() {
     let laws: Vec<(Term, Term)> = (0..50).map(|i| (Term::v(0), (0..i).fold(Term::v(1), |t, _| Term::op(ADD, t, Term::v(2))))).collect();
-    let (sorted, a, a2, b) = (shuffled(laws.clone(), 0), shuffled(laws.clone(), 1), shuffled(laws.clone(), 1), shuffled(laws.clone(), 2));
-    assert!(sorted == laws, "salt 0 keeps the order");
+    let (text, a, a2, b) = (shuffled(laws.clone(), 0), shuffled(laws.clone(), 1), shuffled(laws.clone(), 1), shuffled(laws.clone(), 2));
+    let mut by_text = laws.clone();
+    by_text.sort_by_cached_key(|(x, y)| (x.show(), y.show()));
+    assert!(text == by_text, "salt 0 is the text order");
     assert!(a == a2, "same salt, same order");
-    assert!(a != sorted && a != b);
+    assert!(a != text && a != b);
     let set = |v: &Vec<(Term, Term)>| v.iter().cloned().collect::<hashbrown::HashSet<_>>();
-    assert!(set(&a) == set(&sorted) && set(&b) == set(&sorted) && a.len() == sorted.len(), "a permutation");
+    assert!(set(&a) == set(&text) && set(&b) == set(&text) && a.len() == text.len(), "a permutation");
+    let reversed: Vec<(Term, Term)> = laws.iter().rev().cloned().collect();
+    for salt in [0, 1, 2] {
+        assert!(shuffled(reversed.clone(), salt) == shuffled(laws.clone(), salt), "salt {salt}: the order given matters");
+    }
 }
 
 /// `Fnv` is FNV-1a 64 of the text written into it, and `shuffled`'s order is that hash's of each law's text
-/// `{salt}|{lhs} = {rhs}`: the order the pinned sequences were built in, when the text was built first. Over laws whose
+/// `{salt}|{lhs} = {rhs}` (none at salt 0), then the text: the order the pinned sequences were built in, when the text was
+/// built first. Over laws whose
 /// sides are every term to size 3 (all operators, variables and constants).
 #[test]
 pub fn shuffled_orders_by_the_fnv_of_the_law_text() {
@@ -116,9 +129,9 @@ pub fn shuffled_orders_by_the_fnv_of_the_law_text() {
         .chain(leaves.iter().copied())
         .collect();
     let laws: Vec<(Term, Term)> = to3.iter().copied().zip(to3.iter().rev().copied()).collect();
-    for salt in [1, 2, 7] {
+    for salt in [0, 1, 2, 7] {
         let mut by_text = laws.clone();
-        by_text.sort_by_cached_key(|(a, b)| fnv1a(&format!("{salt}|{} = {}", a.show(), b.show())));
+        by_text.sort_by_cached_key(|(a, b)| (if salt == 0 { 0 } else { fnv1a(&format!("{salt}|{} = {}", a.show(), b.show())) }, a.show(), b.show()));
         assert!(shuffled(laws.clone(), salt) == by_text, "salt {salt}");
     }
 }
@@ -140,7 +153,10 @@ fn num_stops_at_an_unparsable_value() {
 pub fn laws_survive_a_law_file() {
     let leaves = &leaves3();
     let pool: Vec<Term> = (0..6).flat_map(|o| leaves.iter().flat_map(move |&a| leaves.iter().map(move |&b| Term::op(o, a, b)))).collect();
-    let laws: Vec<(String, Term, Term)> = pool_conjectures(pool.into_iter().map(|t| (0, t)), 4, STREAM_VARS, 60).into_iter().map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect();
+    // the conjectures in text order, sampled by stride down to about 60
+    let conj = shuffled(pool_conjectures(pool.into_iter().map(|t| (0, t)), 4, STREAM_VARS), 0);
+    let stride = (conj.len() / 60).max(1);
+    let laws: Vec<(String, Term, Term)> = conj.into_iter().step_by(stride).take(60).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect();
     assert!(laws.len() >= 20, "{} laws", laws.len());
     let path = std::env::temp_dir().join(format!("law_file_{}.txt", std::process::id()));
     std::fs::write(&path, laws_text(&laws)).unwrap();
@@ -698,7 +714,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
         base = next;
     }
     let laws: Vec<(Term, Term)> =
-        pool_conjectures(pool, 4, 3, 0).into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
+        pool_conjectures(pool, 4, 3).into_iter().filter(|(a, b)| level[a].max(level[b]) > 0 && (0..3).all(|v| a.has_var(v) || b.has_var(v))).collect();
     let job = &mut Job::new(Setup::process());
     let mut r8 = width8();
     let (mut out, mut refuted) = (vec![], 0usize);

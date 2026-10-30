@@ -749,9 +749,9 @@ pub fn plain_steps_match_the_kernel_gates() {
 // ---- Comparison (search note section 20): `lt a b` is the final borrow of the chain for `a - b`, a `Bool0` result.
 
 /// The conjectures of a term pool of `(rank, term)`: terms with equal values on every width-`n` tuple of `nv` variables are
-/// paired with the group's head, its least member by `(rank, show_cmp)` whatever order the pool arrives in; sorted for a
-/// stable order and, when `cap` is nonzero, sampled by stride down to about `cap`.
-pub fn pool_conjectures(pool: impl IntoIterator<Item = (usize, Term)>, n: usize, nv: usize, cap: usize) -> Vec<(Term, Term)> {
+/// paired with the group's head, its least member by `(rank, show_cmp)` whatever order the pool arrives in. They come in no
+/// particular order (a map's): `search::shuffled` orders them.
+pub fn pool_conjectures(pool: impl IntoIterator<Item = (usize, Term)>, n: usize, nv: usize) -> Vec<(Term, Term)> {
     use hashbrown::hash_map::Entry;
     let mut memo = ValueMemo::exhaustive(n, nv);
     // per group: its head and the rest (a Vec that stays unallocated for a singleton)
@@ -772,13 +772,7 @@ pub fn pool_conjectures(pool: impl IntoIterator<Item = (usize, Term)>, n: usize,
             }
         }
     }
-    let mut conj: Vec<(Term, Term)> = groups.values().flat_map(|((_, h), rest)| rest.iter().map(move |t| (*h, *t))).collect();
-    conj.sort_unstable_by(|(a, b), (c, d)| a.show_cmp(c).then_with(|| b.show_cmp(d)));
-    if cap > 0 && conj.len() > cap {
-        let stride = conj.len() / cap;
-        conj = conj.into_iter().step_by(stride).take(cap).collect();
-    }
-    conj
+    groups.values().flat_map(|((_, h), rest)| rest.iter().map(move |t| (*h, *t))).collect()
 }
 
 /// A group's head is its least member by `(rank, show_cmp)` whatever order the pool arrives in: the pool as given,
@@ -793,7 +787,7 @@ pub fn pool_conjecture_heads_are_the_least_whatever_the_pool_order() {
         .chain(leaves.iter().copied())
         .map(|t| (t.size() % 3, t))
         .collect();
-    let conj = |p: Vec<(usize, Term)>| pool_conjectures(p, 4, 3, 0).into_iter().collect::<hashbrown::HashSet<_>>();
+    let conj = |p: Vec<(usize, Term)>| pool_conjectures(p, 4, 3).into_iter().collect::<hashbrown::HashSet<_>>();
     let base = conj(pool.clone());
     assert!(base.len() > 100, "{} conjectures", base.len());
     let (mut reversed, mut rotated) = (pool.clone(), pool.clone());

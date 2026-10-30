@@ -5218,7 +5218,8 @@ every term to size 5 and 47k random terms to size 17 by `docs/runs/2026-10-29/sc
   the three sorts' 12.24 points (8.11 + 4.13) less what is left of the seeds sort, before the cost of the minimum
   scan. It changes `pool_conjectures`' contract (it keeps its sort when `cap` is nonzero, since
   `laws_survive_a_law_file` samples by stride over it; only `stream_laws`' `cap` 0 call drops it) and
-  `shuffle_is_a_fixed_permutation`.
+  `shuffle_is_a_fixed_permutation`. Landed 2026-10-29 ("S3 landed" below), further than surveyed: `cap` went too (the
+  one stride-sampling caller does it inline), and the counts fell 9.4% and 4.6% against the survey's "at most about 7".
 - **S4.** Presize `show`'s `String` to `5 * size - 3` (an upper bound, reached by terms of only shifts and `-1`): about
   2.5-2.9 (an estimate: the 2.95 of `show`'s samples holding a mimalloc or `church_bv::_::__rust_` frame, less the
   0.25 of the first allocation, which presizing keeps; the 4.09 holding `::reserve::do_reserve_and_handle` include
@@ -5420,6 +5421,37 @@ busy-sample totals are not comparable between profiles at different loads (50,07
 load against 48,235 at 18% across F1, whose count fell 17%): shares within a profile are what is read. The sorts that
 remain are `stream_laws`' 9.95 and `pool_conjectures`' 3.03 (union 14.63 with `shuffled`'s 1.63). `mi_arena_try_purge`
 1.5 self (2.7).
+
+*S3 landed (2026-10-29), in three commits.* Step 0 (`8f7c2bb`) pinned what the two salt-1 sequences did not cover,
+before any ordering code changed: `stream_sequences_are_pinned_at_salt_0` (2 growths 58440 laws, digest
+`0x4a7dc2260672672b`; 4 growths 230399, `0x8966904d38acdd30`; salt 0 is what a bare `loop_stream` or `rule_miner` run
+gets with `RULEMINER_SHUFFLE` unset) and `small_streams_are_pinned` (six small streams at salts 0, 1 and `HELD_SALT`).
+S3b (`db1e4e2`): `stream_laws` keeps its pool in growth order as `(level, term)` and `pool_conjectures` takes a group's
+head as its least member by `(rank, show_cmp)`, whatever order the pool arrives in (test
+`pool_conjecture_heads_are_the_least_whatever_the_pool_order`: reversed and rotated pools), so the pool sort is gone;
+the seeds sort stays, because `c.reps()` comes in hash-map order and the growth's draw counter depends on the base
+order. S3a: the conjecture sort and `pool_conjectures`' `cap` are gone (the contract is now an unordered set; the one
+caller that sampled by stride, `laws_survive_a_law_file`, does it inline), and `shuffled` is a total order: the `Fnv` of
+`{salt}|{lhs} = {rhs}`, then the text of both sides by `show_cmp`, with no hash at salt 0, so the conjectures are
+ordered once and owe nothing to the order they arrive in (the tests `shuffle_is_a_fixed_permutation` and
+`shuffled_orders_by_the_fnv_of_the_law_text`, which also cover salt 0 and a reversed input). Both salt-1 and both salt-0
+sequences stayed byte-identical at each step, `small_streams_are_pinned` too, and at the last step `regenerate_held`
+rewrote the four `held_*.txt` files unchanged (runs `2026-10-29-s3b-pin`, `-s3b-pin0`, `-s3c-pin`, `-s3c-pin0`, `-s3c-held`; the church_bv
+suite passed, 168 tests and 31 ignored, runs `-s3b-suite` and `-s3c-suite`). Counts: S3b against `8f7c2bb` -9.4% at the
+best runs and -9.5% at the medians (179.46 G against 198.13 G; six runs each, every F run below every L run; loads 12-26%;
+`docs/runs/2026-10-29/rows/2026-10-29-s3b-icount.txt`), S3a against `db1e4e2` -4.6% and -5.3% (170.43 G against 178.72 G;
+six valid runs each, F's 170.43-175.93 below L's 178.72-186.32; `-s3c-icount.txt`; two of its four L rounds failed, one
+with a truncated trace and one with the disk full, so L is two rounds, 18% and 2% load). The two are separate A/Bs on
+separate days' loads, so their product, 0.864, is not a measured pair. Profiles (`-s3b-prof`, `-s3c-prof`): the sorts'
+union of busy samples 14.63 (S2) -> 5.71 -> 0.63, what is left being the seeds sort (0.51) and the sort over `u64`
+keys inside `shuffled` (0.11, of its 1.94 with the hash and the walk); `show_cmp` 3.75 -> 0.71; busy samples 50,071 ->
+43,064 -> 42,266 at 9%, 17% and 12% load. The counts fell by more than the sorts' share of busy samples (S3b: 9.4%
+against the pool sort's 8.85 points; S3a: 4.6% against the conjecture sort's 3.0-3.4), the survey having put S1 and S3
+together at no more than the sorts' 12.24 points; a reading, not checked: the sort's instructions are denser than its
+share of time. One thing to watch, not a finding: `fill_op`'s inclusive samples rose across the three profiles (6,935,
+7,489 and 7,806 of the busy samples), which may be the `ValueMemo` filling in growth order instead of text order (cache
+locality) or the three loads; the instruction counts cannot show it, and the profiles are untimed, so a timed A/B
+(`run.ps1 -Timed`) would be the check if the S3 time saving ever matters.
 
 ## The kernel
 

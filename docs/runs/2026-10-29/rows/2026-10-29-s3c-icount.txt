@@ -1,0 +1,49 @@
+# 2026-10-29-s3c-icount: retired instructions of search::stream_sequences_are_pinned (--exact --ignored), rounds of 3 runs
+# each on CPU 4 by ~/.claude/samply/icount.ps1 (fresh -Out folders, trace time checked by the batch script),
+# STREAM_THREADS=1 from each exe's .env. L = db1e4e2 (S3b: the pool's heads taken as minimums, the pool sort gone; the
+# s3b batch's F.exe, byte-identical, not rebuilt); F = db1e4e2 plus S3a, the conjecture sort and `pool_conjectures`'
+# `cap` gone and `shuffled` a total order, (hash, then text of both sides; no hash at salt 0), so the conjectures are
+# ordered once, by `shuffled` (tests/church_bv/machine.rs, search.rs; the exe of the tree whose suite and pins passed,
+# runs 2026-10-29-s3c-suite, -s3c-pin, -s3c-pin0 and -s3c-held). Both `cargo test --release`, same target dir. Each
+# round launched once the Samply task was Ready, no exclusive CPU lease was live and CPU load was under 25%
+# (scratchpad ab_rounds.ps1 -MaxLoad 25); Defender real-time off, mimalloc's purge on.
+# Valid rounds: L1 (23:08, load 18%), F1 (13%), F2 (16%), L4 (23:46, load 2%).
+# INVALID: s3c-icount-L2 (23:31-23:34, load 24%): 2 runs counted, at 221 G and 251 G (24-40% above L1's), and
+# s3c-icount-L3 (23:37-23:39): exit 1, the Samply task's xperf failed with -2147024784 (0x80070070, ERROR_DISK_FULL) and
+# no trace was recorded (icount.ps1's new check threw instead of counting an old one). The disk had 0.26 GB free; L2's
+# trace was probably cut short by the same shortage (a reading: its run count and counts fit a truncated trace, and
+# nothing else was checked). The finished batches' trace.etl and dump.txt in the ic-* folders were deleted (26 files,
+# 5.0 GB, every batch but this one; their counts are in the rows files), and L4 ran on the freed space.
+# Pooled valid runs (6 each): best F/L 170.43 / 178.72 = 0.9537 (-4.6%), median 170.86 / 180.38 = 0.9472 (-5.3%). Every F
+# run (170.43-175.93) is below every L run (178.72-186.32). Between batches the same exe drifts: L1's best 178.72 G here,
+# 181.26 G in L4 (load 2%), and this exe's runs in the s3b batch were 179.5-183.7 G.
+== L1 (2026-10-29-s3c-icount-L1, 23:08:21-23:10:56, CPU load 18% at start)
+run	pid	instructions
+1	57136	178961564073
+2	3852	178716985668
+3	45264	179507315350
+n 3  best 178,716,985,668  median 178,961,564,073  (median-best)/best 0.00137  max/best 1.00442
+== F1 (2026-10-29-s3c-icount-F1, 23:15:51-23:19:08, CPU load 13% at start)
+run	pid	instructions
+1	61576	170791345740
+2	62284	170698589053
+3	61152	175928958878
+n 3  best 170,698,589,053  median 170,791,345,740  (median-best)/best 0.00054  max/best 1.03064
+== F2 (2026-10-29-s3c-icount-F2, 23:20:17-23:23:39, CPU load 16% at start)
+run	pid	instructions
+1	60484	175749618415
+2	62720	170434878602
+3	20712	170928370063
+n 3  best 170,434,878,602  median 170,928,370,063  (median-best)/best 0.00290  max/best 1.03118
+== L2 (2026-10-29-s3c-icount-L2, 23:31:39-23:34:45, CPU load 24% at start) INVALID: 2 runs, a truncated trace
+run	pid	instructions
+1	46256	221163691013
+2	52100	251155556874
+n 2  best 221,163,691,013  median 236,159,623,944  (median-best)/best 0.06780  max/best 1.13561
+== L3 (2026-10-29-s3c-icount-L3, 23:37:55-23:39:56, CPU load 14% at start) INVALID: no trace (disk full)
+== L4 (2026-10-29-s3c-icount-L4, 23:46:32-23:49:03, CPU load 2% at start)
+run	pid	instructions
+1	50284	186323423434
+2	59336	181799366234
+3	59708	181258764986
+n 3  best 181,258,764,986  median 181,799,366,234  (median-best)/best 0.00298  max/best 1.02794
