@@ -225,6 +225,13 @@ fn the_filter_drops_twins_skeletons_and_trivial_laws() {
     assert_eq!(kept(&held), [other].map(text));
 }
 
+/// The `JOIN_VISIT` each mine runs with, as text for its env: 100 unless `MINE_JOIN_VISIT` says otherwise. Serving and the
+/// held-out check keep the process's own (1000); a mine's search time is 99% failed joins, so a lower budget there
+/// saves CPU at level held-out M (docs/tier-cycle.md, "A join budget for the mines alone").
+fn mine_join_visit(setup: &Setup) -> String {
+    setup.or("MINE_JOIN_VISIT", 100u32).to_string()
+}
+
 /// Whether the mines of `cfg` take extras: it has mines with rule rounds, and `ABLATE=gen` is off.
 fn takes_extras(cfg: &LoopCfg, ablated: bool) -> bool {
     !ablated && cfg.rounds > 0 && !cfg.mines.is_empty()
@@ -286,6 +293,15 @@ fn loop_modes_schedule_their_mines() {
     assert_eq!(at("ref"), [(0, 10, 300, "ref".to_string())]);
     assert_eq!(at("loop"), [(1, 10, 100, "0".to_string()), (2, 110, 100, "1".to_string())]);
     assert_eq!(at("none"), []);
+}
+
+/// `JOIN_VISIT` for the mines alone: 100 (landed 2026-10-30; serving and the held-out check keep 1000, `MINE_JOIN_VISIT`
+/// overrides). At n 319 it keeps held-out M (5166 against 5340) at 21% of the job CPU (docs/tier-cycle.md, "A join budget
+/// for the mines alone").
+#[test]
+fn mines_join_with_a_budget_of_100_unless_overridden() {
+    assert_eq!(mine_join_visit(&Setup::with_env(vec![])), "100");
+    assert_eq!(mine_join_visit(&Setup::with_env(vec![("MINE_JOIN_VISIT".into(), "250".into())])), "250");
 }
 
 /// Extras exist to be mined into rules: a mine with no rule rounds, a loop that only
@@ -718,6 +734,8 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
             ("RULEMINER_LAWS", s(laws)),
             ("RULEMINER_BASE", rules.display().to_string()),
         ]);
+        // before the law file: the extras below append to `env.last()`
+        env.push(("JOIN_VISIT".into(), mine_join_visit(setup)));
         env.push(write_laws(setup, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
         if let Some(at) = cfg.extra_at.get(slot) {
             let extra: String = cfg.extras[at.clone()].iter().map(|l| law_text(l) + "\n").collect();
