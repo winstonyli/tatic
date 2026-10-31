@@ -1,0 +1,208 @@
+# tatic: a tour of the concepts
+
+tatic is a research repo with two layers. The bottom layer (`src/`) is a small JIT: a tiny higher-order term language is compiled to WebAssembly (WAT is its text form, run under wasmtime), and the compiled form is installed only after a small dependent-type kernel has checked a proof that it means the same as the reference interpreter. Terms use De Bruijn indices (a variable is a number counting binders outward, so there are no names). The upper layer is the `church_bv` integration-test binary (`tests/church_bv/`, run with `cargo test --test church_bv`, entry `tests/church_bv/main.rs#mod driver`; it is not a crate). It uses the kernel as a prover for bit-vector laws: it mines rewrite rules from the laws it proves, keeps a learned table of equal-valued terms, and measures whether the rules help. The self-improvement loop and the kernel side of goal 3 live there; no GPU or model code exists yet (`tests/church_bv/scorer.rs#fit` is an offline stand-in), and nothing in `church_bv` calls the JIT. "Church-encoded" means data written as functions (a Bool is a function that picks one of two branches), so the kernel can reason about it with no built-in types.
+
+Keep this current: any change that renames, moves, adds or removes a module, a stage of a flow or a glossary term updates this file in the same commit (rule in `CLAUDE.md#tatic`; `scripts/tour_check.sh` checks every cite).
+
+Terms used below are defined in the Glossary at the end.
+
+Cite format: a backticked file path, a hash, then a symbol (as in `src/jit.rs#apply`) means the symbol appears in that file. A cite can go stale in meaning without failing the checker; when a sentence here disagrees with the code, the code wins.
+
+## The three goals
+
+Written in `ROADMAP.md#Goals`; status is in `ROADMAP.md#Milestones`, not here. Check new work against them.
+
+1. A JIT on proved equivalence. Built: a term is compiled and installed only if it passes a sample battery and a kernel-checked theorem. Its type system is in `TYPES.md#The closures fragment's type system`.
+2. A kernel that improves itself. Mined rewrite rules and a learned class table are built; growth of the kernel's own vocabulary through checked definitions is not (`PARKED.md#Parked work`). Goals 1 and 2 have not met in a milestone: `ROADMAP.md#Goals` says why.
+3. The kernel as the knowledge-representation-and-reasoning (KR&R) tier of a cycle with a GPU model that proposes and the kernel disposes. The kernel side exists; the model and the cycle do not (`PARKED.md#Proposer and loop`, idea in `docs/tier-cycle.md#Idea`, verdict interface in `docs/tier-cycle.md#Interface`). A "calibrated belief layer" between model and kernel is a design note only (`ROADMAP.md#calibrated belief layer`).
+
+## Where to look
+
+The JIT (`src/`):
+- `src/jit.rs`: the cache, the installation gate, wasmtime invocation. Start here to ask "why was this term not installed?"
+- `src/compile.rs`: the fragment test, IR builder and `try_compile`. "What can the compiler accept?"
+- `src/specialise.rs` and `src/spec_check.rs`: the untrusted specialiser and its trusted replay checker.
+- `src/typing.rs`: the type check that keeps closures out of the entry point.
+- `src/ir.rs`, `src/decompile.rs`, `src/lower_wat.rs`: the IR, its validation, its WAT. "How is a closure represented?" (`src/lower_wat.rs#Lowering`)
+- `src/term.rs`, `src/eval.rs`, `src/syntax.rs`: terms, the interpreter that defines correct behavior (`src/eval.rs#eval`), and the parser.
+- `src/samples.rs`, `src/rng.rs`, `src/test_corpus.rs`, `src/ir_fuzz.rs`: the sample inputs, a seeded generator, shared test terms and a fuzzer for the IR. `src/bin/repl.rs`: an interactive REPL. `src/main.rs#main`: the demo.
+
+The kernel and proofs (`src/`):
+- `src/kernel.rs`: the trusted checker. `src/kernel/postulates.rs`: the proof-term builder. `src/kernel/spaces.rs`, `src/kernel/bin.rs`: storage and serialization. `src/independence.rs`: the test that keeps trusted files from importing untrusted ones.
+- `src/proof.rs`: what is and is not established, plus the pure prover `src/proof.rs#prove_pure_expr`. "What does the theorem actually say?" (it is about `denote`: `src/proof.rs#denote`, not about the emitted WAT)
+- `src/proof/closures.rs`, `src/proof/per_instance.rs`, `src/proof/universal.rs`, `src/proof/hardening.rs`: the closure, per-instance and universal provers, and the debug self-check `src/proof/hardening.rs#debug_assert_has_type`.
+
+The bit-vector library and target machine (`tests/church_bv/`; `main.rs` holds only the `mod` lines and the allocator):
+- `encoding.rs`: Church Bool and vector terms and gate builders. `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
+- `classes.rs`, `class_key.txt`, `held_*.txt`: the class table, its key and the held-out laws.
+- `wasm.rs`: the formal target machine. `lemma_cache.rs`, `work.rs`, `task.rs`: caching, counters, shared memo (`tests/church_bv/task.rs#SharedMemo`).
+
+The rewriter and provers (`tests/church_bv/`):
+- `rewrite.rs`: terms, plans, rule table, the rewriter and the `prove_eq` cascade. `job.rs`: per-task and per-thread state.
+- `search.rs`: the law supply (`tests/church_bv/search.rs#stream_sequence`), rule admission (`tests/church_bv/search.rs#rule_admissible`) and cost (`tests/church_bv/search.rs#law_cost`), and the bodies of the two worker tasks: serving (`tests/church_bv/search.rs#rule_set_kernel_check_task`) and mining (`tests/church_bv/search.rs#rule_miner`).
+
+The miner, driver, loop and gate:
+- `miner.rs`: how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scorer.rs`: the offline extras ranker. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
+- `tools/runs/` (own crate): the recorded-run runner and gate. `tools/shr_probe.py`: a probe script.
+- `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/` and `experiments/` (older experiment scripts), `tour_check.sh`.
+- `benches/`: criterion benchmarks of execution and proofs.
+
+Test and fuzz suites at `tests/` (each protects one layer): `church_encoding.rs` and `church_lemmas.rs` (the Church-encoded kernel library), `compile_fuzz.rs` (compiled code against the interpreter), `kernel_fuzz.rs` and `kernel_soundness_fuzz.rs` (the kernel never accepts a false claim), `syntax_fuzz.rs` (the parser), `golden_wat.rs` with `golden/` (pinned WAT output), `rule_match_census.rs` (rule-matching counts).
+
+Project state: `ROADMAP.md`, `PARKED.md`, `docs/tier-cycle.md`, `docs/learned-vs-fixed.md`, `RELATED_WORK.md` (a record of the surveyed landscape, not a design proposal).
+
+## Running things
+
+No commands are restated here; each has one home.
+- Build, test, demo, REPL, benches, the sweep build profile: `README.md#cargo test`.
+- One loop or one sweep, and every environment switch (`LOOP_MODE`, `RULEMINER_FAST`, `POOL`, `GEN_DRAW`, `ABLATE`): the module doc of `tests/church_bv/driver.rs#LOOP_MODE`.
+- The A/B gate: the header of `scripts/streams_ab.sh#arm`. Recorded runs (raw output, `docs/runs.md` rows, CPU leases): `CLAUDE.md#tatic`.
+
+## The picture
+
+### (a) The JIT path
+
+1. Source text is parsed into interned De Bruijn terms (`let` is sugar for application): `src/syntax.rs#parse`. Terms can also be built with `TermStore` builders.
+2. Every node is interned by BLAKE3 content hash; the root hash is the term's identity and the JIT cache key: `src/term.rs#intern`.
+3. The caller invokes `JitEngine::apply`. A hit with matching arity calls the compiled function; a hit on a decline entry, or on a `Compiled` entry of another arity, is interpreted; a miss goes to step 4: `src/jit.rs#apply`.
+4. On a miss, `compile_verify_and_apply` runs `try_install`. A decline is cached with its reason; an argument-count mismatch is interpreted and caches nothing: `src/jit.rs#compile_verify_and_apply`.
+5. `compile_specialised` first tries the untrusted beta-v specialiser; its trace must be accepted by the independent checker and the result must compile, else the unspecialised term is used: `src/compile.rs#compile_candidate`.
+6. `try_compile` rejects oversize terms, builds the closure-converted IR, runs `ir::check`, decompiles the IR and requires the source hash back, then lowers to WAT: `src/compile.rs#try_compile`.
+7. The WAT is instantiated under wasmtime: `src/jit.rs#instantiate`. Before that, the argument count must match and the term must pass the simple type check `src/typing.rs#well_typed`.
+8. Layer 1 of "found equivalent": the compiled function and the interpreter must agree on a fixed battery of inputs: `src/jit.rs#verify`.
+9. Layer 2: a kernel-checked theorem: `src/jit.rs#kernel_verify`. A term that calls one of its own parameters is refused first (`src/jit.rs#calls_a_parameter`). Then come `prove_pure_expr`, `prove_closure_expr` and `prove_tail_recursive_universal`, which state the claim for every input; only at arity 0 is the per-instance proof (one concrete execution) also tried. Failure caches `NoUniversalProof` and the term stays interpreted. How a theorem is built is flow (c).
+10. All gates passed: the entry is stored as `Compiled`, and calls go through `src/jit.rs#invoke`, which zeroes the allocator pointer first.
+
+The whole gate order is written down in `src/jit.rs#try_install`.
+
+### (b) The self-improvement loop, from stream to A/B gate
+
+1. A deterministic list of candidate bit-vector laws is built per salt by interleaving operator-set streams: `tests/church_bv/search.rs#stream_sequence`. A loop reads one phase of it (a residue class): `tests/church_bv/search.rs#residue`.
+2. The driver cuts a window of laws and writes it as a lawfile for a worker task: `tests/church_bv/driver.rs#write_laws`.
+3. A sweep builds three loops (phases 1 to 3) and runs each: `tests/church_bv/driver.rs#sweep`.
+4. `run_loop` serves a batch of laws under the rules in force, records the batch's M, then runs the mines scheduled after it: `tests/church_bv/driver.rs#run_loop`.
+5. Serving: each law is rewritten, then closed by the prover cascade (flow (d)); the leftover that needed a whole-term machine proof or stayed unproved is M: `tests/church_bv/search.rs#rule_set_kernel_check_task`.
+6. A mine may also take extras, more laws from a deeper stream sequence, filtered against served and held-out laws: `tests/church_bv/driver.rs#scope_extras`.
+7. The mine task maps to the miner: `tests/church_bv/driver.rs#task_fn`. It finds the stragglers under the base rules: `tests/church_bv/miner.rs#laws_of`.
+8. It generates candidate rules from the stragglers' normal forms: `tests/church_bv/miner.rs#candidates`, and scores them in greedy rounds: `tests/church_bv/miner.rs#play`. In a sweep (`RULEMINER_FAST`) only each round's winner is proved, in the background (`tests/church_bv/miner.rs#Prover`); `settle` rolls back rounds built on a winner whose proof fails. Without that switch every candidate is proved first.
+9. Each committed rule is recorded as chosen: `tests/church_bv/miner.rs#settle`; the driver appends it to the loop's rules file and the next batch is served under it.
+10. The A/B gate runs a sweep for an A and a B build per salt, then scores each loop's final rules on the held-out bands and compares M, held-out M, CPU and work counts: `scripts/streams_ab.sh#arm`. The held-out laws come from `tests/church_bv/classes.rs#held_laws`.
+
+### (c) From term to theorem (the JIT's proofs)
+
+1. `kernel_verify` (flow (a) step 9) calls a prover with the interned term and gets an `EquivalenceProof` or `None`: `src/proof.rs#EquivalenceProof`.
+2. The statement is about `denote`, the term's meaning as a kernel expression over the postulated arithmetic (`src/proof.rs#denote`), not about the emitted WAT; the proof is a kernel-checked `refl` between that meaning and the compiled form's.
+3. Pure arithmetic terms: `src/proof.rs#prove_pure_expr`. Terms with closures: `src/proof/closures.rs#prove_closure_expr`. Self-recursion that tail-calls: `src/proof/hardening.rs#prove_tail_recursive_universal` over the postulated inductive family (Ev). Arity 0 only: `src/proof/per_instance.rs#prove_closure_expr_instance`.
+4. Proof terms are built with the untrusted `Postulates` builder and typed by the trusted checker `src/kernel.rs#check_in`, so a prover bug should make a proof fail to check rather than pass a false one.
+
+### (d) Serving one law (the rewriter and the prover cascade)
+
+1. Entry: `tests/church_bv/rewrite.rs#rewrite_plan` rewrites both sides, children first, then closes the pair with `prove_eq`. `rewrite_law` compiles the plan into a kernel proof.
+2. Per node (`tests/church_bv/rewrite.rs#rewrite_uncached`): the class table's lookup and proved step come first (a node the table knows is final), then the fixed rules, then the mined rules (`tests/church_bv/rewrite.rs#run_order`). Everything rewritten carries a `Plan` recording why.
+3. `tests/church_bv/rewrite.rs#prove_eq` closes the rewritten pair, first match wins: equal sides (refl), the bitwise truth table, the per-position check for shift terms, the bit-0 mask reduction, then `join_or_machine`: the bounded join, else the whole-term machine proof.
+4. The floor is the set of laws that reach the machine; the join and the rules exist to push it down, and M counts it. See `docs/tier-cycle.md#The floor and the bounded join`.
+5. The random-input screen is not part of serving: it refutes a candidate law or rule before any proof is tried (`tests/church_bv/miner.rs#candidates`, and the class table's replacement check in `tests/church_bv/classes.rs#Classes`), and gates the machine and join steps with a cheap difference test.
+6. A rule is itself proved before it is used: `tests/church_bv/rewrite.rs#prove_rule` tries its own route first, then the every-input fallback.
+
+## Glossary
+
+- **ABLATE**: environment switch that turns a named rule or prover part off. `tests/church_bv/job.rs#ablated`
+- **Batch**: B consecutive laws of a loop's window, served before they are mined. `tests/church_bv/driver.rs#run_loop`
+- **Beta-v**: contracting an application of a lambda to a value only; full beta is unsound under call-by-value with errors and `Rec`. `src/spec_check.rs#check`
+- **Bounded join**: bounded two-sided search that rewrites both sides with the rules plus assoc/comm until they meet. `tests/church_bv/rewrite.rs#join_eq`
+- **CacheEntry**: the per-hash JIT outcome; every variant but `Compiled` is served by the interpreter. `src/jit.rs#CacheEntry`
+- **Carry cap**: the most carries per side the machine proof takes on. `tests/church_bv/machine.rs#carry_cap`
+- **Carry vector**: a machine's state between bit positions, one bit per carrying node. `tests/church_bv/machine.rs#carries`
+- **Church Bool**: the kernel type `Pi C. C -> C -> C`; true picks the first branch. `tests/church_bv/encoding.rs#bool0`
+- **Church bit-vector**: a continuation over n Bools, least significant bit first. `tests/church_bv/encoding.rs#bv_ty`
+- **Class table**: a learned map from the value signature of a term to its smallest representative, used as a rewriting step; a replacement is used only if it is provable. `tests/church_bv/classes.rs#Classes`
+- **Classify / Shape**: the one case analysis of a body node shared by the IR builder and the proof walkers. `src/compile.rs#classify`
+- **Combinator**: a lambda or `Rec` lifted out as its own function (or a partial-application wrapper) in the IR. `src/ir.rs#Combinator`
+- **Compiler (Plan to proof)**: turns a rewriter `Plan` into a checked kernel proof on demand. `tests/church_bv/rewrite.rs#Compiler`
+- **Const (postulate)**: a kernel constant typed by the `Globals` list; it never unfolds, so it acts as an axiom. `src/kernel.rs#const_type`
+- **Content hash**: BLAKE3 of a node's tag and payload; equal structure gives equal hash in any store. `src/term.rs#content_hash`
+- **Cycle cut**: the rewriter returns a term unchanged when a term on its path embeds in it, ending growing chains early. `tests/church_bv/rewrite.rs#cut_at`
+- **Decompile (translation validation)**: rebuilds the source term from the IR alone so a builder bug cannot cancel itself. `src/decompile.rs#decompile`
+- **Dispatch**: whether unknown calls are lowered fast (trap on arity mismatch) or curried. `src/ir.rs#Dispatch`
+- **Encoding (phi, g)**: a coarse labelling of carry vectors through which both machines factor; found by `tests/church_bv/machine.rs#moore_encoding`.
+- **EquivalenceProof**: a kernel-checked refl proof packaged with its globals and arity. `src/proof.rs#EquivalenceProof`
+- **Every-input fallback**: a rule no other route proves is proved by case-splitting over all input bits when width x variables is at most 12; a rule past the cap stays unproved. `tests/church_bv/rewrite.rs#EVERY_INPUT_BITS`
+- **Extras**: additional laws mined alongside a loop's batch; each mine takes its own slice. `tests/church_bv/driver.rs#EXTRAS_N`
+- **Ev / ev_rec**: the postulated inductive family and recursor behind the universal tail-recursion theorem. `src/proof/hardening.rs#prove_tail_recursive_universal`
+- **Expr**: a Copy handle to an interned kernel term. `src/kernel.rs#Expr`
+- **Fallback (machine)**: a whole-term carry-machine proof used when rewriting and join fail; counted toward M. `tests/church_bv/rewrite.rs#machine_fallback`
+- **Floor**: the laws that still need the machine after rewriting and the join. `docs/tier-cycle.md#The floor and the bounded join`
+- **Free**: a builder-scope parameter the kernel refuses to type, so an escaped one cannot act as an axiom. `src/kernel.rs#free_escaped`
+- **Free share**: the share of a band's laws proved with no whole-term machine proof. `docs/tier-cycle.md#Metrics`
+- **Frontier**: the held-out free share per size band (11, 13, 15, 17): how far up in law size the rules still avoid the machine. The v0.6 success measure is moving it, not M on a fixed stream. `docs/tier-cycle.md#The frontier and v0.5`, `ROADMAP.md#Milestones`
+- **Gate (A/B)**: two builds, per salt, compared on M, held-out M, CPU and work counts; entry point `scripts/streams_ab.sh#arm`. `tools/runs/src/gate.rs#gate` is the cheaper variant: four sweeps, no held-out check. Not the installation gate.
+- **GEN_DRAW**: integer that re-draws the extras from a different sample. `tests/church_bv/driver.rs#scope_extras`
+- **Redraw spread (sigma)**: the difference between two arms that differ only in `GEN_DRAW`; the gate is deterministic, so this A/A spread is the noise floor a win must beat. A doc measure, not computed in code. `docs/tier-cycle.md#The streams and the gate`
+- **Globals / Ctx**: the trusted list of constant types and the local binder types. `src/kernel.rs#Globals`
+- **Good witness (GoodBool, GoodBv)**: hypotheses that let a proof split a symbolic bit. `tests/church_bv/encoding.rs#binders`
+- **Guard laws**: machine-free laws scored along with stragglers so a regressing candidate is visible. `tests/church_bv/miner.rs#Laws`
+- **Held-out bands**: committed law files of sizes 11, 13, 15, 17 that no loop serves. `tests/church_bv/classes.rs#HELD_BANDS`
+- **Held-out M**: M of a loop's final rules on the held-out bands. `docs/tier-cycle.md#Metrics`
+- **hp reset**: the host zeroes the bump-allocator pointer before every compiled call. `src/jit.rs#invoke`
+- **Independence**: a test that restricts which modules a trusted file may use. `src/independence.rs#assert_independent`
+- **Installation gate**: arity, type check, instantiate, samples, then kernel theorem (a term that calls its own parameter is refused first); only then `Compiled`. `src/jit.rs#try_install`
+- **Job / Setup**: one thread's rewriting state over the per-task shared configuration. `tests/church_bv/job.rs#Job`, `tests/church_bv/job.rs#Setup`
+- **Kernel**: the trusted checker; the only place typing and definitional equality are decided. `src/kernel.rs#check_in`
+- **Law**: an equation between two bit-vector terms; `tests/church_bv/rewrite.rs#Term` is the interned expression tree.
+- **Lemma cache**: on-disk cache of already-checked lemma statements shared by processes of one build. `tests/church_bv/lemma_cache.rs#Cache`
+- **Lawfile**: text file of `lhs = rhs` lines handed to a worker task. `tests/church_bv/driver.rs#write_laws`
+- **Loop**: serve a batch, mine, serve the next batch under the new rules. `tests/church_bv/driver.rs#run_loop`
+- **M**: per batch, the laws that needed a whole-term machine proof or were not proved; laws closed by the bounded join are not counted; lower is better. `docs/tier-cycle.md#Metrics`
+- **Machine**: a term turned into a bit-serial automaton whose state is a carry vector. `tests/church_bv/machine.rs#Machine`
+- **Mined rules**: rules chosen at run time by the miner, tried after the fixed rules. `tests/church_bv/rewrite.rs#run_order`
+- **Mine**: one run of the rule miner on a lawfile. `tests/church_bv/miner.rs#mine`
+- **Per-instance proof**: a proof that follows one concrete execution; allowed only at arity 0. `src/proof/per_instance.rs#prove_closure_expr_instance`
+- **Peel**: splits a term into parameter count, body and whether it is recursive. `src/compile.rs#peel`
+- **Phase**: a residue class of the stream sequence. `tests/church_bv/search.rs#residue`
+- **Plan / LawKind**: the rewriter's proof sketch and the name of the prover of each leaf. `tests/church_bv/rewrite.rs#Plan`, `tests/church_bv/rewrite.rs#LawKind`
+- **Pool**: `POOL=p` cuts p x n kept extras per mine and keeps n. `tests/church_bv/driver.rs#POOL`
+- **Postulates**: the untrusted builder that grows `Globals`; each pushed type is checked to be a type, its inhabitation is assumed. `src/kernel/postulates.rs#Postulates`
+- **PROMOTED**: mined rules frozen in code: learned once, then fixed. `tests/church_bv/rewrite.rs#PROMOTED`
+- **prove_eq**: the cascade that closes a rewritten pair: refl, truth table, per-position check, mask reduction, join, machine. `tests/church_bv/rewrite.rs#prove_eq`
+- **prove_rule**: proves a rule itself before it is used; the every-input fallback is its last resort. `tests/church_bv/rewrite.rs#prove_rule`
+- **Rec**: a term form that ties a knot for direct self-recursion. `src/term.rs#Term`
+- **Rule order**: the polynomial weight a rule must lower to be admitted. `tests/church_bv/rewrite.rs#rule_order_ok`
+- **Sample battery**: the fixed inputs on which compiled code and interpreter must agree. `src/jit.rs#sample_arg_vectors`
+- **Scorer**: a logistic regression that only orders candidate extras; the kernel still judges every law. `tests/church_bv/scorer.rs#fit`
+- **Screen**: a random-input test that refutes a claimed law before proving it. `tests/church_bv/rewrite.rs#SCREEN_INPUTS`
+- **Specialisation trace**: the list of beta-v steps replayed by the independent checker. `src/spec_check.rs#Step`
+- **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `tests/church_bv/miner.rs#laws_of`
+- **Stream / salt**: operator-set law streams, interleaved round-robin; the salt reshuffles. `tests/church_bv/search.rs#stream_sequence`
+- **Sweep**: three cold loops for one salt and build. `tests/church_bv/driver.rs#sweep`
+- **TermStore**: the hash-consing store of terms. `src/term.rs#TermStore`
+- **Transfer**: whether rules mined on one set of laws help laws they never saw (the held-out bands). `docs/tier-cycle.md#Held-out M and transfer for v0.5`
+- **Twin**: an extra whose normalized key equals a served or held-out law's; the extras filter drops it. `docs/tier-cycle.md#Metrics`
+- **Verdict (kernel to model)**: the per-proposal answer of the cycle's interface: parse error, refuted, trivial, duplicate, known, novel, and cheap or hard. `docs/tier-cycle.md#Interface`
+- **Wasm model**: wasm-like programs as Church-encoded kernel data with laws about append, if and loop; separate from the JIT. `tests/church_bv/wasm.rs#Wasm`
+- **Work counts**: deterministic counters at four sites, a load-independent cost signal. `tests/church_bv/work.rs#Site`
+- **Worker**: a persistent child process that runs serve and mine tasks. `tests/church_bv/driver.rs#worker`
+
+## Where facts live
+
+One home per fact; link instead of restating.
+- Goals and open milestones: `ROADMAP.md`. Finished milestones: tag messages.
+- Deferred work, with why and trigger: `PARKED.md`.
+- Findings and their measurements, organised by topic: `docs/tier-cycle.md`. Its sections are cited by name, not line.
+- Which pipeline parts are learned or fixed, verdicts only: `docs/learned-vs-fixed.md`.
+- Runs: raw output under `%LOCALAPPDATA%\claude-runs\tatic`, one row each in `docs/runs.md` (columns defined by `docs/runs.md#run id`), curated rows in `docs/runs/<date>/`.
+- Specs and plans: `docs/superpowers/`, each with a `status:` front matter line that overrides older status text; decisions too long for a parked line go in `docs/decisions/`.
+- The type system of the closures fragment: `TYPES.md`.
+- Project kind and the rules for all of the above: `CLAUDE.md#tatic`.
+
+## Known doc/code disagreements
+
+Found while writing this tour; each is a stale comment or doc line, not a code bug. They belong in `PARKED.md#Code hygiene` (not yet moved there). Fix the doc or comment when next touching it.
+- The `kernel_verify` doc in `src/jit.rs#kernel_verify` says an `If` between two closures is out of scope for `prove_closure_expr`, but `src/proof/closures.rs#prove_closure_expr` accepts an `If` whose branches are both closures.
+- The `prove_eq` doc comment still lists the class table's normal forms as a step; the body no longer has it. The table is consulted inside the rewriter instead: `tests/church_bv/rewrite.rs#rewrite_uncached`. `docs/tier-cycle.md` also has a note describing the deleted step.
+- `docs/tier-cycle.md` lists `LawKind::Chain` in its proof-plan paragraph; the enum no longer has it (`tests/church_bv/rewrite.rs#LawKind`). Later notes in that doc record the removal.
+- The `Machine::carries` doc comment says only add or sub nodes carry; in code the `shl1` delay cell and `lt` carry too: `tests/church_bv/machine.rs#carries`.
+- A comment in `src/kernel/postulates.rs#cong_n` says it is not yet used by the straight-line proof; `src/proof/hardening.rs` now calls it.
+- `docs/learned-vs-fixed.md` names `set_extra_rules` and `rules()`, which occur in no `.rs` file; the live entry points are `tests/church_bv/job.rs#with_rules` and `tests/church_bv/rewrite.rs#build_fixed_rules`.
+- A "cumulative greedy" doc comment sits on `tests/church_bv/miner.rs#Scorer`'s scoring method rather than on the rounds it describes.
+- `redraw spread` is a doc-only term (`PARKED.md#Proposer and loop`); no church_bv code computes it, the code only provides `GEN_DRAW`. (The frontier is likewise a doc measure, computed by the gate's held-out bands.)
+- One plan file under `docs/superpowers/plans/`, the test-terms-as-source inventory, has no `status:` line, against the rule in `CLAUDE.md#tatic`.

@@ -9,6 +9,10 @@ the history (`git tag -n99`).
   `docs/tier-cycle.md` by section name, not line (override of VERSIONING's `file:line`: that file's lines drift). Milestones: `ROADMAP.md`.
 - Specs and plans (`docs/superpowers/`, tracked from 2026-10-17) start with front matter
   `status: draft | active | done | "superseded-by: <file>"`; it overrides any older "Status:" line in the body.
+- `docs/TOUR.md` is the map of the codebase and its vocabulary (cites are `path#symbol`). A change that renames, moves,
+  adds or removes a module, a stage of the data flow or a glossary term updates the tour in the same commit, and
+  `bash scripts/tour_check.sh` must pass before committing it. The tour holds concepts and flow only: no measurements,
+  dates or results (those live in `docs/tier-cycle.md`).
 - Long runs launch through `~/.claude/runs/run.ps1` (raw output in `%LOCALAPPDATA%\claude-runs\tatic`, one row each in
   `docs/runs.md`); `runs dir` and `kk.sh` then write into that run's folder. Curated rows behind the doc's sections are
   in `docs/runs/<date>/`. Pin a recorded run with `run.ps1 -Affinity CFF`, not `start /wait /affinity` in `-Command`;
