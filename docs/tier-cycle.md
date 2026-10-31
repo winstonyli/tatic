@@ -5558,6 +5558,8 @@ fails on `kernel.rs`, 131 and 126 later commits).
 
 Both survivors were closed the same day (run `2026-10-30-mutants-spaces-rerun2`, 2 of 2 caught): `resolve`'s `-` was equivalent to `+` while `w` was 0 (every test opened its region on an empty persistent space), and `reset_vec` had no test that a small region after a large one gives the capacity back. Two tests in `spaces.rs`; the suite was not otherwise changed.
 
+*Why `church_bv` is slow in a plain `cargo test` (2026-10-30, profile in `%LOCALAPPDATA%claude-runs	atic6-10-30-q1prof`, shares only, machine at 40-60% load).* `search::a_stream_sequence_is_the_same_on_any_thread_count` took 166 s with `small_streams_are_pinned` (two builds of 56 streams: 4 threads 67.7 s, 1 thread 72.9 s; the four threads' CPU summed to 180 s against 73 s serial, the first build filling the shared memos cold). Shrinking its budget (2000 to 500, 2 to 1 growth) cut it only to 87 and 72 s, a fixed cost per build. The profile puts 62-78% inclusive in `stream_laws` -> `ValueMemo::fill` / `fill_op`, and the top self frames are unoptimized `Zip::next` and `__iterator_get_unchecked` slice-iterator adapters: the debug (`opt-level` 0) test profile. The same two tests with `CARGO_PROFILE_TEST_OPT_LEVEL=1` and `CARGO_PROFILE_DEV_OPT_LEVEL=1` (debug assertions and `check_replay` still on) took 19 s, 8.7x less (4 threads 7.2 s, 1 thread 9.6 s); one run, loaded machine, cold 10 min build in a separate target dir, so the rebuild cost of an edit at that level is not yet measured.
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)
