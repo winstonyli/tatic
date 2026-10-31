@@ -5556,6 +5556,8 @@ fails on `kernel.rs`, 131 and 126 later commits).
 
 *Sampled mutation run (2026-10-30, run `2026-10-30-mutants-spaces-sample6b`).* 6 of the 112 `spaces.rs` mutants (5.4%), picked by a Fisher-Yates shuffle from an LCG seeded 20261030 over `cargo mutants --list --no-shuffle`, run with `-F` per name, `--jobs 1`, `-- --lib`, CFF at BelowNormal. 11 min (279 s build + 29 s tests baseline, about 55 s per mutant): 4 caught, 2 missed, 0 timeouts: `reset_vec` `/` to `%` (`spaces.rs:92:28`) and `Spaces::resolve` `-` to `+` (`:269:26`) survive the lib tests. So this crate-level suite does not pin those two lines (the fixed 1/20 shard was 3 caught, 1 unviable, 2 timeouts, 0 missed): a trim judged by this sample would have a baseline of 4 of 6 caught, and any run that drops below it fails. Six mutants give a rough rate only (4/6 caught; a 95% interval is wide); the two survivors are the useful part, as named gaps.
 
+Both survivors were closed the same day (run `2026-10-30-mutants-spaces-rerun2`, 2 of 2 caught): `resolve`'s `-` was equivalent to `+` while `w` was 0 (every test opened its region on an empty persistent space), and `reset_vec` had no test that a small region after a large one gives the capacity back. Two tests in `spaces.rs`; the suite was not otherwise changed.
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)

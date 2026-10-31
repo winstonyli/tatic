@@ -412,6 +412,11 @@ impl Spaces {
     fn persistent_len(&self) -> usize {
         self.get().persistent.nodes.len()
     }
+
+    #[cfg(test)]
+    fn region_capacity(&self) -> usize {
+        self.get().region.nodes.capacity()
+    }
 }
 
 #[cfg(test)]
@@ -499,6 +504,44 @@ mod tests {
         assert!(s.open());
         assert_eq!(s.build(Var(9)), c, "the next region finds the copy below its w");
         s.close();
+    }
+
+    /// A copy at or above `w` reads as its twin at `r - w`; with `w` 0 the index `r + w` is the same, so the persistent
+    /// space must already hold a node when the region opens (cargo-mutants, 2026-10-30: `-` to `+` survived without this).
+    #[test]
+    fn a_copy_above_a_nonzero_w_resolves_to_its_twin_by_offset() {
+        let s = Spaces::new();
+        let old = s.build(Var(1));
+        assert!(s.open());
+        let g = s.epoch();
+        let (x, y) = (s.build(Var(2)), s.build(Var(3)));
+        let t = s.build(App(x, y));
+        let p = s.persist(t);
+        assert_eq!(s.resolve(old, g), old, "below w is itself");
+        assert_eq!(s.resolve(s.persist(x), g), x);
+        assert_eq!(s.resolve(s.persist(y), g), y);
+        assert_eq!(s.resolve(p, g), t);
+        s.close();
+    }
+
+    /// A small region after a large one gives the large one's capacity back (`reset_vec` shrinks below a quarter used;
+    /// cargo-mutants, 2026-10-30: `/` to `%` survived without this).
+    #[test]
+    fn a_small_region_after_a_large_one_gives_the_capacity_back() {
+        let s = Spaces::new();
+        assert!(s.open());
+        for i in 0..2000 {
+            s.build(Var(i));
+        }
+        s.close();
+        let big = s.region_capacity();
+        assert!(big >= 2000);
+        assert!(s.open());
+        for i in 0..5 {
+            s.build(Var(i));
+        }
+        s.close();
+        assert!(s.region_capacity() < big / 4, "capacity {} after a region of 5 following one of {big}", s.region_capacity());
     }
 
     #[test]
