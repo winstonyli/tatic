@@ -37,6 +37,36 @@ pub struct MinerConfig {
     /// `RULEMINER_TRANSFER` (switch, off by default): after the rounds, also print `RULEMINER label2:` lines, the held-out
     /// transfer label (`transfer_labels`). Changes nothing the mine chooses.
     pub transfer: bool,
+    /// `RULEMINER_EXTRAS_FROM=<i>`, `_KEEP=<n>`, `_BY=first|straggler` (all three or none): the lawfile's laws from line `i` are a
+    /// pool of extras and the mine keeps `n` of them (`kept_indices`); the laws before `i` are always read.
+    pub extras: Option<ExtrasKeep>,
+}
+
+/// How a mine picks its extras from the pool: `First` the first `n`, `Straggler` the first `n` the base rules leave as
+/// stragglers (docs/superpowers/specs/2026-10-31-context-aware-selector-design.md).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Keep {
+    First,
+    Straggler,
+}
+
+impl Keep {
+    /// The driver variable `EXTRAS_SELECT` / `RULEMINER_EXTRAS_BY`.
+    pub fn parse(s: &str) -> Result<Keep, String> {
+        match s {
+            "first" => Ok(Keep::First),
+            "straggler" => Ok(Keep::Straggler),
+            _ => Err(format!("EXTRAS_SELECT: expected first or straggler, got {s}")),
+        }
+    }
+}
+
+/// The lawfile's pool of extras starts at line `from`; the mine keeps `n` of it, chosen `by`.
+#[derive(Clone, Copy, Debug)]
+pub struct ExtrasKeep {
+    pub from: usize,
+    pub n: usize,
+    pub by: Keep,
 }
 
 impl MinerConfig {
@@ -50,6 +80,15 @@ impl MinerConfig {
             guard: s.or("RULEMINER_GUARD", 120),
             no_dup_lhs: s.flag("RULEMINER_NODUPLHS", true),
             transfer: s.flag("RULEMINER_TRANSFER", false),
+            extras: s.var("RULEMINER_EXTRAS_FROM").map(|from| {
+                let need = |k: &str| s.var(k).unwrap_or_else(|| panic!("RULEMINER_EXTRAS_FROM needs {k}"));
+                let num = |k: &str| need(k).parse::<usize>().unwrap_or_else(|_| panic!("{k}={} is not a count", need(k)));
+                ExtrasKeep {
+                    from: from.parse().unwrap_or_else(|_| panic!("RULEMINER_EXTRAS_FROM={from} is not a count")),
+                    n: num("RULEMINER_EXTRAS_KEEP"),
+                    by: Keep::parse(need("RULEMINER_EXTRAS_BY")).unwrap_or_else(|e| panic!("RULEMINER_EXTRAS_BY: {e}")),
+                }
+            }),
         }
     }
 }
@@ -137,7 +176,47 @@ struct Laws {
 fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
     let named = read_named_laws(&cfg.lawfile);
     clock.phase("law building");
-    laws_of(job, named, cfg.guard, cfg.fast, budget, clock, true)
+    laws_for(job, named, &cfg.extras, cfg.guard, cfg.fast, budget, clock, true)
+}
+
+/// `laws_of` over the laws a mine reads: all of `named`, or, with `extras`, its served laws and `extras.n` of the pool after
+/// them. `First` cuts the pool before classifying, so it costs and chooses what a file without the pool does; `Straggler`
+/// classifies the pool and keeps its stragglers first.
+fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option<ExtrasKeep>, guard_k: usize, fast: bool, budget: i64, clock: &Clock, loud: bool) -> Laws {
+    let Some(x) = extras else { return laws_of(job, named, guard_k, fast, budget, clock, loud) };
+    if x.by == Keep::First {
+        named = kept_indices(named.len(), x.from, x.n, Keep::First, &|_| false).into_iter().map(|i| named[i].clone()).collect();
+        return laws_of(job, named, guard_k, fast, budget, clock, loud);
+    }
+    let outcomes = classify(job, &named, budget, fast, loud);
+    let is_straggler = |i: usize| matches!(outcomes[i], Outcome::Straggler(..));
+    let keep = kept_indices(named.len(), x.from, x.n, Keep::Straggler, &is_straggler);
+    if loud {
+        let from = x.from.min(named.len());
+        let pool_stragglers = (from..named.len()).filter(|&i| is_straggler(i)).count();
+        println!("RULEMINER extras: kept {} of {} pool laws, {pool_stragglers} stragglers in the pool", keep.len() - from, named.len() - from);
+        clock.phase("extras selection");
+    }
+    assemble(keep.into_iter().map(|i| outcomes[i].clone()).collect(), guard_k, loud, clock)
+}
+
+/// The indices of the `len` laws a mine reads, ascending: the served laws `..from` and `n` of the pool `from..`. `First` takes
+/// the pool's first `n`; `Straggler` its first `n` stragglers, then, short of `n`, its other laws in order. `is_straggler` is
+/// asked of pool indices only.
+fn kept_indices(len: usize, from: usize, n: usize, by: Keep, is_straggler: &dyn Fn(usize) -> bool) -> Vec<usize> {
+    let from = from.min(len);
+    let mut keep: Vec<usize> = (0..from).collect();
+    let pool = from..len;
+    match by {
+        Keep::First => keep.extend(pool.take(n)),
+        Keep::Straggler => {
+            let (s, rest): (Vec<usize>, Vec<usize>) = pool.partition(|&i| is_straggler(i));
+            let mut picked: Vec<usize> = s.into_iter().chain(rest).take(n).collect();
+            picked.sort_unstable();
+            keep.extend(picked);
+        }
+    }
+    keep
 }
 
 /// `laws` for any named laws, `guard_k` guard laws and counting mode `fast`; `loud` prints the mine's report lines.
@@ -1087,6 +1166,89 @@ fn classify_orders_outcomes_like_the_input() {
     assert_eq!(out.len(), laws.len());
     assert!(out.starts_with("kc"), "a false equation is no law, and commuting `and` needs no machine proof: {out}");
     assert!(out[2..].contains('s'), "the stream mine's laws leave stragglers: {out}");
+}
+
+#[test]
+fn kept_indices_keeps_the_served_laws_and_n_of_the_pool() {
+    let none = |_: usize| false;
+    // 3 served laws, a pool of 6, keep 2
+    assert_eq!(kept_indices(9, 3, 2, Keep::First, &none), vec![0, 1, 2, 3, 4]);
+    let s = |i: usize| i == 5 || i == 7; // stragglers at indices 5 and 7
+    assert_eq!(kept_indices(9, 3, 2, Keep::Straggler, &s), vec![0, 1, 2, 5, 7], "stragglers first, in order");
+    assert_eq!(kept_indices(9, 3, 3, Keep::Straggler, &s), vec![0, 1, 2, 3, 5, 7], "the shortfall is the first other pool law");
+    assert_eq!(kept_indices(9, 3, 0, Keep::Straggler, &s), vec![0, 1, 2], "keep 0 reads no extra");
+    assert_eq!(kept_indices(9, 3, 99, Keep::Straggler, &s), (0..9).collect::<Vec<_>>(), "keep past the pool keeps the pool");
+    assert_eq!(kept_indices(4, 9, 2, Keep::First, &none), vec![0, 1, 2, 3], "from past the end: all served, no pool");
+    assert_eq!(Keep::parse("first"), Ok(Keep::First));
+    assert_eq!(Keep::parse("straggler"), Ok(Keep::Straggler));
+    assert!(Keep::parse("bogus").unwrap_err().contains("EXTRAS_SELECT"));
+}
+
+/// The served laws of `ROLLBACK_LAWS` with the pool `[clean, straggler]` after them (a law `and` commutes away; the
+/// straggler is the first of the served file's own).
+fn served_and_pool() -> (usize, String, String, String) {
+    let named = |s: &str| {
+        let (a, b) = s.split_once(" = ").unwrap();
+        (s.to_string(), parse_term(a), parse_term(b))
+    };
+    let served: Vec<_> = ROLLBACK_LAWS.lines().map(named).collect();
+    let job = &mut Job::new(Setup::process());
+    let strag: String = tatic::kernel::scoped(|| {
+        let out = classify(job, &served, UNBOUNDED, true, false);
+        out.iter().zip(&served).find(|(o, _)| matches!(o, Outcome::Straggler(..))).expect("a straggler among the served laws").1 .0.clone()
+    });
+    (served.len(), ROLLBACK_LAWS.to_string(), "and(x, y) = and(y, x)".to_string(), strag)
+}
+
+/// The names of the stragglers `laws_for` leaves a mine with (a whole mine is too slow to run per case).
+fn straggler_names(text: &str, extras: Option<ExtrasKeep>) -> Vec<String> {
+    let named = |s: &str| {
+        let (a, b) = s.split_once(" = ").unwrap();
+        (s.to_string(), parse_term(a), parse_term(b))
+    };
+    let laws: Vec<_> = text.lines().map(named).collect();
+    let job = &mut Job::new(Setup::process());
+    let clock = Clock(std::cell::Cell::new(Instant::now()));
+    tatic::kernel::scoped(|| laws_for(job, laws, &extras, 0, true, UNBOUNDED, &clock, false).stragglers.iter().map(|s| s.0.clone()).collect())
+}
+
+/// Straggler-first keeps the pool's straggler over its clean law that comes first; `first` keeps the clean law and is today's
+/// mine (the pool's cost is not paid); `KEEP=0` and a `FROM` past the end are the served laws alone and the whole file.
+#[test]
+fn the_pool_is_cut_by_the_stragglers_verdict() {
+    let (from, served, clean, strag) = served_and_pool();
+    let both = format!("{served}{clean}\n{strag}\n");
+    let ex = |n, by| Some(ExtrasKeep { from, n, by });
+    let base = straggler_names(&served, None);
+    let by_straggler = straggler_names(&both, ex(1, Keep::Straggler));
+    assert_eq!(by_straggler.len(), base.len() + 1, "the pool's straggler joins the served stragglers");
+    assert_eq!(by_straggler.last(), Some(&strag));
+    assert_eq!(straggler_names(&both, ex(1, Keep::First)), base, "the first pool law is the clean one: no new straggler");
+    assert_eq!(straggler_names(&both, ex(0, Keep::Straggler)), base, "keep 0 reads no extra");
+    assert_eq!(straggler_names(&both, Some(ExtrasKeep { from: 1000, n: 1, by: Keep::Straggler })), straggler_names(&both, None), "from past the end is the whole file as served");
+}
+
+/// `by=first` is today's mine rule for rule: a file with a pool and `KEEP` of the first law chooses what the file without the
+/// pool does.
+#[test]
+fn extras_by_first_mines_what_the_unpooled_file_mines() {
+    let (from, served, clean, strag) = served_and_pool();
+    let mine_rules = |laws: &str, env: &[(&str, String)]| {
+        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
+        static N: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!("extras_laws_{}_{}.txt", std::process::id(), N.fetch_add(1, Relaxed)));
+        std::fs::write(&path, laws).unwrap();
+        let mut e = vec![("RULEMINER_LAWFILE".to_string(), path.display().to_string()), ("RULEMINER_FAST".to_string(), "1".to_string())];
+        e.extend(env.iter().map(|(k, v)| (k.to_string(), v.clone())));
+        let chosen = mine(&Setup::with_env(e), &[]).0;
+        std::fs::remove_file(&path).ok();
+        chosen
+    };
+    let pooled = mine_rules(
+        &format!("{served}{clean}\n{strag}\n"),
+        &[("RULEMINER_EXTRAS_FROM", from.to_string()), ("RULEMINER_EXTRAS_KEEP", "1".to_string()), ("RULEMINER_EXTRAS_BY", "first".to_string())],
+    );
+    assert_eq!(pooled, mine_rules(&format!("{served}{clean}\n"), &[]));
 }
 
 /// A worker that panics fails the thread waiting for its result instead of hanging it: the waiter keeps a sender, so the
