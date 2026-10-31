@@ -196,13 +196,4 @@ One home per fact; link instead of restating.
 
 ## Known doc/code disagreements
 
-Found while writing this tour; each is a stale comment or doc line, not a code bug. They belong in `PARKED.md#Code hygiene` (not yet moved there). Fix the doc or comment when next touching it.
-- The `kernel_verify` doc in `src/jit.rs#kernel_verify` says an `If` between two closures is out of scope for `prove_closure_expr`, but `src/proof/closures.rs#prove_closure_expr` accepts an `If` whose branches are both closures.
-- The `prove_eq` doc comment still lists the class table's normal forms as a step; the body no longer has it. The table is consulted inside the rewriter instead: `tests/church_bv/rewrite.rs#rewrite_uncached`. `docs/tier-cycle.md` also has a note describing the deleted step.
-- `docs/tier-cycle.md` lists `LawKind::Chain` in its proof-plan paragraph; the enum no longer has it (`tests/church_bv/rewrite.rs#LawKind`). Later notes in that doc record the removal.
-- The `Machine::carries` doc comment says only add or sub nodes carry; in code the `shl1` delay cell and `lt` carry too: `tests/church_bv/machine.rs#carries`.
-- A comment in `src/kernel/postulates.rs#cong_n` says it is not yet used by the straight-line proof; `src/proof/hardening.rs` now calls it.
-- `docs/learned-vs-fixed.md` names `set_extra_rules` and `rules()`, which occur in no `.rs` file; the live entry points are `tests/church_bv/job.rs#with_rules` and `tests/church_bv/rewrite.rs#build_fixed_rules`.
-- A "cumulative greedy" doc comment sits on `tests/church_bv/miner.rs#Scorer`'s scoring method rather than on the rounds it describes.
-- `redraw spread` is a doc-only term (`PARKED.md#Proposer and loop`); no church_bv code computes it, the code only provides `GEN_DRAW`. (The frontier is likewise a doc measure, computed by the gate's held-out bands.)
-- One plan file under `docs/superpowers/plans/`, the test-terms-as-source inventory, has no `status:` line, against the rule in `CLAUDE.md#tatic`.
+Moved to `PARKED.md`, "Stale comments and doc lines found by the tour survey". Two terms are doc measures with no code of their own: the redraw spread and the frontier (the gate computes them from `GEN_DRAW` arms and the held-out bands).
