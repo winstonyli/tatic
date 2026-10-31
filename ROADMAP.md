@@ -14,8 +14,8 @@ Every milestone serves at least one of these; work that serves none needs a stat
 2. **A kernel that improves itself.** It mines rewrite rules from the laws it proves, so later proofs are cheaper, and
    grows its own vocabulary through checked definitions, since a fixed vocabulary saturates (`docs/tier-cycle.md`,
    "Idea" and "Risks"; the miner in `tests/church_bv/`).
-3. **The KR&R tier of a cycle with a GPU model.** A learned model on the GPU tier (scratchtape's `README.md`,
-   "Direction: tiered AI") proposes what to explore; the kernel checks and proves it, and returns rules and signals.
+3. **The KR&R tier of a cycle with a GPU model.** A learned model on the GPU tier (nothing
+   built; the idea came from the tiered-AI direction of the inactive scratchtape repo, which this repo does not rely on) proposes what to explore; the kernel checks and proves it, and returns rules and signals.
    The model's output is untrusted (`docs/tier-cycle.md`).
    Between the two, a calibrated belief layer (design note, 2026-10-22; nothing built). For each claimed equality it
    would estimate P(the kernel proves it) from the claim's shape and its evidence: random tests passed, small widths

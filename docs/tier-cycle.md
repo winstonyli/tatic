@@ -5,8 +5,9 @@ is built; the language-model side is not. Each topic's sections run in date orde
 cite sections and paragraph titles by their text, so keep a cited title's words when editing it.
 
 ## Idea
-The overall system has tiers (see scratchtape's `README.md`, "Direction: tiered AI": a gradient-trained model on the GPU, knowledge
-representation and reasoning (KR&R) on the CPU, working memory, long-term memory). tatic is the KR&R tier: a small trusted proof
+The overall system has tiers (a gradient-trained model on the GPU, knowledge
+representation and reasoning (KR&R) on the CPU, working memory, long-term memory; the idea came from the tiered-AI direction of the
+scratchtape repo, now inactive and not depended on). tatic is the KR&R tier: a small trusted proof
 kernel plus a rule miner. The tiers form a cycle rather than a stack:
 
 - **LM -> kernel: what to explore.** The model proposes conjectures, candidate lemmas, or which family and shape to try next. Its
