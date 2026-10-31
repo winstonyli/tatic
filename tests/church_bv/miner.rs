@@ -142,17 +142,30 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
 
 /// `laws` for any named laws, `guard_k` guard laws and counting mode `fast`; `loud` prints the mine's report lines.
 fn laws_of(job: &mut Job, laws: Vec<(String, Term, Term)>, guard_k: usize, fast: bool, budget: i64, clock: &Clock, loud: bool) -> Laws {
+    assemble(classify(job, &laws, budget, fast, loud), guard_k, loud, clock)
+}
+
+/// What the base rules do to one law: `Skipped` (no law, or over the carry cap), `Clean` (no machine proof needed; it feeds the
+/// guard sample) or a `Straggler`, whose flag says the rewriter could not close it at all.
+#[derive(Clone)]
+enum Outcome {
+    Skipped,
+    Clean(String, Term, Term),
+    Straggler(Scored, bool),
+}
+
+/// The outcome of each of `laws` under the rules installed on this thread (P1, P2), in order, each rewritten under `budget`
+/// steps; `loud` prints a line per straggler. Selecting among laws (`kept_indices`) happens between this and `assemble`.
+fn classify(job: &mut Job, laws: &[(String, Term, Term)], budget: i64, fast: bool, loud: bool) -> Vec<Outcome> {
     let (n, kv) = (4usize, STREAM_VARS);
-    // stragglers under the built-in rules
-    let mut stragglers: Vec<Scored> = vec![];
-    let mut unproved = 0usize;
-    let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
+    let mut out: Vec<Outcome> = vec![];
     // `RULEMINER_FAST` counts the base rules' machine proofs the way it scores candidates: without building them. Carry-over:
     // P1 runs under the base rules P0 installed
     let counting = job.rules().counting(fast);
     job.with_rules(counting, |job| {
         for (name, t1, t2) in laws.iter().cloned() {
             if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))) {
+                out.push(Outcome::Skipped);
                 continue;
             }
             let t = Instant::now();
@@ -160,22 +173,42 @@ fn laws_of(job: &mut Job, laws: Vec<(String, Term, Term)>, guard_k: usize, fast:
             let took = t.elapsed();
             let fell = spent.fallbacks;
             // a law the rewriter cannot close at all counts as a straggler too (fixed once it is proved machine-free)
-            unproved += r.is_none() as usize;
-            let fell = if r.is_none() { fell.max(1) } else { fell };
-            if r.is_none() || fell > 0 {
+            let unproved = r.is_none();
+            let fell = if unproved { fell.max(1) } else { fell };
+            if unproved || fell > 0 {
                 let (normal, _) = job.measured(budget, |job| [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0]);
                 if loud {
-                    println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
+                    println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if unproved { ", UNPROVED" } else { "" });
                 }
-                stragglers.push((name, t1, t2, normal, fell, took));
+                out.push(Outcome::Straggler((name, t1, t2, normal, fell, took), unproved));
             } else {
-                clean.push((name, t1, t2));
+                out.push(Outcome::Clean(name, t1, t2));
             }
         }
     });
+    out
+}
+
+/// The `Laws` of classified `outcomes`: the stragglers, and a guard sample of `guard_k` of the clean laws scored with them.
+fn assemble(outcomes: Vec<Outcome>, guard_k: usize, loud: bool, clock: &Clock) -> Laws {
+    let (n, kv) = (4usize, STREAM_VARS);
+    let total = outcomes.len();
+    let mut stragglers: Vec<Scored> = vec![];
+    let mut unproved = 0usize;
+    let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
+    for o in outcomes {
+        match o {
+            Outcome::Skipped => {}
+            Outcome::Clean(name, t1, t2) => clean.push((name, t1, t2)),
+            Outcome::Straggler(s, u) => {
+                unproved += u as usize;
+                stragglers.push(s);
+            }
+        }
+    }
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
     if loud {
-        println!("RULEMINER {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
+        println!("RULEMINER {} stragglers of {total} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), base_time);
         clock.phase("laws and stragglers");
     }
     // `RULEMINER_GUARD=<k>` (default 120, 0 = off): about k of the already machine-free laws are scored with the stragglers, so a candidate that breaks them loses
@@ -1027,6 +1060,33 @@ fn the_pool_finds_terms_over_three_variables() {
     assert!(pool.equal(&p("sub(add(x, z), add(y, z))")).contains(&p("sub(x, y)")));
     assert!(!pool.equal(&p("sub(add(x, z), add(y, z))")).contains(&p("sub(x, z)")));
     assert!(pool.equal(&p("lt(x, and(and(y, z), y))")).contains(&p("lt(x, and(y, z))")));
+}
+
+/// `classify` gives one outcome per law, in the input's order: a false equation is skipped, a law the built-in rules close
+/// is clean, and the stream mine's laws (`ROLLBACK_LAWS`) leave stragglers.
+#[test]
+fn classify_orders_outcomes_like_the_input() {
+    let named = |s: &str| {
+        let (a, b) = s.split_once(" = ").unwrap();
+        (s.to_string(), parse_term(a), parse_term(b))
+    };
+    let mut laws = vec![named("add(x, y) = add(x, z)"), named("and(x, y) = and(y, x)")];
+    laws.extend(ROLLBACK_LAWS.lines().map(named));
+    let job = &mut Job::new(Setup::process());
+    // one letter per outcome (the kernel scope lets nothing but plain values out)
+    let out: String = tatic::kernel::scoped(|| {
+        classify(job, &laws, UNBOUNDED, false, false)
+            .iter()
+            .map(|o| match o {
+                Outcome::Skipped => 'k',
+                Outcome::Clean(..) => 'c',
+                Outcome::Straggler(..) => 's',
+            })
+            .collect()
+    });
+    assert_eq!(out.len(), laws.len());
+    assert!(out.starts_with("kc"), "a false equation is no law, and commuting `and` needs no machine proof: {out}");
+    assert!(out[2..].contains('s'), "the stream mine's laws leave stragglers: {out}");
 }
 
 /// A worker that panics fails the thread waiting for its result instead of hanging it: the waiter keeps a sender, so the

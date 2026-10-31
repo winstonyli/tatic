@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # v0.6, second try: select the extras by the kernel's straggler verdicts (implementation plan)
