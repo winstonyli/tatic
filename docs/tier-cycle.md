@@ -5542,6 +5542,20 @@ Windows) and compares it with cargo metadata's `src_path`, so the match fails. T
 (cause not checked), so read the headline. Not patched: a fix is a change to
 third-party code; the check is a one-line path normalization in `main.rs:85`, about 10 minutes to try.
 
+*Cheaper than mutation (2026-10-30 survey; sources re-fetched by a verifier, the history-replay items unchecked).* Extreme
+mutation (whole function bodies; Descartes) ran 13 min against 37 min for PIT's default mutators and 4 h for all of them on one
+Java industrial suite, with 409 survivors to triage against 23,835; cargo-mutants already replaces function bodies. Google's
+diff-scoped, covered-lines, one-per-line sampling cut the median from 820 to 77 to 7 mutants per change (a review signal, not a
+score). A per-test coverage matrix shortlists duplicates only (equal coverage is not equal checking); its cost on Windows
+(process-per-test spawn and Defender, or an in-process counter reset in a serial harness) has no published figure. Checked
+coverage and assertion counts have conflicting evidence and no Rust tool. History replay is poor here: of 1369 commits, 110
+subjects match fix/bug/wrong, 9 touch `src/` and `tests/` together, and the two checked do not revert cleanly (`git apply -R`
+fails on `kernel.rs`, 131 and 126 later commits).
+
+*Per-test coverage matrix spike (2026-10-30, run `2026-10-30-cov-spike-all2`, 168 non-ignored `church_bv` tests, debug build with `-C instrument-coverage`, one process per test).* Cost: 20 min wall at CPUs 0-7,10-11 (per test: run 5.0 s, `llvm-profdata merge` 0.44 s, `llvm-cov export` 1.02 s; instrumented build 2 min; about 3 GB of lcov, deleted). Result: no usable shortlist. Counting the harness files (`tests/church_bv/`) every test is unique, because each test body is its own covered lines; counting `src/` only, 131 tests cover 0 lines (they test the harness crate itself, which the filter drops) and form one "identical" group, 7871 strict subset pairs, 162 of 168 with no unique line. The two views bracket the answer: line coverage here either separates everything or merges everything, so it cannot name duplicates; only the six `src`-heavy groups (e.g. the 1090-line `rewrite_plan`/`encoding_search` group) are real candidates, and equal coverage is not equal checking. The sampled mutation run (below) is the check that can fail; the matrix is not worth repeating.
+
+*Sampled mutation run (2026-10-30, run `2026-10-30-mutants-spaces-sample6b`).* 6 of the 112 `spaces.rs` mutants (5.4%), picked by a Fisher-Yates shuffle from an LCG seeded 20261030 over `cargo mutants --list --no-shuffle`, run with `-F` per name, `--jobs 1`, `-- --lib`, CFF at BelowNormal. 11 min (279 s build + 29 s tests baseline, about 55 s per mutant): 4 caught, 2 missed, 0 timeouts: `reset_vec` `/` to `%` (`spaces.rs:92:28`) and `Spaces::resolve` `-` to `+` (`:269:26`) survive the lib tests. So this crate-level suite does not pin those two lines (the fixed 1/20 shard was 3 caught, 1 unviable, 2 timeouts, 0 missed): a trim judged by this sample would have a baseline of 4 of 6 caught, and any run that drops below it fails. Six mutants give a rough rate only (4/6 caught; a 95% interval is wide); the two survivors are the useful part, as named gaps.
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)
