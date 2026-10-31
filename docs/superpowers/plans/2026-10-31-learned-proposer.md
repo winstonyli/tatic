@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # v0.6 stage 1: a learned scorer over the extras draw (implementation plan)

@@ -23,7 +23,8 @@
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md, docs/tier-cycle.md "Count and slicing"): every mine
 //! with rule rounds also mines its own `EXTRAS_N` laws, the next the filter keeps from the stream sequence grown as deep
 //! as the held-out bands (`scope_extras`, fresh slices); off with ABLATE=gen; GEN_DRAW=d draws them from the sequence at
-//! salt + 1000 d instead.
+//! salt + 1000 d instead. POOL=p cuts p x n kept laws per mine and keeps n (the first n, or the best n by SCORER=<weights
+//! file>, scorer.rs).
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
 //! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the stream sequence, built once
@@ -202,6 +203,25 @@ fn extra_slices(len: usize, loops: usize, mines: usize, n: usize) -> Result<Vec<
     Ok((0..k).map(|j| j * n..(j + 1) * n).collect())
 }
 
+/// The extras a scope's mines take from `kept` (its first `loops x mines x block` kept laws): from each block of `block`
+/// laws the `n` with the highest `score` (a stable sort, so ties keep stream order), or the block's first `n` with no
+/// score. A block of `n` (pool 1) is the identity. `docs/superpowers/specs/2026-10-31-learned-proposer-design.md`.
+fn select_extras(kept: &[(Term, Term)], block: usize, n: usize, score: Option<&dyn Fn(&(Term, Term)) -> f32>) -> Vec<(Term, Term)> {
+    if block == 0 || n == 0 {
+        return vec![];
+    }
+    kept.chunks(block)
+        .flat_map(|chunk| {
+            let mut order: Vec<usize> = (0..chunk.len()).collect();
+            if let Some(f) = score {
+                let s: Vec<f32> = chunk.iter().map(f).collect();
+                order.sort_by(|&i, &j| s[j].total_cmp(&s[i]));
+            }
+            order.into_iter().take(n).map(|i| chunk[i]).collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 /// The filter drops a twin of a served law (here through `sub(y, 0)`, which normalizes to `y`), a law with a served
 /// law's skeleton, a law trivial after normalizing (its sides equal below their roots) and a twin of a held-out law, and
 /// keeps an unrelated law.
@@ -271,6 +291,37 @@ fn extra_slices_are_disjoint_and_full() {
 fn extra_slices_refuse_a_short_list() {
     assert_eq!(extra_slices(59, 3, 2, 10), Err(1));
     assert!(extra_slices(60, 3, 2, 10).is_ok());
+}
+
+/// Distinct laws for the selection tests: law `i` is `add(.. add(x, y) .. y) = 0` with `i` additions, so its size grows with `i`.
+fn nested_laws(count: usize) -> Vec<(Term, Term)> {
+    (0..count).map(|i| ((0..i).fold(Term::v(0), |t, _| Term::op(ADD, t, Term::v(1))), Term::ZERO)).collect()
+}
+
+#[test]
+fn select_extras_takes_the_first_n_of_each_block_without_a_score() {
+    let laws = nested_laws(12);
+    let texts = |ls: &[(Term, Term)]| ls.iter().map(law_text).collect::<Vec<_>>();
+    assert_eq!(texts(&select_extras(&laws, 6, 2, None)), texts(&[laws[0], laws[1], laws[6], laws[7]]));
+    assert_eq!(texts(&select_extras(&laws, 3, 3, None)), texts(&laws), "a block of n is the whole list: pool 1 changes nothing");
+    assert!(select_extras(&laws, 0, 0, None).is_empty(), "n 0 takes nothing and a block of 0 does not panic");
+}
+
+#[test]
+fn select_extras_takes_the_best_n_of_each_block_and_keeps_ties_in_order() {
+    let laws = nested_laws(12);
+    let texts = |ls: &[(Term, Term)]| ls.iter().map(law_text).collect::<Vec<_>>();
+    let by_size = |l: &(Term, Term)| l.0.size() as f32;
+    assert_eq!(texts(&select_extras(&laws, 6, 2, Some(&by_size))), texts(&[laws[5], laws[4], laws[11], laws[10]]));
+    let flat = |_: &(Term, Term)| 0.0;
+    assert_eq!(texts(&select_extras(&laws, 6, 2, Some(&flat))), texts(&select_extras(&laws, 6, 2, None)), "equal scores keep the stream order");
+}
+
+#[test]
+fn extra_slices_refuse_a_pool_that_does_not_fit() {
+    // 3 loops x 2 mines x (pool 4 x n 319) laws needed
+    assert_eq!(extra_slices(6 * 4 * 319 - 1, 3, 2, 4 * 319), Err(1));
+    assert!(extra_slices(6 * 4 * 319, 3, 2, 4 * 319).is_ok());
 }
 
 /// Review Focus 4: the stream phases are disjoint residue classes, so no two of the loops' phases share a law, and
@@ -690,14 +741,17 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     let c = scope[0].clone();
     let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
     let (n, mines) = (setup.or("EXTRAS_N", EXTRAS_N), c.mines.len());
+    let pool = setup.or("POOL", 1usize);
     // built once per process and salt (its `STREAMS` lines give the time)
     let deep = stream_sequence(salt, held_levels(HELD_BANDS.into_iter().max().unwrap()));
     let keep = filter(&served, &held);
-    let laws: Vec<(Term, Term)> = deep.iter().filter(|l| keep(l)).take(scope.len() * mines * n).copied().collect();
-    let at = extra_slices(laws.len(), scope.len(), mines, n).map_err(|short| {
-        format!("{}: the extras sequence of {} laws keeps {}, {short} short of {} loops x {mines} mines x {n}", c.out.display(), deep.len(), laws.len(), scope.len())
+    let kept: Vec<(Term, Term)> = deep.iter().filter(|l| keep(l)).take(scope.len() * mines * pool * n).copied().collect();
+    extra_slices(kept.len(), scope.len(), mines, pool * n).map_err(|short| {
+        format!("{}: the extras sequence of {} laws keeps {}, {short} short of {} loops x {mines} mines x POOL {pool} x n {n}", c.out.display(), deep.len(), kept.len(), scope.len())
     })?;
-    println!("GEN {}: n {n}, {} laws from a sequence of {}", c.out.display(), laws.len(), deep.len());
+    let laws = select_extras(&kept, pool * n, n, None);
+    let at = extra_slices(laws.len(), scope.len(), mines, n).expect("a selection of n per block fills the slices");
+    println!("GEN {}: n {n}, pool {pool}, {} laws from a sequence of {}", c.out.display(), laws.len(), deep.len());
     let laws = std::sync::Arc::new(laws);
     for (i, cfg) in scope.iter_mut().enumerate() {
         cfg.extras = laws.clone();
