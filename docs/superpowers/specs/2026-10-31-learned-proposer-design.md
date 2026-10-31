@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # v0.6: does a learned proposer push the frontier? (design)

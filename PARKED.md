@@ -104,6 +104,14 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   `2026-10-27-xgrid-f4950h`, `-f4950`, `-f9900h2`). Deleted in 66a9810 (`xgrid.patch` in
   `2026-10-27-xgrid-exes` has both). Status: decided against.
 
+- **Learned proposer, stage 2 (the cycle) and richer scorers (v0.6)** — what: refit the scorer each round on the labels of
+  earlier rounds; or a richer model (more features, a Rust ML crate, the GPU model) or a held-out-transfer label (w2) behind
+  the same `Scorer::score` interface. Why: stage 1's count-feature scorer found offline signal (test AUC 0.691 vs size-only
+  0.528) but no curve shift: held-out M worse than random at n 80/160/319 and 1.1-1.4x the CPU. Trigger: a w2 refit of the
+  same features (about 40 min: relabel, fit, rerun g4-g6) that beats random beyond the redraw spread (sigma 76 held-out M
+  over salts 1-3), or a richer model with held-out AUC well above 0.69. Evidence: `docs/tier-cycle.md`, "A learned scorer
+  over the extras" (runs `2026-10-31-v06-labels`, `v06-g1` to `g6`). Status: parked (2026-10-31).
+
 ## Rewriter, rule order and the floor
 
 - **Learn a rule order (a global order, or a priority per rule)** — why: no better global order was found; the one signal left on the families was per family (sbo3 under size first), and the families are gone (2026-10-23), so a learned order would start from the streams. Trigger: none stated. Evidence: `docs/tier-cycle.md` ("Rule order"), `docs/tier-cycle.md` ("Operand order"); also `docs/learned-vs-fixed.md` ("Moving parts to learned: candidates", the rule-order row). Status: parked.

@@ -7483,6 +7483,40 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 - Reserved storage could also give the arena large pages of its own. That is not measured by this probe, but mimalloc already serves these arrays from large pages in `proof_cost_split`, so there is little left to gain.
 - **Parked:** option 1 of the allocator question. Revisit only if a profile shows growth (`reserve_rehash`, `memcpy` from `Vec` growth) as a visible share of the build.
 
+### A learned scorer over the extras: no curve shift (2026-10-31; v0.6 stage 1)
+
+Question (`docs/superpowers/specs/2026-10-31-learned-proposer-design.md`): does ordering each mine's extras by a model
+trained on the kernel's own verdicts move the frontier past a random draw at the same mining CPU? The scorer is a
+logistic regression on 26 counts of a law's two sides (`tests/church_bv/scorer.rs`); `POOL=4` cuts 4n kept laws per mine
+and keeps the best n by score; the label is miner credit (a straggler a chosen rule covers).
+
+- **Signal exists offline.** Run `2026-10-31-v06-labels` (salts 4-10, arm A = arm B, deterministic): 42 mines, 13,398 laws,
+  3,282 credited. Fit on salts 4-9, test AUC on salt 10: **0.691**, size-only 0.528 (train 0.711). The verdict rule
+  (test AUC >= 0.55 and >= size-only + 0.02) passed, so the gate ran. Final weights fit on salts 4-10.
+- **No curve shift.** Gates `2026-10-31-v06-g1` to `g6`, salts 1-3 (disjoint from training), untimed counts, Defender
+  real-time protection off, machine about 50% loaded by other apps. Summed over the salts (`curve.sh`):
+
+| arm | held-out M | job CPU | rules | free share, bands 11/13/15/17 |
+|---|---|---|---|---|
+| random n 80 | 6043 | 333 s | 719 | .939 .827 .810 .750 |
+| scorer n 80 | 6337 | 402 s | 866 | .937 .827 .793 .736 |
+| random n 160 | 5517 | 417 s | 925 | .943 .838 .829 .775 |
+| scorer n 160 | 5603 | 600 s | 1136 | .945 .847 .820 .763 |
+| random n 319 | 5166 | 711 s | 1140 | .943 .850 .840 .792 |
+| redraw `GEN_DRAW=1` / `2` | 5090 / 5150 | 659 / 677 s | 1210 / 1241 | |
+| pool 4, first n (control) | 5168 | 636 s | 1181 | .945 .853 .839 .788 |
+| scorer n 319 | 5248 | 770 s | 1327 | .947 .857 .833 .778 |
+
+  Redraw spread sigma = 76 (|5166-5090|, |5166-5150|); the control is within it (the pool alone moves nothing). The scorer
+  arm is **worse** than random at every n (+294, +86, +82 held-out M; the last within sigma) and costs more CPU (1.2x, 1.4x,
+  1.1x). It reaches no random arm of a larger n: scorer n 80 is 6337 against random n 160 at 5517. The win rule
+  (held(s_n) < held(r_n) - sigma at CPU <= 1.1x, or held(s_n) <= held(r_2n) at lower CPU) fails everywhere.
+- **Reading (inference).** The labels reward laws that are easy to cover by a rule the mine picks (greedy credit,
+  in-sample), and those are the large laws (size feature weight): the scorer prefers them, the mines get more work
+  (walk/match/op 1.8x at n 319) and more rules but do not transfer to the held-out bands. What would confirm: refit on a
+  held-out-transfer label (w2) and rerun g4-g6 (about 40 min). Not done.
+- **Null scope.** "No gain from a linear model on these count features with this label", not "no signal".
+
 ## The JIT and the target machine
 
 ### Compiled evaluation, the wasm JIT and a formal target machine (2026-10-13 to 10-17)
