@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # v0.6, second try: select the extras from the kernel's own verdicts (design)

@@ -7550,6 +7550,42 @@ and keeps the best n by score; the label is miner credit (a straggler a chosen r
   What is left is that count features of a law do not predict which laws help a mine (an inference: a law's value depends
   on the other laws in the mine, which a per-law score cannot see).
 
+### Selecting the extras by straggler verdict: better per n, not per CPU (2026-10-31; v0.6, second try)
+
+Question (`docs/superpowers/specs/2026-10-31-context-aware-selector-design.md`): does filling each mine's n extra slots with
+laws the mine's own base rules mark as stragglers (the first n of a 4n pool, `EXTRAS_SELECT=straggler`, selection inside
+`rule_miner` via `RULEMINER_EXTRAS_*`) move the frontier past a random draw at the same mining CPU? Only stragglers can earn
+a rule; 37% of random extras are stragglers (`2026-10-31-v06-labels`). The pool always held at least n stragglers (18 of 18
+mines logged, kept-straggler share 1.000), so every extra slot was a straggler. Classifying the pool costs 0.1-0.2 s per mine.
+Gates `v06h-g1` to `g5`, salts 1-3 (disjoint from any training), Defender real-time protection off, machine 36-50% loaded by
+other apps, untimed counts. Summed over the salts:
+
+| arm | held-out M | job CPU | CPU vs random, same n |
+|---|---|---|---|
+| random n 80 / straggler n 80 | 6043 / 5347 | 359 / 492 s | 1.37x |
+| random n 160 / straggler n 160 | 5517 / 4931 | 446 / 841 s | 1.89x |
+| random n 319 / straggler n 319 | 5166 / 4498 | 674 / 1252 s | 1.86x |
+| random n 638 (g5) | 4600 | 910 s | |
+| pool 4, first n (control, g4) | 5168 | 628 s | |
+
+Sigma = 76 (redraw spread, `2026-10-31-v06-g*`). The control is within it (5168 against 5166), so the pool alone moves
+nothing. The straggler arm is better than random at every n by 586-696 held-out M, beyond sigma, but costs 1.4-1.9x the job
+CPU (more rules to prove: walk/match/op counts 1.3x the random n 638 arm).
+
+- **Verdict by the pre-registered rule: null.** Rule (a) (held(h_n) < held(r_n) - sigma at CPU <= 1.1x) fails at every n on
+  CPU. Rule (b) (held(h_n) <= held(r_2n) at lower CPU): 4498 <= 4600 holds, but 1252 s against 910 s is higher, so it fails.
+  The earlier recorded n 688 point (4622 at 1247 s) agrees on the held-out side and not on cost; the r638 arm here ran at
+  910 s on a lighter machine, so the CPU gap is real but its size carries load noise.
+- **Reading (inference).** The straggler verdict does choose better extras per slot, and the gain is bigger than a doubling
+  of n would give per law, but doubling n is the cheaper way to buy held-out M: random 319 to 638 gains 566 M for 236 s, the
+  straggler choice at 319 gains 668 M for 578 s over random 319, and over random 638 only 102 M for 342 s. What would
+  confirm: a cheaper straggler arm (pool 2, or n 100) read against the random curve between n 160 and 319, where the
+  straggler arm's CPU would meet random's. Not run.
+- **Null scope.** "Straggler-first selection does not beat doubling n at equal CPU", not "the base rules' verdict carries
+  no signal". Marginal selection (h1b: prefer stragglers whose candidate left side no kept law has yet) is not run; it
+  would target the same cost (`PARKED.md`, "Learned proposer").
+- Runs: `2026-10-31-v06h-smoke`, `v06h-g1` to `g5`.
+
 ## The JIT and the target machine
 
 ### Compiled evaluation, the wasm JIT and a formal target machine (2026-10-13 to 10-17)
