@@ -15,6 +15,7 @@ mod rewrite;
 mod machine;
 mod miner;
 mod search;
+mod scorer;
 mod task;
 mod work;
 #[allow(unused_imports)]
