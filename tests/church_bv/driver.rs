@@ -318,6 +318,20 @@ fn select_extras_takes_the_best_n_of_each_block_and_keeps_ties_in_order() {
 }
 
 #[test]
+fn zero_weights_select_the_baseline_and_a_size_weight_prefers_big_laws() {
+    let laws = nested_laws(12);
+    let texts = |ls: &[(Term, Term)]| ls.iter().map(law_text).collect::<Vec<_>>();
+    let zero = crate::scorer::Scorer::zero();
+    let z = |l: &(Term, Term)| zero.score(l);
+    assert_eq!(texts(&select_extras(&laws, 6, 2, Some(&z))), texts(&select_extras(&laws, 6, 2, None)), "zero weights are the baseline");
+    let mut w = [0.0; crate::scorer::F];
+    w[1] = 1.0;
+    let big = crate::scorer::Scorer::with_weights(w);
+    let b = |l: &(Term, Term)| big.score(l);
+    assert_eq!(texts(&select_extras(&laws, 6, 2, Some(&b))), texts(&[laws[5], laws[4], laws[11], laws[10]]));
+}
+
+#[test]
 fn extra_slices_refuse_a_pool_that_does_not_fit() {
     // 3 loops x 2 mines x (pool 4 x n 319) laws needed
     assert_eq!(extra_slices(6 * 4 * 319 - 1, 3, 2, 4 * 319), Err(1));
@@ -742,6 +756,11 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
     let (n, mines) = (setup.or("EXTRAS_N", EXTRAS_N), c.mines.len());
     let pool = setup.or("POOL", 1usize);
+    let scorer = setup.var("SCORER").map(|p| {
+        let text = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("SCORER {p}: {e}"));
+        crate::scorer::Scorer::from_text(&text).unwrap_or_else(|e| panic!("SCORER {p}: {e}"))
+    });
+    let score = scorer.as_ref().map(|s| move |l: &(Term, Term)| s.score(l));
     // built once per process and salt (its `STREAMS` lines give the time)
     let deep = stream_sequence(salt, held_levels(HELD_BANDS.into_iter().max().unwrap()));
     let keep = filter(&served, &held);
@@ -749,9 +768,9 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     extra_slices(kept.len(), scope.len(), mines, pool * n).map_err(|short| {
         format!("{}: the extras sequence of {} laws keeps {}, {short} short of {} loops x {mines} mines x POOL {pool} x n {n}", c.out.display(), deep.len(), kept.len(), scope.len())
     })?;
-    let laws = select_extras(&kept, pool * n, n, None);
+    let laws = select_extras(&kept, pool * n, n, score.as_ref().map(|f| f as &dyn Fn(&(Term, Term)) -> f32));
     let at = extra_slices(laws.len(), scope.len(), mines, n).expect("a selection of n per block fills the slices");
-    println!("GEN {}: n {n}, pool {pool}, {} laws from a sequence of {}", c.out.display(), laws.len(), deep.len());
+    println!("GEN {}: n {n}, pool {pool}, scorer {}, {} laws from a sequence of {}", c.out.display(), scorer.is_some(), laws.len(), deep.len());
     let laws = std::sync::Arc::new(laws);
     for (i, cfg) in scope.iter_mut().enumerate() {
         cfg.extras = laws.clone();
