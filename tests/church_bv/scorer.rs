@@ -164,6 +164,117 @@ pub fn auc(scored: &[(f64, bool)]) -> f64 {
     (rank_sum - pos * (pos + 1.0) / 2.0) / (pos * neg)
 }
 
+
+/// The label rows of one mine: for each law of its extras file (`lhs = rhs` lines) whether its log credits it
+/// (`RULEMINER label: 1 <law>`: a straggler a chosen rule covers). A log that counts stragglers but has no label line was
+/// written before the miner printed them: refused, because every law would read as y = 0.
+pub fn mine_labels(extras: &str, log: &str) -> Result<Vec<(String, bool)>, String> {
+    let credited: std::collections::HashSet<&str> = log.lines().filter_map(|l| l.strip_prefix("RULEMINER label: 1 ")).collect();
+    let labelled = log.lines().any(|l| l.starts_with("RULEMINER label: "));
+    let stragglers = log
+        .lines()
+        .filter_map(|l| l.strip_prefix("RULEMINER ")?.split_once(" stragglers of ")?.0.parse::<usize>().ok())
+        .next()
+        .unwrap_or(0);
+    if stragglers > 0 && !labelled {
+        return Err(format!("{stragglers} stragglers but no `RULEMINER label:` line"));
+    }
+    Ok(extras.lines().filter(|l| !l.is_empty()).map(|l| (l.to_string(), credited.contains(l))).collect())
+}
+
+/// The number in the first path component that reads `s<digits>_...` (a gate arm folder, `s7_A`).
+pub fn salt_of(path: &str) -> Option<usize> {
+    path.split(['/', '\\']).find_map(|c| {
+        let rest = c.strip_prefix('s')?;
+        let (digits, _) = rest.split_once('_')?;
+        digits.parse().ok()
+    })
+}
+
+fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    for e in std::fs::read_dir(dir).unwrap_or_else(|e| panic!("{}: {e}", dir.display())) {
+        let p = e.unwrap().path();
+        if p.is_dir() {
+            walk(&p, out);
+        } else {
+            out.push(p);
+        }
+    }
+}
+
+/// `LABEL_DIRS=<arm folder>;<arm folder>.. LABEL_OUT=<tsv> <exe> scorer::dump_labels --exact --ignored --nocapture`: one row
+/// `salt<TAB>y<TAB>law` per extras law of every mine under the folders (`laws_extra_<m>.txt` with its `mine_<m>.log`).
+#[test]
+#[ignore]
+fn dump_labels() {
+    let setup = &job::Setup::process();
+    let dirs = setup.var("LABEL_DIRS").expect("LABEL_DIRS");
+    let out = setup.var("LABEL_OUT").expect("LABEL_OUT");
+    let mut rows = String::new();
+    let (mut mines, mut laws, mut pos) = (0, 0, 0);
+    for d in dirs.split(';') {
+        let mut files = vec![];
+        walk(std::path::Path::new(d), &mut files);
+        files.sort();
+        for f in files.iter().filter(|f| f.file_name().is_some_and(|n| n.to_string_lossy().starts_with("laws_extra_"))) {
+            let name = f.file_name().unwrap().to_string_lossy().replace("laws_extra_", "").replace(".txt", "");
+            let log = f.with_file_name(format!("mine_{name}.log"));
+            let salt = salt_of(&f.to_string_lossy()).unwrap_or_else(|| panic!("no s<salt>_ folder in {}", f.display()));
+            let (extras, log_text) = (std::fs::read_to_string(f).unwrap(), std::fs::read_to_string(&log).unwrap_or_else(|e| panic!("{}: {e}", log.display())));
+            for (law, y) in mine_labels(&extras, &log_text).unwrap_or_else(|e| panic!("{}: {e}", log.display())) {
+                rows += &format!("{salt}\t{}\t{law}\n", y as u8);
+                laws += 1;
+                pos += y as usize;
+            }
+            mines += 1;
+        }
+    }
+    std::fs::write(out, rows).unwrap();
+    println!("LABELS {mines} mines, {laws} laws, {pos} credited");
+}
+
+type Rows = Vec<([f32; F], bool)>;
+
+/// The label TSV's rows (`salt<TAB>y<TAB>law`) of the `train` salts and of the `test` salts, as feature rows.
+pub fn split_rows(tsv: &str, train: &[usize], test: &[usize]) -> (Rows, Rows) {
+    let (mut a, mut b) = (vec![], vec![]);
+    for l in tsv.lines() {
+        let mut p = l.splitn(3, '\t');
+        let (salt, y, law) = (p.next().unwrap().parse::<usize>().unwrap(), p.next().unwrap() == "1", p.next().unwrap());
+        let (lhs, rhs) = law.split_once(" = ").unwrap_or_else(|| panic!("not a law: {law}"));
+        let row = (features(&(parse_term(lhs), parse_term(rhs))), y);
+        if train.contains(&salt) {
+            a.push(row);
+        } else if test.contains(&salt) {
+            b.push(row);
+        }
+    }
+    (a, b)
+}
+
+/// `LABELS=<tsv> TRAIN_SALTS=4,5,.. TEST_SALTS=10 SCORER_OUT=<weights> <exe> scorer::fit_scorer --exact --ignored --nocapture`.
+/// Fits on the train salts, writes the weights, and prints the AUC on the train rows, on the test rows, and of the size
+/// feature alone on the test rows (the baseline the scorer must beat).
+#[test]
+#[ignore]
+fn fit_scorer() {
+    let setup = &job::Setup::process();
+    let salts = |k: &str| -> Vec<usize> { setup.var(k).unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.parse().unwrap()).collect() };
+    let tsv = std::fs::read_to_string(setup.var("LABELS").expect("LABELS")).unwrap();
+    let (train, test) = split_rows(&tsv, &salts("TRAIN_SALTS"), &salts("TEST_SALTS"));
+    let s = fit(&train);
+    std::fs::write(setup.var("SCORER_OUT").expect("SCORER_OUT"), s.to_text()).unwrap();
+    let on = |rows: &Rows, f: &dyn Fn(&[f32; F]) -> f64| auc(&rows.iter().map(|(x, y)| (f(x), *y)).collect::<Vec<_>>());
+    println!(
+        "AUC train {:.4} test {:.4} sizeonly-test {:.4} rows {} positives {}",
+        on(&train, &|f| s.logit(f)),
+        on(&test, &|f| s.logit(f)),
+        on(&test, &|f| f[1] as f64),
+        train.len(),
+        train.iter().filter(|r| r.1).count()
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,5 +330,39 @@ mod tests {
         assert_eq!(a, b);
         let scored: Vec<(f64, bool)> = rows.iter().map(|(f, y)| (a.logit(f), *y)).collect();
         assert_eq!(auc(&scored), 1.0);
+    }
+
+    #[test]
+    fn labels_credit_covered_stragglers_only() {
+        let extras = "add(x, y) = add(y, x)\nand(x, y) = and(y, x)\nor(x, y) = or(y, x)\n";
+        let log = "RULEMINER 2 stragglers of 9 laws, 1.0s base (0 unproved)\n\
+                   RULEMINER label: 1 add(x, y) = add(y, x)\n\
+                   RULEMINER label: 0 and(x, y) = and(y, x)\n\
+                   RULEMINER label: 1 some(other, law) = served\n";
+        let rows = mine_labels(extras, log).unwrap();
+        assert_eq!(rows, vec![("add(x, y) = add(y, x)".to_string(), true), ("and(x, y) = and(y, x)".to_string(), false), ("or(x, y) = or(y, x)".to_string(), false)]);
+    }
+
+    #[test]
+    fn a_log_with_stragglers_and_no_label_lines_is_refused() {
+        let old = "RULEMINER 5 stragglers of 9 laws, 1.0s base (0 unproved)\nRULEMINER uncovered: x\n";
+        assert!(mine_labels("add(x, y) = add(y, x)\n", old).is_err());
+        let none = "RULEMINER 0 stragglers of 9 laws, 1.0s base (0 unproved)\n";
+        assert_eq!(mine_labels("add(x, y) = add(y, x)\n", none).unwrap(), vec![("add(x, y) = add(y, x)".to_string(), false)]);
+    }
+
+    #[test]
+    fn the_salt_is_the_arm_folders_number() {
+        assert_eq!(salt_of("C:/runs/2026-11-01-v06-dump/s7_A/cold_streams_streams_1_none"), Some(7));
+        assert_eq!(salt_of("C:/runs/s12_B"), Some(12));
+        assert_eq!(salt_of("C:/runs/state/none"), None);
+    }
+
+    #[test]
+    fn rows_split_by_salt() {
+        let tsv = "4\t1\tadd(x, y) = add(y, x)\n5\t0\tand(x, y) = and(y, x)\n4\t0\tor(x, y) = or(y, x)\n";
+        let (a, b) = split_rows(tsv, &[4], &[5]);
+        assert_eq!((a.len(), b.len()), (2, 1));
+        assert!(a[0].1 && !a[1].1 && !b[0].1);
     }
 }

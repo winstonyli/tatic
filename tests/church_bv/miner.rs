@@ -920,6 +920,7 @@ impl<'a> Rounds<'a> {
         println!("RULEMINER join store: {} joins served, {:.1}s querying", j.stored, j.store_nanos as f64 / 1e9);
         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
         for (st, c) in stragglers.iter().zip(covered) {
+            println!("RULEMINER label: {} {}", *c as u8, st.0);
             if !c {
                 println!("RULEMINER uncovered: {}", st.0);
             }
