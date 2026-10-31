@@ -34,8 +34,10 @@ results, 2026-10-17 and 2026-10-23).
 
 ## Milestones
 
-- **v0.5 - Does closing the cycle push the frontier?** (goals 2 and 3) Experiment 3: train on accepted laws, repeat,
-  and track the frontier, not only M on a fixed stream. The frontier: on a fixed held-out set of laws larger than the
+- **v0.5 - Is the frontier measured, with the mine settings fixed?** (goals 2 and 3) Decided 2026-10-30 (the model-in-the-loop
+  run moved to v0.6): the milestone closes on the frontier measure, the extras and one mining join budget. Done when the mines'
+  join budget of 100 at n 319 (serving and the held-out check stay at 1000) is the default, not a probe, and the gate's
+  frontier line is rerun with it. Experiment 3's question, whether closing the cycle pushes the frontier, is v0.6. The frontier: on a fixed held-out set of laws larger than the
   loops serve (the loops run on operator-set streams, the class-table spec's decision 11), the share proved free (with no whole-term machine proof, within the rule budget and the join's cap
   and visit budget, which must be fixed: from 1000 to 5000 it moves by up to 27 of 400 laws, `docs/tier-cycle.md`,
   "Why a sound rule costs the join") by law size, against the table alone. Serving proves every law, so the share proved at all
@@ -54,3 +56,6 @@ results, 2026-10-17 and 2026-10-23).
   and at 0 no better than 100 (`docs/tier-cycle.md`, "As the loop's extras", "At every size, and at three
   times the count", "Count and slicing" and the bullets after it; rejected designs in `PARKED.md`, "Mine large laws
   after the loop" and "Serve laws of the held-out sizes").
+- **v0.6 - Does a learned proposer push the frontier?** (goals 2 and 3) Experiment 3: train a model on accepted laws,
+  repeat the cycle, and track the frontier of v0.5, not only M on a fixed stream. Nothing is built: it needs a model (design
+  in `docs/tier-cycle.md`, "The proposer model's target") and a way to score its proposals against the kernel.
