@@ -94,3 +94,15 @@ Gate: salts 1-3, pool 4, n in {160, 319}, against the recorded random arms (r160
 4600 at 910 s) and straggler-first (h160 4931 at 841 s, h319 4498 at 1252 s). Win: held(c_n) < held(r_n) - 76 at job CPU
 <= 1.1x r_n, or held(c_n) <= held(r_2n) at lower job CPU. Else null; "dominated" if no better than straggler-first at
 more CPU. Reading beyond the rule: whether `cheap` sits left of straggler-first on the (CPU, held-out M) curve.
+
+### Follow-up control (set after `v06c-g1` to `g3`, before its data)
+
+`cheap` n 160 reads 4721 held-out M at 700 s; the random arms are n 319 5166 at 674 s, n 345 5023 at 608 s, n 638 4600 at 910 s,
+so the pre-registered rule (b) misses by 26 s against r319 and the random curve at 700 s (interpolated) is about 4894. The
+match on work counts is random n about 433 (c160's walk count 488 M against r345's 388 M). Control: random n 433 against
+`cheap` n 160, salts 1-3 (`v06c-g4`) and fresh salts 4-6 (`v06c-g5`). Win: held(c160) < held(r433) - 76 on both salt sets, with
+c160's job CPU <= 1.1x r433's. This is a post-hoc control, not the pre-registered rule; a pass says the n 160 point is on a
+better curve, not that the milestone rule was met.
+
+Result (2026-10-31): `v06c-g4` -111 and `v06c-g5` -205 held-out M against random n 433 at 1.05x and 1.03x job CPU: the control
+passes on both salt sets. The pre-registered rule (b) missed by 26 s. Details: `docs/tier-cycle.md`, "The cheap variant".

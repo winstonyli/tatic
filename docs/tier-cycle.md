@@ -7586,6 +7586,30 @@ CPU (more rules to prove: walk/match/op counts 1.3x the random n 638 arm).
   would target the same cost (`PARKED.md`, "Learned proposer").
 - Runs: `2026-10-31-v06h-smoke`, `v06h-g1` to `g5`.
 
+#### The cheap variant: a better point on the curve (2026-10-31; runs `v06c-g1` to `g5`)
+
+`EXTRAS_SELECT=cheap` keeps, of the pool's stragglers, the n with the fewest rewrite steps spent classifying them (spec
+addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protection off, machine 74-75% loaded by other apps:
+
+| arm | held-out M | job CPU | walk work |
+|---|---|---|---|
+| cheap n 160 | 4721 | 700 s | 488 M |
+| cheap n 319 | 4666 | 1158 s | 965 M |
+| random n 160 / 319 / 345 / 433 / 638 | 5517 / 5166 / 5023 / 4832 / 4600 | 446 / 674 / 608 / 669 / 910 s | 157 / 362 / 388 / 485 / - M |
+| straggler-first n 160 / 319 | 4931 / 4498 | 841 / 1252 s | |
+
+- **Pre-registered rule: null, narrowly.** (a) fails on CPU (700 s against 446 s). (b) c160 holds the held-out side against r319 (4721 <= 5166), but
+  700 s is above r319's 674 s by 26 s; c319 (4666) misses r638 (4600). Cheap n 160 sits left of straggler-first n 160
+  (4721 at 700 s against 4931 at 841 s): the cost key keeps the gain and drops part of the cost.
+- **Post-hoc control at matched work** (set before its data, in the spec addendum): random n 433 has the same walk work as
+  c160 (485 M against 488 M). Salts 1-3 (`v06c-g4`): 4721 against 4832, **-111** (sigma 76), job CPU 700 against 669 s
+  (1.05x). Fresh salts 4-6 (`v06c-g5`): 4569 against 4774, **-205**, 887 against 860 s (1.03x). Both pass. The random arms'
+  job CPU swings with load (r319 674 s, r345 608 s), so the CPU ratios carry about +-10%; the work counts do not.
+- **Reading (inference).** Among the pool's stragglers the cheap ones carry more held-out gain per unit of mine work than a
+  random draw gives, up to n about 160; at n 319 the cheap pool is spent and the arm costs what straggler-first costs.
+  What would confirm: cheap at n 80 and 240 (the knee), and a replication of g4 at the other pool sizes. The milestone
+  rule was not met, so this is a better point, not the rule's win. Gain 111-205 held-out M of about 4800 (2-4%).
+
 ## The JIT and the target machine
 
 ### Compiled evaluation, the wasm JIT and a formal target machine (2026-10-13 to 10-17)
