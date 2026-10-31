@@ -175,7 +175,7 @@ pub fn mine_labels(extras: &str, log: &str) -> Result<Vec<(String, bool)>, Strin
         .lines()
         .filter_map(|l| l.strip_prefix("RULEMINER ")?.split_once(" stragglers of ")?.0.parse::<usize>().ok())
         .next()
-        .unwrap_or(0);
+        .ok_or("no `RULEMINER N stragglers of M laws` line (a crashed or foreign log)")?;
     if stragglers > 0 && !labelled {
         return Err(format!("{stragglers} stragglers but no `RULEMINER label:` line"));
     }
@@ -364,5 +364,24 @@ mod tests {
         let (a, b) = split_rows(tsv, &[4], &[5]);
         assert_eq!((a.len(), b.len()), (2, 1));
         assert!(a[0].1 && !a[1].1 && !b[0].1);
+    }
+
+    #[test]
+    fn a_log_without_a_stragglers_count_is_refused() {
+        assert!(mine_labels("add(x, y) = add(y, x)\n", "RULEMINER something else\n").is_err());
+    }
+
+    #[test]
+    fn auc_with_a_mixed_tie_group() {
+        // positives 1, 2; negatives 1, 0: pairs (1,1) tie 0.5, (1,0) 1, (2,1) 1, (2,0) 1 -> 3.5 / 4
+        assert_eq!(auc(&[(1.0, true), (1.0, false), (2.0, true), (0.0, false)]), 0.875);
+    }
+
+    #[test]
+    fn a_fitted_scorer_round_trips_through_text() {
+        let rows: Vec<([f32; F], bool)> = (0..20).map(|i| { let mut f = [0f32; F]; f[0] = 1.0; f[1] = i as f32; f[2] = (i % 3) as f32; (f, i > 9) }).collect();
+        let s = fit(&rows);
+        assert_ne!(s.mean[1], 0.0);
+        assert_eq!(Scorer::from_text(&s.to_text()).unwrap(), s);
     }
 }
