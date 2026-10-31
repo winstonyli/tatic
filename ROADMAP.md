@@ -2,7 +2,7 @@
 
 The project's goals, then ordered milestones, each the question it answers (format: `~/.claude/VERSIONING.md`).
 `kind: experiment`: a tag marks a step and its message is the milestone sentence; tagging moves the line out of this
-file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23) and `v0.4.0` (2026-10-26; `git tag -n99`). Deferred work is in
+file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) and `v0.5.0` (2026-10-31; `git tag -n99`). Deferred work is in
 `PARKED.md`. The cleanup break from v0.5 (`docs/superpowers/plans/2026-10-26-cleanup.md`) is done (2026-10-27).
 
 ## Goals
@@ -34,28 +34,6 @@ results, 2026-10-17 and 2026-10-23).
 
 ## Milestones
 
-- **v0.5 - Is the frontier measured, with the mine settings fixed?** (goals 2 and 3) Decided 2026-10-30 (the model-in-the-loop
-  run moved to v0.6): the milestone closes on the frontier measure, the extras and one mining join budget. Met 2026-10-30: the mines'
-  join budget of 100 at n 319 (serving and the held-out check stay at 1000) is the default, and the gate's frontier line
-  was rerun with it (`docs/tier-cycle.md`, "Landed 2026-10-30"); ready to tag. Experiment 3's question, whether closing the cycle pushes the frontier, is v0.6. The frontier: on a fixed held-out set of laws larger than the
-  loops serve (the loops run on operator-set streams, the class-table spec's decision 11), the share proved free (with no whole-term machine proof, within the rule budget and the join's cap
-  and visit budget, which must be fixed: from 1000 to 5000 it moves by up to 27 of 400 laws, `docs/tier-cycle.md`,
-  "Why a sound rule costs the join") by law size, against the table alone. Serving proves every law, so the share proved at all
-  would always be 1. The gate prints it per arm for bands 11-17 (`docs/tier-cycle.md`, "The frontier on the gate":
-  .94 to .72 with mined rules since 2026-10-26, .76 to .60 without); no threshold, since no band nears 50% (the probe before it:
-  "The frontier past the loops' sizes"). First finding (2026-10-26): the loops miss rules that transfer because they
-  serve few or no laws as large as the held-out ones; mining 500-1000 fresh laws of those sizes per band cuts held-out M
-  22-28% (`docs/tier-cycle.md`, "Fresh laws of the held-out sizes do as well"). Design chosen 2026-10-26: draw the
-  extras (laws a loop's mines take but it does not serve) from the sequence at 4 growths instead of 2, at every size
-  (replacing the small ones cost band 11) and minus every held-out law and its twins. Landed 2026-10-28 (66a9810) with
-  each mine its own n = 319 laws (fresh slices: distinct laws per loop matter more than laws per mine): held-out M
-  -16.6% at 5x the base's job CPU. n is a price on a curve with no knee, weighed against mining CPU. Cutting a mine
-  short loses to a smaller n; a lower join budget in the mines alone (probe, not landed) keeps held-out M at a fraction
-  of the CPU: on salts 1-3, at 100 -19.3% at 1.06x the base's job CPU, at 250 with n 688 -28.5% at 2.84x, at 100
-  with n 688 -27.8% at 45% of 250's op count (on salts 1-2 1.45x the base's job CPU; salt 3 ran under heavy load),
-  and at 0 no better than 100 (`docs/tier-cycle.md`, "As the loop's extras", "At every size, and at three
-  times the count", "Count and slicing" and the bullets after it; rejected designs in `PARKED.md`, "Mine large laws
-  after the loop" and "Serve laws of the held-out sizes").
 - **v0.6 - Does a learned proposer push the frontier?** (goals 2 and 3) Experiment 3: train a model on accepted laws,
   repeat the cycle, and track the frontier of v0.5, not only M on a fixed stream. Nothing is built: it needs a model (design
   in `docs/tier-cycle.md`, "The proposer model's target") and a way to score its proposals against the kernel.
