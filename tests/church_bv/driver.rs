@@ -331,6 +331,18 @@ fn zero_weights_select_the_baseline_and_a_size_weight_prefers_big_laws() {
     assert_eq!(texts(&select_extras(&laws, 6, 2, Some(&b))), texts(&[laws[5], laws[4], laws[11], laws[10]]));
 }
 
+/// The miner names a straggler `a.show() = b.show()` (`read_named_laws`) and credits it by that name; the extras file is
+/// written with `law_text`. The labels join the two, so they must stay equal.
+#[test]
+fn law_text_equals_the_names_the_miner_reads_back() {
+    let laws = nested_laws(5);
+    let path = std::env::temp_dir().join(format!("law_text_names_{}.txt", std::process::id()));
+    std::fs::write(&path, laws.iter().map(|l| law_text(l) + "\n").collect::<String>()).unwrap();
+    let names: Vec<String> = crate::search::read_named_laws(path.to_str().unwrap()).into_iter().map(|n| n.0).collect();
+    std::fs::remove_file(&path).unwrap();
+    assert_eq!(names, laws.iter().map(law_text).collect::<Vec<_>>());
+}
+
 #[test]
 fn extra_slices_refuse_a_pool_that_does_not_fit() {
     // 3 loops x 2 mines x (pool 4 x n 319) laws needed
@@ -756,6 +768,9 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
     let (n, mines) = (setup.or("EXTRAS_N", EXTRAS_N), c.mines.len());
     let pool = setup.or("POOL", 1usize);
+    if pool == 0 {
+        return Err("POOL must be at least 1".to_string());
+    }
     let scorer = setup.var("SCORER").map(|p| {
         let text = std::fs::read_to_string(p).unwrap_or_else(|e| panic!("SCORER {p}: {e}"));
         crate::scorer::Scorer::from_text(&text).unwrap_or_else(|e| panic!("SCORER {p}: {e}"))

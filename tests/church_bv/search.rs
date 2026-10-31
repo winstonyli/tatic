@@ -609,6 +609,8 @@ pub const STREAM_BUDGET: usize = 20000;
 
 /// The stream laws' variables (`x`, `y`, `z`).
 pub const STREAM_VARS: usize = 3;
+// `Term::occurrences` counts into `[usize; 8]` (scorer features): a variable index must stay below 8
+const _: () = assert!(STREAM_VARS <= 8);
 /// Growth levels of a stream.
 pub const STREAM_LEVELS: usize = 2;
 /// Phases of the stream sequence: a sweep's loops serve 1-3 (spec §9); 0 fed the mines' extras until 2026-10-28 and is

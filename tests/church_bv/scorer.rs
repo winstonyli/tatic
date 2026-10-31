@@ -104,7 +104,10 @@ impl Scorer {
         let mut s = Scorer::zero();
         for name in ["mean", "scale", "w"] {
             let line = text.lines().find_map(|l| l.strip_prefix(name).and_then(|r| r.strip_prefix(' '))).ok_or(format!("no `{name}` line"))?;
-            let v: Vec<f64> = line.split(' ').map(|x| x.parse::<f64>().map_err(|e| format!("`{name}`: {x}: {e}"))).collect::<Result<_, _>>()?;
+            let v: Vec<f64> = line.split_whitespace().map(|x| x.parse::<f64>().map_err(|e| format!("`{name}`: {x}: {e}"))).collect::<Result<_, _>>()?;
+            if v.iter().any(|x| !x.is_finite()) || (name == "scale" && v.iter().any(|&x| x <= 0.0)) {
+                return Err(format!("`{name}` has a non-finite number{}", if name == "scale" { " or a scale <= 0" } else { "" }));
+            }
             let v: [f64; F] = v.try_into().map_err(|v: Vec<f64>| format!("`{name}` has {} numbers, expected {F}", v.len()))?;
             match name {
                 "mean" => s.mean = v,
@@ -118,6 +121,7 @@ impl Scorer {
 
 /// Full-batch gradient descent for the logistic loss with a small L2 penalty, from zero weights: deterministic.
 pub fn fit(rows: &[([f32; F], bool)]) -> Scorer {
+    assert!(!rows.is_empty(), "fit needs rows");
     let n = rows.len() as f64;
     let (mut mean, mut scale) = ([0.0; F], [1.0; F]);
     for i in 1..F {
@@ -182,13 +186,15 @@ pub fn mine_labels(extras: &str, log: &str) -> Result<Vec<(String, bool)>, Strin
     Ok(extras.lines().filter(|l| !l.is_empty()).map(|l| (l.to_string(), credited.contains(l))).collect())
 }
 
-/// The number in the first path component that reads `s<digits>_...` (a gate arm folder, `s7_A`).
+/// The number in the last path component that reads `s<digits>_...` (a gate arm folder, `s7_A`; the one nearest the file).
 pub fn salt_of(path: &str) -> Option<usize> {
-    path.split(['/', '\\']).find_map(|c| {
-        let rest = c.strip_prefix('s')?;
-        let (digits, _) = rest.split_once('_')?;
-        digits.parse().ok()
-    })
+    path.split(['/', '\\'])
+        .filter_map(|c| {
+            let rest = c.strip_prefix('s')?;
+            let (digits, _) = rest.split_once('_')?;
+            digits.parse().ok()
+        })
+        .last()
 }
 
 fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
@@ -229,6 +235,7 @@ fn dump_labels() {
             mines += 1;
         }
     }
+    assert!(mines > 0, "no laws_extra_*.txt under {dirs}");
     std::fs::write(out, rows).unwrap();
     println!("LABELS {mines} mines, {laws} laws, {pos} credited");
 }
@@ -265,6 +272,10 @@ fn fit_scorer() {
     // DROP=<feature indexes>: zero those columns (constant columns get weight 0), so the scorer cannot use them
     for i in salts("DROP") {
         train.iter_mut().chain(test.iter_mut()).for_each(|r| r.0[i] = 0.0);
+    }
+    let dropped = tsv.lines().count() - train.len() - test.len();
+    if dropped > 0 {
+        println!("{dropped} rows are in neither TRAIN_SALTS nor TEST_SALTS");
     }
     let s = fit(&train);
     std::fs::write(setup.var("SCORER_OUT").expect("SCORER_OUT"), s.to_text()).unwrap();
@@ -360,6 +371,8 @@ mod tests {
         assert_eq!(salt_of("C:/runs/2026-11-01-v06-dump/s7_A/cold_streams_streams_1_none"), Some(7));
         assert_eq!(salt_of("C:/runs/s12_B"), Some(12));
         assert_eq!(salt_of("C:/runs/state/none"), None);
+        assert_eq!(salt_of("C:\\runs\\s7_A\\x"), Some(7), "backslash paths");
+        assert_eq!(salt_of("C:/runs/s3_old/s9_B/x"), Some(9), "the folder nearest the file wins");
     }
 
     #[test]
@@ -387,5 +400,20 @@ mod tests {
         let s = fit(&rows);
         assert_ne!(s.mean[1], 0.0);
         assert_eq!(Scorer::from_text(&s.to_text()).unwrap(), s);
+    }
+
+    #[test]
+    fn from_text_refuses_a_bad_scale_or_non_finite_number_and_reads_padded_lines() {
+        let ok = Scorer::zero().to_text();
+        assert!(Scorer::from_text(&ok.replace('\n', " \r\n")).is_ok(), "trailing spaces and CRLF");
+        let zero_scale = ok.replacen("scale 1.0", "scale 0.0", 1);
+        assert!(Scorer::from_text(&zero_scale).is_err());
+        assert!(Scorer::from_text(&ok.replacen("w 0.0", "w NaN", 1)).is_err());
+    }
+
+    #[test]
+    #[should_panic(expected = "fit needs rows")]
+    fn fit_refuses_no_rows() {
+        fit(&[]);
     }
 }
