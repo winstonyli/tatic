@@ -5527,6 +5527,21 @@ timeout), 0 missed. A rebuild is 31-37 s per mutant, so the whole module is roug
 6 mutants, not measured). Feasible for one module as a before/after check on a trim, not for the whole crate; `--in-diff`
 cannot drive it for a test-only diff.
 
+*Alternatives to cargo-mutants (2026-10-30; survey, sources re-fetched by a verifier).* The only live Rust alternative is
+mutest-rs (zalanlevai; nightly, mutants swapped at runtime from one build, 18 operators, last commit 2026-10-08, a research
+tool): its claimed ~100x speed-up over cargo-mutants is not in the sources opened (the ICST 2026 abstract says only
+"efficient"). mutagen (last commit 2022-07), Mull (C/C++, no Windows lock files), universalmutator (one rebuild per mutant),
+cargo-mutamancer (v0.1, no mutants yet) and unclebob/mutator (`cargo test` per mutant) are not replacements. Cheaper
+cargo-mutants runs: a 5% sample after operator selection took 6.54% of the time (Zhang, ASE 2013), `--shard` (each shard
+repeats the build and baseline), `-- --all-targets` to skip doctests, a `mutants` profile with debug off.
+*mutest-rs on this machine:* built and installed under the pinned `nightly-2026-07-18` into `%LOCALAPPDATA%\mutest-rs\inst`
+(run `2026-10-30-mutest-build`, exit 0); `cargo mutest run -p tatic --lib --filter-mutations file:src/kernel/spaces.rs`
+(run `2026-10-30-mutest-spaces`) panics in `mutest-driver\src\main.rs:87`, "cannot find target in Cargo package
+metadata". Inference, untested: the driver canonicalizes rustc's input path (`src\lib.rs`, giving a `\\?\C:\...` path on
+Windows) and compares it with cargo metadata's `src_path`, so the match fails. The wrapper recorded exit 0 for that run
+(cause not checked), so read the headline. Not patched: a fix is a change to
+third-party code; the check is a one-line path normalization in `main.rs:85`, about 10 minutes to try.
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)
