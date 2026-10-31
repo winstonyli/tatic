@@ -106,3 +106,12 @@ better curve, not that the milestone rule was met.
 
 Result (2026-10-31): `v06c-g4` -111 and `v06c-g5` -205 held-out M against random n 433 at 1.05x and 1.03x job CPU: the control
 passes on both salt sets. The pre-registered rule (b) missed by 26 s. Details: `docs/tier-cycle.md`, "The cheap variant".
+
+### Knee chart (set before its data; Winston chose it 2026-10-31)
+
+Arms: `cheap` n 80 and n 240 (pool 4) and `cheap` n 160 with pool 8, each on salts 1-3 and 4-6. Stage 1 runs them against the
+recorded or fresh random arm of the same n; stage 2 reads each arm's walk work (the deterministic count), picks the random n of
+equal work from the random arms' walk-per-n (about 1.0-1.1 M per n), and runs that random arm on both salt sets. Win, per cheap
+arm: held(cheap) < held(random of equal work) - 76 on both salt sets at job CPU <= 1.1x. A pool that is too short for pool 8 is
+reported as such (the gate says how far the sequence falls short). The tally is the answer to "is n 160 a knee": cheap wins at
+n 80 and 240 too (a curve), only at 160 (a point), or nowhere but 160 on salts 4-6 only (noise).
