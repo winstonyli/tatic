@@ -37,4 +37,5 @@ results, 2026-10-17 and 2026-10-23).
 - **v0.6 - Does a learned proposer push the frontier?** (goals 2 and 3) Experiment 3: train a model on accepted laws,
   repeat the cycle, and track the frontier of v0.5, not only M on a fixed stream. Stage 1 (offline scorer over the extras, spec
   `docs/superpowers/specs/2026-10-31-learned-proposer-design.md`) is done: AUC 0.69 offline but no curve shift, worse than
-  random at every n (`docs/tier-cycle.md`, "A learned scorer over the extras"). Stage 2 (the cycle) is parked (`PARKED.md`).
+  random at every n (`docs/tier-cycle.md`, "A learned scorer over the extras"). Stage 2 (the cycle) is parked (`PARKED.md`). Next try, drafted: select the extras by the kernel's own straggler
+  verdicts inside the mine (`docs/superpowers/specs/2026-10-31-context-aware-selector-design.md`).
