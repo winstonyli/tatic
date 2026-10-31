@@ -7529,7 +7529,26 @@ and keeps the best n by score; the label is miner credit (a straggler a chosen r
   Still no shift: worse at n 80 and 160 (+286, +266, beyond sigma 76) and equal at 319 (+20, inside sigma); the n 80 CPU is
   noise from other load (the arm ran 264 s against 333 s for 1.3x the rules). So the "large laws" reading is not
   what fails; the label's in-sample credit does not transfer by whatever features. The full w2 transfer label (credit
-  by a rule that also covers held-out stragglers) was not built, since the size-blind result gave no signal to follow.
+  by a rule that also covers held-out stragglers) was then built (below).
+- **Held-out transfer label w2 (2026-10-31; runs `v06-labels2`, `v06-g10` to `g12`).** `RULEMINER_TRANSFER=1` makes each mine
+  also print `RULEMINER label2:` (`transfer_labels` in `miner.rs`): a straggler is 1 if it is covered and a chosen rule that
+  could act in its evaluation (`Trace::touched_by`) earns its keep on the held-out bands: some held-out straggler (base
+  rules, bands 11-17, 4000 laws, 917-1542 stragglers per mine) is covered under the chosen rules but not under the chosen
+  rules without that rule. The print changes nothing the mine chooses (probe `v06-tx-probe`: rules, M and held-out M equal
+  to the plain exe; about 1 s per mine). Over salts 4-10: 2949 positives against 3282 for the credit label (90%: most credit
+  transfers by this test, 28-54% of chosen rules earn their keep). Fit on salts 4-9, test AUC on salt 10: 0.686 (size-only 0.543).
+  Gate, salts 1-3, pool 4:
+
+| arm | held-out M | job CPU | rules |
+|---|---|---|---|
+| random n 80 / w2 scorer n 80 | 6043 / 6529 | 333 / 307 s | 719 / 866 |
+| random n 160 / w2 scorer n 160 | 5517 / 5832 | 417 / 634 s | 925 / 1118 |
+| random n 319 / w2 scorer n 319 | 5166 / 5409 | 711 / 1075 s | 1140 / 1232 |
+
+  Worse than random at every n (+486, +315, +243, all beyond sigma 76) and worse than the credit-label scorer. So the
+  label's in-sample bias was not the cause: three scorers (credit, size-blind, transfer) over count features all fail.
+  What is left is that count features of a law do not predict which laws help a mine (an inference: a law's value depends
+  on the other laws in the mine, which a per-law score cannot see).
 
 ## The JIT and the target machine
 

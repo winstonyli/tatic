@@ -34,6 +34,9 @@ pub struct MinerConfig {
     pub guard: usize,
     /// `RULEMINER_NODUPLHS` (switch, on by default): drop candidates whose left side already has a rule in `base`.
     pub no_dup_lhs: bool,
+    /// `RULEMINER_TRANSFER` (switch, off by default): after the rounds, also print `RULEMINER label2:` lines, the held-out
+    /// transfer label (`transfer_labels`). Changes nothing the mine chooses.
+    pub transfer: bool,
 }
 
 impl MinerConfig {
@@ -46,6 +49,7 @@ impl MinerConfig {
             lawfile: s.var("RULEMINER_LAWFILE").expect("RULEMINER_LAWFILE: the laws to mine").to_string(),
             guard: s.or("RULEMINER_GUARD", 120),
             no_dup_lhs: s.flag("RULEMINER_NODUPLHS", true),
+            transfer: s.flag("RULEMINER_TRANSFER", false),
         }
     }
 }
@@ -104,8 +108,15 @@ fn mine(setup: &Arc<Setup>, extra: &[(Term, Term)]) -> (Vec<String>, usize) {
             let scorer = Scorer::new(&laws, &cfg, base.clone());
             let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &cfg, &clock);
             // the main job's join work from here on
-            let (Chosen { chosen, covered, .. }, main) = job.spent(|job| rounds.play(job));
+            let (Chosen { chosen, covered, eval, .. }, main) = job.spent(|job| rounds.play(job));
             rounds.report(&covered, main.join);
+            if cfg.transfer {
+                job.join_store = None;
+                let y2 = transfer_labels(job, &cfg, &base, budget, &clock, &laws, &chosen, &eval);
+                for (st, y) in laws.stragglers.iter().zip(y2) {
+                    println!("RULEMINER label2: {} {}", y as u8, st.0);
+                }
+            }
             (chosen.iter().map(rule_show).collect(), rounds.proofs.iter().filter(|p| **p == Some(false)).count())
         })
     })
@@ -124,16 +135,21 @@ struct Laws {
 /// The laws of `cfg` and their stragglers under the rules installed on this thread (P1, P2), each rewritten under `budget`
 /// steps.
 fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
+    let named = read_named_laws(&cfg.lawfile);
+    clock.phase("law building");
+    laws_of(job, named, cfg.guard, cfg.fast, budget, clock, true)
+}
+
+/// `laws` for any named laws, `guard_k` guard laws and counting mode `fast`; `loud` prints the mine's report lines.
+fn laws_of(job: &mut Job, laws: Vec<(String, Term, Term)>, guard_k: usize, fast: bool, budget: i64, clock: &Clock, loud: bool) -> Laws {
     let (n, kv) = (4usize, STREAM_VARS);
     // stragglers under the built-in rules
     let mut stragglers: Vec<Scored> = vec![];
-    let laws = read_named_laws(&cfg.lawfile);
-    clock.phase("law building");
     let mut unproved = 0usize;
     let mut clean: Vec<(String, Term, Term)> = vec![]; // laws that are already machine-free under the base rules (for `RULEMINER_GUARD`)
     // `RULEMINER_FAST` counts the base rules' machine proofs the way it scores candidates: without building them. Carry-over:
     // P1 runs under the base rules P0 installed
-    let counting = job.rules().counting(cfg.fast);
+    let counting = job.rules().counting(fast);
     job.with_rules(counting, |job| {
         for (name, t1, t2) in laws.iter().cloned() {
             if !t1.is_law(&t2, kv) || [&t1, &t2].iter().any(|t| Machine::parse(t).is_some_and(|m| m.carries() > carry_cap(job))) {
@@ -148,7 +164,9 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
             let fell = if r.is_none() { fell.max(1) } else { fell };
             if r.is_none() || fell > 0 {
                 let (normal, _) = job.measured(budget, |job| [rewrite(job, &t1, n, kv).0, rewrite(job, &t2, n, kv).0]);
-                println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
+                if loud {
+                    println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if r.is_none() { ", UNPROVED" } else { "" });
+                }
                 stragglers.push((name, t1, t2, normal, fell, took));
             } else {
                 clean.push((name, t1, t2));
@@ -156,11 +174,12 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
         }
     });
     let base_time: f64 = stragglers.iter().map(|s| s.5.as_secs_f64()).sum();
-    println!("RULEMINER {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
-    clock.phase("laws and stragglers");
+    if loud {
+        println!("RULEMINER {} stragglers of {} laws, {:.1}s base ({unproved} unproved)", stragglers.len(), laws.len(), base_time);
+        clock.phase("laws and stragglers");
+    }
     // `RULEMINER_GUARD=<k>` (default 120, 0 = off): about k of the already machine-free laws are scored with the stragglers, so a candidate that breaks them loses
     // the same 1000 per law as it gains per straggler fixed (the miner otherwise sees only the stragglers and cannot see a regression)
-    let guard_k = cfg.guard;
     let mut scored = stragglers.clone();
     let mut guard_w = 1000i64; // each sampled guard law stands for clean/sampled laws, so a regression costs that many times 1000
     if guard_k > 0 && !clean.is_empty() {
@@ -169,9 +188,50 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
         for (name, t1, t2) in clean.iter().step_by(step) {
             scored.push((name.clone(), *t1, *t2, [*t1, *t2], 1, std::time::Duration::ZERO));
         }
-        println!("RULEMINER guard: {} machine-free laws scored of {} (weight {guard_w} each)", scored.len() - stragglers.len(), clean.len());
+        if loud {
+            println!("RULEMINER guard: {} machine-free laws scored of {} (weight {guard_w} each)", scored.len() - stragglers.len(), clean.len());
+        }
     }
     Laws { stragglers, scored, guard_w, n, kv }
+}
+
+/// The held-out transfer label of each straggler (`RULEMINER_TRANSFER`): covered under the `chosen` rules, and some chosen
+/// rule that could act in its evaluation (`Trace::touched_by`) also earns its keep on the held-out laws. A chosen rule `r`
+/// earns its keep there when a held-out law the base rules leave a straggler (bands `HELD_BANDS`, all `HELD_PER_BAND` laws)
+/// is covered under `chosen` but not under `chosen` without `r`. `eval` is the stragglers' evaluation under `chosen`
+/// (`Chosen::eval`, scored order, stragglers first). Runs under the base rules like the mine; fresh memos throughout.
+#[allow(clippy::too_many_arguments)]
+fn transfer_labels(job: &mut Job, cfg: &MinerConfig, base: &[(Term, Term)], budget: i64, clock: &Clock, laws: &Laws, chosen: &[(Term, Term)], eval: &[(bool, i64, Trace)]) -> Vec<bool> {
+    use crate::classes::{held_laws, HELD_BANDS};
+    let named: Vec<(String, Term, Term)> = HELD_BANDS.into_iter().flat_map(held_laws).map(|(a, b)| (format!("{} = {}", a.show(), b.show()), a, b)).collect();
+    let total = named.len();
+    let t0 = Instant::now();
+    let found = laws_of(job, named, 0, cfg.fast, budget, clock, false);
+    let held = Laws { stragglers: vec![], scored: found.stragglers, guard_w: 0, n: found.n, kv: found.kv };
+    let hs = Scorer::new(&held, cfg, base.to_vec());
+    let (ev, _) = hs.score_laws(job, chosen, &hs.all_laws, true, None);
+    let covered_held: Vec<usize> = (0..ev.len()).filter(|&i| ev[i].0).collect();
+    let mut transfers: hashbrown::HashSet<(Term, Term)> = Default::default();
+    for r in chosen {
+        let touched: Vec<usize> = covered_held.iter().copied().filter(|&i| ev[i].2.touched_by(r, |_| true)).collect();
+        if touched.is_empty() {
+            continue;
+        }
+        let rest: Vec<(Term, Term)> = chosen.iter().filter(|x| *x != r).copied().collect();
+        let (without, _) = hs.score_laws(job, &rest, &touched, false, None);
+        if without.iter().any(|e| !e.0) {
+            transfers.insert(*r);
+        }
+    }
+    println!(
+        "RULEMINER transfer: {} of {} chosen rules earn their keep on {} held-out stragglers of {total} laws ({} covered), {:.1}s",
+        transfers.len(),
+        chosen.len(),
+        held.scored.len(),
+        covered_held.len(),
+        t0.elapsed().as_secs_f64()
+    );
+    (0..laws.stragglers.len()).map(|i| eval[i].0 && chosen.iter().any(|r| transfers.contains(r) && eval[i].2.touched_by(r, |_| true))).collect()
 }
 
 /// The candidate rules for the stragglers (P3, P4), one per left side, and the other right sides of each left side (`rivals`).

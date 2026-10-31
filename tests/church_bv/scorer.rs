@@ -172,16 +172,17 @@ pub fn auc(scored: &[(f64, bool)]) -> f64 {
 /// The label rows of one mine: for each law of its extras file (`lhs = rhs` lines) whether its log credits it
 /// (`RULEMINER label: 1 <law>`: a straggler a chosen rule covers). A log that counts stragglers but has no label line was
 /// written before the miner printed them: refused, because every law would read as y = 0.
-pub fn mine_labels(extras: &str, log: &str) -> Result<Vec<(String, bool)>, String> {
-    let credited: std::collections::HashSet<&str> = log.lines().filter_map(|l| l.strip_prefix("RULEMINER label: 1 ")).collect();
-    let labelled = log.lines().any(|l| l.starts_with("RULEMINER label: "));
+pub fn mine_labels(extras: &str, log: &str, tag: &str) -> Result<Vec<(String, bool)>, String> {
+    let (yes, any) = (format!("RULEMINER {tag}: 1 "), format!("RULEMINER {tag}: "));
+    let credited: std::collections::HashSet<&str> = log.lines().filter_map(|l| l.strip_prefix(yes.as_str())).collect();
+    let labelled = log.lines().any(|l| l.starts_with(any.as_str()));
     let stragglers = log
         .lines()
         .filter_map(|l| l.strip_prefix("RULEMINER ")?.split_once(" stragglers of ")?.0.parse::<usize>().ok())
         .next()
         .ok_or("no `RULEMINER N stragglers of M laws` line (a crashed or foreign log)")?;
     if stragglers > 0 && !labelled {
-        return Err(format!("{stragglers} stragglers but no `RULEMINER label:` line"));
+        return Err(format!("{stragglers} stragglers but no `RULEMINER {tag}:` line"));
     }
     Ok(extras.lines().filter(|l| !l.is_empty()).map(|l| (l.to_string(), credited.contains(l))).collect())
 }
@@ -208,6 +209,7 @@ fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
     }
 }
 
+/// `LABEL_TAG=label2` reads the held-out transfer label (`RULEMINER_TRANSFER`) instead of the credit label.
 /// `LABEL_DIRS=<arm folder>;<arm folder>.. LABEL_OUT=<tsv> <exe> scorer::dump_labels --exact --ignored --nocapture`: one row
 /// `salt<TAB>y<TAB>law` per extras law of every mine under the folders (`laws_extra_<m>.txt` with its `mine_<m>.log`).
 #[test]
@@ -216,6 +218,7 @@ fn dump_labels() {
     let setup = &job::Setup::process();
     let dirs = setup.var("LABEL_DIRS").expect("LABEL_DIRS");
     let out = setup.var("LABEL_OUT").expect("LABEL_OUT");
+    let tag = setup.var("LABEL_TAG").unwrap_or("label").to_string();
     let mut rows = String::new();
     let (mut mines, mut laws, mut pos) = (0, 0, 0);
     for d in dirs.split(';') {
@@ -227,7 +230,7 @@ fn dump_labels() {
             let log = f.with_file_name(format!("mine_{name}.log"));
             let salt = salt_of(&f.to_string_lossy()).unwrap_or_else(|| panic!("no s<salt>_ folder in {}", f.display()));
             let (extras, log_text) = (std::fs::read_to_string(f).unwrap(), std::fs::read_to_string(&log).unwrap_or_else(|e| panic!("{}: {e}", log.display())));
-            for (law, y) in mine_labels(&extras, &log_text).unwrap_or_else(|e| panic!("{}: {e}", log.display())) {
+            for (law, y) in mine_labels(&extras, &log_text, &tag).unwrap_or_else(|e| panic!("{}: {e}", log.display())) {
                 rows += &format!("{salt}\t{}\t{law}\n", y as u8);
                 laws += 1;
                 pos += y as usize;
@@ -354,16 +357,16 @@ mod tests {
                    RULEMINER label: 1 add(x, y) = add(y, x)\n\
                    RULEMINER label: 0 and(x, y) = and(y, x)\n\
                    RULEMINER label: 1 some(other, law) = served\n";
-        let rows = mine_labels(extras, log).unwrap();
+        let rows = mine_labels(extras, log, "label").unwrap();
         assert_eq!(rows, vec![("add(x, y) = add(y, x)".to_string(), true), ("and(x, y) = and(y, x)".to_string(), false), ("or(x, y) = or(y, x)".to_string(), false)]);
     }
 
     #[test]
     fn a_log_with_stragglers_and_no_label_lines_is_refused() {
         let old = "RULEMINER 5 stragglers of 9 laws, 1.0s base (0 unproved)\nRULEMINER uncovered: x\n";
-        assert!(mine_labels("add(x, y) = add(y, x)\n", old).is_err());
+        assert!(mine_labels("add(x, y) = add(y, x)\n", old, "label").is_err());
         let none = "RULEMINER 0 stragglers of 9 laws, 1.0s base (0 unproved)\n";
-        assert_eq!(mine_labels("add(x, y) = add(y, x)\n", none).unwrap(), vec![("add(x, y) = add(y, x)".to_string(), false)]);
+        assert_eq!(mine_labels("add(x, y) = add(y, x)\n", none, "label").unwrap(), vec![("add(x, y) = add(y, x)".to_string(), false)]);
     }
 
     #[test]
@@ -384,8 +387,21 @@ mod tests {
     }
 
     #[test]
+    fn the_tag_picks_which_label_is_read() {
+        let log = "RULEMINER 2 stragglers of 9 laws, 1.0s base (0 unproved)\n\
+                   RULEMINER label: 1 add(x, y) = add(y, x)\n\
+                   RULEMINER label: 1 and(x, y) = and(y, x)\n\
+                   RULEMINER label2: 0 add(x, y) = add(y, x)\n\
+                   RULEMINER label2: 1 and(x, y) = and(y, x)\n";
+        let extras = "add(x, y) = add(y, x)\nand(x, y) = and(y, x)\n";
+        let ys = |tag| mine_labels(extras, log, tag).unwrap().iter().map(|r| r.1).collect::<Vec<_>>();
+        assert_eq!((ys("label"), ys("label2")), (vec![true, true], vec![false, true]));
+        assert!(mine_labels(extras, "RULEMINER 2 stragglers of 9 laws, 1.0s base (0 unproved)\nRULEMINER label: 1 x\n", "label2").is_err(), "no label2 lines: refused");
+    }
+
+    #[test]
     fn a_log_without_a_stragglers_count_is_refused() {
-        assert!(mine_labels("add(x, y) = add(y, x)\n", "RULEMINER something else\n").is_err());
+        assert!(mine_labels("add(x, y) = add(y, x)\n", "RULEMINER something else\n", "label").is_err());
     }
 
     #[test]
