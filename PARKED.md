@@ -106,7 +106,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 
 - **Learned proposer, stage 2 (the cycle) and richer scorers (v0.6)** — what: refit the scorer each round on the labels of
   earlier rounds; or a richer model (more features, a Rust ML crate, the GPU model) behind
-  the same `Scorer::score` interface. Why: stage 1's count-feature scorer found offline signal (test AUC 0.691 vs size-only
+  an offline scorer. The stage 1 scorer, `SCORER`, `select_extras` and `RULEMINER_TRANSFER` were removed on 2026-10-31 (recover with `git show 71cb240:tests/church_bv/scorer.rs`). Why: stage 1's count-feature scorer found offline signal (test AUC 0.691 vs size-only
   0.528) but no curve shift: held-out M worse than random at n 80/160/319 and 1.1-1.4x the CPU. Trigger: a model that sees a law in context (the other laws of the mine) or a different kind of feature, beating random beyond the redraw spread (sigma 76 held-out M over salts 1-3). Evidence: `docs/tier-cycle.md`, "A learned scorer
   over the extras" (runs `2026-10-31-v06-labels`, `v06-g1` to `g6`). The size-blind refit and the w2 transfer label (2026-10-31, runs `v06-g7` to `g12`) were also null: three scorers over count features all lose to random. Status: parked. Straggler-first selection from the mine's own verdicts (the second try, runs `v06h-g1` to `g5`) lowered held-out M at every n but at 1.4-1.9x the CPU, null by the rule; the trigger is a selection or model that beats random at equal CPU (2026-10-31).
 

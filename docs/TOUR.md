@@ -1,6 +1,6 @@
 # tatic: a tour of the concepts
 
-tatic is a research repo with two layers. The bottom layer (`src/`) is a small JIT: a tiny higher-order term language is compiled to WebAssembly (WAT is its text form, run under wasmtime), and the compiled form is installed only after a small dependent-type kernel has checked a proof that it means the same as the reference interpreter. Terms use De Bruijn indices (a variable is a number counting binders outward, so there are no names). The upper layer is the `church_bv` integration-test binary (`tests/church_bv/`, run with `cargo test --test church_bv`, entry `tests/church_bv/main.rs#mod driver`; it is not a crate). It uses the kernel as a prover for bit-vector laws: it mines rewrite rules from the laws it proves, keeps a learned table of equal-valued terms, and measures whether the rules help. The self-improvement loop and the kernel side of goal 3 live there; no GPU or model code exists yet (`tests/church_bv/scorer.rs#fit` is an offline stand-in), and nothing in `church_bv` calls the JIT. "Church-encoded" means data written as functions (a Bool is a function that picks one of two branches), so the kernel can reason about it with no built-in types.
+tatic is a research repo with two layers. The bottom layer (`src/`) is a small JIT: a tiny higher-order term language is compiled to WebAssembly (WAT is its text form, run under wasmtime), and the compiled form is installed only after a small dependent-type kernel has checked a proof that it means the same as the reference interpreter. Terms use De Bruijn indices (a variable is a number counting binders outward, so there are no names). The upper layer is the `church_bv` integration-test binary (`tests/church_bv/`, run with `cargo test --test church_bv`, entry `tests/church_bv/main.rs#mod driver`; it is not a crate). It uses the kernel as a prover for bit-vector laws: it mines rewrite rules from the laws it proves, keeps a learned table of equal-valued terms, and measures whether the rules help. The self-improvement loop and the kernel side of goal 3 live there; no GPU or model code exists yet, and nothing in `church_bv` calls the JIT. "Church-encoded" means data written as functions (a Bool is a function that picks one of two branches), so the kernel can reason about it with no built-in types.
 
 Keep this current: any change that renames, moves, adds or removes a module, a stage of a flow or a glossary term updates this file in the same commit (rule in `CLAUDE.md#tatic`; `scripts/tour_check.sh` checks every cite).
 
@@ -42,7 +42,7 @@ The rewriter and provers (`tests/church_bv/`):
 - `search.rs`: the law supply (`tests/church_bv/search.rs#stream_sequence`), rule admission (`tests/church_bv/search.rs#rule_admissible`) and cost (`tests/church_bv/search.rs#law_cost`), and the bodies of the two worker tasks: serving (`tests/church_bv/search.rs#rule_set_kernel_check_task`) and mining (`tests/church_bv/search.rs#rule_miner`).
 
 The miner, driver, loop and gate:
-- `miner.rs`: how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scorer.rs`: the offline extras ranker. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
+- `miner.rs`: how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
 - `tools/runs/` (own crate): the recorded-run runner and gate. `tools/shr_probe.py`: a probe script.
 - `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/` and `experiments/` (older experiment scripts), `tour_check.sh`.
 - `benches/`: criterion benchmarks of execution and proofs.
@@ -160,7 +160,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Peel**: splits a term into parameter count, body and whether it is recursive. `src/compile.rs#peel`
 - **Phase**: a residue class of the stream sequence. `tests/church_bv/search.rs#residue`
 - **Plan / LawKind**: the rewriter's proof sketch and the name of the prover of each leaf. `tests/church_bv/rewrite.rs#Plan`, `tests/church_bv/rewrite.rs#LawKind`
-- **Pool**: `POOL=p` cuts p x n kept extras per mine and keeps n. `tests/church_bv/driver.rs#POOL`
+- **Pool**: `POOL=p` hands each mine p x n extras and `EXTRAS_SELECT` keeps n. `tests/church_bv/driver.rs#POOL`
 - **Postulates**: the untrusted builder that grows `Globals`; each pushed type is checked to be a type, its inhabitation is assumed. `src/kernel/postulates.rs#Postulates`
 - **PROMOTED**: mined rules frozen in code: learned once, then fixed. `tests/church_bv/rewrite.rs#PROMOTED`
 - **prove_eq**: the cascade that closes a rewritten pair: refl, truth table, per-position check, mask reduction, join, machine. `tests/church_bv/rewrite.rs#prove_eq`
@@ -168,7 +168,6 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Rec**: a term form that ties a knot for direct self-recursion. `src/term.rs#Term`
 - **Rule order**: the polynomial weight a rule must lower to be admitted. `tests/church_bv/rewrite.rs#rule_order_ok`
 - **Sample battery**: the fixed inputs on which compiled code and interpreter must agree. `src/jit.rs#sample_arg_vectors`
-- **Scorer**: a logistic regression that only orders candidate extras; the kernel still judges every law. `tests/church_bv/scorer.rs#fit`
 - **Screen**: a random-input test that refutes a claimed law before proving it. `tests/church_bv/rewrite.rs#SCREEN_INPUTS`
 - **Specialisation trace**: the list of beta-v steps replayed by the independent checker. `src/spec_check.rs#Step`
 - **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `tests/church_bv/miner.rs#laws_of`
