@@ -5562,6 +5562,8 @@ Both survivors were closed the same day (run `2026-10-30-mutants-spaces-rerun2`,
 
 *Opt-level 0 against 1, whole suites (2026-10-30, run `2026-10-30-opt-level-ab`, `--test-threads 8`, CFF, not timed-gated: machine load 77% for the opt 0 arm and 31% for opt 1, so the ratios are rough, but they are far larger than the load difference).* `cargo test --lib`: 32.5 s against 2.9 s (11x). `church_bv` (168 tests): 157.9 s against 12.0 s (13x). Rebuild after a one-line edit of `src/kernel/spaces.rs`: lib 7.9 and 9.0 s against 4.3 and 4.6 s; `church_bv` 11.1 and 12.6 s against 6.0 and 6.0 s, so opt-level 1 was also faster to rebuild (incremental codegen has less to unwind; a clean build was about 10 min in the separate dir, not measured against opt 0). One lib test failed in the opt 0 arm's first run under that load (359 passed, 1 failed; its name was not captured) and passed in two reruns at load 40%: a load-sensitive test, not yet identified.
 
+*Workspace at opt-level 1, dependencies at 0 (2026-10-30, run `2026-10-30-opt-level-split`, load 24%, `--config profile.{test,dev}.package.tatic.opt-level=1`, own target dir).* Cold `--no-run` build 160 s (the all-opt-1 cold build above was about 9.5 min with its 19 s test run, so the dependencies, wasmtime among them, are most of a cold build). `--lib` 9.2 s (opt 0: 32.5 s, all opt 1: 2.9 s); `church_bv` 30.8 s (158 s, 12.0 s); rebuild after a one-line edit: lib 10.4 and 24.3 s, `church_bv` 33.4 and 26.8 s (all opt 1: 4.3-4.6 and 6.0 s; the rebuild gap is not explained). So the dependencies at opt 0 cost 3x on the suites: hot generics (hashbrown, iterator adapters) are instantiated from them, and the workspace-only setting is not enough.
+
 ## The kernel
 
 ### Instruction count as a metric (2026-10-10)
