@@ -21,7 +21,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   Status: decided against (2026-10-26).
 - **Serve laws of the held-out sizes (v0.5)** — what: grow the loops' own sequence 4 times (`STREAM_LEVELS`) so the
   batches hold laws up to size 17. Why: bands 15 and 17 would no longer lie past the loops' sizes, so the frontier
-  (`ROADMAP.md` v0.5) would change meaning; loop M would stop comparing with history, and serving large terms costs.
+  (the frontier of `v0.5.0`, `git tag -n99 v0.5.0`) would change meaning; loop M would stop comparing with history, and serving large terms costs.
   Trigger: a frontier defined some other way. Evidence: `tests/church_bv/search.rs` (`STREAM_LEVELS`),
   `tests/church_bv/classes.rs` (`HELD_BANDS`). Status: decided against (2026-10-26).
 - **A library of mined definitions that outlives the loop** — what: definitions one loop mines are kept and seed later
@@ -29,8 +29,8 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   (2026-10-25, v0.4 design): definitions, one of v0.4's levers, were to be tested per loop
   on the gate's A/B as it stands; a library needs a stored format, a keep-and-forget policy and an order across
   loops, and makes the gate's A/A path-dependent. Trigger: per-loop definitions shown to pay (the enumerator
-  vocabulary does not: entry below), and v0.5 (closing the cycle) needs vocabulary to
-  compound across iterations. Evidence: `docs/tier-cycle.md`, "They do not transfer"; `ROADMAP.md` v0.5. Status: parked.
+  vocabulary does not: entry below), and v0.6 (closing the cycle) needs vocabulary to
+  compound across iterations. Evidence: `docs/tier-cycle.md`, "They do not transfer"; `ROADMAP.md` v0.6. Status: parked.
 - **Defined operators inside `Term`, and normal forms that fold them** — what: (a) a defined operator as a real `Term`
   operator (index 8 and up in a run-time operator table), unfolded at the prover boundary, so rules print and weigh in
   the defined vocabulary; (b) on top of (a), the rewriter folding a definition's body back into its operator, so normal
@@ -86,9 +86,9 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   CPU), and at n 688 gives 4622 at budget 100 and 4577 at 250 against 4690 at 1000 (1247, 1671 and 8870 s of job CPU;
   100's salt 3 ran under heavy load; on every salt its op count is 45-46% of 250's and its walk 26-28%); budget 0 is
   no better than 100, probably worse (5271 against 5166, at the noise; worse on loop M and band 11)
-  (runs `2026-10-28-mjv-*`; a probe, not landed), so it makes larger n cheaper. Trigger: a question resting on the extras' best held-out M, or
-  mining made cheaper (met by that probe if it lands). Status: held for v0.5 (`ROADMAP.md`), which weighs n against
-  mining CPU.
+  (runs `2026-10-28-mjv-*`; landed 2026-10-30 as the mines' default at n 319), so it makes larger n cheaper. Trigger: a question resting on the extras' best held-out M, or
+  mining made cheaper (met: budget 100 landed). Status: held for a choice of n against mining CPU on the landed budget (n 688 at 100: 4622
+  against 5166, at 1247 against 627 s of job CPU on salts 1-3).
   (b) *Draw: a learned ranker choosing which laws each mine takes.* Redrawn lists leave batch 0 and job CPU unchanged,
   and the best of four draws saves 51 of about 2230 M, against 7-37 points of held-out free share for having a library
   at all ("How much choosing the extras can gain", "Does the choice of extras move the frontier?", runs

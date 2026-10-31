@@ -32,7 +32,7 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
   greedy candidate pool: each mine its own `EXTRAS_N` (319) laws from the stream sequence grown to the held-out sizes,
   minus served laws and held-out laws and their twins (since 2026-10-28, "Count and slicing"). Mining on more laws
   beats ranking candidates ("More laws beat any ranking"; "Fresh laws of the held-out sizes do as well";
-  `ROADMAP.md`, v0.5).
+  the `v0.5.0` tag message).
 - **Raw rows**, run scripts and the patches of reverted switches are kept per day under `docs/runs/<date>/` (from
   2026-10-12); runs from 2026-10-17 on have a row each in `docs/runs.md`. A `scripts/` path cited below that no longer
   exists is in that day's `docs/runs/<date>/scripts/`, or in git history (`git log --all --oneline -- <path>`), except
@@ -1025,7 +1025,7 @@ this n (ROADMAP v0.3's gate).
 *Free proofs by law size: a gradient for the frontier (2026-10-22; run `2026-10-22-size-band`, 49 s, CPU 51% at
 launch; probe `docs/runs/2026-10-22/patches/size_band_probe.patch`, reverted).* Serving never fails to prove a law:
 the whole-term machine proof closes whatever rewriting and the join leave, and all 194 serves of `gen-warm-fix`'s salt-1
-loops and ref mine report 0 not proved. So a frontier ("the hardest law provable within a budget", ROADMAP v0.5) has to count proofs with no
+loops and ref mine report 0 not proved. So a frontier ("the hardest law provable within a budget", the v0.5.0 tag) has to count proofs with no
 machine proof. The probe (`search::size_band_laws`) grows each family's pool twice, one leaf at a time into an
 operator over two leaves (padding growths dropped, about 20000 terms per level, salt 11), pairs terms by width-4
 values as `grammar_laws` does, and keeps up to 200 laws per size (the larger side's nodes; odd, since every operator
@@ -1220,7 +1220,7 @@ laws reach their count at 20000:
 
 - **The budget a law needs grows about twofold per node.** From 1000 to 20000 size 7 gains nothing, size 9 0-7 laws per
   family (of 200), size 11 1-16, cmp3d's size 13 5; 55 of 2589 in all. A fixed budget therefore under-serves exactly the
-  larger laws the frontier (ROADMAP v0.5) compares.
+  larger laws the frontier (the v0.5.0 tag) compares.
 - **Serving does not cost more with a larger budget.** Terms reached grow about threefold (add3 size 11: 48063 to
   146479), but serve wall time stays flat or falls (1319 to 1114 ms; cmp3d size 13 3803 to 3018 ms): each law joined is
   a machine proof saved. The cost seen before (5000 at 2-3 times the sweep time, "The bounded join removes the floor")
