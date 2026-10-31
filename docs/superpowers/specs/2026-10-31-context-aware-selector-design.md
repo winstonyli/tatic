@@ -81,3 +81,16 @@ pipeline stay as they are until the user decides their removal (`PARKED.md`, the
    not hidden. Caught: h1b's direction is unknown → two arms, after h1a.
 3. Found nothing material beyond wording. Not verified yet: that the extras start can be read from the lawfile (plan
    task 1), the verdict's determinism (a check above), and the 0.1 s cost at POOL 4.
+
+## Addendum, 2026-10-31: h1a-cheap (set before data)
+
+Straggler-first gave better held-out M at every n for 1.4-1.9x the job CPU (`docs/tier-cycle.md`, "Selecting the extras by
+straggler verdict"). Variant `EXTRAS_SELECT=cheap`: of the pool's stragglers keep the n with the fewest rewrite steps spent
+classifying them (`Outcome::Straggler`'s count; a deterministic cost, ties in stream order), then fill as before. One
+mechanism with `straggler` (`kept_indices` ranks by a cost key; `straggler` is the constant key). The machine-proof count
+cannot rank: every straggler in `v06h-g5`'s logs counts 1 (2710 of 2710).
+
+Gate: salts 1-3, pool 4, n in {160, 319}, against the recorded random arms (r160 5517 at 446 s, r319 5166 at 674 s, r638
+4600 at 910 s) and straggler-first (h160 4931 at 841 s, h319 4498 at 1252 s). Win: held(c_n) < held(r_n) - 76 at job CPU
+<= 1.1x r_n, or held(c_n) <= held(r_2n) at lower job CPU. Else null; "dominated" if no better than straggler-first at
+more CPU. Reading beyond the rule: whether `cheap` sits left of straggler-first on the (CPU, held-out M) curve.

@@ -34,7 +34,7 @@ pub struct MinerConfig {
     pub guard: usize,
     /// `RULEMINER_NODUPLHS` (switch, on by default): drop candidates whose left side already has a rule in `base`.
     pub no_dup_lhs: bool,
-    /// `RULEMINER_EXTRAS_FROM=<i>`, `_KEEP=<n>`, `_BY=first|straggler` (all three or none): the lawfile's laws from line `i` are a
+    /// `RULEMINER_EXTRAS_FROM=<i>`, `_KEEP=<n>`, `_BY=first|straggler|cheap` (all three or none): the lawfile's laws from line `i` are a
     /// pool of extras and the mine keeps `n` of them (`kept_indices`); the laws before `i` are always read.
     pub extras: Option<ExtrasKeep>,
 }
@@ -45,6 +45,7 @@ pub struct MinerConfig {
 pub enum Keep {
     First,
     Straggler,
+    Cheap,
 }
 
 impl Keep {
@@ -53,7 +54,8 @@ impl Keep {
         match s {
             "first" => Ok(Keep::First),
             "straggler" => Ok(Keep::Straggler),
-            _ => Err(format!("EXTRAS_SELECT: expected first or straggler, got {s}")),
+            "cheap" => Ok(Keep::Cheap),
+            _ => Err(format!("EXTRAS_SELECT: expected first, straggler or cheap, got {s}")),
         }
     }
 }
@@ -174,15 +176,18 @@ fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
 fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option<ExtrasKeep>, guard_k: usize, fast: bool, budget: i64, clock: &Clock, loud: bool) -> Laws {
     let Some(x) = extras else { return laws_of(job, named, guard_k, fast, budget, clock, loud) };
     if x.by == Keep::First {
-        named = kept_indices(named.len(), x.from, x.n, Keep::First, &|_| false).into_iter().map(|i| named[i].clone()).collect();
+        named = kept_indices(named.len(), x.from, x.n, Keep::First, &|_| None).into_iter().map(|i| named[i].clone()).collect();
         return laws_of(job, named, guard_k, fast, budget, clock, loud);
     }
     let outcomes = classify(job, &named, budget, fast, loud);
-    let is_straggler = |i: usize| matches!(outcomes[i], Outcome::Straggler(..));
-    let keep = kept_indices(named.len(), x.from, x.n, Keep::Straggler, &is_straggler);
+    let cost = |i: usize| match outcomes[i] {
+        Outcome::Straggler(.., steps) => Some(steps),
+        _ => None,
+    };
+    let keep = kept_indices(named.len(), x.from, x.n, x.by, &cost);
     if loud {
         let from = x.from.min(named.len());
-        let pool_stragglers = (from..named.len()).filter(|&i| is_straggler(i)).count();
+        let pool_stragglers = (from..named.len()).filter(|&i| cost(i).is_some()).count();
         println!("RULEMINER extras: kept {} of {} pool laws, {pool_stragglers} stragglers in the pool", keep.len() - from, named.len() - from);
         clock.phase("extras selection");
     }
@@ -190,16 +195,20 @@ fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option
 }
 
 /// The indices of the `len` laws a mine reads, ascending: the served laws `..from` and `n` of the pool `from..`. `First` takes
-/// the pool's first `n`; `Straggler` its first `n` stragglers, then, short of `n`, its other laws in order. `is_straggler` is
+/// the pool's first `n`; `Straggler` its first `n` stragglers, `Cheap` the `n` stragglers with the fewest rewrite steps (ties in
+/// stream order); both then, short of `n`, its other laws in order. `cost` is `None` for a law that is no straggler, else its steps, and is
 /// asked of pool indices only.
-fn kept_indices(len: usize, from: usize, n: usize, by: Keep, is_straggler: &dyn Fn(usize) -> bool) -> Vec<usize> {
+fn kept_indices(len: usize, from: usize, n: usize, by: Keep, cost: &dyn Fn(usize) -> Option<i64>) -> Vec<usize> {
     let from = from.min(len);
     let mut keep: Vec<usize> = (0..from).collect();
     let pool = from..len;
     match by {
         Keep::First => keep.extend(pool.take(n)),
-        Keep::Straggler => {
-            let (s, rest): (Vec<usize>, Vec<usize>) = pool.partition(|&i| is_straggler(i));
+        Keep::Straggler | Keep::Cheap => {
+            let (mut s, rest): (Vec<usize>, Vec<usize>) = pool.partition(|&i| cost(i).is_some());
+            if by == Keep::Cheap {
+                s.sort_by_key(|&i| cost(i)); // stable: equal costs keep the stream order
+            }
             let mut picked: Vec<usize> = s.into_iter().chain(rest).take(n).collect();
             picked.sort_unstable();
             keep.extend(picked);
@@ -214,12 +223,13 @@ fn laws_of(job: &mut Job, laws: Vec<(String, Term, Term)>, guard_k: usize, fast:
 }
 
 /// What the base rules do to one law: `Skipped` (no law, or over the carry cap), `Clean` (no machine proof needed; it feeds the
-/// guard sample) or a `Straggler`, whose flag says the rewriter could not close it at all.
+/// guard sample) or a `Straggler`, whose flag says the rewriter could not close it at all and whose count is the rewrite steps
+/// the classification spent on it (a deterministic cost; `Keep::Cheap`).
 #[derive(Clone)]
 enum Outcome {
     Skipped,
     Clean(String, Term, Term),
-    Straggler(Scored, bool),
+    Straggler(Scored, bool, i64),
 }
 
 /// The outcome of each of `laws` under the rules installed on this thread (P1, P2), in order, each rewritten under `budget`
@@ -248,7 +258,7 @@ fn classify(job: &mut Job, laws: &[(String, Term, Term)], budget: i64, fast: boo
                 if loud {
                     println!("RULEMINER straggler {name}: {} = {} ({fell} machine proofs, {took:?}{})", normal[0].show(), normal[1].show(), if unproved { ", UNPROVED" } else { "" });
                 }
-                out.push(Outcome::Straggler((name, t1, t2, normal, fell, took), unproved));
+                out.push(Outcome::Straggler((name, t1, t2, normal, fell, took), unproved, spent.steps));
             } else {
                 out.push(Outcome::Clean(name, t1, t2));
             }
@@ -268,7 +278,7 @@ fn assemble(outcomes: Vec<Outcome>, guard_k: usize, loud: bool, clock: &Clock) -
         match o {
             Outcome::Skipped => {}
             Outcome::Clean(name, t1, t2) => clean.push((name, t1, t2)),
-            Outcome::Straggler(s, u) => {
+            Outcome::Straggler(s, u, _) => {
                 unproved += u as usize;
                 stragglers.push(s);
             }
@@ -1120,15 +1130,21 @@ fn classify_orders_outcomes_like_the_input() {
 
 #[test]
 fn kept_indices_keeps_the_served_laws_and_n_of_the_pool() {
-    let none = |_: usize| false;
+    let none = |_: usize| None;
     // 3 served laws, a pool of 6, keep 2
     assert_eq!(kept_indices(9, 3, 2, Keep::First, &none), vec![0, 1, 2, 3, 4]);
-    let s = |i: usize| i == 5 || i == 7; // stragglers at indices 5 and 7
+    let s = |i: usize| (i == 5 || i == 7).then_some(0); // stragglers at indices 5 and 7, equally costly
     assert_eq!(kept_indices(9, 3, 2, Keep::Straggler, &s), vec![0, 1, 2, 5, 7], "stragglers first, in order");
     assert_eq!(kept_indices(9, 3, 3, Keep::Straggler, &s), vec![0, 1, 2, 3, 5, 7], "the shortfall is the first other pool law");
     assert_eq!(kept_indices(9, 3, 0, Keep::Straggler, &s), vec![0, 1, 2], "keep 0 reads no extra");
     assert_eq!(kept_indices(9, 3, 99, Keep::Straggler, &s), (0..9).collect::<Vec<_>>(), "keep past the pool keeps the pool");
     assert_eq!(kept_indices(4, 9, 2, Keep::First, &none), vec![0, 1, 2, 3], "from past the end: all served, no pool");
+    // `Cheap` takes the stragglers with the fewest rewrite steps; equal costs keep the stream order
+    let c = |i: usize| [None, None, None, None, Some(9), Some(2), None, Some(2), Some(5)][i];
+    assert_eq!(kept_indices(9, 3, 2, Keep::Cheap, &c), vec![0, 1, 2, 5, 7], "the two cheapest, the tie in stream order");
+    assert_eq!(kept_indices(9, 3, 3, Keep::Cheap, &c), vec![0, 1, 2, 5, 7, 8], "the third cheapest");
+    assert_eq!(kept_indices(9, 3, 5, Keep::Cheap, &c), vec![0, 1, 2, 3, 4, 5, 7, 8], "a shortfall fills with the first other pool law, as for Straggler");
+    assert_eq!(Keep::parse("cheap"), Ok(Keep::Cheap));
     assert_eq!(Keep::parse("first"), Ok(Keep::First));
     assert_eq!(Keep::parse("straggler"), Ok(Keep::Straggler));
     assert!(Keep::parse("bogus").unwrap_err().contains("EXTRAS_SELECT"));
@@ -1173,6 +1189,7 @@ fn the_pool_is_cut_by_the_stragglers_verdict() {
     let by_straggler = straggler_names(&both, ex(1, Keep::Straggler));
     assert_eq!(by_straggler.len(), base.len() + 1, "the pool's straggler joins the served stragglers");
     assert_eq!(by_straggler.last(), Some(&strag));
+    assert_eq!(straggler_names(&both, ex(1, Keep::Cheap)), by_straggler, "one straggler in the pool: cheapest is the only");
     assert_eq!(straggler_names(&both, ex(1, Keep::First)), base, "the first pool law is the clean one: no new straggler");
     assert_eq!(straggler_names(&both, ex(0, Keep::Straggler)), base, "keep 0 reads no extra");
     assert_eq!(straggler_names(&both, Some(ExtrasKeep { from: 1000, n: 1, by: Keep::Straggler })), straggler_names(&both, None), "from past the end is the whole file as served");
