@@ -1250,6 +1250,25 @@ fn extras_by_first_mines_what_the_unpooled_file_mines() {
     assert_eq!(pooled, mine_rules("plain", &format!("{served}{clean}\n"), &[]));
 }
 
+/// The three `RULEMINER_EXTRAS_*` variables become the config the mine keeps by (the `by_first` test above cannot tell
+/// whether they were read: a mine that ignored them might choose the same rules), and none of them is no config.
+#[test]
+fn the_extras_env_becomes_the_config() {
+    let cfg = |vars: &[(&str, &str)]| MinerConfig::new(&Setup::with_env(vars.iter().chain(&[("RULEMINER_LAWFILE", "unused")]).map(|(k, v)| (k.to_string(), v.to_string())).collect())).extras;
+    assert!(cfg(&[]).is_none());
+    let k = cfg(&[("RULEMINER_EXTRAS_FROM", "7"), ("RULEMINER_EXTRAS_KEEP", "3"), ("RULEMINER_EXTRAS_BY", "straggler")]).expect("set");
+    assert_eq!((k.from, k.n, k.by), (7, 3, Keep::Straggler));
+    let k = cfg(&[("RULEMINER_EXTRAS_FROM", "0"), ("RULEMINER_EXTRAS_KEEP", "5"), ("RULEMINER_EXTRAS_BY", "first")]).expect("set");
+    assert_eq!((k.from, k.n, k.by), (0, 5, Keep::First));
+}
+
+/// `FROM` without `KEEP` and `BY` fails loudly, not as a half-set config.
+#[test]
+#[should_panic(expected = "RULEMINER_EXTRAS_KEEP")]
+fn an_incomplete_extras_env_panics() {
+    MinerConfig::new(&Setup::with_env(vec![("RULEMINER_LAWFILE".to_string(), "unused".to_string()), ("RULEMINER_EXTRAS_FROM".to_string(), "2".to_string())]));
+}
+
 /// A worker that panics fails the thread waiting for its result instead of hanging it: the waiter keeps a sender, so the
 /// channel never closes (a band-17 mine hung at 0 CPU after a join step panicked, run `2026-10-25-held-seen`).
 #[test]

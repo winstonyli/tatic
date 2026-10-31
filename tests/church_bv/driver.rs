@@ -858,7 +858,7 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
             println!("GEN_EXTRA {name}: {} laws, keep {}", at.len(), if setup.var("EXTRAS_SELECT").is_some() { keep } else { at.len() });
             std::fs::write(out.join(format!("laws_extra_{name}.txt")), &extra).unwrap();
             let lawfile = env.last().unwrap().1.clone();
-            let served = std::fs::read_to_string(&lawfile).unwrap().lines().count();
+            let served = crate::search::read_named_laws(&lawfile).len();
             append(Path::new(&lawfile), &extra);
             // `scope_extras` checked the value: the miner reads the pool from line `served` and keeps `keep` of it
             if let Some(by) = setup.var("EXTRAS_SELECT") {
