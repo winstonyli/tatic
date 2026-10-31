@@ -629,7 +629,7 @@ fn args_id_is_stable_for_short_and_long_lists() {
 fn subst_top_leaves_an_unused_argument_alone() {
     // n + 1 distinct nodes, 2^n as a tree: copying 2^20 takes about a
     // second in a debug build, and the shortcut doesn't look at it.
-    assert_scales("subst_top", 10, 20, 4, 0, |n| {
+    assert_scales("subst_top", 10, 20, 2, 0, |n| {
         let s = (0..n).fold(var(0), |s, _| app(s, s));
         let body = pi(var(3), var(4));
         worked(|| assert_eq!(subst_top(&body, &s), pi(var(2), var(3))))
@@ -668,7 +668,7 @@ fn subst_top_shifts_a_used_argument_once() {
 /// sides and comparing takes about 0.3 s at n = 14.
 #[test]
 fn def_eq_answers_equal_sides_without_normalising() {
-    assert_scales("def_eq equal sides", 7, 14, 4, 0, |n| {
+    assert_scales("def_eq equal sides", 7, 14, 2, 0, |n| {
         let (a, b) = (doubling(n), doubling(n));
         worked(|| assert!(def_eq(&a, &b)))
     });
@@ -685,7 +685,7 @@ fn doubling(n: u32) -> Expr {
 /// doubling term and only the codomains need reducing.
 #[test]
 fn def_eq_normalises_only_where_the_sides_differ() {
-    assert_scales("def_eq shared domains", 7, 14, 4, 0, |n| {
+    assert_scales("def_eq shared domains", 7, 14, 2, 0, |n| {
         let a = pi(doubling(n), app(lam(sort(1), var(0)), sort(0)));
         let (b, c) = (pi(doubling(n), sort(0)), pi(doubling(n), sort(1)));
         worked(|| {
@@ -777,7 +777,7 @@ fn whnf_keeps_the_stuck_part_it_was_given() {
 #[test]
 fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
     let fresh = std::cell::Cell::new(0);
-    assert_scales("stuck spine", 1000, 16000, 80, 0, move |depth| {
+    assert_scales("stuck spine", 1000, 16000, 24, 0, move |depth| {
         let v = fresh.get();
         fresh.set(v + 3);
         let spine = |head: Expr| (0..depth).fold(head, |t, i| app(t, var(v + i % 3)));
@@ -795,7 +795,7 @@ fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
 /// tree (`RELATED_WORK.md` §63). Postulates as `Const`s, per stage 3.
 #[test]
 fn infer_is_linear_in_the_dag_of_a_shared_term() {
-    assert_scales("infer on a DAG", 10, 20, 8, 0, |n| {
+    assert_scales("infer on a DAG", 10, 20, 3, 0, |n| {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         p.push(p.get(a_ty));
@@ -870,7 +870,7 @@ fn infer_cache_is_emptied_between_calls() {
 /// the whole check quadratic (`RELATED_WORK.md` §80).
 #[test]
 fn infer_memo_skips_unused_inner_binders() {
-    assert_scales("infer under unused binders", 100, 800, 30, 0, |depth| {
+    assert_scales("infer under unused binders", 100, 800, 12, 0, |depth| {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         let a = p.push(p.get(a_ty));
@@ -893,7 +893,7 @@ fn infer_memo_skips_unused_inner_binders() {
 /// debug); the spine at once copies them once (under 5 ms).
 #[test]
 fn infer_types_an_application_spine_at_once() {
-    assert_scales("infer on a spine", 500, 8000, 80, 0, |k| {
+    assert_scales("infer on a spine", 500, 8000, 24, 0, |k| {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         let a = p.push(p.get(a_ty));
@@ -927,7 +927,7 @@ fn infer_memo_keeps_same_length_contexts_apart() {
 /// debug build (`RELATED_WORK.md` §61). `==` is now one id comparison.
 #[test]
 fn def_eq_is_linear_on_a_chain_that_differs_at_the_bottom() {
-    assert_scales("def_eq on chains", 1000, 16000, 80, 0, |n| {
+    assert_scales("def_eq on chains", 1000, 16000, 24, 0, |n| {
         let chain = |bottom: Expr| (0..n).fold(bottom, |t, _| app(var(0), t));
         let (a, b) = (chain(var(1)), chain(var(2)));
         worked(|| assert!(!def_eq(&a, &b)))
