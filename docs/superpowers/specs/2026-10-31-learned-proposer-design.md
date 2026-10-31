@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # v0.6: does a learned proposer push the frontier? (design)
@@ -18,7 +18,7 @@ sequence (`scope_extras`, `EXTRAS_N` = 319). Redrawn lists move held-out M by a 
 points at n 319 ("Does the choice of extras move the frontier?"), and n costs CPU about linearly (held-out M falls about
 770 per e-fold of n; n 688 gives 4622 against 5166 at about twice the job CPU, `PARKED.md`, the mining-budget entry).
 So the success measure is a **curve shift**: the scorer arm at a smaller n matches the random arm at a larger n, or beats
-it at the same n, by more than the A/A spread. Nothing below n 319 has been measured, so the random curve at n 80 and
+it at the same n, by more than the redraw spread (the A/A of a deterministic gate). Nothing below n 319 has been measured, so the random curve at n 80 and
 160 is part of the result.
 
 Out of scope: the GPU model (goal 3's end state; it would sit behind the same `score` interface), new definitions,
@@ -47,8 +47,8 @@ One new mechanism: a `Scorer` that orders candidate laws. Nothing else changes i
 1. **Dump** labels from the random arm on salts 4-10 at n 319 (fits the existing sweep; the fresh-slice draw is unchanged).
 2. **Fit** the scorer offline on those rows (`fit`), report held-out AUC on a salt it did not see, against a trivial
    baseline (size only). A scorer that cannot beat size-only AUC stops here.
-3. **Gate A/B** on salts 1-3 (disjoint from training), n in {80, 160, 319}, arms random and scorer, plus a second random run
-   as the A/A and the 4n-pool-first-n control (see Risks), both at one n. Metrics per `streams_ab.sh`: frontier per band, held-out M, job CPU, work counts.
+3. **Gate A/B** on salts 1-3 (disjoint from training), n in {80, 160, 319}, arms random and scorer, plus the 4n-pool-first-n
+   control (see Risks) and two redraws of the random arm (`GEN_DRAW=1`, `2`) at n 319. The gate is deterministic (the same exe and environment give the same rules and M), so a rerun reads zero spread; the **A/A spread is the redraw spread** (plan, Task 7). Metrics per `streams_ab.sh`: frontier per band, held-out M, job CPU, work counts.
 4. **Verdict**: curve shift, or a recorded negative with the AUC and the curves in `docs/tier-cycle.md`; stage 2 is then
    parked in `PARKED.md` with its trigger.
 
@@ -69,7 +69,7 @@ frontier is the check, so a w2 transfer label can replace w1 if the two diverge)
   Recorded as such; richer features or y3 (a Rust ML crate) are then the parked next step.
 - **Leakage.** Training salts 4-10, evaluation salts 1-3; the held-out bands are never in a pool (`filter` already removes them).
 - **Selection bias in the pool.** The scorer arm draws from a 4x larger prefix of the sequence than the random arm, so the
-  random arm at 4n-pool-and-first-n is not the same draw. The A/A uses today's code path; a control arm draws 4n and takes
+  random arm at 4n-pool-and-first-n is not the same draw. The random arm is today's code path; a control arm draws 4n and takes
   the first n, to show the pool size alone moves nothing.
 
 ## Checks left behind
