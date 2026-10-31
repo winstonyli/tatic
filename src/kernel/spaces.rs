@@ -13,7 +13,7 @@
 //! the vectors. Reads return copies, so a vector that grows never leaves a borrow dangling.
 
 use super::Node;
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::{Cell, RefCell, UnsafeCell};
 use std::hash::BuildHasherDefault;
 
 /// A node in one of the two spaces: bit 31 set for the region, bits 0-29 the index into that space.
@@ -214,6 +214,9 @@ struct Inner {
 pub(crate) struct Spaces {
     inner: UnsafeCell<Inner>,
     pub(crate) memos: RefCell<Memos>,
+    /// Calls to the kernel's six recursive workers on this thread (see [`tick`](Spaces::tick)): a deterministic count
+    /// of its work, the same in every build.
+    work: Cell<u64>,
 }
 
 impl Spaces {
@@ -229,7 +232,20 @@ impl Spaces {
                 twins: Vec::new(),
             }),
             memos: RefCell::new(Memos::new()),
+            work: Cell::new(0),
         }
+    }
+
+    /// Counts one call of a recursive worker: `shift_unchecked`, `inst_rec`, `whnf_step`, `nf_whnf`, `conv_whnf`
+    /// and `infer_node` (a type-cache miss). A memo hit, which skips the call, counts nothing.
+    #[inline(always)]
+    pub(crate) fn tick(&self) {
+        self.work.set(self.work.get() + 1);
+    }
+
+    /// The count so far on this thread; callers take differences.
+    pub(crate) fn work(&self) -> u64 {
+        self.work.get()
     }
 
     #[inline(always)]

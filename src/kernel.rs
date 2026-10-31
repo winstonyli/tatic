@@ -313,6 +313,13 @@ pub(crate) fn with_spaces<R>(f: impl FnOnce(&Spaces) -> R) -> R {
     SPACES.with(f)
 }
 
+/// This thread's kernel work so far: calls to the recursive workers (`shift`, `instantiate`, `whnf` step, `nf`, `conv`,
+/// and `infer` on a type-cache miss), counted in every build. Deterministic for a given input and memo state, so
+/// differences of it measure work where a clock measures load; a thread reports only its own.
+pub fn work() -> u64 {
+    with_spaces(|s| s.work())
+}
+
 /// A map key naming a node: its resolved `Ref`'s bits.
 pub(crate) type Key = u32;
 /// An argument list's id in the instantiation memo ([`hc::args_id`]).
@@ -792,6 +799,7 @@ fn shift_in(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// `shift` for an `e` already known to have a loose variable at or above
 /// `cutoff` (and `amount != 0`).
 fn shift_unchecked(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
+    s.tick();
     grow(|| match s.node(e) {
         Node::Var(k) if k >= cutoff => var((k as i32 + amount) as u32),
         Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *e,
@@ -1062,6 +1070,7 @@ fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
 
 /// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo.
 fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Aid, d: u32) -> Expr {
+    s.tick();
     let m = args.len() as u32;
     let go = |x: Expr, under: bool| {
         let d = d + under as u32;
@@ -1500,6 +1509,7 @@ fn under_lams(s: &Spaces, w: Expr) -> Expr {
 /// a copy missed them, so each level of a stuck spine reduced the whole
 /// spine below it again (`RELATED_WORK.md` §48, §59).
 fn whnf_step(s: &Spaces, e: &Expr) -> Option<Expr> {
+    s.tick();
     grow(|| match s.node(e) {
         Node::App(f, a) => {
             // `e`'s spine facts from `f`'s, asked for only as needed: `f` itself is the common
@@ -1603,6 +1613,7 @@ fn nf_in(s: &Spaces, e: &Expr) -> Expr {
 /// `nf` of a term already in weak head normal form: its constructor over
 /// the `nf` of each child.
 fn nf_whnf(s: &Spaces, w: &Expr) -> Expr {
+    s.tick();
     grow(|| match s.node(w) {
         Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *w,
         n => s.mk(n.map_kids(|c, _| nf_in(s, &c))),
@@ -1661,6 +1672,7 @@ fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
 /// Compares two weak head normal forms: same constructor, then `conv` on
 /// each pair of children, in the order `nf_in` visits them.
 fn conv_whnf(s: &Spaces, x: &Expr, y: &Expr) -> bool {
+    s.tick();
     let (nx, ny) = (s.node(x), s.node(y));
     grow(|| nx.same_shape(&ny, |p, q| conv(s, p, q)))
 }
@@ -1917,6 +1929,7 @@ impl Checker<'_> {
 
     fn infer_node(&mut self, e: &Expr) -> Result<Expr, String> {
         let s = self.s;
+        s.tick();
         grow(|| match s.node(e) {
             Node::Var(k) => ctx_lookup(s, &self.ctx, k),
             Node::Sort(i) => i.checked_add(1).map(sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),

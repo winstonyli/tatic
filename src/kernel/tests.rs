@@ -29,14 +29,14 @@ fn hc_lowest_loose(x: &Expr, d: u32, memo: &mut IdMap<(Key, u32), u32>) -> u32 {
     with_spaces(|s| hc::lowest_loose(s, x, d, memo))
 }
 
-/// Asserts `run(large)` takes under `max_ratio` times `run(small)` (plus 5 ms of timer noise),
-/// for one of three small-then-large pairs. `run(n)` builds its size-`n` terms and returns the
-/// time of the work alone. A ratio holds under load where a wall budget fails: both runs of a pair
-/// slow down together. The runs go on a thread of their own: a small one gets 10 s, a large one
-/// ten times its budget plus 2 s, so a regression to quadratic or exponential time fails within
-/// seconds instead of hanging the suite. For runs of microseconds the 5 ms dominates, and the
-/// check reads "the large size stays cheap": pick it so a walk of the tree would take seconds.
-fn assert_scales(what: &str, small: u32, large: u32, max_ratio: u32, run: impl Fn(u32) -> std::time::Duration + Send + 'static) {
+/// Asserts `run(large)` costs under `max_ratio` times `run(small)` (plus `noise`), for one of
+/// three small-then-large pairs. `run(n)` builds its size-`n` terms and returns the cost of the
+/// work alone: `worked`, the change in `work()`, which is the same on every run and every machine
+/// (`noise` 0), or `timed`, nanoseconds, for code the counter doesn't see (`TIMER_NOISE`). The
+/// runs go on a thread of their own, each given 20 s, so a regression to quadratic or exponential
+/// cost fails within seconds instead of hanging the suite. With `noise` dominating, the check reads
+/// "the large size stays cheap": pick it so a walk of the tree would take seconds.
+fn assert_scales(what: &str, small: u32, large: u32, max_ratio: u32, noise: u64, run: impl Fn(u32) -> u64 + Send + 'static) {
     use std::sync::{Arc, atomic::{AtomicBool, Ordering}, mpsc};
     use std::time::Duration;
     struct Stop(Arc<AtomicBool>);
@@ -55,22 +55,38 @@ fn assert_scales(what: &str, small: u32, large: u32, max_ratio: u32, run: impl F
             }
         }
     });
-    let next = |n: u32, wait: Duration, done: &[(Duration, Duration)]| match rx.recv_timeout(wait) {
+    let next = |n: u32, wait: Duration, done: &[(u64, u64)]| match rx.recv_timeout(wait) {
         Ok(t) => t,
         Err(mpsc::RecvTimeoutError::Timeout) => panic!("{what}: n = {n} still running after {wait:?}, done {done:?}"),
         Err(mpsc::RecvTimeoutError::Disconnected) => panic!("{what}: a run panicked"),
     };
     let mut pairs = vec![];
     for _ in 0..3 {
-        let short = next(small, Duration::from_secs(10), &pairs);
-        let budget = short * max_ratio + Duration::from_millis(5);
-        let long = next(large, budget * 10 + Duration::from_secs(2), &pairs);
-        if long < budget {
+        let short = next(small, Duration::from_secs(20), &pairs);
+        let budget = short * max_ratio as u64 + noise;
+        let long = next(large, Duration::from_secs(20), &pairs);
+        if long <= budget {
             return;
         }
         pairs.push((short, long));
     }
     panic!("{what}: (n = {small}, n = {large}) took {pairs:?}, over {max_ratio}x each");
+}
+/// Nanoseconds of timer noise for a timed `assert_scales`.
+const TIMER_NOISE: u64 = 5_000_000;
+
+/// `run(n)` cost for `assert_scales`: the kernel work `f` does on this thread.
+fn worked(f: impl FnOnce()) -> u64 {
+    let w = work();
+    f();
+    work() - w
+}
+
+/// `run(n)` cost for `assert_scales`: the nanoseconds `f` takes.
+fn timed(f: impl FnOnce()) -> u64 {
+    let t = std::time::Instant::now();
+    f();
+    t.elapsed().as_nanos() as u64
 }
 fn hc_whnf_get(x: &Expr) -> Option<Expr> {
     with_spaces(|s| hc::whnf_get(s, x))
@@ -190,11 +206,11 @@ fn brief_bounds_the_text_of_an_exponential_tree() {
     assert!(text.len() <= 400 + 4, "{} chars", text.len());
     assert!(text.ends_with(" ..."));
     // 2^10 leaves already overflow the text.
-    assert_scales("brief", 10, 60, 30, move |n| {
+    assert_scales("brief", 10, 60, 30, TIMER_NOISE, move |n| {
         let e = tree(n);
-        let t = std::time::Instant::now();
-        brief(&e);
-        t.elapsed()
+        timed(|| {
+            brief(&e);
+        })
     });
     assert_eq!(brief(&sort(3)), "Type3");
 }
@@ -613,12 +629,10 @@ fn args_id_is_stable_for_short_and_long_lists() {
 fn subst_top_leaves_an_unused_argument_alone() {
     // n + 1 distinct nodes, 2^n as a tree: copying 2^20 takes about a
     // second in a debug build, and the shortcut doesn't look at it.
-    assert_scales("subst_top", 10, 20, 4, |n| {
+    assert_scales("subst_top", 10, 20, 4, 0, |n| {
         let s = (0..n).fold(var(0), |s, _| app(s, s));
         let body = pi(var(3), var(4));
-        let t = std::time::Instant::now();
-        assert_eq!(subst_top(&body, &s), pi(var(2), var(3)));
-        t.elapsed()
+        worked(|| assert_eq!(subst_top(&body, &s), pi(var(2), var(3))))
     });
 }
 
@@ -654,11 +668,9 @@ fn subst_top_shifts_a_used_argument_once() {
 /// sides and comparing takes about 0.3 s at n = 14.
 #[test]
 fn def_eq_answers_equal_sides_without_normalising() {
-    assert_scales("def_eq equal sides", 7, 14, 4, |n| {
+    assert_scales("def_eq equal sides", 7, 14, 4, 0, |n| {
         let (a, b) = (doubling(n), doubling(n));
-        let t = std::time::Instant::now();
-        assert!(def_eq(&a, &b));
-        t.elapsed()
+        worked(|| assert!(def_eq(&a, &b)))
     });
 }
 
@@ -673,13 +685,13 @@ fn doubling(n: u32) -> Expr {
 /// doubling term and only the codomains need reducing.
 #[test]
 fn def_eq_normalises_only_where_the_sides_differ() {
-    assert_scales("def_eq shared domains", 7, 14, 4, |n| {
+    assert_scales("def_eq shared domains", 7, 14, 4, 0, |n| {
         let a = pi(doubling(n), app(lam(sort(1), var(0)), sort(0)));
         let (b, c) = (pi(doubling(n), sort(0)), pi(doubling(n), sort(1)));
-        let t = std::time::Instant::now();
-        assert!(def_eq(&a, &b));
-        assert!(!def_eq(&a, &c));
-        t.elapsed()
+        worked(|| {
+            assert!(def_eq(&a, &b));
+            assert!(!def_eq(&a, &c));
+        })
     });
 }
 
@@ -765,16 +777,16 @@ fn whnf_keeps_the_stuck_part_it_was_given() {
 #[test]
 fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
     let fresh = std::cell::Cell::new(0);
-    assert_scales("stuck spine", 1000, 16000, 80, move |depth| {
+    assert_scales("stuck spine", 1000, 16000, 80, 0, move |depth| {
         let v = fresh.get();
         fresh.set(v + 3);
         let spine = |head: Expr| (0..depth).fold(head, |t, i| app(t, var(v + i % 3)));
         let (a, b, nf_b) = (spine(var(v)), spine(app(lam(sort(0), var(0)), var(v + 1))), spine(var(v + 1)));
-        let t = std::time::Instant::now();
-        assert_eq!(nf(&a), a);
-        assert_eq!(nf(&b), nf_b);
-        assert!(!def_eq(&a, &b));
-        t.elapsed()
+        worked(|| {
+            assert_eq!(nf(&a), a);
+            assert_eq!(nf(&b), nf_b);
+            assert!(!def_eq(&a, &b));
+        })
     });
 }
 
@@ -783,16 +795,14 @@ fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
 /// tree (`RELATED_WORK.md` §63). Postulates as `Const`s, per stage 3.
 #[test]
 fn infer_is_linear_in_the_dag_of_a_shared_term() {
-    assert_scales("infer on a DAG", 10, 20, 8, |n| {
+    assert_scales("infer on a DAG", 10, 20, 8, 0, |n| {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         p.push(p.get(a_ty));
         p.push(arrow(p.get(a_ty), arrow(p.get(a_ty), p.get(a_ty))));
         p.push(arrow(p.get(a_ty), p.get(a_ty)));
         let d = (0..n).fold(p.get(1), |d, _| app(app(p.get(2), d), d));
-        let t = std::time::Instant::now();
-        assert_eq!(p.infer(&d), Ok(p.get(0)));
-        t.elapsed()
+        worked(|| assert_eq!(p.infer(&d), Ok(p.get(0))))
     });
 }
 
@@ -860,7 +870,7 @@ fn infer_cache_is_emptied_between_calls() {
 /// the whole check quadratic (`RELATED_WORK.md` §80).
 #[test]
 fn infer_memo_skips_unused_inner_binders() {
-    assert_scales("infer under unused binders", 100, 800, 30, |depth| {
+    assert_scales("infer under unused binders", 100, 800, 30, 0, |depth| {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         let a = p.push(p.get(a_ty));
@@ -873,9 +883,7 @@ fn infer_memo_skips_unused_inner_binders() {
             b = app(app(p.get(k), l), r);
         }
         let e = lam(p.get(a_ty), b);
-        let t = std::time::Instant::now();
-        assert_eq!(p.infer(&e), Ok(arrow(p.get(a_ty), p.get(a_ty))));
-        t.elapsed()
+        worked(|| assert_eq!(p.infer(&e), Ok(arrow(p.get(a_ty), p.get(a_ty)))))
     });
 }
 
@@ -885,7 +893,7 @@ fn infer_memo_skips_unused_inner_binders() {
 /// debug); the spine at once copies them once (under 5 ms).
 #[test]
 fn infer_types_an_application_spine_at_once() {
-    assert_scales("infer on a spine", 500, 8000, 80, |k| {
+    assert_scales("infer on a spine", 500, 8000, 80, 0, |k| {
         let mut p = Postulates::new();
         let a_ty = p.push(sort(0));
         let a = p.push(p.get(a_ty));
@@ -895,9 +903,7 @@ fn infer_types_an_application_spine_at_once() {
         let f = p.push(f_ty);
         let e = (0..k).fold(p.get(f), |e, _| app(e, p.get(a)));
         let s_a = (0..k).fold(p.get(g), |s, _| app(s, p.get(a)));
-        let t = std::time::Instant::now();
-        assert_eq!(p.infer(&e), Ok(id(p.get(a_ty), s_a, s_a)));
-        t.elapsed()
+        worked(|| assert_eq!(p.infer(&e), Ok(id(p.get(a_ty), s_a, s_a))))
     });
 }
 
@@ -921,13 +927,34 @@ fn infer_memo_keeps_same_length_contexts_apart() {
 /// debug build (`RELATED_WORK.md` §61). `==` is now one id comparison.
 #[test]
 fn def_eq_is_linear_on_a_chain_that_differs_at_the_bottom() {
-    assert_scales("def_eq on chains", 1000, 16000, 80, |n| {
+    assert_scales("def_eq on chains", 1000, 16000, 80, 0, |n| {
         let chain = |bottom: Expr| (0..n).fold(bottom, |t, _| app(var(0), t));
         let (a, b) = (chain(var(1)), chain(var(2)));
-        let t = std::time::Instant::now();
-        assert!(!def_eq(&a, &b));
-        t.elapsed()
+        worked(|| assert!(!def_eq(&a, &b)))
     });
+}
+
+/// `work()` counts the same on every run of a query from a fresh thread, and grows with the query, linearly for the chain.
+#[test]
+fn work_is_deterministic_and_scales_with_the_query() {
+    let on_fresh_thread = |n: u32| {
+        std::thread::Builder::new()
+            .stack_size(64 << 20)
+            .spawn(move || {
+                let chain = |bottom: Expr| (0..n).fold(bottom, |t, _| app(var(0), t));
+                let (a, b) = (chain(var(1)), chain(var(2)));
+                let w0 = work();
+                assert!(!def_eq(&a, &b));
+                work() - w0
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    };
+    let (small, again, large) = (on_fresh_thread(1000), on_fresh_thread(1000), on_fresh_thread(2000));
+    assert!(small > 0);
+    assert_eq!(small, again, "the same query from a fresh thread counts the same");
+    assert!(large > small && large < small * 3, "doubling the chain gives {large} against {small}");
 }
 
 /// `whnf` keeps each argument's node rather than copying it into
@@ -2520,15 +2547,15 @@ fn check_open_types_a_parameter_in_a_dependent_context() {
 /// walked and copied the tree.
 #[test]
 fn close_is_linear_in_the_dag_of_a_shared_body() {
-    assert_scales("close", 10, 20, 8, |n| {
+    assert_scales("close", 10, 20, 8, TIMER_NOISE, |n| {
         let mut p = Postulates::new();
         let a = p.push(sort(0));
         let f = p.push(arrow(p.get(a), arrow(p.get(a), p.get(a))));
         let s = p.open();
         let d = (0..n).fold(p.bind(p.get(a)), |d, _| app(app(p.get(f), d), d));
-        let t = std::time::Instant::now();
-        let closed = p.close(s, Binder::Lam, d);
-        let took = t.elapsed();
+        let mut closed = None;
+        let took = timed(|| closed = Some(p.close(s, Binder::Lam, d)));
+        let closed = closed.unwrap();
         // The Lam, its domain, the base `Var`, the one `f` node, and 2 `App`s per level.
         assert_eq!(term_sizes(&closed).0, 2 * n as usize + 4);
         assert!(p.check(&closed, &arrow(p.get(a), p.get(a))).is_ok());
