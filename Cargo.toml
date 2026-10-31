@@ -27,6 +27,12 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 
+# A plain `cargo test` at opt-level 1, debug assertions and `check_replay` still on: the lib suite takes 2.9 s instead of
+# 32.5 s and church_bv 12 s instead of 158 s, and an edit rebuilds faster. The dependencies must be included (workspace
+# only: 3x slower). The cold build is about 7 min longer. docs/tier-cycle.md, "Opt-level 0 against 1".
+[profile.test]
+opt-level = 1
+
 [[bench]]
 name = "execution"
 harness = false
