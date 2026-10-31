@@ -7516,6 +7516,20 @@ and keeps the best n by score; the label is miner credit (a straggler a chosen r
   (walk/match/op 1.8x at n 319) and more rules but do not transfer to the held-out bands. What would confirm: refit on a
   held-out-transfer label (w2) and rerun g4-g6 (about 40 min). Not done.
 - **Null scope.** "No gain from a linear model on these count features with this label", not "no signal".
+- **Size-blind refit (2026-10-31; runs `v06-g7` to `g9`).** The reading above predicts that removing the size features
+  helps. Refit with columns 1-4 (sizes, depth) and 10-17 (operator totals, a size proxy) zeroed (`DROP` in `fit_scorer`):
+  test AUC 0.650 (train 0.669), so the signal does not come from size alone. Same gate, same salts, pool 4:
+
+| arm | held-out M | job CPU | rules |
+|---|---|---|---|
+| random n 80 / scorer n 80 | 6043 / 6329 | 333 / 264 s | 719 / 840 |
+| random n 160 / scorer n 160 | 5517 / 5783 | 417 / 420 s | 925 / 1142 |
+| random n 319 / scorer n 319 | 5166 / 5186 | 711 / 687 s | 1140 / 1322 |
+
+  Still no shift: worse at n 80 and 160 (+286, +266, beyond sigma 76) and equal at 319 (+20, inside sigma); the n 80 CPU is
+  noise from other load (the arm ran 264 s against 333 s for 1.3x the rules). So the "large laws" reading is not
+  what fails; the label's in-sample credit does not transfer by whatever features. The full w2 transfer label (credit
+  by a rule that also covers held-out stragglers) was not built, since the size-blind result gave no signal to follow.
 
 ## The JIT and the target machine
 

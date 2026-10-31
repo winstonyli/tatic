@@ -261,7 +261,11 @@ fn fit_scorer() {
     let setup = &job::Setup::process();
     let salts = |k: &str| -> Vec<usize> { setup.var(k).unwrap_or("").split(',').filter(|s| !s.is_empty()).map(|s| s.parse().unwrap()).collect() };
     let tsv = std::fs::read_to_string(setup.var("LABELS").expect("LABELS")).unwrap();
-    let (train, test) = split_rows(&tsv, &salts("TRAIN_SALTS"), &salts("TEST_SALTS"));
+    let (mut train, mut test) = split_rows(&tsv, &salts("TRAIN_SALTS"), &salts("TEST_SALTS"));
+    // DROP=<feature indexes>: zero those columns (constant columns get weight 0), so the scorer cannot use them
+    for i in salts("DROP") {
+        train.iter_mut().chain(test.iter_mut()).for_each(|r| r.0[i] = 0.0);
+    }
     let s = fit(&train);
     std::fs::write(setup.var("SCORER_OUT").expect("SCORER_OUT"), s.to_text()).unwrap();
     let on = |rows: &Rows, f: &dyn Fn(&[f32; F]) -> f64| auc(&rows.iter().map(|(x, y)| (f(x), *y)).collect::<Vec<_>>());
