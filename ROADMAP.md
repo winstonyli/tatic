@@ -35,9 +35,9 @@ results, 2026-10-17 and 2026-10-23).
 ## Milestones
 
 - **v0.5 - Is the frontier measured, with the mine settings fixed?** (goals 2 and 3) Decided 2026-10-30 (the model-in-the-loop
-  run moved to v0.6): the milestone closes on the frontier measure, the extras and one mining join budget. Done when the mines'
-  join budget of 100 at n 319 (serving and the held-out check stay at 1000) is the default, not a probe, and the gate's
-  frontier line is rerun with it. Experiment 3's question, whether closing the cycle pushes the frontier, is v0.6. The frontier: on a fixed held-out set of laws larger than the
+  run moved to v0.6): the milestone closes on the frontier measure, the extras and one mining join budget. Met 2026-10-30: the mines'
+  join budget of 100 at n 319 (serving and the held-out check stay at 1000) is the default, and the gate's frontier line
+  was rerun with it (`docs/tier-cycle.md`, "Landed 2026-10-30"); ready to tag. Experiment 3's question, whether closing the cycle pushes the frontier, is v0.6. The frontier: on a fixed held-out set of laws larger than the
   loops serve (the loops run on operator-set streams, the class-table spec's decision 11), the share proved free (with no whole-term machine proof, within the rule budget and the join's cap
   and visit budget, which must be fixed: from 1000 to 5000 it moves by up to 27 of 400 laws, `docs/tier-cycle.md`,
   "Why a sound rule costs the join") by law size, against the table alone. Serving proves every law, so the share proved at all

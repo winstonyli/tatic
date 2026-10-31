@@ -2371,6 +2371,8 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     stream sequence lazily". At 250 the build's share is lower, at most 23% by 4 threads times that arm's logged
     build walls (55.7 s over the salts; the walls vary 13.7-28.4 s with load).
 
+    **Landed 2026-10-30** (the mines' `JOIN_VISIT` defaults to 100, `MINE_JOIN_VISIT` overrides; serving and the held-out check keep 1000). Gate on current `main`, salts 1-3, A = the same exe with `MINE_JOIN_VISIT=1000`, B = the default (run `2026-10-30-land-mine100`, untimed, JOBS=2, other load 94%, so counts only): held-out M A 5340 (1774/1750/1816), B 5166 (1730/1668/1768), the 2026-10-28 numbers to the unit; loop M 440 against 447 (145/150/145 against 145/153/149); job CPU 3561 s against 788 s (22%, against 21% then); op count 6.3 G against 0.82 G. Rules differ in all 9 loops (the budget changes what the mines find). Frontier per band (free share, loops' rules; A then B): 11 .944 / .943, 13 .849 / .850, 15 .832 / .840, 17 .779 / .792, table alone .762 / .693 / .635 / .602.
+
     A third round (runs `2026-10-28-mjv-j0` and `-mjv-j100n688`, set up as above: J0 and J100n688 are J250's bytes
     with `MINE_JOIN_VISIT=0`, and 100 with `EXTRAS_N=688`) tried budget 0, a mine with no join at all, and 100 at n
     688. Both lost salt 3 to a hang (below; fixed, and salt 3 rerun, which gives the table above its "third round"
