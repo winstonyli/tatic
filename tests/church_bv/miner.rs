@@ -1233,10 +1233,8 @@ fn the_pool_is_cut_by_the_stragglers_verdict() {
 #[test]
 fn extras_by_first_mines_what_the_unpooled_file_mines() {
     let (from, served, clean, strag) = served_and_pool();
-    let mine_rules = |laws: &str, env: &[(&str, String)]| {
-        use std::sync::atomic::{AtomicUsize, Ordering::Relaxed};
-        static N: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!("extras_laws_{}_{}.txt", std::process::id(), N.fetch_add(1, Relaxed)));
+    let mine_rules = |tag: &str, laws: &str, env: &[(&str, String)]| {
+        let path = std::env::temp_dir().join(format!("extras_laws_{}_{tag}.txt", std::process::id()));
         std::fs::write(&path, laws).unwrap();
         let mut e = vec![("RULEMINER_LAWFILE".to_string(), path.display().to_string()), ("RULEMINER_FAST".to_string(), "1".to_string())];
         e.extend(env.iter().map(|(k, v)| (k.to_string(), v.clone())));
@@ -1245,10 +1243,11 @@ fn extras_by_first_mines_what_the_unpooled_file_mines() {
         chosen
     };
     let pooled = mine_rules(
+        "pooled",
         &format!("{served}{clean}\n{strag}\n"),
         &[("RULEMINER_EXTRAS_FROM", from.to_string()), ("RULEMINER_EXTRAS_KEEP", "1".to_string()), ("RULEMINER_EXTRAS_BY", "first".to_string())],
     );
-    assert_eq!(pooled, mine_rules(&format!("{served}{clean}\n"), &[]));
+    assert_eq!(pooled, mine_rules("plain", &format!("{served}{clean}\n"), &[]));
 }
 
 /// A worker that panics fails the thread waiting for its result instead of hanging it: the waiter keeps a sender, so the

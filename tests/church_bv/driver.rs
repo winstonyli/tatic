@@ -24,7 +24,8 @@
 //! with rule rounds also mines its own `EXTRAS_N` laws, the next the filter keeps from the stream sequence grown as deep
 //! as the held-out bands (`scope_extras`, fresh slices); off with ABLATE=gen; GEN_DRAW=d draws them from the sequence at
 //! salt + 1000 d instead. POOL=p cuts p x n kept laws per mine and keeps n (the first n, or the best n by SCORER=<weights
-//! file>, scorer.rs).
+//! file>, scorer.rs), or all of them to the miner with EXTRAS_SELECT=first|straggler, which keeps the first n or the first n stragglers
+//! under that mine's base rules (`RULEMINER_EXTRAS_*`, `miner::kept_indices`).
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
 //! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the stream sequence, built once
@@ -203,6 +204,16 @@ fn extra_slices(len: usize, loops: usize, mines: usize, n: usize) -> Result<Vec<
     Ok((0..k).map(|j| j * n..(j + 1) * n).collect())
 }
 
+/// The driver variable `EXTRAS_SELECT` (`first` or `straggler`; unset is today's draw): the miner cuts each mine's pool of
+/// `POOL x n` extras down to `n` (`miner::kept_indices`). It and `SCORER` are two selectors for one slice, so both is an error.
+fn extras_select(select: Option<&str>, scorer: bool) -> Result<Option<crate::miner::Keep>, String> {
+    let Some(s) = select else { return Ok(None) };
+    if scorer {
+        return Err("EXTRAS_SELECT and SCORER both select the extras: set one".to_string());
+    }
+    crate::miner::Keep::parse(s).map(Some)
+}
+
 /// The extras a scope's mines take from `kept` (its first `loops x mines x block` kept laws): from each block of `block`
 /// laws the `n` with the highest `score` (a stable sort, so ties keep stream order), or the block's first `n` with no
 /// score. A block of `n` (pool 1) is the identity. `docs/superpowers/specs/2026-10-31-learned-proposer-design.md`.
@@ -329,6 +340,19 @@ fn zero_weights_select_the_baseline_and_a_size_weight_prefers_big_laws() {
     let big = crate::scorer::Scorer::with_weights(w);
     let b = |l: &(Term, Term)| big.score(l);
     assert_eq!(texts(&select_extras(&laws, 6, 2, Some(&b))), texts(&[laws[5], laws[4], laws[11], laws[10]]));
+}
+
+/// `EXTRAS_SELECT`: unset is today's draw; `first` and `straggler` pick the miner's selection; anything else, or a selection
+/// together with `SCORER` (two selectors for one slice), is an error naming the variables.
+#[test]
+fn extras_select_parses_and_refuses_a_second_selector() {
+    use crate::miner::Keep;
+    assert_eq!(extras_select(None, false), Ok(None));
+    assert_eq!(extras_select(Some("first"), false), Ok(Some(Keep::First)));
+    assert_eq!(extras_select(Some("straggler"), false), Ok(Some(Keep::Straggler)));
+    assert!(extras_select(Some("bogus"), false).unwrap_err().contains("EXTRAS_SELECT"));
+    let both = extras_select(Some("first"), true).unwrap_err();
+    assert!(both.contains("EXTRAS_SELECT") && both.contains("SCORER"), "{both}");
 }
 
 /// The miner names a straggler `a.show() = b.show()` (`read_named_laws`) and credits it by that name; the extras file is
@@ -768,6 +792,7 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
     let (n, mines) = (setup.or("EXTRAS_N", EXTRAS_N), c.mines.len());
     let pool = setup.or("POOL", 1usize);
+    let select = extras_select(setup.var("EXTRAS_SELECT"), setup.var("SCORER").is_some())?;
     if pool == 0 {
         return Err("POOL must be at least 1".to_string());
     }
@@ -783,9 +808,11 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     extra_slices(kept.len(), scope.len(), mines, pool * n).map_err(|short| {
         format!("{}: the extras sequence of {} laws keeps {}, {short} short of {} loops x {mines} mines x POOL {pool} x n {n}", c.out.display(), deep.len(), kept.len(), scope.len())
     })?;
-    let laws = select_extras(&kept, pool * n, n, score.as_ref().map(|f| f as &dyn Fn(&(Term, Term)) -> f32));
-    let at = extra_slices(laws.len(), scope.len(), mines, n).expect("a selection of n per block fills the slices");
-    println!("GEN {}: n {n}, pool {pool}, scorer {}, {} laws from a sequence of {}", c.out.display(), scorer.is_some(), laws.len(), deep.len());
+    // with `EXTRAS_SELECT` each mine gets its whole pool and the miner keeps n (`RULEMINER_EXTRAS_*`, `run_loop`)
+    let per_mine = if select.is_some() { pool * n } else { n };
+    let laws = select_extras(&kept, pool * n, per_mine, score.as_ref().map(|f| f as &dyn Fn(&(Term, Term)) -> f32));
+    let at = extra_slices(laws.len(), scope.len(), mines, per_mine).expect("a selection of per_mine per block fills the slices");
+    println!("GEN {}: n {n}, pool {pool}, scorer {}, select {select:?}, {} laws from a sequence of {}", c.out.display(), scorer.is_some(), laws.len(), deep.len());
     let laws = std::sync::Arc::new(laws);
     for (i, cfg) in scope.iter_mut().enumerate() {
         cfg.extras = laws.clone();
@@ -827,9 +854,18 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
         env.push(write_laws(setup, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
         if let Some(at) = cfg.extra_at.get(slot) {
             let extra: String = cfg.extras[at.clone()].iter().map(|l| law_text(l) + "\n").collect();
-            println!("GEN_EXTRA {name}: {} laws", at.len());
+            let keep = setup.or("EXTRAS_N", EXTRAS_N);
+            println!("GEN_EXTRA {name}: {} laws, keep {}", at.len(), if setup.var("EXTRAS_SELECT").is_some() { keep } else { at.len() });
             std::fs::write(out.join(format!("laws_extra_{name}.txt")), &extra).unwrap();
-            append(Path::new(&env.last().unwrap().1), &extra);
+            let lawfile = env.last().unwrap().1.clone();
+            let served = std::fs::read_to_string(&lawfile).unwrap().lines().count();
+            append(Path::new(&lawfile), &extra);
+            // `scope_extras` checked the value: the miner reads the pool from line `served` and keeps `keep` of it
+            if let Some(by) = setup.var("EXTRAS_SELECT") {
+                env.push(("RULEMINER_EXTRAS_FROM".into(), served.to_string()));
+                env.push(("RULEMINER_EXTRAS_KEEP".into(), keep.to_string()));
+                env.push(("RULEMINER_EXTRAS_BY".into(), by.to_string()));
+            }
         }
         let records = worker.run("search::rule_miner", &env, &log).unwrap_or_else(|| panic!("rule_miner failed (see {})", log.display()));
         // the chosen rules
