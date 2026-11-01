@@ -7891,13 +7891,13 @@ long form, not a fixed external corpus; the 33% is an upper-bound illustration, 
 The routines now live as the corpus `docs/corpora/hd-own/` (`corpus_report` reproduces the 80, 54 and 17; the probe patch is
 superseded).
 
-*Souper's `test/Infer` agrees (2026-11-01; `docs/corpora/souper/`, commit `963d4df`).* Of its 39 files 12 fit the term language
-(Hacker's Delight P1 to P7, P11, P14, P15, P17 and `const1`; the rest need `mul`, `select`, width-specific shifts or other
-constants, listed per file in `SOURCE.md`): 42 operators, the table changes 9 terms and leaves 32, and the base rewriter also
-leaves 32. As in `hd-own`, the table does the rewriting and nothing is left for a mined rule. Only P11, P17 and `const1` are
-new shapes, since the other nine repeat `hd-own` routines; the corpus is mostly the same book, so it is not independent
-confirmation of the 33%. Two files (P10, P12, from `ule`) panic the measurement and are parked (`PARKED.md`, "An `lt` word
-under a bitwise operator").
+*Souper's `test/Infer` agrees (2026-11-01; `docs/corpora/souper/`, commit `963d4df`).* Of its 39 files 14 fit the term language
+(Hacker's Delight P1 to P7, P10 to P12, P14, P15, P17 and `const1`; the rest need `mul`, `select`, width-specific shifts or
+other constants, listed per file in `SOURCE.md`): 52 operators, the table changes 10 terms and leaves 42, and the base rewriter
+also leaves 42. As in `hd-own`, the table does the rewriting and nothing is left for a mined rule. Only P10 to P12, P17 and
+`const1` are new shapes, since the rest repeat `hd-own` routines; the corpus is mostly the same book, so it is not independent
+confirmation of the 33%. P10 and P12 (from `ule`) first panicked the measurement: `abstract_atoms` (`rewrite.rs`) listed the
+non-bitwise operators without `lt`, so an `lt` word under a bitwise operator reached the bit-level evaluator; fixed, with a test.
 
 *Does the specialiser produce arithmetic depth? No (2026-11-01, probe reverted; `docs/runs/2026-11-01/patches/specialise_depth_probe.patch`).*
 The 23 terms of `samples::corpus()` before and after `specialise` (12 of them take at least one inlining step): the maximal

@@ -2426,11 +2426,11 @@ fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanR
     }
 }
 
-/// `t` with each variable and each `add` subterm replaced by an atom variable (up to `cap`, by `show`).
+/// `t` with each variable and each non-bitwise subterm (`add`, `sub`, `lt`, a shift) replaced by an atom variable (up to `cap`, by `show`).
 pub fn abstract_atoms(t: &Term, atoms: &mut Vec<Term>, cap: usize) -> Option<Term> {
     match *t.node() {
         Node::Zero | Node::Ones => Some(*t),
-        Node::V(_) | Node::Op(ADD | SUB | SHL1 | SHR1, ..) => {
+        Node::V(_) | Node::Op(ADD | SUB | LT | SHL1 | SHR1, ..) => {
             let i = match atoms.iter().position(|a| a == t) {
                 Some(i) => i,
                 None => {

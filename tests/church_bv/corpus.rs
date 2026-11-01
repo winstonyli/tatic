@@ -121,7 +121,18 @@ mod tests {
             let m = measure(&cases, vec![]);
             let (before, table, rules) = m.iter().fold((0, 0, 0), |a, r| (a.0 + r.before, a.1 + r.table, a.2 + r.rules));
             let changed = m.iter().filter(|r| r.table_changed).count();
-            assert_eq!((cases.len(), before, table, changed, rules), (12, 42, 32, 9, 32));
+            assert_eq!((cases.len(), before, table, changed, rules), (14, 52, 42, 10, 42));
+        });
+    }
+
+    #[test]
+    fn an_lt_word_under_a_bitwise_operator_is_measured() {
+        tatic::kernel::scoped(|| {
+            let cases = read_cases("ule	xor(lt(and(x, y), xor(x, y)), sub(0, -1))
+mask	and(x, lt(y, z))
+").unwrap();
+            let m = measure(&cases, vec![]);
+            assert!(m.iter().all(|r| r.table <= r.before && r.rules <= r.before), "{m:?}");
         });
     }
 }
