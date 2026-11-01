@@ -7651,6 +7651,29 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
   `cheap` and the direction question is untested, not answered. `novel` reproduced `cheap`'s rules in 9 of 9 loops on salts 4-6.
   What a sharper test needs: a class that splits the pool (for example reached by a candidate that the served stragglers'
   greedy pass would choose, or the number of distinct candidates reaching), which is a new design, not a rerun.
+
+- **Crossover and steps (2026-10-31; runs `v06h2-g1` to `g6`; same rule as the knee chart).** `cheap` at n 120, 200 and 240
+  against a random arm of near-equal walk work (n 310, 570, 700), salts 1-3 | 4-6, held-out M (job CPU), sigma 76:
+
+| cheap arm (pool 4) | salts | cheap | random | difference | wins |
+|---|---|---|---|---|---|
+| n 120 (walk 334 M, 338 M) | 1-3 | 5057 (1088 s) | 5251, n 310, walk 353 M (1196 s) | -194 | yes |
+| n 120 | 4-6 | 5032 (1053 s) | 5110, walk 386 M (1221 s) | -78 | yes (2 past sigma; the random arm did 14% more work) |
+| n 200 (walk 646 M, 664 M) | 1-3 | 4700 (1554 s) | 4537, n 570, walk 671 M (1742 s) | **+163** | no |
+| n 200 | 4-6 | 4742 (1474 s) | 4606, walk 679 M (1822 s) | **+136** | no |
+| n 240 (walk 780 M, 784 M) | 1-3 | 4543 (1550 s) | 4377, n 700 (1422 s) | +166 | no (reproduces `v06k-g5`) |
+| n 240 | 4-6 | 4591 (1419 s) | 4434 (1207 s) | +157 | no |
+
+  With the knee chart: wins at n 80, 120 and 160, loses at n 200 and 240; the crossover lies between n 160 and n 200 (about
+  500-650 M of walk work). The new `RULEMINER extras steps` lines show why the ranking is thin:
+  - **Mine 0 has no key.** The kept stragglers' steps sum to 0 in every mine 0 (empty base): steps count applications of mined
+    rules, and there are none, so `cheap` is straggler-first in stream order there, about half the extras.
+  - **Mine 1 runs out of choice.** Its pool holds 114-249 stragglers (n 120 to 240) against n of 120-240, so past n about 160
+    it keeps nearly all of them (n 240: 221 of 221, 232 of 232) and fills the rest with clean laws; the key has nothing left to
+    rank. Earlier "the dearer stragglers" is not what the logs show; the pool simply has no cheap tail to choose from.
+  - So `cheap` helps when it can leave stragglers out of the mine 1 pool (n at most about 160 of about 150-200 stragglers)
+    and costs what straggler-first costs when it cannot. A larger pool did not help (pool 8, n 160) because the pool's extra
+    stragglers raise the work for a key that only ranks by mined-rule steps.
   (the pool is not the limit; the cost key is).
 ## The JIT and the target machine
 

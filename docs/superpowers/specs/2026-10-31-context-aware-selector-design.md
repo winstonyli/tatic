@@ -147,3 +147,5 @@ that reach the straggler; `novel` ranks the fewest first, `reinforce` the most, 
 lines give the pool's min, max, distinct values and the correlation of reach with steps. Go to the full gates (salts 1-3 and
 4-6, n 160, pool 4, the c1 win rule) only if the pool's reach has at least 5 distinct values and |corr with steps| < 0.8 in
 most mines; else park, as a graded key that is a function of steps adds nothing.
+
+Crossover result (2026-10-31): `cheap` wins at n 120 (-194, -78) and loses at n 200 (+163, +136) and n 240 (+166, +157) against random of equal work. Mine 0's kept steps are all 0 (no mined rules) and mine 1 keeps nearly all its stragglers past n about 160. `docs/tier-cycle.md`, "The cheap variant" (runs `v06h2-g1` to `g6`).
