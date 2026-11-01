@@ -24,7 +24,7 @@ use std::time::Instant;
 use tatic::kernel::{self, Ctx, Expr};
 
 #[derive(Clone)]
-enum T {
+pub(crate) enum T {
     V(&'static str),
     S(u32),
     Pi(&'static str, Box<T>, Box<T>),
@@ -40,41 +40,41 @@ enum T {
     K(Expr),
 }
 use T::*;
-fn b(t: T) -> Box<T> {
+pub(crate) fn b(t: T) -> Box<T> {
     Box::new(t)
 }
-fn v(n: &'static str) -> T {
+pub(crate) fn v(n: &'static str) -> T {
     V(n)
 }
-fn s(k: u32) -> T {
+pub(crate) fn s(k: u32) -> T {
     S(k)
 }
-fn pi_(n: &'static str, a: T, c: T) -> T {
+pub(crate) fn pi_(n: &'static str, a: T, c: T) -> T {
     Pi(n, b(a), b(c))
 }
-fn lm(n: &'static str, a: T, c: T) -> T {
+pub(crate) fn lm(n: &'static str, a: T, c: T) -> T {
     Lm(n, b(a), b(c))
 }
-fn ap(f: T, a: T) -> T {
+pub(crate) fn ap(f: T, a: T) -> T {
     A(b(f), b(a))
 }
-fn ap2(f: T, a: T, c: T) -> T {
+pub(crate) fn ap2(f: T, a: T, c: T) -> T {
     ap(ap(f, a), c)
 }
-fn ap3(f: T, a: T, c: T, d: T) -> T {
+pub(crate) fn ap3(f: T, a: T, c: T, d: T) -> T {
     ap(ap2(f, a, c), d)
 }
-fn idt(a: T, x: T, y: T) -> T {
+pub(crate) fn idt(a: T, x: T, y: T) -> T {
     Id(b(a), b(x), b(y))
 }
-fn rfl(a: T) -> T {
+pub(crate) fn rfl(a: T) -> T {
     Refl(b(a))
 }
-fn arr(a: T, c: T) -> T {
+pub(crate) fn arr(a: T, c: T) -> T {
     pi_("_", a, c)
 }
 
-fn comp(t: &T, env: &mut Vec<&'static str>) -> Expr {
+pub(crate) fn comp(t: &T, env: &mut Vec<&'static str>) -> Expr {
     match t {
         V(n) => {
             let i = env.iter().rposition(|x| x == n).unwrap_or_else(|| panic!("unbound {n}"));
@@ -119,111 +119,111 @@ fn comp(t: &T, env: &mut Vec<&'static str>) -> Expr {
         }
     }
 }
-fn ex(t: &T) -> Expr {
+pub(crate) fn ex(t: &T) -> Expr {
     comp(t, &mut vec![])
 }
 
 // ---------- Church Bool / Nat ----------
-fn bool0() -> T {
+pub(crate) fn bool0() -> T {
     pi_("C", s(0), arr(v("C"), arr(v("C"), v("C"))))
 }
-fn tt() -> T {
+pub(crate) fn tt() -> T {
     lm("C", s(0), lm("t", v("C"), lm("f", v("C"), v("t"))))
 }
-fn ff() -> T {
+pub(crate) fn ff() -> T {
     lm("C", s(0), lm("t", v("C"), lm("f", v("C"), v("f"))))
 }
-fn bool2(body: T) -> T {
+pub(crate) fn bool2(body: T) -> T {
     lm("a", bool0(), lm("b", bool0(), lm("C", s(0), lm("t", v("C"), lm("f", v("C"), body)))))
 }
-fn and_() -> T {
+pub(crate) fn and_() -> T {
     bool2(ap2(ap(v("a"), v("C")), ap3(v("b"), v("C"), v("t"), v("f")), v("f")))
 }
-fn or_() -> T {
+pub(crate) fn or_() -> T {
     bool2(ap3(v("a"), v("C"), v("t"), ap3(v("b"), v("C"), v("t"), v("f"))))
 }
-fn xor_() -> T {
+pub(crate) fn xor_() -> T {
     bool2(ap3(v("a"), v("C"), ap3(v("b"), v("C"), v("f"), v("t")), ap3(v("b"), v("C"), v("t"), v("f"))))
 }
-fn xor(a: T, c: T) -> T {
+pub(crate) fn xor(a: T, c: T) -> T {
     ap2(xor_(), a, c)
 }
 /// The next carry, in the circuit `encoding::ripple_carry` uses (so the adder's bits are convertible to `encoding::add`'s).
-fn maj(a: T, c: T, d: T) -> T {
+pub(crate) fn maj(a: T, c: T, d: T) -> T {
     ap2(or_(), ap2(and_(), a.clone(), c.clone()), ap2(and_(), d, xor(a, c)))
 }
-fn nat(k: u32) -> T {
+pub(crate) fn nat(k: u32) -> T {
     pi_("C", s(k), pi_("z", v("C"), pi_("s", arr(v("C"), v("C")), v("C"))))
 }
-fn zero(k: u32) -> T {
+pub(crate) fn zero(k: u32) -> T {
     lm("C", s(k), lm("z", v("C"), lm("s", arr(v("C"), v("C")), v("z"))))
 }
-fn succ(k: u32) -> T {
+pub(crate) fn succ(k: u32) -> T {
     lm("n", nat(k), lm("C", s(k), lm("z", v("C"), lm("s", arr(v("C"), v("C")),
         ap(v("s"), ap3(v("n"), v("C"), v("z"), v("s")))))))
 }
-fn goodbool() -> T {
+pub(crate) fn goodbool() -> T {
     lm("a", bool0(), pi_("P", arr(bool0(), s(1)), arr(ap(v("P"), tt()), arr(ap(v("P"), ff()), ap(v("P"), v("a"))))))
 }
-fn good1(k: u32) -> T {
+pub(crate) fn good1(k: u32) -> T {
     lm("n", nat(k + 1), pi_("P", arr(nat(k + 1), s(k + 1)), arr(ap(v("P"), zero(k + 1)),
         arr(pi_("m", nat(k + 1), arr(ap(v("P"), v("m")), ap(v("P"), ap(succ(k + 1), v("m"))))), ap(v("P"), v("n"))))))
 }
 
 // ---------- streams, state, bit-serial adder ----------
-fn bits(k: u32) -> T {
+pub(crate) fn bits(k: u32) -> T {
     arr(nat(k), bool0())
 }
-fn zs(k: u32) -> T {
+pub(crate) fn zs(k: u32) -> T {
     lm("i", nat(k), ff())
 }
-fn state(k: u32) -> T {
+pub(crate) fn state(k: u32) -> T {
     Sig("_s", b(nat(k)), b(bool0()))
 }
-fn pair_s(k: u32, a: T, c: T) -> T {
+pub(crate) fn pair_s(k: u32, a: T, c: T) -> T {
     Pair("_k", b(bool0()), b(a), b(c))
 }
-fn fst(k: u32, u: T) -> T {
+pub(crate) fn fst(k: u32, u: T) -> T {
     SigRec(b(lm("_s", state(k), nat(k))), b(lm("a", nat(k), lm("b", bool0(), v("a")))), b(u))
 }
-fn snd(k: u32, u: T) -> T {
+pub(crate) fn snd(k: u32, u: T) -> T {
     SigRec(b(lm("_s", state(k), bool0())), b(lm("a", nat(k), lm("b", bool0(), v("b")))), b(u))
 }
 /// one step of the carry machine: (i, c) -> (i+1, maj(x i, y i, c))
-fn step(k: u32, x: T, y: T) -> T {
+pub(crate) fn step(k: u32, x: T, y: T) -> T {
     lm("u", state(k), pair_s(k, ap(succ(k), fst(k, v("u"))),
         maj(ap(x, fst(k, v("u"))), ap(y, fst(k, v("u"))), snd(k, v("u")))))
 }
 /// the fold over the Nat1 count n: (zero0, false) --step^n-->
-fn st(k: u32, x: T, y: T, n: T) -> T {
+pub(crate) fn st(k: u32, x: T, y: T, n: T) -> T {
     ap3(n, state(k), pair_s(k, zero(k), ff()), step(k, x, y))
 }
 /// sum bit at the state's position: x_i xor y_i xor carry_i
-fn sumfn(k: u32, x: T, y: T, u: T) -> T {
+pub(crate) fn sumfn(k: u32, x: T, y: T, u: T) -> T {
     xor(xor(ap(x, fst(k, u.clone())), ap(y, fst(k, u.clone()))), snd(k, u))
 }
-fn sumbit(k: u32, x: T, y: T, n: T) -> T {
+pub(crate) fn sumbit(k: u32, x: T, y: T, n: T) -> T {
     sumfn(k, x.clone(), y.clone(), st(k, x, y, n))
 }
-fn embed(k: u32, n: T) -> T {
+pub(crate) fn embed(k: u32, n: T) -> T {
     ap3(n, nat(k), zero(k), succ(k))
 }
 
 // ---------- J helpers ----------
 /// rew(A, l, r, p : l = r, fam, h : fam r) : fam l
-fn rew(a: T, l: T, r: T, p: T, fam: T, h: T) -> T {
+pub(crate) fn rew(a: T, l: T, r: T, p: T, fam: T, h: T) -> T {
     let motive = lm("$l", a.clone(), lm("$r", a.clone(), lm("$q", idt(a.clone(), v("$l"), v("$r")),
         pi_("$h", ap(fam.clone(), v("$r")), ap(fam.clone(), v("$l"))))));
     let base = lm("$x", a.clone(), lm("$h", ap(fam, v("$x")), v("$h")));
     ap(J(b(motive), b(base), b(l), b(r), b(p)), h)
 }
 /// case split on a symbolic bit with witness ga: F(b) = G(b) for b in {true,false}, by refl
-fn cases1(ga: T, f: &dyn Fn(T) -> T, g: &dyn Fn(T) -> T) -> T {
+pub(crate) fn cases1(ga: T, f: &dyn Fn(T) -> T, g: &dyn Fn(T) -> T) -> T {
     let motive = lm("$b", bool0(), idt(bool0(), f(v("$b")), g(v("$b"))));
     ap3(ga, motive, rfl(f(tt())), rfl(f(ff())))
 }
 /// two bits: L(a,b) = R(a,b) in type ty; yb is the actual second bit (witness gb)
-fn cases2(ga: T, gb: T, yb: T, ty: T, l: &dyn Fn(T, T) -> T, r: &dyn Fn(T, T) -> T) -> T {
+pub(crate) fn cases2(ga: T, gb: T, yb: T, ty: T, l: &dyn Fn(T, T) -> T, r: &dyn Fn(T, T) -> T) -> T {
     let tm = |a: T, c: T| idt(ty.clone(), l(a.clone(), c.clone()), r(a, c));
     let m1 = lm("$a", bool0(), tm(v("$a"), yb));
     let inner = |av: T| {
@@ -236,7 +236,7 @@ fn cases2(ga: T, gb: T, yb: T, ty: T, l: &dyn Fn(T, T) -> T, r: &dyn Fn(T, T) ->
 // ---------- (b) add x zero = x ----------
 /// with_y = false: y is the zero stream (the law). with_y = true: y is a symbolic stream (the false law
 /// `add x y = x`, used as a negative control with the very same proof skeleton).
-fn stmt_b(k: u32, with_y: bool) -> T {
+pub(crate) fn stmt_b(k: u32, with_y: bool) -> T {
     let y = if with_y { v("y") } else { zs(k) };
     let body = idt(bool0(), sumbit(k, v("x"), y, v("N")), ap(v("x"), embed(k, v("N"))));
     let body = if with_y {
@@ -247,7 +247,7 @@ fn stmt_b(k: u32, with_y: bool) -> T {
     pi_("N", nat(k + 1), arr(ap(good1(k), v("N")), pi_("x", bits(k),
         arr(pi_("i", nat(k), ap(goodbool(), ap(v("x"), v("i")))), body))))
 }
-fn proof_b(k: u32, with_y: bool) -> T {
+pub(crate) fn proof_b(k: u32, with_y: bool) -> T {
     let y = if with_y { v("y") } else { zs(k) };
     let stx = |m: T| st(k, v("x"), y.clone(), m);
     // one induction on the count: st M = (embed M, false), the position tracks the count and the carry stays false.
@@ -278,12 +278,12 @@ fn proof_b(k: u32, with_y: bool) -> T {
 }
 
 // ---------- (c) add x y = add y x ----------
-fn stmt_c(k: u32) -> T {
+pub(crate) fn stmt_c(k: u32) -> T {
     let gb = |s_: &'static str| pi_("i", nat(k), ap(goodbool(), ap(v(s_), v("i"))));
     pi_("N", nat(k + 1), arr(ap(good1(k), v("N")), pi_("x", bits(k), pi_("y", bits(k), arr(gb("x"), arr(gb("y"),
         idt(bool0(), sumbit(k, v("x"), v("y"), v("N")), sumbit(k, v("y"), v("x"), v("N")))))))))
 }
-fn proof_c(k: u32) -> T {
+pub(crate) fn proof_c(k: u32) -> T {
     let gb = |s_: &'static str| pi_("i", nat(k), ap(goodbool(), ap(v(s_), v("i"))));
     let xy = |m: T| st(k, v("x"), v("y"), m);
     let yx = |m: T| st(k, v("y"), v("x"), m);
@@ -311,7 +311,7 @@ fn proof_c(k: u32) -> T {
         lm("gx", gb("x"), lm("gy", gb("y"), fin))))))
 }
 
-fn run(name: &str, stmt: &T, proof: &T) -> Result<(), String> {
+pub(crate) fn run(name: &str, stmt: &T, proof: &T) -> Result<(), String> {
     let (ty, pf) = (ex(stmt), ex(proof));
     let t0 = Instant::now();
     let r = kernel::check(&Ctx::new(), &pf, &ty);
@@ -432,35 +432,35 @@ fn e_sanity_adder_computes_and_more_controls() {
 // sx := \i:Nat1. x Bool0 (i (Bool0^n -> Bool0) proj_0 rot), proj_0 a_0..a_(n-1) = a_0 and rot p a_0..a_(n-1) = p a_1..a_(n-1) false,
 // so proj_k picks a_k and runs off the end into false.
 /// Variable names `a<i>` and `ga<i>` for up to 64 bits.
-const AN_NAMES: [&str; 64] = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20", "a21", "a22", "a23", "a24", "a25", "a26", "a27", "a28", "a29", "a30", "a31", "a32", "a33", "a34", "a35", "a36", "a37", "a38", "a39", "a40", "a41", "a42", "a43", "a44", "a45", "a46", "a47", "a48", "a49", "a50", "a51", "a52", "a53", "a54", "a55", "a56", "a57", "a58", "a59", "a60", "a61", "a62", "a63"];
-const GN_NAMES: [&str; 64] = ["ga0", "ga1", "ga2", "ga3", "ga4", "ga5", "ga6", "ga7", "ga8", "ga9", "ga10", "ga11", "ga12", "ga13", "ga14", "ga15", "ga16", "ga17", "ga18", "ga19", "ga20", "ga21", "ga22", "ga23", "ga24", "ga25", "ga26", "ga27", "ga28", "ga29", "ga30", "ga31", "ga32", "ga33", "ga34", "ga35", "ga36", "ga37", "ga38", "ga39", "ga40", "ga41", "ga42", "ga43", "ga44", "ga45", "ga46", "ga47", "ga48", "ga49", "ga50", "ga51", "ga52", "ga53", "ga54", "ga55", "ga56", "ga57", "ga58", "ga59", "ga60", "ga61", "ga62", "ga63"];
+pub(crate) const AN_NAMES: [&str; 64] = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20", "a21", "a22", "a23", "a24", "a25", "a26", "a27", "a28", "a29", "a30", "a31", "a32", "a33", "a34", "a35", "a36", "a37", "a38", "a39", "a40", "a41", "a42", "a43", "a44", "a45", "a46", "a47", "a48", "a49", "a50", "a51", "a52", "a53", "a54", "a55", "a56", "a57", "a58", "a59", "a60", "a61", "a62", "a63"];
+pub(crate) const GN_NAMES: [&str; 64] = ["ga0", "ga1", "ga2", "ga3", "ga4", "ga5", "ga6", "ga7", "ga8", "ga9", "ga10", "ga11", "ga12", "ga13", "ga14", "ga15", "ga16", "ga17", "ga18", "ga19", "ga20", "ga21", "ga22", "ga23", "ga24", "ga25", "ga26", "ga27", "ga28", "ga29", "ga30", "ga31", "ga32", "ga33", "ga34", "ga35", "ga36", "ga37", "ga38", "ga39", "ga40", "ga41", "ga42", "ga43", "ga44", "ga45", "ga46", "ga47", "ga48", "ga49", "ga50", "ga51", "ga52", "ga53", "ga54", "ga55", "ga56", "ga57", "ga58", "ga59", "ga60", "ga61", "ga62", "ga63"];
 #[allow(non_snake_case)]
-fn AN(i: usize) -> &'static str {
+pub(crate) fn AN(i: usize) -> &'static str {
     AN_NAMES[i]
 }
 #[allow(non_snake_case)]
-fn GN(i: usize) -> &'static str {
+pub(crate) fn GN(i: usize) -> &'static str {
     GN_NAMES[i]
 }
-fn arrows(n: usize, res: T) -> T {
+pub(crate) fn arrows(n: usize, res: T) -> T {
     (0..n).fold(res, |acc, _| arr(bool0(), acc))
 }
-fn bvt(n: usize) -> T {
+pub(crate) fn bvt(n: usize) -> T {
     pi_("C", s(1), arr(arrows(n, v("C")), v("C")))
 }
-fn tuple(bits: &[T]) -> T {
+pub(crate) fn tuple(bits: &[T]) -> T {
     lm("C", s(1), lm("k", arrows(bits.len(), v("C")), bits.iter().fold(v("k"), |f, a| ap(f, a.clone()))))
 }
-fn proj0(n: usize) -> T {
+pub(crate) fn proj0(n: usize) -> T {
     (0..n).rev().fold(v(AN(0)), |body, i| lm(AN(i), bool0(), body))
 }
-fn rot(n: usize) -> T {
+pub(crate) fn rot(n: usize) -> T {
     let cn = arrows(n, bool0());
     let call = (1..n).fold(v("p"), |f, i| ap(f, v(AN(i))));
     let call = ap(call, ff());
     lm("p", cn, (0..n).rev().fold(call, |body, i| lm(AN(i), bool0(), body)))
 }
-fn lookup(n: usize) -> T {
+pub(crate) fn lookup(n: usize) -> T {
     lm("x", bvt(n), lm("i", nat(1), ap(ap(v("x"), bool0()), ap3(v("i"), arrows(n, bool0()), proj0(n), rot(n)))))
 }
 
@@ -491,17 +491,17 @@ fn b_add_zero_at_higher_levels() {
 // index to be a Nat2 (level k = 2, the count a Nat3). Each output bit is the uniform theorem at the numeral i, and the
 // tuple equality is a chain of rewrites of those bits (the adder's carry circuit is `encoding::ripple_carry`'s, so the
 // uniform adder's bit i is convertible to `encoding::add`'s).
-fn wty() -> T {
+pub(crate) fn wty() -> T {
     Sig("b", b(bool0()), b(ap(goodbool(), v("b"))))
 }
-fn fstw(u: T) -> T {
+pub(crate) fn fstw(u: T) -> T {
     SigRec(b(lm("_s", wty(), bool0())), b(lm("a", bool0(), lm("b", ap(goodbool(), v("a")), v("a")))), b(u))
 }
-fn sndw(u: T) -> T {
+pub(crate) fn sndw(u: T) -> T {
     SigRec(b(lm("_s", wty(), ap(goodbool(), fstw(v("_s"))))), b(lm("a", bool0(), lm("b", ap(goodbool(), v("a")), v("b")))), b(u))
 }
 /// `Pi a_0..a_(n-1). GoodBool a_0 -> .. -> GoodBool a_(n-1) -> W`
-fn cw(n: usize) -> T {
+pub(crate) fn cw(n: usize) -> T {
     let mut t = wty();
     for j in (0..n).rev() {
         t = pi_(GN(j), ap(goodbool(), v(AN(j))), t);
@@ -511,7 +511,7 @@ fn cw(n: usize) -> T {
     }
     t
 }
-fn lam_bits(n: usize, mut body: T) -> T {
+pub(crate) fn lam_bits(n: usize, mut body: T) -> T {
     for j in (0..n).rev() {
         body = lm(GN(j), ap(goodbool(), v(AN(j))), body);
     }
@@ -520,10 +520,10 @@ fn lam_bits(n: usize, mut body: T) -> T {
     }
     body
 }
-fn proj0w(n: usize) -> T {
+pub(crate) fn proj0w(n: usize) -> T {
     lam_bits(n, Pair("b", b(ap(goodbool(), v("b"))), b(v(AN(0))), b(v(GN(0)))))
 }
-fn rotw(n: usize) -> T {
+pub(crate) fn rotw(n: usize) -> T {
     let gf = lm("P", arr(bool0(), s(1)), lm("h1", ap(v("P"), tt()), lm("h0", ap(v("P"), ff()), v("h0"))));
     let mut call = v("p");
     for j in 1..n {
@@ -537,7 +537,7 @@ fn rotw(n: usize) -> T {
     lm("p", cw(n), lam_bits(n, call))
 }
 /// The stream position read as a W: `i Cw proj0 rot a.. ga..`
-fn sw(n: usize, i: T) -> T {
+pub(crate) fn sw(n: usize, i: T) -> T {
     let mut t = ap3(i, cw(n), proj0w(n), rotw(n));
     for j in 0..n {
         t = ap(t, v(AN(j)));
@@ -548,7 +548,7 @@ fn sw(n: usize, i: T) -> T {
     t
 }
 /// The `Good` witness for the numeral `m` at level `k + 1`.
-fn goodnum(k: u32, m: u32) -> T {
+pub(crate) fn goodnum(k: u32, m: u32) -> T {
     let numeral = |j: u32| (0..j).fold(zero(k + 1), |e, _| ap(succ(k + 1), e));
     let mut g = lm("P", arr(nat(k + 1), s(k + 1)), lm("h0", ap(v("P"), zero(k + 1)), lm("hs",
         pi_("m", nat(k + 1), arr(ap(v("P"), v("m")), ap(v("P"), ap(succ(k + 1), v("m"))))), v("h0"))));
@@ -561,7 +561,7 @@ fn goodnum(k: u32, m: u32) -> T {
     g
 }
 /// `(proof, statement)` of `Pi x:Bv_n. GoodBv x -> Id(Bv_n, add x (lit 0), x)`, by the uniform theorem.
-fn bridge_add_zero(n: usize) -> (Expr, Expr) {
+pub(crate) fn bridge_add_zero(n: usize) -> (Expr, Expr) {
     let k = 2;
     let (_, stmt) = super::encoding::add_zero_proof(n, 0);
     let numeral = |j: usize| (0..j).fold(zero(k + 1), |e, _| ap(succ(k + 1), e));
