@@ -119,3 +119,18 @@ n 80 and 240 too (a curve), only at 160 (a point), or nowhere but 160 on salts 4
 Knee chart result (2026-10-31): cheap wins at n 80 (-104, -171) and n 160 (-111, -205) against random of equal work, and
 loses at n 240 (+166, +157) and at pool 8 (+130, +1). A curve at small n that reverses past about 500 M of walk work.
 `docs/tier-cycle.md`, "The cheap variant" (runs `v06k-g1` to `g12`).
+
+### c1: coverage keys (set before its data; Winston chose e1 f1 on 2026-10-31)
+
+`kept_indices` now takes a rank per straggler: `first` no rank, `straggler` a constant, `cheap` the steps, and two new keys,
+`novel` and `reinforce`, whose rank is (class, steps). The class is whether some candidate left side proposed by the *served*
+stragglers (`candidates` over the laws before the pool, under the mine's base rules) matches a subterm of the straggler's
+normalized terms (`reaches`): `novel` puts the unreached first, `reinforce` the reached first. The mine applies the key to every
+mine of a loop (mine 0 has an empty base; no special case for mine 1). Identity: `cheap` keeps the same laws as before the
+change (unit test `kept_indices_...`; the gate's walk counts for `cheap` n 160 must equal the recorded arm's).
+
+Gate: `cheap` n 160 pool 4 (A) against `novel` and against `reinforce` (B), salts 1-3 and 4-6. Win, per key: held(key) <
+held(cheap) - 76 on both salt sets at job CPU <= 1.1x cheap's. Else null. A null on both keys parks c1 and a2 (`PARKED.md`).
+`RULEMINER extras reached` lines say how many kept stragglers each key reached. Caveats set now: `cheap` is rerun on the new
+exe, so its held-out M should reproduce 4721 and 4569 (identity) and its job CPU is the matched control; candidate generation
+runs twice per mine (once for the key), so the key's CPU cost is part of the verdict.
