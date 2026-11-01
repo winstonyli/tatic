@@ -223,7 +223,7 @@ pub fn logistic_fit(x: &[Vec<f64>], y: &[bool], l2: f64) -> Vec<f64> {
 pub const S1_SEED: u128 = 0x1b87_3593_0000_0001;
 pub const S2_SEED: u128 = 0x6a09_e667_f3bc_c908;
 pub const CLAIM_SEED: u128 = 0x51ed_270b_27a3_c1f5;
-pub const KINDS: [&str; 4] = ["bitwise", "add/sub", "shl1", "lt"];
+pub const KINDS: [&str; 4] = ["bitwise", "add/sub", "shift", "lt"];
 pub const KEYS: [&str; 4] = ["bool8", "plus4", "plus64", "exh"];
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -297,7 +297,7 @@ pub fn input_set(seed: u128, count: usize, avoid: &[[u8; 3]]) -> Vec<[u8; 3]> {
 
 use super::*;
 use crate::classes::{Classes, Key, SIZE};
-use crate::rewrite::{with_screen, Node, ValueMemo, ADD, LT, SCREEN_INPUTS, SHL1, SUB};
+use crate::rewrite::{with_screen, Node, ValueMemo, ADD, LT, SCREEN_INPUTS, SHL1, SHR1, SUB};
 
 /// The key named `name` (`bool8`, `plus4`, `plus64`, `exh`), built as the 2026-10-22 probe built its keys.
 fn make_key(name: &str) -> Key {
@@ -327,14 +327,14 @@ fn ops_in(t: Term, acc: &mut u32) {
     }
 }
 
-/// The claim's kind (an index into `KINDS`): `lt` at the root, else any `shl1`, else any `add`/`sub`, else bitwise.
+/// The claim's kind (an index into `KINDS`): `lt` at the root, else any `shl1` or `shr1`, else any `add`/`sub`, else bitwise.
 fn kind_of(u: &Term, r: &Term) -> u8 {
     let mut m = 0u32;
     ops_in(*u, &mut m);
     ops_in(*r, &mut m);
     if matches!(*u.node(), Node::Op(LT, ..)) {
         3
-    } else if m & 1 << SHL1 != 0 {
+    } else if m & (1 << SHL1 | 1 << SHR1) != 0 {
         2
     } else if m & (1 << ADD | 1 << SUB) != 0 {
         1
@@ -432,14 +432,14 @@ pub fn gate(rows: &[Row], folds: &[usize]) -> Result<(), String> {
 
 /// The counts arm's belief that `r` is negative (refuted) when scored at level `lvl` (0..=3 for n = 0, 8, 64, 256):
 /// 1.0 when a check it has passed at that level is failed (decided), else the smoothed cell estimate.
-pub fn belief_counts(c: &Counts, r: &Row, lvl: usize) -> f64 {
+pub fn belief_counts(c: &Counts, r: &Row, lvl: usize, with_key: bool) -> f64 {
     if !r.w4 || !r.screen || (1..=lvl).any(|l| !r.extra[l - 1]) {
         return 1.0;
     }
-    if r.kind == 0 && r.key == 0 {
+    if with_key && r.kind == 0 && r.key == 0 {
         return 0.0; // a pure bitwise term on the 8 Boolean tuples is decided by its truth table (spec): never wrong
     }
-    c.p(Cell { kind: r.kind, key: r.key, w4: r.w4, screen: r.screen, n: lvl as u8 }).0
+    c.p(Cell { kind: r.kind, key: if with_key { r.key } else { 0 }, w4: r.w4, screen: r.screen, n: lvl as u8 }).0
 }
 
 /// The stage-1 report on a claim dump (`$BELIEF_TSV`): per key and kind, how many claims each label holds, how many pass
@@ -613,7 +613,32 @@ mod report_tests {
         let mut r = row(Label::Refuted, true, true, 1);
         r.extra = [true, false, false];
         // level 1 (n = 8): extra8 passed, so the cell answers; no (kind,key,n=1) cell exists, so (kind,key) answers: (0+1)/(1+2)
-        assert_eq!(belief_counts(&c, &r, 1), 1.0 / 3.0);
-        assert_eq!(belief_counts(&c, &r, 2), 1.0); // level 2 (n = 64): extra64 failed, decided
+        assert_eq!(belief_counts(&c, &r, 1, true), 1.0 / 3.0);
+        assert_eq!(belief_counts(&c, &r, 2, true), 1.0); // level 2 (n = 64): extra64 failed, decided
+    }
+}
+
+#[cfg(test)]
+mod review_fix_tests {
+    use super::*;
+    use crate::rewrite::parse_term;
+
+    #[test]
+    fn a_claim_with_shr1_is_a_shift_claim_not_bitwise() {
+        let (u, r) = (parse_term("shr1(xor(x, y), 0)"), parse_term("0"));
+        assert_eq!(kind_of(&u, &r), 2);
+        assert_eq!(kind_of(&parse_term("xor(x, y)"), &parse_term("xor(y, x)")), 0);
+    }
+
+    #[test]
+    fn the_no_key_arm_queries_the_cells_it_was_fitted_on() {
+        let row = |key: u8, label: Label| Row { key, kind: 1, size: 5, vars: 2, w4: true, screen: true, extra: [true; 3], d: 0, label, index: 0, u: "u".into(), r: "r".into() };
+        let rows = vec![row(2, Label::Refuted), row(2, Label::Refuted), row(2, Label::Proved), row(3, Label::Proved)];
+        let cells: Vec<Cell> = cells_at(&rows, 0, false).into_iter().flatten().collect();
+        let hit: Vec<bool> = rows.iter().map(|r| r.label == Label::Refuted).collect();
+        let c = Counts::fit(&cells, &hit);
+        // key is dropped on both sides: (kind 1, key 0) holds 2 hits of 4 -> 3/6, answered by the exact cell
+        assert_eq!(belief_counts(&c, &rows[0], 0, false), 3.0 / 6.0);
+        assert_eq!(c.p(Cell { kind: 1, key: 0, w4: true, screen: true, n: 0 }).1, 0);
     }
 }
