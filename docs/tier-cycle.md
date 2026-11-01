@@ -7898,6 +7898,20 @@ variables, so nothing composes into a longer chain. This closes the parked trigg
 inlining" for this corpus: it does not, so a workload with depth has to be written, not derived. Limits: 23 small terms, the
 specialiser inlines only known closures, and a count of trees does not measure what a larger program would give.
 
+**Laws uniform in the width: two of them check on the unchanged kernel (spike, 2026-11-01; `tests/uniform_width_spike.rs`,
+6 tests, 0.02 s).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md` §53:
+bits as streams, a bit-serial adder whose carry is a fold, and induction on the position. The kernel has no cumulativity,
+so one Church `Nat` cannot index the inputs and also count the fold (the state would mention its own type); the spike
+uses two, `Nat0` for the streams' index and `Nat1` for the count, with the state `Sigma(Nat0, Bool0)` (position numeral,
+carry). Checked, uniformly in the position N and with per-bit `GoodBool` hypotheses on the stream bits as in
+`tests/church_lemmas.rs`: `add x 0 = x` (1.0 ms) and `add x y = add y x` (0.8 ms), plus the prefix form for every n. Five
+false laws are rejected (one control, `add x y = x xor y`, is only ill-typed, so weak). The per-width proofs cost 70 ms at
+n = 8, 3.4 s at 32 and 32.6 s at 64 for `add x 0 = x` (bit-vector doc, §17-21; not re-run here). Not shown: the bridge from
+a stream to the fixed-width `Bv_n` tuple (restricting a stream to n bits needs a lookup that eliminates a symbolic `Nat0`
+into `Sort1`, which `Nat0` cannot do; the escapes, indexing by `Nat1` or threading witnesses at `Sort2`, are unbuilt), any
+bitwise or comparison law, and `mul` (a second induction). So "the kernel lacks an induction principle" in the parked goal-D
+entry is too strong for `add`; what is missing is the bridge and the rest of the operators.
+
 **Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
 2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.
 Of three ways to trust compiled code (trust the compiler, as `native_compute` does; a certificate per output; prove each
