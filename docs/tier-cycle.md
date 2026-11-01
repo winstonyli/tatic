@@ -7632,6 +7632,25 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
 - **Reading (inference).** The cheapest stragglers of a pool are worth more than a random law per unit of work, and the
   pool of 4n holds only so many of them: past n about 160 the kept laws are the dearer stragglers and the arm pays what
   straggler-first pays. What would confirm: the kept laws' steps per n (not logged). A larger pool did not help, which fits
+
+- **Coverage keys (2026-10-31; runs `v06n-g1` to `g4`; rule in the spec addendum "c1: coverage keys").** `novel` and `reinforce`
+  rank the pool's stragglers by whether a candidate left side the served stragglers propose reaches them, then by steps. At
+  n 160, pool 4, against `cheap` rerun on the new exe (identity: 4721 and 4569 held-out M reproduced, walk counts equal to the
+  recorded arm):
+
+| key | salts | held-out M | against cheap | job CPU against cheap | wins |
+|---|---|---|---|---|---|
+| novel | 1-3 | 4721 | 0 | 1628 s against 1593 s | no |
+| novel | 4-6 | 4569 | 0 | 1573 s against 1528 s | no |
+| reinforce | 1-3 | 4723 | +2 | 1549 s against 1593 s | no |
+| reinforce | 4-6 | 4612 | +43 | 1359 s against 1528 s | no |
+
+  Null on both keys (sigma 76). The cause is visible in the logs: the class is nearly constant. Of the kept stragglers, 99-100%
+  are reached (`RULEMINER extras reached`: mine 0 kept 160 of 160 with the pool 302 of 302; mine 1 142 of 143), because the
+  candidates are abstract patterns that match some subterm of almost any straggler's normal form. So both keys reduce to
+  `cheap` and the direction question is untested, not answered. `novel` reproduced `cheap`'s rules in 9 of 9 loops on salts 4-6.
+  What a sharper test needs: a class that splits the pool (for example reached by a candidate that the served stragglers'
+  greedy pass would choose, or the number of distinct candidates reaching), which is a new design, not a rerun.
   (the pool is not the limit; the cost key is).
 ## The JIT and the target machine
 

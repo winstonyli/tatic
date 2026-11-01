@@ -134,3 +134,7 @@ held(cheap) - 76 on both salt sets at job CPU <= 1.1x cheap's. Else null. A null
 `RULEMINER extras reached` lines say how many kept stragglers each key reached. Caveats set now: `cheap` is rerun on the new
 exe, so its held-out M should reproduce 4721 and 4569 (identity) and its job CPU is the matched control; candidate generation
 runs twice per mine (once for the key), so the key's CPU cost is part of the verdict.
+
+c1 result (2026-10-31): null on both keys (novel 0 and 0, reinforce +2 and +43 against cheap; `cheap` reproduced 4721 and 4569).
+The coverage class is almost constant (99-100% of kept stragglers are reached), so both keys degenerate to `cheap`;
+`docs/tier-cycle.md`, "The cheap variant" (runs `v06n-g1` to `g4`).
