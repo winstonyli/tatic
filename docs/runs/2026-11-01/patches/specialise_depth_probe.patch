@@ -1,0 +1,67 @@
+diff --git a/tests/specialise_depth_probe.rs b/tests/specialise_depth_probe.rs
+new file mode 100644
+index 0000000..723e9f0
+--- /dev/null
++++ b/tests/specialise_depth_probe.rs
+@@ -0,0 +1,61 @@
++// Throwaway probe (k1, 2026-11-01): does the closure specialiser produce arithmetic depth? For each corpus term, the
++// maximal add/sub trees (an Add or Sub node not directly under another) by their operator count, before and after
++// `specialise`. Counts only; nothing is proved.
++use std::collections::HashSet;
++use tatic::specialise::specialise;
++use tatic::term::{Hash, PrimOp, Term, TermStore};
++
++fn is_as(s: &TermStore, h: Hash) -> bool {
++    matches!(s.resolve(h), Term::Prim(PrimOp::Add | PrimOp::Sub, ..))
++}
++
++/// operators in the add/sub tree rooted at `h` (expanded, so shared subtrees count each time), and its leaf count
++fn tree(s: &TermStore, h: Hash) -> (usize, usize) {
++    match s.resolve(h) {
++        Term::Prim(PrimOp::Add | PrimOp::Sub, a, b) => {
++            let (x, y) = (tree(s, *a), tree(s, *b));
++            (1 + x.0 + y.0, x.1 + y.1)
++        }
++        _ => (0, 1),
++    }
++}
++
++/// sizes (operator counts) of the maximal add/sub trees over the distinct nodes reachable from `root`
++fn maximal(s: &TermStore, root: Hash) -> Vec<usize> {
++    let (mut seen, mut stack, mut out) = (HashSet::new(), vec![(root, false)], vec![]);
++    while let Some((h, under)) = stack.pop() {
++        if !seen.insert((h, under)) {
++            continue;
++        }
++        let here = is_as(s, h);
++        if here && !under {
++            out.push(tree(s, h).0);
++        }
++        match s.resolve(h) {
++            Term::Var(_) | Term::Lit(_) => {}
++            Term::Prim(_, a, b) => stack.extend([(*a, here), (*b, here)]),
++            Term::If(c, t, e) => stack.extend([(*c, false), (*t, false), (*e, false)]),
++            Term::Abs(b) | Term::Rec(b) => stack.push((*b, false)),
++            Term::App(f, a) => stack.extend([(*f, false), (*a, false)]),
++        }
++    }
++    out
++}
++
++fn summary(v: &[usize]) -> String {
++    let n = |k: usize| v.iter().filter(|x| **x >= k).count();
++    format!("trees {} (>=2 ops {}, >=3 ops {}, max {})", v.len(), n(2), n(3), v.iter().max().copied().unwrap_or(0))
++}
++
++#[test]
++fn does_the_specialiser_produce_arithmetic_depth() {
++    let (mut before, mut after) = (vec![], vec![]);
++    for (name, s, root) in tatic::samples::corpus() {
++        let sp = specialise(&s, root);
++        let (b, a) = (maximal(&s, root), maximal(&sp.store, sp.term));
++        println!("DEPTH {name}: steps {} | before {} | after {}", sp.trace.len(), summary(&b), summary(&a));
++        before.extend(b);
++        after.extend(a);
++    }
++    println!("DEPTH total: before {} | after {}", summary(&before), summary(&after));
++}

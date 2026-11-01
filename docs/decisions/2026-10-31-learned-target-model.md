@@ -34,5 +34,7 @@ representation.
    decision.
 3. **Pre-filtering** proof attempts: predict failure before the kernel spends time (a belief-layer consumer).
 
-Limit: none of these unblocks goal 1. The JIT's blocker is that its programs lack arithmetic depth, not missing knowledge
-of the machine.
+Limit: none of these unblocks goal 1. The JIT's blocker is that its programs lack arithmetic depth (and the specialiser
+does not add any, 2026-11-01), plus a bridge from the loop's width-n laws to the JIT's i64; it is not missing knowledge
+of the machine. A hand-written depth workload exists (Hacker's Delight, `docs/tier-cycle.md`), and there the fixed table,
+not mined rules, does the rewriting.

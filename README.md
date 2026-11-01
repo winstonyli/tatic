@@ -966,13 +966,16 @@ proof speed); the longer list this section kept until 2026-10-27 is in
   no term language yet. A probe found that the mined `add`/`sub` rules
   fire on one node of the JIT's benchmark terms and save no instructions,
   and the class table saves one operator (a planted `x + 0`): the JIT's
-  programs are loops and closures without arithmetic depth
+  programs are loops and closures without arithmetic depth, and the
+  specialiser's inlining does not add any (2026-11-01). A hand-written
+  workload with depth (Hacker's Delight routines) shows the fixed class
+  table, not the mined rules, doing the rewriting
   (`docs/tier-cycle.md`, "Other ways to join the JIT and the loop", option
-  A's results, 2026-10-17 and 2026-10-23). Lowering templates can be stated and proved as
+  A's results, 2026-10-17 to 2026-11-01). Lowering templates can be stated and proved as
   kernel laws, so compilations could be mined by target cost (same doc,
   "Compiling hot transformations, with learnable compilations"; parked in
-  `PARKED.md`). Trigger: workloads with arithmetic depth, or the
-  specialiser producing it by inlining.
+  `PARKED.md`). Trigger: workloads with arithmetic depth, and a bridge
+  from the loop's width-n laws to the JIT's i64.
 - A universal proof for a call through a closure-typed variable whose
   callee is known only at run time (a captured or parameter closure, not a
   statically known combinator). Such calls are proved per instance

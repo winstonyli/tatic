@@ -7889,6 +7889,15 @@ workload has depth, and the table (the fixed base rules too) is what finds it; i
 from the fixed machinery, so it is not the next milestone's test by itself. The routines are my own transcriptions in the
 long form, not a fixed external corpus; the 33% is an upper-bound illustration, not a rate.
 
+*Does the specialiser produce arithmetic depth? No (2026-11-01, probe reverted; `docs/runs/2026-11-01/patches/specialise_depth_probe.patch`).*
+The 23 terms of `samples::corpus()` before and after `specialise` (12 of them take at least one inlining step): the maximal
+add/sub trees (an `Add` or `Sub` not directly under another), by operator count. Before: 33 trees, 4 with two operators, none
+with three, largest 2. After: 34 trees, the same 4, none with three, largest 2 (one extra single-operator tree, from
+`twice_inc_5`). Inlining a known closure puts a body into a call site, but the bodies are single operators over loop-carried
+variables, so nothing composes into a longer chain. This closes the parked trigger "or the specialiser producing it by
+inlining" for this corpus: it does not, so a workload with depth has to be written, not derived. Limits: 23 small terms, the
+specialiser inlines only known closures, and a count of trees does not measure what a larger program would give.
+
 **Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
 2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.
 Of three ways to trust compiled code (trust the compiler, as `native_compute` does; a certificate per output; prove each

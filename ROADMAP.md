@@ -33,8 +33,10 @@ Every milestone serves at least one of these; work that serves none needs a stat
 
 Goals 1 and 2 meet in compiled hot transformations with learned compilations (`README.md`, "Future work"). That is
 not a milestone yet: neither the mined rules nor the class table find work in the JIT's programs, whose add/sub
-trees are one operator over leaves (`docs/tier-cycle.md`, "Other ways to join the JIT and the loop", option A's
-results, 2026-10-17 and 2026-10-23).
+trees are one operator over leaves, and the specialiser's inlining adds no depth (`docs/tier-cycle.md`, "Other ways to
+join the JIT and the loop", option A's results, 2026-10-17 to 2026-11-01). A hand-written depth workload (Hacker's Delight)
+shows the fixed table, not mined rules, doing the rewriting; and the loop's laws are at one small width, the JIT's `Int` is
+i64 (`PARKED.md`, "laws uniform in the width").
 
 ## Milestones
 
