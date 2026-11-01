@@ -113,4 +113,15 @@ mod tests {
             assert_eq!((cases.len(), before, table, changed, rules), (25, 80, 54, 17, 54));
         });
     }
+
+    #[test]
+    fn the_souper_corpus_reproduces_its_source_counts() {
+        tatic::kernel::scoped(|| {
+            let cases = read_cases(include_str!("../../docs/corpora/souper/cases.txt")).unwrap();
+            let m = measure(&cases, vec![]);
+            let (before, table, rules) = m.iter().fold((0, 0, 0), |a, r| (a.0 + r.before, a.1 + r.table, a.2 + r.rules));
+            let changed = m.iter().filter(|r| r.table_changed).count();
+            assert_eq!((cases.len(), before, table, changed, rules), (12, 42, 32, 9, 32));
+        });
+    }
 }

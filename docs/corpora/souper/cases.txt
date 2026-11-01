@@ -1,0 +1,13 @@
+# Souper test/Infer cases that fit the term language (docs/corpora/souper/SOURCE.md). Souper's 1 is sub(0, -1); its i1 results are 0/1 words; ule(a, b) is xor(lt(b, a), 1).
+HackersDelight/P1	and(x, sub(x, sub(0, -1)))
+HackersDelight/P2	and(x, add(x, sub(0, -1)))
+HackersDelight/P3	and(x, sub(0, x))
+HackersDelight/P4	xor(x, sub(x, sub(0, -1)))
+HackersDelight/P5	or(x, sub(x, sub(0, -1)))
+HackersDelight/P6	or(x, add(x, sub(0, -1)))
+HackersDelight/P7	and(xor(x, -1), add(x, sub(0, -1)))
+HackersDelight/P11	lt(y, and(x, xor(y, -1)))
+HackersDelight/P14	add(and(x, y), shr1(xor(x, y), 0))
+HackersDelight/P15	sub(or(x, y), shr1(xor(x, y), 0))
+HackersDelight/P17	and(add(or(x, sub(x, sub(0, -1))), sub(0, -1)), x)
+syn-const/const1	add(add(x, sub(0, -1)), sub(0, -1))
