@@ -112,6 +112,113 @@ pub fn reliability(score: &[f64], neg: &[bool], bins: usize) -> Vec<(f64, f64, u
 }
 
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub struct Cell {
+    pub kind: u8,
+    pub key: u8,
+    pub w4: bool,
+    pub screen: bool,
+    pub n: u8,
+}
+
+/// Smoothed hit fractions per cell, with the fallback chain exact cell, (kind, key, n), (kind, key), key, global.
+pub struct Counts {
+    levels: [HashMap<(u8, u8, u8, u8, u8), (usize, usize)>; 5],
+}
+
+fn level_key(c: Cell, level: usize) -> (u8, u8, u8, u8, u8) {
+    match level {
+        0 => (c.kind, c.key, c.w4 as u8, c.screen as u8, c.n),
+        1 => (c.kind, c.key, 0, 0, c.n),
+        2 => (c.kind, c.key, 0, 0, 0),
+        3 => (0, c.key, 0, 0, 0),
+        _ => (0, 0, 0, 0, 0),
+    }
+}
+
+impl Counts {
+    pub fn fit(cells: &[Cell], hit: &[bool]) -> Counts {
+        let mut levels: [HashMap<_, (usize, usize)>; 5] = Default::default();
+        for (c, h) in cells.iter().zip(hit) {
+            for (l, m) in levels.iter_mut().enumerate() {
+                let e = m.entry(level_key(*c, l)).or_default();
+                e.0 += *h as usize;
+                e.1 += 1;
+            }
+        }
+        Counts { levels }
+    }
+
+    /// The smoothed hit fraction and the level that answered.
+    pub fn p(&self, c: Cell) -> (f64, u8) {
+        for l in 0..5 {
+            if let Some(&(h, t)) = self.levels[l].get(&level_key(c, l)) {
+                return ((h + 1) as f64 / (t + 2) as f64, l as u8);
+            }
+        }
+        (0.5, 4)
+    }
+}
+
+pub fn logistic_p(w: &[f64], x: &[f64]) -> f64 {
+    1.0 / (1.0 + (-w.iter().zip(x).map(|(a, b)| a * b).sum::<f64>()).exp())
+}
+
+/// L2-regularised logistic regression by Newton steps (the last feature is the caller's constant 1.0, unpenalised).
+pub fn logistic_fit(x: &[Vec<f64>], y: &[bool], l2: f64) -> Vec<f64> {
+    let d = x.first().map_or(1, |r| r.len());
+    let mut w = vec![0.0; d];
+    let pos = y.iter().filter(|b| **b).count();
+    if x.is_empty() || pos == 0 || pos == y.len() {
+        // one class (or none): the unpenalised intercept would diverge, so answer the smoothed rate with no slopes
+        let q = (pos as f64 + 1.0) / (y.len() as f64 + 2.0);
+        w[d - 1] = (q / (1.0 - q)).ln();
+        return w;
+    }
+    for _ in 0..25 {
+        let (mut g, mut h) = (vec![0.0; d], vec![vec![0.0; d]; d]);
+        for (r, yi) in x.iter().zip(y) {
+            let p = logistic_p(&w, r);
+            let (e, v) = (p - *yi as u8 as f64, (p * (1.0 - p)).max(1e-9));
+            for i in 0..d {
+                g[i] += e * r[i];
+                for j in 0..d {
+                    h[i][j] += v * r[i] * r[j];
+                }
+            }
+        }
+        for i in 0..d - 1 {
+            g[i] += l2 * w[i];
+            h[i][i] += l2;
+        }
+        h[d - 1][d - 1] += 1e-9;
+        // solve h * step = g by Gaussian elimination with partial pivoting
+        let mut a: Vec<Vec<f64>> = h.into_iter().zip(&g).map(|(mut r, gi)| { r.push(*gi); r }).collect();
+        for c in 0..d {
+            let p = (c..d).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
+            a.swap(c, p);
+            for r in c + 1..d {
+                let f = a[r][c] / a[c][c];
+                for k in c..=d {
+                    a[r][k] -= f * a[c][k];
+                }
+            }
+        }
+        let mut step = vec![0.0; d];
+        for i in (0..d).rev() {
+            step[i] = (a[i][d] - (i + 1..d).map(|j| a[i][j] * step[j]).sum::<f64>()) / a[i][i];
+        }
+        let moved: f64 = step.iter().map(|s| s.abs()).sum();
+        for i in 0..d {
+            w[i] -= step[i];
+        }
+        if moved < 1e-8 {
+            break;
+        }
+    }
+    w
+}
+
 #[cfg(test)]
 mod stats_tests {
     use super::*;
@@ -159,5 +266,47 @@ mod stats_tests {
         assert!(b.iter().all(|x| x.2 == 10));
         assert_eq!(b[0].1, 0.0);
         assert_eq!(b[9].1, 1.0);
+    }
+}
+
+#[cfg(test)]
+mod estimator_tests {
+    use super::*;
+
+    fn cell(kind: u8, key: u8, n: u8) -> Cell {
+        Cell { kind, key, w4: true, screen: true, n }
+    }
+
+    #[test]
+    fn counts_are_beta_smoothed_and_fall_back_when_a_cell_is_empty() {
+        let cells = [cell(1, 0, 0), cell(1, 0, 0), cell(1, 0, 0), cell(1, 0, 1)];
+        let hit = [true, false, false, true];
+        let c = Counts::fit(&cells, &hit);
+        // cell (1,0,0): 1 hit of 3 -> (1+1)/(3+2)
+        assert_eq!(c.p(cell(1, 0, 0)), (2.0 / 5.0, 0));
+        // an unseen n has no (kind,key,n) cell, so level 2 (kind,key) answers: 2 hits of 4 -> 3/6
+        assert_eq!(c.p(cell(1, 0, 2)), (3.0 / 6.0, 2));
+        // an unseen key falls back to the global: 2 hits of 4 -> 3/6
+        assert_eq!(c.p(cell(3, 9, 0)), (3.0 / 6.0, 4));
+    }
+
+    #[test]
+    fn logistic_separates_a_separable_toy_set() {
+        let x: Vec<Vec<f64>> = (0..40).map(|i| vec![(i as f64 - 20.0) / 10.0, 1.0]).collect();
+        let y: Vec<bool> = (0..40).map(|i| i >= 20).collect();
+        let w = logistic_fit(&x, &y, 0.1);
+        let p: Vec<f64> = x.iter().map(|r| logistic_p(&w, r)).collect();
+        assert_eq!(auc(&p, &y), Some(1.0));
+        assert!(p[0] < 0.2 && p[39] > 0.8, "{} {}", p[0], p[39]);
+    }
+
+    #[test]
+    fn logistic_with_one_class_or_no_rows_is_finite() {
+        let x = vec![vec![1.0, 1.0], vec![2.0, 1.0]];
+        for y in [[true, true], [false, false]] {
+            let w = logistic_fit(&x, &y, 1.0);
+            assert!(w.iter().all(|v| v.is_finite()) && logistic_p(&w, &x[0]).is_finite());
+        }
+        assert!(logistic_fit(&[], &[], 1.0).iter().all(|v| v.is_finite()));
     }
 }
