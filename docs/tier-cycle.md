@@ -2159,6 +2159,13 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     0.4 ms each. The other callers of `prove_rule` (`rewrite.rs` `LawKind::Rule`, `search.rs`'s benches and tests)
     prove rules known to hold.
 
+  - *What a rollback costs (2026-10-31, from logs already on disk, no code; `docs/runs/2026-10-31/scripts/rollback_cost.awk`).*
+    Over the 3850 mine logs under `claude-runs\tatic` newer than 2026-10-28: 324 (8.4%) have a rollback, 391 rollbacks in
+    all. Replaying the log's round lines, a rollback to round r voids the rounds r.. played so far, 3.9 rounds on average
+    (1510 in all), 315 s of 70516 s of round time (scoring plus rule-set evaluation): 0.45%, about 0.8 s a rollback. The
+    mine is 44% of a sweep's samples, so a rollback is under 0.2% of a sweep, and the 5.4% failure rate across all eras
+    (48379 of 902050 lazy proofs) is mostly the old arms without the fallback. Left out: the failing proof's own time and the
+    speculative proof threads' contention with scoring. The instrumented sweep is not worth running.
 ### Held-out M and transfer for v0.5 (2026-10-26)
 - **What held-out M is made of now (run `2026-10-26-held-now`, about 2 min; `held_now.sh` in its folder, the
   2026-10-25 probe's script on arm B of `2026-10-26-everyinput-ab`).** Salts 1-3, loops 1-3, every band; each
