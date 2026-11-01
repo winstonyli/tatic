@@ -34,13 +34,14 @@ pub struct MinerConfig {
     pub guard: usize,
     /// `RULEMINER_NODUPLHS` (switch, on by default): drop candidates whose left side already has a rule in `base`.
     pub no_dup_lhs: bool,
-    /// `RULEMINER_EXTRAS_FROM=<i>`, `_KEEP=<n>`, `_BY=first|straggler|cheap|novel|reinforce` (all three or none): the lawfile's laws from line `i` are a
+    /// `RULEMINER_EXTRAS_FROM=<i>`, `_KEEP=<n>`, `_BY=first|small` (all three or none): the lawfile's laws from line `i` are a
     /// pool of extras and the mine keeps `n` of them (`kept_indices`); the laws before `i` are always read.
     pub extras: Option<ExtrasKeep>,
 }
 
-/// How a mine picks its extras from the pool: `First` the first `n`, `Small` the first `n` stragglers the base rules leave,
-/// cheapest first (docs/superpowers/specs/2026-10-31-context-aware-selector-design.md).
+/// How a mine picks its extras from the pool: `First` the first `n`, `Small` the stragglers the base rules leave, fewest
+/// rewrite steps then smallest normal form first, any shortfall filled with the pool's other laws in order
+/// (docs/superpowers/specs/2026-10-31-context-aware-selector-design.md).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Keep {
     First,
@@ -1126,16 +1127,17 @@ fn kept_indices_keeps_the_served_laws_and_n_of_the_pool() {
     let none = |_: usize| None;
     // 3 served laws, a pool of 6, keep 2
     assert_eq!(kept_indices(9, 3, 2, &none), vec![0, 1, 2, 3, 4], "no straggler ranked: the pool's first n (`first`)");
-    let s = |i: usize| (i == 5 || i == 7).then_some((0, 0)); // stragglers at indices 5 and 7, equally ranked (`straggler`)
+    let s = |i: usize| (i == 5 || i == 7).then_some((0, 0)); // stragglers at indices 5 and 7, equally ranked
     assert_eq!(kept_indices(9, 3, 2, &s), vec![0, 1, 2, 5, 7], "stragglers first, in order");
     assert_eq!(kept_indices(9, 3, 3, &s), vec![0, 1, 2, 3, 5, 7], "the shortfall is the first other pool law");
     assert_eq!(kept_indices(9, 3, 0, &s), vec![0, 1, 2], "keep 0 reads no extra");
+    assert_eq!(kept_indices(9, 3, 6, &s), (0..9).collect::<Vec<_>>(), "keep exactly the pool keeps the pool");
     assert_eq!(kept_indices(9, 3, 99, &s), (0..9).collect::<Vec<_>>(), "keep past the pool keeps the pool");
     assert_eq!(kept_indices(4, 9, 2, &none), vec![0, 1, 2, 3], "from past the end: all served, no pool");
     // a rank orders the stragglers, smallest first; equal ranks keep the stream order
     let c = |i: usize| [None, None, None, None, Some((0, 9)), Some((0, 2)), None, Some((0, 2)), Some((0, 5))][i];
     assert_eq!(kept_indices(9, 3, 2, &c), vec![0, 1, 2, 5, 7], "the two cheapest, the tie in stream order");
-    assert_eq!(kept_indices(9, 3, 3, &c), vec![0, 1, 2, 5, 7, 8], "the third cheapest");
+    assert_eq!(kept_indices(9, 3, 3, &c), vec![0, 1, 2, 5, 7, 8], "the third cheapest (rank (0, 5))");
     assert_eq!(kept_indices(9, 3, 5, &c), vec![0, 1, 2, 3, 4, 5, 7, 8], "a shortfall fills with the first other pool law, as for a constant rank");
     // the miner's rank is (steps, normal-form size): under an empty base every step count is 0 and the size decides
     let r = |i: usize| [None, None, None, Some((0, 30)), Some((0, 8)), Some((0, 20)), Some((2, 4))][i];
@@ -1229,6 +1231,19 @@ fn the_extras_env_becomes_the_config() {
 #[should_panic(expected = "RULEMINER_EXTRAS_KEEP")]
 fn an_incomplete_extras_env_panics() {
     MinerConfig::new(&Setup::with_env(vec![("RULEMINER_LAWFILE".to_string(), "unused".to_string()), ("RULEMINER_EXTRAS_FROM".to_string(), "2".to_string())]));
+}
+
+/// A bad `BY`, `FROM` or `KEEP` value fails loudly and names its variable.
+#[test]
+fn a_bad_extras_env_value_names_its_variable() {
+    let panic_of = |vars: [(&str, &str); 3]| {
+        let vars: Vec<(String, String)> = vars.iter().chain(&[("RULEMINER_LAWFILE", "unused")]).map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        let Err(err) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| MinerConfig::new(&Setup::with_env(vars)))) else { panic!("a bad value must panic") };
+        err.downcast_ref::<String>().cloned().unwrap_or_default()
+    };
+    assert!(panic_of([("RULEMINER_EXTRAS_FROM", "2"), ("RULEMINER_EXTRAS_KEEP", "3"), ("RULEMINER_EXTRAS_BY", "cheap")]).contains("RULEMINER_EXTRAS_BY"));
+    assert!(panic_of([("RULEMINER_EXTRAS_FROM", "x"), ("RULEMINER_EXTRAS_KEEP", "3"), ("RULEMINER_EXTRAS_BY", "small")]).contains("RULEMINER_EXTRAS_FROM=x"));
+    assert!(panic_of([("RULEMINER_EXTRAS_FROM", "2"), ("RULEMINER_EXTRAS_KEEP", "-1"), ("RULEMINER_EXTRAS_BY", "small")]).contains("RULEMINER_EXTRAS_KEEP=-1"));
 }
 
 /// A worker that panics fails the thread waiting for its result instead of hanging it: the waiter keeps a sender, so the
