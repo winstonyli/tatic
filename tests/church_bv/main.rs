@@ -18,6 +18,7 @@ mod machine;
 mod miner;
 mod search;
 mod task;
+mod uniform_width;
 mod work;
 #[allow(unused_imports)]
 use encoding::*;

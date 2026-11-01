@@ -7908,7 +7908,7 @@ variables, so nothing composes into a longer chain. This closes the parked trigg
 inlining" for this corpus: it does not, so a workload with depth has to be written, not derived. Limits: 23 small terms, the
 specialiser inlines only known closures, and a count of trees does not measure what a larger program would give.
 
-**Laws uniform in the width: two of them check on the unchanged kernel (spike, 2026-11-01; `tests/uniform_width_spike.rs`,
+**Laws uniform in the width: two of them check on the unchanged kernel (spike, 2026-11-01; `tests/church_bv/uniform_width.rs`,
 6 tests, 0.02 s).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md` §53:
 bits as streams, a bit-serial adder whose carry is a fold, and induction on the position. The kernel has no cumulativity,
 so one Church `Nat` cannot index the inputs and also count the fold (the state would mention its own type); the spike
