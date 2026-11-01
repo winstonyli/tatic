@@ -380,7 +380,7 @@ fn belief_dump() {
                 } else if verdict(job, 4, u, r).is_some() {
                     if index % 20 == 0 {
                         checked += 1;
-                        agree += prove_rule(&mut job, 4, 1 + u.max_var().max(r.max_var()), u, r).is_some() as usize;
+                        agree += prove_rule(job, 4, 1 + u.max_var().max(r.max_var()), u, r).is_some() as usize;
                     }
                     Label::Proved
                 } else {
@@ -705,7 +705,7 @@ fn belief_shr1_spike() {
             }
             let agree = w6.agree(&u, &v);
             let t0 = std::time::Instant::now();
-            let ok = prove_rule(job, 4, 1 + u.max_var().max(v.max_var()), &u, &v).is_some();
+            let ok = prove_rule(&mut job, 4, 1 + u.max_var().max(v.max_var()), &u, &v).is_some();
             secs += t0.elapsed().as_secs_f64();
             n += 1;
             with_shr1 += has as usize;
