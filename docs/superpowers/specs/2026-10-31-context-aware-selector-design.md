@@ -151,3 +151,13 @@ most mines; else park, as a graded key that is a function of steps adds nothing.
 Crossover result (2026-10-31): `cheap` wins at n 120 (-194, -78) and loses at n 200 (+163, +136) and n 240 (+166, +157) against random of equal work. Mine 0's kept steps are all 0 (no mined rules) and mine 1 keeps nearly all its stragglers past n about 160. `docs/tier-cycle.md`, "The cheap variant" (runs `v06h2-g1` to `g6`).
 
 g2 result (2026-10-31): null. `novel` +86 and +88 against `cheap`, `reinforce` +314 and -24 (runs `v06g2-g1` to `g4`); the graded reach splits the pool (11-18 distinct values) but does not choose better extras in either direction. `docs/tier-cycle.md`, "The cheap variant".
+
+### j3: a key that works under an empty base (set before its data; Winston chose j3 on 2026-10-31)
+
+`cheap` ranks by steps, which count mined-rule applications, so they are 0 for every straggler in mine 0 and `cheap` is
+straggler-first there (`v06h2` logs). `EXTRAS_SELECT=small` ranks by (steps, normal-form size), the size being the two
+normalized sides' node count: in mine 1 it is `cheap` with ties broken by size, in mine 0 it is smallest normal form first.
+Assumption: a smaller normal form means fewer subterms, fewer candidates and less mining work. Gate: `cheap` n 160 pool 4 (A,
+the recorded arm) against `small` (B), salts 1-3 and 4-6. Win: held(small) < held(cheap) - 76 on both salt sets at job CPU
+<= 1.1x cheap's; a CPU saving at equal held-out M (job CPU <= 0.9x on both sets, held within sigma) is reported as a cost win,
+not a rule win. Else null; then the dead-key gap is a property of the stream, not of the key, and `PARKED.md` records it.

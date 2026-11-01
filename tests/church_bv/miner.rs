@@ -48,6 +48,7 @@ pub enum Keep {
     Cheap,
     Novel,
     Reinforce,
+    Small,
 }
 
 impl Keep {
@@ -59,7 +60,8 @@ impl Keep {
             "cheap" => Ok(Keep::Cheap),
             "novel" => Ok(Keep::Novel),
             "reinforce" => Ok(Keep::Reinforce),
-            _ => Err(format!("EXTRAS_SELECT: expected first, straggler, cheap, novel or reinforce, got {s}")),
+            "small" => Ok(Keep::Small),
+            _ => Err(format!("EXTRAS_SELECT: expected first, straggler, cheap, novel, reinforce or small, got {s}")),
         }
     }
 }
@@ -192,7 +194,7 @@ fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option
         vec![]
     };
     let rank = |i: usize| match outcomes[i] {
-        Outcome::Straggler(.., steps) => Some(rank_of(x.by, steps, reach.get(i).copied().unwrap_or(0))),
+        Outcome::Straggler(ref s, _, steps) => Some(rank_of(x.by, steps, reach.get(i).copied().unwrap_or(0), (s.3[0].size() + s.3[1].size()) as i64)),
         _ => None,
     };
     let keep = kept_indices(named.len(), x.from, x.n, &rank);
@@ -242,11 +244,12 @@ fn correlation(p: &[(i64, i64)]) -> f64 {
 
 /// How a straggler ranks in the pool, smallest first: `straggler` all alike, `cheap` by its rewrite steps, `novel` the
 /// stragglers the fewest served-straggler candidate left sides reach first, `reinforce` the most, both then by steps.
-fn rank_of(by: Keep, steps: i64, reach: i64) -> (i64, i64) {
+fn rank_of(by: Keep, steps: i64, reach: i64, size: i64) -> (i64, i64) {
     match by {
         Keep::Cheap => (0, steps),
         Keep::Novel => (reach, steps),
         Keep::Reinforce => (-reach, steps),
+        Keep::Small => (steps, size),
         Keep::First | Keep::Straggler => (0, 0),
     }
 }
@@ -1205,6 +1208,7 @@ fn kept_indices_keeps_the_served_laws_and_n_of_the_pool() {
     assert_eq!(Keep::parse("straggler"), Ok(Keep::Straggler));
     assert_eq!(Keep::parse("novel"), Ok(Keep::Novel));
     assert_eq!(Keep::parse("reinforce"), Ok(Keep::Reinforce));
+    assert_eq!(Keep::parse("small"), Ok(Keep::Small));
     assert!(Keep::parse("bogus").unwrap_err().contains("EXTRAS_SELECT"));
 }
 
@@ -1212,16 +1216,17 @@ fn kept_indices_keeps_the_served_laws_and_n_of_the_pool() {
 /// `cheap` and `straggler` ignore coverage.
 #[test]
 fn the_rank_of_a_straggler_is_its_reach_then_its_steps() {
-    // (steps, candidates reaching)
-    let (a, b, c, d) = ((5, 1), (9, 1), (2, 3), (7, 2));
+    // (steps, candidates reaching, normal-form size)
+    let (a, b, c, d) = ((5, 1, 30), (9, 1, 10), (2, 3, 20), (5, 2, 8));
     let order = |by| {
         let mut v = [("a", a), ("b", b), ("c", c), ("d", d)];
-        v.sort_by_key(|&(_, (steps, reach))| rank_of(by, steps, reach));
+        v.sort_by_key(|&(_, (steps, reach, size))| rank_of(by, steps, reach, size));
         v.map(|x| x.0)
     };
     assert_eq!(order(Keep::Novel), ["a", "b", "d", "c"], "fewest reaching first, ties by steps");
     assert_eq!(order(Keep::Reinforce), ["c", "d", "a", "b"], "most reaching first, ties by steps");
     assert_eq!(order(Keep::Cheap), ["c", "a", "d", "b"], "steps alone");
+    assert_eq!(order(Keep::Small), ["c", "d", "a", "b"], "steps, then the smaller normal form (under an empty base steps are all 0 and size decides)");
     assert_eq!(order(Keep::Straggler), ["a", "b", "c", "d"], "no ranking: the stream order");
     assert!((correlation(&[(1, 2), (2, 4), (3, 6)]) - 1.0).abs() < 1e-9 && correlation(&[(1, 2), (1, 5)]) == 0.0);
 }
@@ -1266,7 +1271,7 @@ fn the_pool_is_cut_by_the_stragglers_verdict() {
     assert_eq!(by_straggler.len(), base.len() + 1, "the pool's straggler joins the served stragglers");
     assert_eq!(by_straggler.last(), Some(&strag));
     assert_eq!(straggler_names(&both, ex(1, Keep::Cheap)), by_straggler, "one straggler in the pool: cheapest is the only");
-    for by in [Keep::Novel, Keep::Reinforce] {
+    for by in [Keep::Novel, Keep::Reinforce, Keep::Small] {
         assert_eq!(straggler_names(&both, ex(1, by)), by_straggler, "one straggler in the pool: {by:?} keeps it too");
     }
     assert_eq!(straggler_names(&both, ex(1, Keep::First)), base, "the first pool law is the clean one: no new straggler");
