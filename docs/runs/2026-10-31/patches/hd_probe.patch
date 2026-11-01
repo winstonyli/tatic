@@ -1,0 +1,86 @@
+diff --git a/tests/church_bv/hd_probe.rs b/tests/church_bv/hd_probe.rs
+new file mode 100644
+index 0000000..0bfb705
+--- /dev/null
++++ b/tests/church_bv/hd_probe.rs
+@@ -0,0 +1,68 @@
++// Throwaway probe (docs/tier-cycle.md, "Hacker's Delight probe"): Hacker's Delight routines written the long way in the
++// loop's term language (constants 0 and -1 only; `one` is sub(0, -1)), then the class table's canonical form and a rewrite
++// under the base rules plus a mined rule file (env HD_RULES) are compared by operator count.
++use crate::classes::Classes;
++use crate::job::{Job, Setup};
++use crate::rewrite::{parse_rules, parse_term, rewrite, Node, Term};
++
++fn ops(t: &Term) -> usize {
++    match *t.node() {
++        Node::Op(_, a, b) => 1 + ops(&a) + ops(&b),
++        _ => 0,
++    }
++}
++
++const ONE: &str = "sub(0, -1)";
++
++#[test]
++#[ignore]
++fn hackers_delight() {
++    let one = ONE;
++    let nx = |s: &str| format!("xor({s}, -1)");
++    let corpus: Vec<(&str, String)> = vec![
++        ("isolate lowest 1", "and(x, sub(0, x))".into()),
++        ("clear lowest 1", "and(x, add(x, -1))".into()),
++        ("mask trailing 0s", format!("and({}, add(x, -1))", nx("x"))),
++        ("mask through lowest 1", "xor(x, add(x, -1))".into()),
++        ("propagate lowest 1 right", "or(x, add(x, -1))".into()),
++        ("set lowest 0", format!("or(x, add(x, {one}))")),
++        ("isolate lowest 0", format!("and({}, add(x, {one}))", nx("x"))),
++        ("clear trailing 1s", format!("and(x, add(x, {one}))")),
++        ("floor average", "add(and(x, y), shr1(xor(x, y), 0))".into()),
++        ("ceiling average", "sub(or(x, y), shr1(xor(x, y), 0))".into()),
++        ("min via lt mask", "xor(y, and(xor(x, y), sub(0, lt(x, y))))".into()),
++        ("max via lt mask", "xor(x, and(xor(x, y), sub(0, lt(x, y))))".into()),
++        ("add via xor/and", "add(xor(x, y), shl1(and(x, y), 0))".into()),
++        ("add via or/and", "add(or(x, y), and(x, y))".into()),
++        ("sub via and/not", format!("sub(and(x, {}), and({}, y))", nx("y"), nx("x"))),
++        ("xor via or-and", "sub(or(x, y), and(x, y))".into()),
++        ("and via add-or", "sub(add(x, y), or(x, y))".into()),
++        ("negate via not+1", format!("add({}, {one})", nx("x"))),
++        ("not via sub", "sub(-1, x)".into()),
++        ("or via add", format!("add(x, and({}, y))", nx("x"))),
++        ("or via de Morgan", nx(&format!("and({}, {})", nx("x"), nx("y")))),
++        ("bit select", "xor(y, and(xor(x, y), z))".into()),
++        ("majority", "or(or(and(x, y), and(x, z)), and(y, z))".into()),
++        ("swap-xor leftover", "xor(xor(x, y), y)".into()),
++        ("3-way add", "add(add(x, y), z)".into()),
++    ];
++    tatic::kernel::scoped(|| {
++    let c = Classes::get();
++    let mined = std::env::var("HD_RULES").map(|p| parse_rules(&std::fs::read_to_string(p).unwrap())).unwrap_or_default();
++    let job = &mut Job::new(Setup::process());
++    let (mut before, mut table, mut rules, mut tfire, mut rfire) = (0, 0, 0, 0, 0);
++    for (name, s) in &corpus {
++        let t = parse_term(s);
++        let canon = c.canonical(&t);
++        let (rw, _) = job.with_mined(mined.clone(), |j| rewrite(j, &t, 4, 3));
++        let (a, b, d) = (ops(&t), ops(&canon), ops(&rw));
++        before += a;
++        table += b;
++        rules += d;
++        tfire += (canon != t) as usize;
++        rfire += (rw != t) as usize;
++        println!("HD {name}: {a} ops | table {b}: {} | rules {d}: {}", canon.show(), rw.show());
++    }
++    println!("HD total: routines={} ops={before} table_changed={tfire} table_ops={table} rules_changed={rfire} rules_ops={rules} mined_rules={}", corpus.len(), mined.len());
++    });
++}
+diff --git a/tests/church_bv/main.rs b/tests/church_bv/main.rs
+index 5e585aa..3cf8c70 100644
+--- a/tests/church_bv/main.rs
++++ b/tests/church_bv/main.rs
+@@ -6,6 +6,7 @@ use std::sync::Arc;
+ use job::{Job, Setup};
+ 
+ mod classes;
++mod hd_probe;
+ mod driver;
+ mod encoding;
+ mod job;

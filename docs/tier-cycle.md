@@ -7822,6 +7822,21 @@ There are 28 such trees, none with more than three atoms; the table changes 4 an
 `sub(x, sub(y, z))`, `add(add(x, y), z)` twice). A normal form cannot help where the trees are one operator over leaves;
 option A still needs workloads with arithmetic depth.
 
+*Hacker's Delight routines, a workload with arithmetic depth (2026-10-31, probe reverted; `docs/runs/2026-10-31/patches/hd_probe.patch`):
+the table and the base rules rewrite most of them; the 156 mined rules add nothing.* 25 routines written the long way in the
+loop's term language (constants 0 and -1 only, so `1` is `sub(0, -1)`; `shl1` and `shr1` take a second operand; `lt` is
+assumed to give 0 or 1): trailing-bit tricks, averages, min/max by `lt` mask, the add/sub/and/or/xor interconversions, bit
+select, majority. 80 operators in all. `Classes::canonical` changes 17 and leaves 54 (26 saved, 33%); a `rewrite` at width 4
+under the base rules plus the 156 mined rules of `v06-icount/out_sm/cold_streams_streams_3_none` changes 19 and also leaves
+54, and with no mined rules the total is the same 54 (the extra two changed terms only reorder operands of the `lt` mask).
+The table's savings are the textbook identities (`add` via xor/and to `add(x, y)`, 4 to 1; `sub` via and/not, 5 to 1; the
+de Morgan `or`, 4 to 1; `majority`, 5 to 4 via `xor(x, and(xor(x, y), xor(x, z)))`), and it reaches `x` from a swap-xor
+leftover. Misses: the already-short forms (isolate lowest 1, clear lowest 1, averages, bit select) stay as written, as they
+should, and `lt`-mask min/max do not shrink, so no routine shows a gain from a mined rule over the table. Reading: this
+workload has depth, and the table (the fixed base rules too) is what finds it; it does not separate a learned proposer
+from the fixed machinery, so it is not the next milestone's test by itself. The routines are my own transcriptions in the
+long form, not a fixed external corpus; the 33% is an upper-bound illustration, not a rate.
+
 **Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
 2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.
 Of three ways to trust compiled code (trust the compiler, as `native_compute` does; a certificate per output; prove each
