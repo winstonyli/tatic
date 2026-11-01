@@ -41,6 +41,9 @@ The rewriter and provers (`tests/church_bv/`):
 - `rewrite.rs`: terms, plans, rule table, the rewriter and the `prove_eq` cascade. `job.rs`: per-task and per-thread state.
 - `search.rs`: the law supply (`tests/church_bv/search.rs#stream_sequence`), rule admission (`tests/church_bv/search.rs#rule_admissible`) and cost (`tests/church_bv/search.rs#law_cost`), and the bodies of the two worker tasks: serving (`tests/church_bv/search.rs#rule_set_kernel_check_task`) and mining (`tests/church_bv/search.rs#rule_miner`).
 
+External corpora (`tests/church_bv/`):
+- `corpus.rs`: fixed lists of named expressions in the loop's term language, one `docs/corpora/<source>/cases.txt` per source with a `SOURCE.md` (origin, licence, in-scope count). `tests/church_bv/corpus.rs#read_cases` loads one; `tests/church_bv/corpus.rs#measure` reports what the class table and the rewriter do to each case (operators before, after the table, after the rewrite).
+
 The belief layer (`tests/church_bv/`):
 - `belief.rs`: a calibrated estimate of whether a claimed equality is refuted or unprovable, from its shape and the cheap evidence it has passed; it is meant to order and budget work (nothing reads a belief yet) and never accepts a claim. Pure statistics (`tests/church_bv/belief.rs#auc`, grouped folds `tests/church_bv/belief.rs#fold_of`) sit under the estimators, the claim dump and the report.
 
@@ -111,6 +114,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 
 - **ABLATE**: environment switch that turns a named rule or prover part off. `tests/church_bv/job.rs#ablated`
 - **Batch**: B consecutive laws of a loop's window, served before they are mined. `tests/church_bv/driver.rs#run_loop`
+- **Corpus**: a fixed, named list of expressions from one source, measured by the table and the rewriter. `tests/church_bv/corpus.rs#read_cases`
 - **Belief layer**: P(a claimed equality is refuted or unprovable) from shape and evidence; meant to order and budget work (nothing reads it yet), never accepts a claim. `tests/church_bv/belief.rs#auc`
 - **Beta-v**: contracting an application of a lambda to a value only; full beta is unsound under call-by-value with errors and `Rec`. `src/spec_check.rs#check`
 - **Bounded join**: bounded two-sided search that rewrites both sides with the rules plus assoc/comm until they meet. `tests/church_bv/rewrite.rs#join_eq`

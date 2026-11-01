@@ -7888,6 +7888,8 @@ should, and `lt`-mask min/max do not shrink, so no routine shows a gain from a m
 workload has depth, and the table (the fixed base rules too) is what finds it; it does not separate a learned proposer
 from the fixed machinery, so it is not the next milestone's test by itself. The routines are my own transcriptions in the
 long form, not a fixed external corpus; the 33% is an upper-bound illustration, not a rate.
+The routines now live as the corpus `docs/corpora/hd-own/` (`corpus_report` reproduces the 80, 54 and 17; the probe patch is
+superseded).
 
 *Does the specialiser produce arithmetic depth? No (2026-11-01, probe reverted; `docs/runs/2026-11-01/patches/specialise_depth_probe.patch`).*
 The 23 terms of `samples::corpus()` before and after `specialise` (12 of them take at least one inlining step): the maximal
