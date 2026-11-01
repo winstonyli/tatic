@@ -1435,6 +1435,17 @@ refuted; the kernel-path check (a full proof of each proved claim whose sample i
   Under the new enumerator some bool8 and plus4 merges that contain `shr1` are wrong, so the 2026-10-22 line "bitwise
   merges were never wrong, under any key" holds only for claims without `shr1` (kind "bitwise" now excludes `shr1`). A
   rerun on a different label (unprovable as the negative class) is parked in `PARKED.md`, "Belief layer stage 2".
+- **The unproved ones are provable (spike, 2026-11-01).** All 2693 unproved screen-pass claims (2652 with `shr1`, 41 `lt`
+  without) hold on every width-6 input (3 variables, 262144 inputs), and `prove_rule` (the every-input route, kernel
+  checked at width 4) proves all 2693, about 0.3 s each (runs `2026-11-01-belief-shr1-spike-3` for claims 1-1350 and
+  `-spike-4` for 1351-2693; the first two runs died of memory, since the spike's width-6 memo and job grew with every
+  claim, so it now renews both every 50 claims). So "unproved" labels the table's `verdict` path (a carry encoding with
+  each `shr1` a fresh atom), not the kernel's reach: at the loops' width every screen-pass claim is provable, and what
+  differs is the price (milliseconds in `verdict`, 0.3 s in the every-input proof). That matches the parked `shr1` entry
+  (219 of 219 oracle rules). It makes A_unp a prediction of which claims the cheap path misses, not of which are true,
+  and the hard-negative shortage extends to the kernel's own label: among claims that pass the screen and width 4, none
+  was refuted and none was unprovable at width 4. Not shown: width 8 or wider (the proof is at width 4, and width 6 is a
+  test, not a proof).
 
 *A key refined by counterexamples (2026-10-22; run `2026-10-22-key-refine`, 4.5 min, CPU 24% at launch; exe 9607129
 plus `docs/runs/2026-10-22/patches/key_refine.patch`, reverted; script `docs/runs/2026-10-22/scripts/key_refine.sh`).*
