@@ -64,7 +64,12 @@ milestone makes no speed claim; run cost is counted in instructions (`~/.claude/
 Claims are the merges a key proposes while the class table is enumerated, sampled uniformly per key, as in
 `claim_calibration` (patch `docs/runs/2026-10-22/patches/claim_calibration.patch`, script
 `docs/runs/2026-10-22/scripts/claim_calibration.sh`; the patch was reverted, so the dump is rebuilt as a new throwaway
-probe, not reapplied). One row per claim, in `%LOCALAPPDATA%\claude-runs\tatic\<run>\claims.tsv`:
+probe, not reapplied). Amendment at the plan (2026-10-31): the 2026-10-22 patch no longer applies, and the tree now has
+`Classes::build(key, size, sample_n, seed)`, whose `BuildStats.sample` is the same uniform reservoir of merges
+(`(member, representative)`) under any `Key`; the dump uses it instead of a rebuilt enumerator. Its enumerator differs
+from the 2026-10-22 one (shifts only by a constant-0 amount, displaced representatives, `shr1`), so the claim mix is
+new and the old table is a comparison, not a target. "Proved" is the class table's own prover decision
+(`classes::verdict` is Some), with the kernel check run on a sample of each key's proved claims. One row per claim, in `%LOCALAPPDATA%\claude-runs\tatic\<run>\claims.tsv`:
 `key, kind, size, vars, w4, screen, extra8, extra64, extra256, d (of 4096), label, index` (`index` = the claim's
 position in its key's sample, which orders the proving deadline).
 
@@ -99,7 +104,12 @@ random keys, and the exhaustive key's 10 `lt` negatives are unproved, not refute
   by hand-rolled Newton steps with L2 on the training folds; no new dependency. Kept as the answer only if its paired
   interval (against the counts arm) lies above 0.
 
-**Reproduction check (review 5).** The 2026-10-22 cells are expectations from d, P = proved / (proved + sum of
+**Reproduction check (review 5; amended at the plan).** The claims now come from a different enumerator, so the old
+table's rows cannot be a target; the check becomes internal: the unsmoothed old formula on the new dump agrees with the
+empirical counts cells to 0.01 for every cell of at least 200 claims, and the new dump's per-kind refuted and unproved
+counts are printed beside the old table's, with no tolerance claimed. The text below is the original wording.
+
+**Original wording.** The 2026-10-22 cells are expectations from d, P = proved / (proved + sum of
 (1 − d/4096)^n over the refuted), with untried counted proved; the new cells are empirical and smoothed, so they match
 only to a stated tolerance. Test: the unsmoothed old formula on the new dump, with the old label (refuted by the 4096 random inputs, every
 width-4 input or the screen; untried counted proved; all claims, not the subset), reproduces the old table's rows to
