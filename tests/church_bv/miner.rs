@@ -177,16 +177,22 @@ fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option
         return laws_of(job, named, guard_k, fast, budget, clock, loud);
     }
     let outcomes = classify(job, &named, budget, fast, loud);
-    // `novel` and `reinforce`: whether a candidate left side the served stragglers propose reaches each straggler
-    let reached: Vec<bool> = if matches!(x.by, Keep::Novel | Keep::Reinforce) {
+    // `novel` and `reinforce`: how many candidate left sides the served stragglers propose reach each straggler
+    let reach: Vec<i64> = if matches!(x.by, Keep::Novel | Keep::Reinforce) {
         let served = assemble(outcomes[..x.from.min(outcomes.len())].to_vec(), 0, false, clock);
         let (cands, _) = candidates(&served, no_dup_lhs, base, &[]);
-        outcomes.iter().map(|o| matches!(o, Outcome::Straggler(s, ..) if cands.iter().any(|(l, _)| reaches(l, s)))).collect()
+        outcomes
+            .iter()
+            .map(|o| match o {
+                Outcome::Straggler(s, ..) => cands.iter().filter(|(l, _)| reaches(l, s)).count() as i64,
+                _ => 0,
+            })
+            .collect()
     } else {
         vec![]
     };
     let rank = |i: usize| match outcomes[i] {
-        Outcome::Straggler(.., steps) => Some(rank_of(x.by, steps, reached.get(i).copied().unwrap_or(false))),
+        Outcome::Straggler(.., steps) => Some(rank_of(x.by, steps, reach.get(i).copied().unwrap_or(0))),
         _ => None,
     };
     let keep = kept_indices(named.len(), x.from, x.n, &rank);
@@ -198,22 +204,49 @@ fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option
         let (kept, all) = (steps(&mut keep.iter().copied().filter(|&i| i >= from)), steps(&mut (from..named.len())));
         println!("RULEMINER extras steps: kept {} stragglers, sum {}, max {}; pool {} stragglers, sum {}, max {}", kept.2, kept.0, kept.1, all.2, all.0, all.1);
         if matches!(x.by, Keep::Novel | Keep::Reinforce) {
-            let reached_kept = keep.iter().filter(|&&i| i >= from && reached[i]).count();
-            let reached_pool = (from..named.len()).filter(|&i| reached[i]).count();
-            println!("RULEMINER extras reached: kept {reached_kept} of {} kept stragglers, pool {reached_pool} of {pool_stragglers}", kept.2);
+            let pool: Vec<(i64, i64)> = (from..named.len()).filter_map(|i| match outcomes[i] { Outcome::Straggler(.., v) => Some((reach[i], v)), _ => None }).collect();
+            let kept_reach: Vec<i64> = keep.iter().filter(|&&i| i >= from && rank(i).is_some()).map(|&i| reach[i]).collect();
+            let pool_reach: Vec<i64> = pool.iter().map(|p| p.0).collect();
+            let distinct = pool_reach.iter().collect::<std::collections::BTreeSet<_>>().len();
+            println!(
+                "RULEMINER extras reach: pool min {} max {} ({distinct} distinct), corr with steps {:.2}; mean kept {:.1} of pool {:.1}",
+                pool_reach.iter().min().unwrap_or(&0),
+                pool_reach.iter().max().unwrap_or(&0),
+                correlation(&pool),
+                mean(&kept_reach),
+                mean(&pool_reach)
+            );
         }
         clock.phase("extras selection");
     }
     assemble(keep.into_iter().map(|i| outcomes[i].clone()).collect(), guard_k, loud, clock)
 }
 
+fn mean(v: &[i64]) -> f64 {
+    v.iter().sum::<i64>() as f64 / v.len().max(1) as f64
+}
+
+/// Pearson correlation of the pairs (0 when either side is constant).
+fn correlation(p: &[(i64, i64)]) -> f64 {
+    let (mx, my) = (mean(&p.iter().map(|q| q.0).collect::<Vec<_>>()), mean(&p.iter().map(|q| q.1).collect::<Vec<_>>()));
+    let (sxy, sxx, syy) = p.iter().fold((0.0, 0.0, 0.0), |(a, b, c), q| {
+        let (dx, dy) = (q.0 as f64 - mx, q.1 as f64 - my);
+        (a + dx * dy, b + dx * dx, c + dy * dy)
+    });
+    if sxx == 0.0 || syy == 0.0 {
+        0.0
+    } else {
+        sxy / (sxx * syy).sqrt()
+    }
+}
+
 /// How a straggler ranks in the pool, smallest first: `straggler` all alike, `cheap` by its rewrite steps, `novel` the
-/// stragglers no served-straggler candidate reaches before those one does, `reinforce` the other way, both then by steps.
-fn rank_of(by: Keep, steps: i64, reached: bool) -> (i64, i64) {
+/// stragglers the fewest served-straggler candidate left sides reach first, `reinforce` the most, both then by steps.
+fn rank_of(by: Keep, steps: i64, reach: i64) -> (i64, i64) {
     match by {
         Keep::Cheap => (0, steps),
-        Keep::Novel => (reached as i64, steps),
-        Keep::Reinforce => (!reached as i64, steps),
+        Keep::Novel => (reach, steps),
+        Keep::Reinforce => (-reach, steps),
         Keep::First | Keep::Straggler => (0, 0),
     }
 }
@@ -1175,21 +1208,22 @@ fn kept_indices_keeps_the_served_laws_and_n_of_the_pool() {
     assert!(Keep::parse("bogus").unwrap_err().contains("EXTRAS_SELECT"));
 }
 
-/// `novel` ranks a straggler no served-straggler candidate reaches before one that is reached, `reinforce` the other way,
-/// each then by steps; `cheap` and `straggler` ignore coverage.
+/// `novel` ranks the straggler the fewest served-straggler candidates reach first, `reinforce` the most, each then by steps;
+/// `cheap` and `straggler` ignore coverage.
 #[test]
-fn the_rank_of_a_straggler_is_its_coverage_class_then_its_steps() {
-    // (steps, covered)
-    let (a, b, c, d) = ((5, false), (9, false), (2, true), (7, true));
+fn the_rank_of_a_straggler_is_its_reach_then_its_steps() {
+    // (steps, candidates reaching)
+    let (a, b, c, d) = ((5, 1), (9, 1), (2, 3), (7, 2));
     let order = |by| {
         let mut v = [("a", a), ("b", b), ("c", c), ("d", d)];
-        v.sort_by_key(|&(_, (steps, cov))| rank_of(by, steps, cov));
+        v.sort_by_key(|&(_, (steps, reach))| rank_of(by, steps, reach));
         v.map(|x| x.0)
     };
-    assert_eq!(order(Keep::Novel), ["a", "b", "c", "d"], "uncovered first, each by steps");
-    assert_eq!(order(Keep::Reinforce), ["c", "d", "a", "b"], "covered first, each by steps");
+    assert_eq!(order(Keep::Novel), ["a", "b", "d", "c"], "fewest reaching first, ties by steps");
+    assert_eq!(order(Keep::Reinforce), ["c", "d", "a", "b"], "most reaching first, ties by steps");
     assert_eq!(order(Keep::Cheap), ["c", "a", "d", "b"], "steps alone");
     assert_eq!(order(Keep::Straggler), ["a", "b", "c", "d"], "no ranking: the stream order");
+    assert!((correlation(&[(1, 2), (2, 4), (3, 6)]) - 1.0).abs() < 1e-9 && correlation(&[(1, 2), (1, 5)]) == 0.0);
 }
 
 /// The served laws of `ROLLBACK_LAWS` with the pool `[clean, straggler]` after them (a law `and` commutes away; the

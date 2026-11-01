@@ -138,3 +138,12 @@ runs twice per mine (once for the key), so the key's CPU cost is part of the ver
 c1 result (2026-10-31): null on both keys (novel 0 and 0, reinforce +2 and +43 against cheap; `cheap` reproduced 4721 and 4569).
 The coverage class is almost constant (99-100% of kept stragglers are reached), so both keys degenerate to `cheap`;
 `docs/tier-cycle.md`, "The cheap variant" (runs `v06n-g1` to `g4`).
+
+### g2: graded reach (set before its data; Winston chose g2 and i1 on 2026-10-31)
+
+The class of `novel` and `reinforce` is now the number of candidate left sides (one per left side, from the served stragglers)
+that reach the straggler; `novel` ranks the fewest first, `reinforce` the most, each then by steps (the binary class reached
+99-100% and equalled `cheap`). Probe first: a one-salt gate (`cn160` against `novel`, salt 1) whose `RULEMINER extras reach`
+lines give the pool's min, max, distinct values and the correlation of reach with steps. Go to the full gates (salts 1-3 and
+4-6, n 160, pool 4, the c1 win rule) only if the pool's reach has at least 5 distinct values and |corr with steps| < 0.8 in
+most mines; else park, as a graded key that is a function of steps adds nothing.
