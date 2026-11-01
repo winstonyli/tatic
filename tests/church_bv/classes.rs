@@ -322,6 +322,8 @@ impl Classes {
             }
             *r = subst(*r, &moved);
         }
+        // a displacement can leave a pair as a term against itself, which is no claim
+        st.sample.retain(|(u, r)| u != r);
         let memos = key.sets.iter().map(|(w, ins)| ValueMemo::new(*w, ins.len(), (0..3).map(|v| ins.iter().map(|x| x[v] as u8).collect()).collect())).collect();
         st.millis = t0.elapsed().as_millis();
         (Classes { map, memos: Mutex::new((memos, Default::default())) }, st)

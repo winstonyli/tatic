@@ -41,6 +41,9 @@ fn lcg(s: &mut u64) -> u64 {
 /// how many resamples had a negative and a positive; `None` when none did.
 pub fn paired_bootstrap(a: &[f64], b: &[f64], neg: &[bool], reps: usize, seed: u64) -> Option<(f64, f64, usize)> {
     let n = a.len();
+    if n == 0 {
+        return None;
+    }
     let (mut s, mut diffs) = (seed, vec![]);
     for _ in 0..reps {
         let idx: Vec<usize> = (0..n).map(|_| lcg(&mut s) as usize % n).collect();
@@ -265,7 +268,7 @@ impl Row {
         let num = |i: usize, w: &str| f[i].parse::<usize>().map_err(|_| err(w, f[i]));
         let flag = |i: usize, w: &str| match f[i] { "1" => Ok(true), "0" => Ok(false), v => Err(err(w, v)) };
         Ok(Row {
-            key: f[0].parse::<u8>().map_err(|_| err("key", f[0]))?,
+            key: f[0].parse::<u8>().ok().filter(|k| (*k as usize) < KEYS.len()).ok_or_else(|| err("key", f[0]))?,
             kind: KINDS.iter().position(|k| *k == f[1]).ok_or_else(|| err("kind", f[1]))? as u8,
             size: num(2, "size")?,
             vars: num(3, "vars")?,
@@ -431,15 +434,16 @@ pub fn gate(rows: &[Row], folds: &[usize]) -> Result<(), String> {
 }
 
 /// The counts arm's belief that `r` is negative (refuted) when scored at level `lvl` (0..=3 for n = 0, 8, 64, 256):
-/// 1.0 when a check it has passed at that level is failed (decided), else the smoothed cell estimate.
-pub fn belief_counts(c: &Counts, r: &Row, lvl: usize, with_key: bool) -> f64 {
+/// 1.0 when a check it has passed at that level is failed (decided), else the smoothed cell estimate. The second value
+/// is the fallback level the estimate came from (`Counts::p`; 0 is the exact cell, and a decided claim reports 0).
+pub fn belief_counts(c: &Counts, r: &Row, lvl: usize, with_key: bool) -> (f64, u8) {
     if !r.w4 || !r.screen || (1..=lvl).any(|l| !r.extra[l - 1]) {
-        return 1.0;
+        return (1.0, 0);
     }
     if with_key && r.kind == 0 && r.key == 0 {
-        return 0.0; // a pure bitwise term on the 8 Boolean tuples is decided by its truth table (spec): never wrong
+        return (0.0, 0); // a pure bitwise term on the 8 Boolean tuples is decided by its truth table (spec): never wrong
     }
-    c.p(Cell { kind: r.kind, key: if with_key { r.key } else { 0 }, w4: r.w4, screen: r.screen, n: lvl as u8 }).0
+    c.p(Cell { kind: r.kind, key: if with_key { r.key } else { 0 }, w4: r.w4, screen: r.screen, n: lvl as u8 })
 }
 
 /// The stage-1 report on a claim dump (`$BELIEF_TSV`): per key and kind, how many claims each label holds, how many pass
@@ -613,8 +617,8 @@ mod report_tests {
         let mut r = row(Label::Refuted, true, true, 1);
         r.extra = [true, false, false];
         // level 1 (n = 8): extra8 passed, so the cell answers; no (kind,key,n=1) cell exists, so (kind,key) answers: (0+1)/(1+2)
-        assert_eq!(belief_counts(&c, &r, 1, true), 1.0 / 3.0);
-        assert_eq!(belief_counts(&c, &r, 2, true), 1.0); // level 2 (n = 64): extra64 failed, decided
+        assert_eq!(belief_counts(&c, &r, 1, true).0, 1.0 / 3.0);
+        assert_eq!(belief_counts(&c, &r, 2, true).0, 1.0); // level 2 (n = 64): extra64 failed, decided
     }
 }
 
@@ -638,7 +642,39 @@ mod review_fix_tests {
         let hit: Vec<bool> = rows.iter().map(|r| r.label == Label::Refuted).collect();
         let c = Counts::fit(&cells, &hit);
         // key is dropped on both sides: (kind 1, key 0) holds 2 hits of 4 -> 3/6, answered by the exact cell
-        assert_eq!(belief_counts(&c, &rows[0], 0, false), 3.0 / 6.0);
+        assert_eq!(belief_counts(&c, &rows[0], 0, false).0, 3.0 / 6.0);
         assert_eq!(c.p(Cell { kind: 1, key: 0, w4: true, screen: true, n: 0 }).1, 0);
+    }
+
+    #[test]
+    fn a_row_with_an_unknown_key_is_rejected() {
+        let row = Row { key: 0, kind: 1, size: 5, vars: 2, w4: true, screen: true, extra: [true; 3], d: 0, label: Label::Proved, index: 0, u: "u".into(), r: "r".into() };
+        assert!(Row::parse(&row.line(), 1).is_ok());
+        let bad = Row { key: KEYS.len() as u8, ..row };
+        assert!(Row::parse(&bad.line(), 1).is_err());
+    }
+
+    #[test]
+    fn an_empty_bootstrap_has_no_interval() {
+        assert_eq!(paired_bootstrap(&[], &[], &[], 10, 1), None);
+    }
+
+    #[test]
+    fn belief_counts_reports_the_fallback_level_it_answered_from() {
+        let cells = [Cell { kind: 1, key: 0, w4: true, screen: true, n: 0 }; 2];
+        let c = Counts::fit(&cells, &[true, false]);
+        let row = |key: u8| Row { key, kind: 1, size: 5, vars: 2, w4: true, screen: true, extra: [true; 3], d: 0, label: Label::Proved, index: 0, u: "u".into(), r: "r".into() };
+        assert_eq!(belief_counts(&c, &row(0), 0, true).1, 0);
+        assert!(belief_counts(&c, &row(3), 0, true).1 > 0, "an unseen key falls back");
+        let mut failed = row(0);
+        failed.w4 = false;
+        assert_eq!(belief_counts(&c, &failed, 0, true), (1.0, 0), "a decided claim is not estimated");
+    }
+
+    #[test]
+    fn the_sample_holds_no_self_claim() {
+        let (_c, st) = Classes::build(&make_key("exh"), SIZE, 20000, CLAIM_SEED);
+        let selfs = st.sample.iter().filter(|(u, r)| u == r).count();
+        assert_eq!(selfs, 0, "{selfs} of {} sampled claims are a term against itself", st.sample.len());
     }
 }
