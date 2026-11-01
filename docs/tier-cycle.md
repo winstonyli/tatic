@@ -7891,6 +7891,14 @@ long form, not a fixed external corpus; the 33% is an upper-bound illustration, 
 The routines now live as the corpus `docs/corpora/hd-own/` (`corpus_report` reproduces the 80, 54 and 17; the probe patch is
 superseded).
 
+*Souper's `test/Infer` agrees (2026-11-01; `docs/corpora/souper/`, commit `963d4df`).* Of its 39 files 12 fit the term language
+(Hacker's Delight P1 to P7, P11, P14, P15, P17 and `const1`; the rest need `mul`, `select`, width-specific shifts or other
+constants, listed per file in `SOURCE.md`): 42 operators, the table changes 9 terms and leaves 32, and the base rewriter also
+leaves 32. As in `hd-own`, the table does the rewriting and nothing is left for a mined rule. Only P11, P17 and `const1` are
+new shapes, since the other nine repeat `hd-own` routines; the corpus is mostly the same book, so it is not independent
+confirmation of the 33%. Two files (P10, P12, from `ule`) panic the measurement and are parked (`PARKED.md`, "An `lt` word
+under a bitwise operator").
+
 *Does the specialiser produce arithmetic depth? No (2026-11-01, probe reverted; `docs/runs/2026-11-01/patches/specialise_depth_probe.patch`).*
 The 23 terms of `samples::corpus()` before and after `specialise` (12 of them take at least one inlining step): the maximal
 add/sub trees (an `Add` or `Sub` not directly under another), by operator count. Before: 33 trees, 4 with two operators, none
