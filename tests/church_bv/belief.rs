@@ -688,7 +688,7 @@ fn belief_shr1_spike() {
     use crate::rewrite::{parse_term, prove_rule};
     let rows = read_rows(&std::env::var("BELIEF_TSV").expect("BELIEF_TSV: the claim dump"));
     let step: usize = std::env::var("BELIEF_STEP").map_or(1, |v| v.parse().unwrap());
-    let pick: Vec<&Row> = rows.iter().filter(|r| r.label == Label::Unproved && in_subset(r, 0)).step_by(step).collect();
+    let pick: Vec<&Row> = rows.iter().filter(|r| r.label == Label::Unproved && in_subset(r, 0)).step_by(step).skip(std::env::var("BELIEF_SKIP").map_or(0, |v| v.parse().unwrap())).collect();
     let mut job = Job::new(Setup::process());
     let mut w6 = ValueMemo::exhaustive(6, 3);
     // (claims, with shr1, true at width 6, proved by prove_rule, proved with shr1, seconds in prove_rule)
@@ -703,6 +703,7 @@ fn belief_shr1_spike() {
                 job = Job::new(Setup::process());
                 println!("SHR1 progress: {n} claims, {secs:.0} s in prove_rule");
             }
+            println!("SHR1 at {n}: {} -> {}", r.u, r.r); // a crash names its claim
             let agree = w6.agree(&u, &v);
             let t0 = std::time::Instant::now();
             let ok = prove_rule(&mut job, 4, 1 + u.max_var().max(v.max_var()), &u, &v).is_some();
