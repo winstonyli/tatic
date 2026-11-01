@@ -2,7 +2,7 @@
 
 The project's goals, then ordered milestones, each the question it answers (format: `~/.claude/VERSIONING.md`).
 `kind: experiment`: a tag marks a step and its message is the milestone sentence; tagging moves the line out of this
-file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) and `v0.5.0` (2026-10-31; `git tag -n99`). Deferred work is in
+file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) `v0.5.0` (2026-10-31) and `v0.6.0` (2026-10-31; `git tag -n99`). Deferred work is in
 `PARKED.md`. The cleanup break from v0.5 (`docs/superpowers/plans/2026-10-26-cleanup.md`) is done (2026-10-27).
 
 ## Goals
@@ -34,8 +34,4 @@ results, 2026-10-17 and 2026-10-23).
 
 ## Milestones
 
-- **v0.6 - Does a learned proposer push the frontier?** (goals 2 and 3) Experiment 3: train a model on accepted laws,
-  repeat the cycle, and track the frontier of v0.5, not only M on a fixed stream. Stage 1 (offline scorer over the extras, spec
-  `docs/superpowers/specs/2026-10-31-learned-proposer-design.md`) is done: AUC 0.69 offline but no curve shift, worse than
-  random at every n (`docs/tier-cycle.md`, "A learned scorer over the extras"). Stage 2 (the cycle) is parked (`PARKED.md`). Second try, done: select the extras by the kernel's own straggler
-  verdicts inside the mine (`docs/superpowers/specs/2026-10-31-context-aware-selector-design.md`): held-out M better at every n but 1.4-1.9x the CPU, null by the pre-registered rule (`docs/tier-cycle.md`, "Selecting the extras by straggler verdict"). Third try, `EXTRAS_SELECT=cheap` (the stragglers with the fewest rewrite steps): the pre-registered rule missed by 26 s of CPU, but at matched work cheap n 160 beats random by 111 and 205 held-out M on two salt sets (`docs/tier-cycle.md`, "The cheap variant"). Knee charted (`v06k-g1` to `g12`): cheap beats random of equal work at n 80 and 160 (104-205 held-out M) and loses at n 240 and with pool 8. Coverage keys (`novel`, `reinforce`) equalled `cheap` with the binary class (`v06n-g1` to `g4`) and lost to it with the graded reach (`v06g2-g1` to `g4`); a2 parked. Crossover charted (`v06h2-g1` to `g6`): wins at n 80-160, loses at n 200 and 240; the key is dead under an empty base. `small` (steps, then normal-form size) matches `cheap` on held-out M with 4-15% fewer match/op counts (`v06j3-g1`, `g2`), 1.95% fewer instructions (`v06j3-icount`); `EXTRAS_SELECT` is now `first` or `small` (the `straggler`, `cheap`, `novel` and `reinforce` keys are deleted; recover them from `6bdf573`). **Answer (2026-10-31):** no learned proposer pushed the frontier; the best point is the kernel's own straggler verdict ranked by `small`, which helps at n 80-160 only. Closed, untagged (tag on request); the sibling proposer (l3), the cycle and larger n are parked (`PARKED.md`).
+No milestone is open. v0.6 (`git tag -n99 v0.6.0`; findings in `docs/tier-cycle.md`, sections on the learned scorer, straggler verdicts, `small` and the crossover) closed with selection by `small` as the answer; what it left is in `PARKED.md`.
