@@ -7692,6 +7692,7 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
   same), so the key does move the mine; it just does not move it toward a better frontier. Reach by served candidates is not a
   useful signal for choosing extras, in either direction. With the binary class (`v06n-g1` to `g4`) and the stage-1 scorer this
   is the third per-law signal that fails to beat `cheap`/random.
+  (the pool is not the limit; the cost key is).
 
 - **A key under an empty base (2026-10-31; runs `v06j3-g1`, `g2`; rule in the spec addendum "j3").** `small` ranks by (steps,
   normal-form size): `cheap` with ties by size in mine 1, smallest normal form first in mine 0. n 160, pool 4, against `cheap`
@@ -7706,8 +7707,14 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
   match and op (4-15%) at equal walk, which points at real saving, and job CPU is 13-16% lower, which meets the cost-win line
   (<= 0.9x on both sets). Caveat: the `cheap` job CPU is a cached earlier measurement (1240 s and 1279 s) and the same arm read
   1593 s and 1528 s under load in `v06n-g1` and `g3`, so the CPU ratio is not reliable; the deterministic counts are. The rules
-  differ in every loop (0 of 9 same). A cost claim needs an instruction-count A/B (`icount.ps1`), not another gate.
-  (the pool is not the limit; the cost key is).
+  differ in every loop (0 of 9 same). The instruction count settles it:
+  Instruction counts (`icount.ps1` method, `-Mode pmc` on CPU 4, whole `driver::sweep` salt 1 at n 160, summed over the three
+  loop processes; runs `v06j3-icount` for `cheap`, `v06j3-icount-sm` for `small`, 2 runs each; the first `small` trace lost
+  events and was discarded, the machine at 44% load): `cheap` 2351.25 G and 2351.79 G; `small` 2306.71 G and 2304.61 G. So
+  `small` does 1.95% fewer instructions, against a spread of 0.02% (`cheap`) and 0.09% (`small`): real and well above noise,
+  and an order of magnitude below the 13-16% the job CPU suggested (load noise). Per loop the cost moves both ways (loop 2
+  388 G to 449 G, loop 3 883 G to 776 G), as the rules differ. One salt only; a cost claim of about 2%.
+
 ## The JIT and the target machine
 
 ### Compiled evaluation, the wasm JIT and a formal target machine (2026-10-13 to 10-17)
