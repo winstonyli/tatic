@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Belief layer, calibration milestone (design)
@@ -72,6 +72,11 @@ new and the old table is a comparison, not a target. "Proved" is the class table
 (`classes::verdict` is Some), with the kernel check run on a sample of each key's proved claims. One row per claim, in `%LOCALAPPDATA%\claude-runs\tatic\<run>\claims.tsv`:
 `key, kind, size, vars, w4, screen, extra8, extra64, extra256, d (of 4096), label, index` (`index` = the claim's
 position in its key's sample, which orders the proving deadline).
+
+**Cap, as run (2026-11-01).** A pilot (`2026-11-01-belief-pilot-plus64-b`) tried 1000 claims in 3.5 s, so the cap is the
+whole 20000-claim sample per key and every claim is tried; the run is `2026-11-01-belief-dump-all`. Outcome: the
+stage-1 gate found 0 hard negatives, so stage 2 did not start (`docs/tier-cycle.md`, "The belief layer's calibration
+milestone stops at its first gate"); the rest is parked (`PARKED.md`, "Belief layer stage 2").
 
 **Untried claims (review 3).** Proving stops at 10 minutes per key, and the old probe checked refutation on every claim
 but proved only until the deadline, so 40-53% of the last three keys' unrefuted claims were untried while every refuted

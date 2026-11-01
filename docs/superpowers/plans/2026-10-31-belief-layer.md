@@ -1,10 +1,12 @@
 ---
-status: draft
+status: done
 ---
 
 # Belief layer, calibration milestone: implementation plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**Execution note (2026-11-01):** Tasks 1-4 and 6 ran; Task 5 (logistic arm) did not start because the stage-1 gate found 0 hard negatives. `oof` was not added. See `docs/tier-cycle.md`, "The belief layer's calibration milestone stops at its first gate".
 
 **Goal:** Measure whether shape plus cheap evidence predicts which claimed equalities are false or unprovable, better than the fixed screen (spec question), and record the finding.
 

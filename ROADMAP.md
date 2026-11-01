@@ -17,7 +17,10 @@ Every milestone serves at least one of these; work that serves none needs a stat
 3. **The KR&R tier of a cycle with a GPU model.** A learned model on the GPU tier (nothing
    built; the idea came from the tiered-AI direction of the inactive scratchtape repo, which this repo does not rely on) proposes what to explore; the kernel checks and proves it, and returns rules and signals.
    The model's output is untrusted (`docs/tier-cycle.md`).
-   Between the two, a calibrated belief layer (design note, 2026-10-22; nothing built). For each claimed equality it
+   Between the two, a calibrated belief layer (design note, 2026-10-22). Its first calibration milestone (2026-11-01) built
+   the claim dump and the statistics and stopped at its gate: no claim that passes the screen is refuted, so there was
+   nothing for a belief about refutation to rank; the live question is unprovability, parked (`PARKED.md`, "Belief layer
+   stage 2"; `docs/tier-cycle.md`, "The belief layer's calibration milestone stops at its first gate"). For each claimed equality it
    would estimate P(the kernel proves it) from the claim's shape and its evidence: random tests passed, small widths
    checked exhaustively, the model's score. Evidence that decides a claim outright sets it to 1, such as a pure bitwise
    term's values on the 0/1 inputs; a counterexample sets it to 0 for good. It learns from the outcomes: kernel-checked proofs and counterexamples. It

@@ -1402,6 +1402,33 @@ width 4 or on the screen.)
 - **Limits.** The claims are enumeration merges over three variables up to size 9, not laws from a stream, so the
   numbers hold for that distribution only. Differences were measured at width 8; the proofs are generic.
 
+*The belief layer's calibration milestone stops at its first gate (2026-11-01; runs `2026-11-01-belief-dump-all`, 5 min,
+CPU 25% at launch, and its pilot `2026-11-01-belief-pilot-plus64-b`; code `tests/church_bv/belief.rs`, no patch; report
+text in the dump run's `report.log`; spec `docs/superpowers/specs/2026-10-31-belief-layer-design.md`).* The dump re-draws
+the claims with `Classes::build` (20000 merges per key, the four keys of 2026-10-22; its enumerator differs, so the mix
+is new) and labels each claim with evidence kept apart from the label: refuted if it differs on 4096 fresh random
+width-8 inputs (S2), on 256 more (S1, disjoint from S2), on a width-4 input or on the screen; proved if the class
+table's prover finds a proof; else unproved. The pilot ran 1000 claims in 3.5 s, so every sampled claim is tried (cap
+20000) and the untried bias of 2026-10-22 is gone. Of the 80000 claims, 60691 are proved, 2693 unproved and 16616
+refuted; the kernel-path check (a full proof of every 20th proved claim) agreed on 3058 of 3058.
+
+- **No claim that passes the screen is refuted.** 63384 claims pass every width-4 input and the screen; none differs on
+  any of the 4352 further random inputs. All 16616 refuted claims fail width 4 (370 only there), the screen (27 only
+  there) or both (16219). The stage-1 gate needs 100 such hard negatives in all and 10 per fold; it found 0, so
+  stage 2 (the smoothed-count and logistic arms, the paired bootstrap against the screen) did not start, as the spec
+  prescribes. The finding is "too few hard negatives to compare": on this claim distribution the screen plus the exhaustive
+  width-4 check leave nothing for a belief about refutation to rank (any false claim left differs on well under 1/4096 of
+  the width-8 inputs; with 0 of 63384, the one-sided 95% bound on the rate is about 4.7e-5).
+- **What is left to predict is unprovability.** 2693 screen-pass claims (4.2%) have no proof: 1972 add/sub, 400 `lt`, 321
+  shl1, spread over the keys (bool8 315, plus4 590, plus64 807, exhaustive 981). None is refuted by the further inputs, so
+  they look true but out of the prover's reach (an inference; a proof or counterexample at another width would confirm
+  it). The spec scored this as A_unp, descriptive only, so the milestone's headline score is empty and the live one is
+  the secondary. The 2026-10-22 run found 19 such claims (all `lt`); the new enumerator proposes many more
+  (it adds shifts by a constant 0, displaced representatives and `shr1`).
+- **Not done.** The estimators and their comparison (counts, logistic, bootstrap) were not run. What is kept:
+  `belief_counts`, `cells_at`, the grouped folds, `logistic_fit`, AUC and the paired bootstrap, each with a unit test. A
+  rerun on a different label (unprovable as the negative class) is parked in `PARKED.md`, "Belief layer stage 2".
+
 *A key refined by counterexamples (2026-10-22; run `2026-10-22-key-refine`, 4.5 min, CPU 24% at launch; exe 9607129
 plus `docs/runs/2026-10-22/patches/key_refine.patch`, reverted; script `docs/runs/2026-10-22/scripts/key_refine.sh`).*
 The table's key learns its inputs from the merges it gets wrong. Each round builds the table to size 9 under the
