@@ -604,7 +604,7 @@ fn fill_op<W: Word>(o: usize, out: &mut [std::mem::MaybeUninit<W>], x: &[W], y: 
 const VALUE_BLOCK: usize = 1 << 16;
 
 /// The screen's input count: all zeros, all ones, then 202 pseudo-random tuples.
-const SCREEN_INPUTS: usize = 204;
+pub(crate) const SCREEN_INPUTS: usize = 204;
 
 /// The plausibility screen's value memos, by width and variable count, shared by a process's threads behind one lock: per
 /// thread, 66% of a sweep's screen fills redid another thread's (docs/tier-cycle.md, "Per-thread refills"). Pure: values on
@@ -612,7 +612,7 @@ const SCREEN_INPUTS: usize = 204;
 static SCREENS: crate::task::SharedMemo<(usize, usize), ValueMemo<u128>> = crate::task::SharedMemo::new();
 
 /// `f` on the screen's value memo for width `n` and `k` variables.
-fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R) -> R {
+pub(crate) fn with_screen<R>(n: usize, k: usize, f: impl FnOnce(&mut ValueMemo<u128>) -> R) -> R {
     SCREENS.with((n, k), || ValueMemo::screen(n, k), f)
 }
 

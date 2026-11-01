@@ -392,7 +392,7 @@ impl Classes {
 }
 
 /// How a replacement `u -> r` is proved (spec §3, R2, R3): its prover, the law's sides over `V(0..)` and its arguments.
-struct Verdict {
+pub(crate) struct Verdict {
     kind: LawKind,
     lhs: Term,
     rhs: Term,
@@ -406,7 +406,7 @@ static VERDICTS: SharedMemo<(usize, usize, Term, Term), Option<Arc<Verdict>>> = 
 /// The verdict on `u -> r` at width `n`: `Bitwise` when neither side has `add`, `sub` or `lt` and they agree at widths
 /// 1..=5; else `Tree` when `tree_encoding` finds a carry encoding with each `shr1` node a fresh variable (decision 3);
 /// else none (decision 6).
-fn verdict(job: &Job, n: usize, u: &Term, r: &Term) -> Option<Verdict> {
+pub(crate) fn verdict(job: &Job, n: usize, u: &Term, r: &Term) -> Option<Verdict> {
     let kv = 1 + u.max_var().max(r.max_var());
     let vars = (0..kv).map(Term::v);
     if u.add_free() && r.add_free() {

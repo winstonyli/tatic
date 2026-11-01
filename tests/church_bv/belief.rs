@@ -3,6 +3,7 @@
 
 use std::collections::HashMap;
 
+
 /// The probability that a random negative scores above a random positive, ties half (Mann-Whitney); `None` with no
 /// negative or no positive.
 pub fn auc(score: &[f64], neg: &[bool]) -> Option<f64> {
@@ -219,6 +220,262 @@ pub fn logistic_fit(x: &[Vec<f64>], y: &[bool], l2: f64) -> Vec<f64> {
     w
 }
 
+pub const S1_SEED: u128 = 0x1b87_3593_0000_0001;
+pub const S2_SEED: u128 = 0x6a09_e667_f3bc_c908;
+pub const CLAIM_SEED: u128 = 0x51ed_270b_27a3_c1f5;
+pub const KINDS: [&str; 4] = ["bitwise", "add/sub", "shl1", "lt"];
+pub const KEYS: [&str; 4] = ["bool8", "plus4", "plus64", "exh"];
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Label {
+    Proved,
+    Refuted,
+    Unproved,
+}
+
+#[derive(Clone, PartialEq, Debug)]
+pub struct Row {
+    pub key: u8,
+    pub kind: u8,
+    pub size: usize,
+    pub vars: usize,
+    pub w4: bool,
+    pub screen: bool,
+    pub extra: [bool; 3], // passes the first 8, 64, 256 of S1
+    pub d: usize,         // differing inputs of S2's 4096
+    pub label: Label,
+    pub index: usize,
+    pub u: String,
+    pub r: String,
+}
+
+impl Row {
+    pub fn line(&self) -> String {
+        let b = |x: bool| x as u8;
+        let l = match self.label { Label::Proved => "proved", Label::Refuted => "refuted", Label::Unproved => "unproved" };
+        format!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", self.key, KINDS[self.kind as usize], self.size, self.vars, b(self.w4), b(self.screen), b(self.extra[0]), b(self.extra[1]), b(self.extra[2]), self.d, l, self.index, self.u, self.r)
+    }
+
+    pub fn parse(line: &str, no: usize) -> Result<Row, String> {
+        let f: Vec<&str> = line.split('\t').collect();
+        let err = |what: &str, v: &str| format!("claims.tsv line {no}: bad {what} {v:?}");
+        if f.len() != 14 {
+            return Err(format!("claims.tsv line {no}: {} fields, expected 14", f.len()));
+        }
+        let num = |i: usize, w: &str| f[i].parse::<usize>().map_err(|_| err(w, f[i]));
+        let flag = |i: usize, w: &str| match f[i] { "1" => Ok(true), "0" => Ok(false), v => Err(err(w, v)) };
+        Ok(Row {
+            key: f[0].parse::<u8>().map_err(|_| err("key", f[0]))?,
+            kind: KINDS.iter().position(|k| *k == f[1]).ok_or_else(|| err("kind", f[1]))? as u8,
+            size: num(2, "size")?,
+            vars: num(3, "vars")?,
+            w4: flag(4, "w4")?,
+            screen: flag(5, "screen")?,
+            extra: [flag(6, "extra8")?, flag(7, "extra64")?, flag(8, "extra256")?],
+            d: num(9, "d")?,
+            label: match f[10] { "proved" => Label::Proved, "refuted" => Label::Refuted, "unproved" => Label::Unproved, v => return Err(err("label", v)) },
+            index: num(11, "index")?,
+            u: f[12].to_string(),
+            r: f[13].to_string(),
+        })
+    }
+}
+
+/// `count` pseudo-random width-8 triples from `seed` (the old probe's generator), none of them in `avoid` and no repeats
+/// (256 by 4096 draws from 2^24 triples collide about 6% of the time, so S1 is drawn by rejection against S2).
+pub fn input_set(seed: u128, count: usize, avoid: &[[u8; 3]]) -> Vec<[u8; 3]> {
+    let (mut s, mut out) = (seed, vec![]);
+    let seen: std::collections::HashSet<[u8; 3]> = avoid.iter().copied().collect();
+    while out.len() < count {
+        let t = [(); 3].map(|_| { s = s.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407); (s >> 40) as u8 });
+        if !seen.contains(&t) && !out.contains(&t) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+use super::*;
+use crate::classes::{Classes, Key, SIZE};
+use crate::rewrite::{with_screen, Node, ValueMemo, ADD, LT, SCREEN_INPUTS, SHL1, SUB};
+
+/// The key named `name` (`bool8`, `plus4`, `plus64`, `exh`), built as the 2026-10-22 probe built its keys.
+fn make_key(name: &str) -> Key {
+    if name == "exh" {
+        return Key { sets: [3usize, 4].iter().map(|&w| (w, (0..1usize << (3 * w)).map(|i| [0, 1, 2].map(|v| (i >> (w * v) & ((1 << w) - 1)) as u128)).collect())).collect() };
+    }
+    let mut key = Key::start();
+    let count: usize = name.strip_prefix("plus").map_or(0, |n| n.parse().unwrap_or_else(|_| panic!("unknown key {name}")));
+    if count == 0 && name != "bool8" {
+        panic!("unknown key {name}");
+    }
+    let mut seed = 0x2545_f491_4f6c_dd1du128;
+    for _ in 0..count {
+        key.push(8, [0, 1, 2].map(|_| {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 40) & 0xff
+        }));
+    }
+    key
+}
+
+fn ops_in(t: Term, acc: &mut u32) {
+    if let Node::Op(o, a, b) = *t.node() {
+        *acc |= 1 << o;
+        ops_in(a, acc);
+        ops_in(b, acc);
+    }
+}
+
+/// The claim's kind (an index into `KINDS`): `lt` at the root, else any `shl1`, else any `add`/`sub`, else bitwise.
+fn kind_of(u: &Term, r: &Term) -> u8 {
+    let mut m = 0u32;
+    ops_in(*u, &mut m);
+    ops_in(*r, &mut m);
+    if matches!(*u.node(), Node::Op(LT, ..)) {
+        3
+    } else if m & 1 << SHL1 != 0 {
+        2
+    } else if m & (1 << ADD | 1 << SUB) != 0 {
+        1
+    } else {
+        0
+    }
+}
+
+#[test]
+#[ignore]
+fn belief_dump() {
+    use std::io::Write;
+    use crate::classes::verdict;
+    let out = std::env::var("RUN_DIR").expect("RUN_DIR: the run wrapper's folder");
+    let cap: usize = std::env::var("BELIEF_CAP").map_or(10000, |v| v.parse().unwrap());
+    let keys = std::env::var("BELIEF_KEYS").unwrap_or("bool8 plus4 plus64 exh".into());
+    let mut file = std::io::BufWriter::new(std::fs::File::create(format!("{out}/claims.tsv")).unwrap());
+    let s2 = input_set(S2_SEED, 4096, &[]);
+    let s1 = input_set(S1_SEED, 256, &s2);
+    let cols = |s: &[[u8; 3]]| -> std::sync::Arc<[Box<[u8]>]> { (0..3).map(|v| s.iter().map(|t| t[v]).collect::<Box<[u8]>>()).collect() };
+    let job = &mut Job::new(Setup::process());
+    tatic::kernel::scoped(|| {
+        for name in keys.split_whitespace() {
+            let ki = KEYS.iter().position(|k| *k == name).unwrap_or_else(|| panic!("unknown key {name}"));
+            let key = make_key(name);
+            let (_c, st) = Classes::build(&key, SIZE, 20000, CLAIM_SEED);
+            println!("BELIEF DUMP key {name}: {} merges proposed, {} sampled, cap {cap}", st.merges, st.sample.len());
+            let (mut r1, mut r2) = (ValueMemo::<u8>::new(8, 256, cols(&s1)), ValueMemo::<u8>::new(8, 4096, cols(&s2)));
+            let mut e4 = ValueMemo::exhaustive(4, 3);
+            let (mut agree, mut checked) = (0, 0);
+            for (index, (u, r)) in st.sample.iter().take(cap).enumerate() {
+                let a = r2.values(u).to_vec();
+                let d = a.iter().zip(r2.values(r)).filter(|(p, q)| p != q).count();
+                let w4 = e4.first_difference(u, r, 1 << 12).is_none();
+                let screen = with_screen(8, 3, |m| m.first_difference(u, r, SCREEN_INPUTS)).is_none();
+                let extra = [8, 64, 256].map(|n| r1.first_difference(u, r, n).is_none());
+                let refuted = d > 0 || !w4 || !screen || !extra[2];
+                let label = if refuted {
+                    Label::Refuted
+                } else if verdict(job, 4, u, r).is_some() {
+                    if index % 20 == 0 {
+                        checked += 1;
+                        agree += prove_rule(job, 4, 1 + u.max_var().max(r.max_var()), u, r).is_some() as usize;
+                    }
+                    Label::Proved
+                } else {
+                    Label::Unproved
+                };
+                let row = Row { key: ki as u8, kind: kind_of(u, r), size: u.size() + r.size(), vars: 1 + u.max_var().max(r.max_var()), w4, screen, extra, d, label, index, u: u.show(), r: r.show() };
+                writeln!(file, "{}", row.line()).unwrap();
+            }
+            println!("BELIEF DUMP key {name}: kernel-path check on every 20th proved claim: {agree} of {checked} agree");
+        }
+    });
+}
+
+pub fn read_rows(path: &str) -> Vec<Row> {
+    std::fs::read_to_string(path).unwrap().lines().enumerate().map(|(i, l)| Row::parse(l, i + 1).unwrap_or_else(|e| panic!("{e}"))).collect()
+}
+
+/// The screen-pass subset at level `lvl`: passes `w4`, `screen` and the first `lvl` S1 prefixes.
+fn in_subset(r: &Row, lvl: usize) -> bool {
+    r.w4 && r.screen && (1..=lvl).all(|l| r.extra[l - 1])
+}
+
+/// The counts arm's training cells at level `lvl`: only rows in the level's subset are fitted (a row that failed a check
+/// is decided, not estimated), with `Cell.n = lvl`, so the n = 8 cell is not the n = 0 cell.
+pub fn cells_at(rows: &[Row], lvl: usize, with_key: bool) -> Vec<Option<Cell>> {
+    rows.iter().map(|r| in_subset(r, lvl).then_some(Cell { kind: r.kind, key: if with_key { r.key } else { 0 }, w4: r.w4, screen: r.screen, n: lvl as u8 })).collect()
+}
+
+pub fn gate(rows: &[Row], folds: &[usize]) -> Result<(), String> {
+    let (mut all, mut per_fold, mut per_kk) = (0, [0usize; 5], HashMap::<(u8, u8), usize>::new());
+    for (r, f) in rows.iter().zip(folds) {
+        if in_subset(r, 0) && r.label == Label::Refuted {
+            all += 1;
+            per_fold[*f] += 1;
+            *per_kk.entry((r.key, r.kind)).or_default() += 1;
+        }
+    }
+    let mut kk: Vec<_> = per_kk.into_iter().collect();
+    kk.sort();
+    let detail = format!("{all} negatives in the screen-pass subset; per fold {per_fold:?}; per (key, kind) {kk:?}");
+    let sizes: Vec<usize> = (0..5).map(|f| folds.iter().filter(|x| **x == f).count()).collect();
+    println!("BELIEF folds: rows per fold {sizes:?}");
+    if sizes.iter().any(|n| *n * 100 > rows.len() * 40) {
+        return Err(format!("stage-1 gate failed: fold sizes {sizes:?} are unbalanced (a fold holds over 40% of {} rows; a giant component of shared sides?)", rows.len()));
+    }
+    if all < 100 || per_fold.iter().any(|n| *n < 10) {
+        return Err(format!("stage-1 gate failed (needs 100 in all and 10 per fold): {detail}"));
+    }
+    println!("BELIEF gate passed: {detail}");
+    Ok(())
+}
+
+/// The counts arm's belief that `r` is negative (refuted) when scored at level `lvl` (0..=3 for n = 0, 8, 64, 256):
+/// 1.0 when a check it has passed at that level is failed (decided), else the smoothed cell estimate.
+pub fn belief_counts(c: &Counts, r: &Row, lvl: usize) -> f64 {
+    if !r.w4 || !r.screen || (1..=lvl).any(|l| !r.extra[l - 1]) {
+        return 1.0;
+    }
+    if r.kind == 0 && r.key == 0 {
+        return 0.0; // a pure bitwise term on the 8 Boolean tuples is decided by its truth table (spec): never wrong
+    }
+    c.p(Cell { kind: r.kind, key: r.key, w4: r.w4, screen: r.screen, n: lvl as u8 }).0
+}
+
+/// The stage-1 report on a claim dump (`$BELIEF_TSV`): per key and kind, how many claims each label holds, how many pass
+/// `w4` and the screen, and how many of those are refuted anyway (the hard negatives A_ref ranks); then the gate. A failed
+/// gate is the milestone's recorded finding ("too few hard negatives to compare"), so stage 2 never starts.
+#[test]
+#[ignore]
+fn belief_report() {
+    let rows = read_rows(&std::env::var("BELIEF_TSV").expect("BELIEF_TSV: the claim dump"));
+    println!("BELIEF stage 1: key kind claims proved refuted unproved | screen-pass refuted unproved | screen-pass refuted by S2/S1/d");
+    for key in 0..KEYS.len() as u8 {
+        for kind in 0..KINDS.len() as u8 {
+            let g: Vec<&Row> = rows.iter().filter(|r| r.key == key && r.kind == kind).collect();
+            let n = |f: &dyn Fn(&&Row) -> bool| g.iter().filter(|r| f(r)).count();
+            let sub = n(&|r| in_subset(r, 0));
+            println!(
+                "BELIEF {:7} {:8} {:6} {:6} {:6} {:6} | {:6} {:4} {:6} | {}",
+                KEYS[key as usize],
+                KINDS[kind as usize],
+                g.len(),
+                n(&|r| r.label == Label::Proved),
+                n(&|r| r.label == Label::Refuted),
+                n(&|r| r.label == Label::Unproved),
+                sub,
+                n(&|r| in_subset(r, 0) && r.label == Label::Refuted),
+                n(&|r| in_subset(r, 0) && r.label == Label::Unproved),
+                n(&|r| in_subset(r, 0) && (r.d > 0 || r.extra.iter().any(|b| !b))),
+            );
+        }
+    }
+    let folds = fold_of(&rows.iter().map(|r| (r.u.clone(), r.r.clone())).collect::<Vec<_>>());
+    if let Err(e) = gate(&rows, &folds) {
+        panic!("{e}");
+    }
+}
+
 #[cfg(test)]
 mod stats_tests {
     use super::*;
@@ -308,5 +565,55 @@ mod estimator_tests {
             assert!(w.iter().all(|v| v.is_finite()) && logistic_p(&w, &x[0]).is_finite());
         }
         assert!(logistic_fit(&[], &[], 1.0).iter().all(|v| v.is_finite()));
+    }
+}
+
+#[cfg(test)]
+mod dump_tests {
+    use super::*;
+
+    #[test]
+    fn a_row_round_trips_and_a_bad_kind_names_its_line() {
+        let r = Row { key: 1, kind: 2, size: 7, vars: 3, w4: true, screen: true, extra: [true, true, false], d: 12, label: Label::Refuted, index: 5, u: "add(x, y)".into(), r: "add(y, x)".into() };
+        assert_eq!(Row::parse(&r.line(), 9).unwrap(), r);
+        let bad = "1\tnope\t7\t3\t1\t1\t1\t1\t0\t12\trefuted\t5\tu\tr";
+        let e = Row::parse(bad, 42).unwrap_err();
+        assert!(e.contains("line 42") && e.contains("nope"), "{e}");
+    }
+
+    #[test]
+    fn s1_and_s2_are_disjoint_input_sets() {
+        let s2 = input_set(S2_SEED, 4096, &[]);
+        let s1 = input_set(S1_SEED, 256, &s2);
+        let a: std::collections::HashSet<[u8; 3]> = s1.into_iter().collect();
+        assert!(s2.iter().all(|t| !a.contains(t)), "S1 and S2 share a triple");
+    }
+}
+
+#[cfg(test)]
+mod report_tests {
+    use super::*;
+
+    fn row(label: Label, w4: bool, screen: bool, fold_marker: usize) -> Row {
+        Row { key: 0, kind: 3, size: 5, vars: 2, w4, screen, extra: [true; 3], d: 1, label, index: fold_marker, u: format!("u{fold_marker}"), r: format!("r{fold_marker}") }
+    }
+
+    #[test]
+    fn the_gate_counts_only_screen_pass_refutations_and_names_the_shortfall() {
+        let mut rows: Vec<Row> = (0..30).map(|i| row(Label::Refuted, true, true, i)).collect();
+        rows.extend((30..60).map(|i| row(Label::Refuted, false, true, i))); // caught by w4: not in the subset
+        let folds: Vec<usize> = (0..rows.len()).map(|i| i % 5).collect(); // balanced, so the shortfall is what fails
+        let e = gate(&rows, &folds).unwrap_err();
+        assert!(e.contains("30 negatives") && e.contains("100"), "{e}");
+    }
+
+    #[test]
+    fn belief_is_one_for_a_claim_that_failed_the_evidence_at_that_level() {
+        let c = Counts::fit(&[Cell { kind: 3, key: 0, w4: true, screen: true, n: 0 }], &[false]);
+        let mut r = row(Label::Refuted, true, true, 1);
+        r.extra = [true, false, false];
+        // level 1 (n = 8): extra8 passed, so the cell answers; no (kind,key,n=1) cell exists, so (kind,key) answers: (0+1)/(1+2)
+        assert_eq!(belief_counts(&c, &r, 1), 1.0 / 3.0);
+        assert_eq!(belief_counts(&c, &r, 2), 1.0); // level 2 (n = 64): extra64 failed, decided
     }
 }
