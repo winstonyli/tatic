@@ -7614,15 +7614,16 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
 - **Knee chart (2026-10-31; runs `v06k-g1` to `g12`; rule in the spec addendum, set before the data).** Each cheap arm against the
   random arm of equal walk work (the random n from the walk-per-n of the recorded arms), salts 1-3 | 4-6, held-out M (job CPU):
 
-| cheap arm (pool 4 unless noted) | cheap | random of equal work | difference | wins |
-|---|---|---|---|---|
-| n 80 (walk 219 M | 224 M) | 5427 (444 s) | 5531 at n 208 (684 s) | -104 | yes |
-| | 5305 (656 s) | 5476 (688 s) | -171 | yes |
-| n 160 (walk 488 M | 545 M) | 4721 (700 s) | 4832 at n 433 (669 s) | -111 | yes |
-| | 4569 (887 s) | 4774 (860 s) | -205 | yes |
-| n 240 (walk 780 M | 784 M) | 4543 (1260 s) | 4377 at n 700 (1422 s) | **+166** | no |
-| | 4591 (1359 s) | 4434 (1207 s) | **+157** | no |
-| n 160, pool 8 (walk 555 M | 525 M) | 4990 (920 s) | 4860 at n 495 (985 s) | **+130** | no |
+| cheap arm (pool 4 unless noted) | salts | cheap (job CPU) | random of equal work (job CPU) | difference | wins |
+|---|---|---|---|---|---|
+| n 80 (walk 219 M, 224 M) | 1-3 | 5427 (444 s) | 5531, n 208 (684 s) | -104 | yes |
+| n 80 | 4-6 | 5305 (656 s) | 5476 (688 s) | -171 | yes |
+| n 160 (walk 488 M, 545 M) | 1-3 | 4721 (700 s) | 4832, n 433 (669 s) | -111 | yes |
+| n 160 | 4-6 | 4569 (887 s) | 4774 (860 s) | -205 | yes |
+| n 240 (walk 780 M, 784 M) | 1-3 | 4543 (1260 s) | 4377, n 700 (1422 s) | **+166** | no |
+| n 240 | 4-6 | 4591 (1359 s) | 4434 (1207 s) | **+157** | no |
+| n 160, pool 8 (walk 555 M, 525 M) | 1-3 | 4990 (920 s) | 4860, n 495 (985 s) | **+130** | no |
+| n 160, pool 8 | 4-6 | 4718 (967 s) | 4717 (1081 s) | +1 | no |
 | | 4718 (967 s) | 4717 (1081 s) | +1 | no |
 
   Sigma 76. So cheap selection beats a random draw of equal work at n 80 and n 160 (by 104-205 held-out M, 2-3% of the
