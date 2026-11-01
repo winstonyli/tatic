@@ -2164,7 +2164,7 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     all. Replaying the log's round lines, a rollback to round r voids the rounds r.. played so far, 3.9 rounds on average
     (1510 in all), 315 s of 70516 s of round time (scoring plus rule-set evaluation): 0.45%, about 0.8 s a rollback. The
     mine is 44% of a sweep's samples, so a rollback is under 0.2% of a sweep, and the 5.4% failure rate across all eras
-    (48379 of 902050 lazy proofs) is mostly the old arms without the fallback. Left out: the failing proof's own time and the
+    (48379 of 902050 lazy proofs) is probably mostly the old arms without the fallback (inference; the per-era split was not run). Left out: the failing proof's own time and the
     speculative proof threads' contention with scoring. The instrumented sweep is not worth running.
 ### Held-out M and transfer for v0.5 (2026-10-26)
 - **What held-out M is made of now (run `2026-10-26-held-now`, about 2 min; `held_now.sh` in its folder, the
