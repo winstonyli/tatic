@@ -697,6 +697,9 @@ fn belief_shr1_spike() {
         for r in pick {
             let (u, v) = (parse_term(&r.u), parse_term(&r.r));
             let has = r.u.contains("shr1") || r.r.contains("shr1");
+            if n % 50 == 0 {
+                w6 = ValueMemo::exhaustive(6, 3); // the memo grows with every subterm: 3 GB by claim ~100 otherwise
+            }
             let agree = w6.agree(&u, &v);
             let t0 = std::time::Instant::now();
             let ok = prove_rule(job, 4, 1 + u.max_var().max(v.max_var()), &u, &v).is_some();
@@ -706,7 +709,7 @@ fn belief_shr1_spike() {
             true6 += agree as usize;
             proved += ok as usize;
             proved_shr1 += (ok && has) as usize;
-            if !ok || !agree || !has {
+            if !ok || !agree {
                 println!("SHR1 odd: key {} kind {} shr1 {has} true6 {agree} proved {ok}: {} -> {}", KEYS[r.key as usize], KINDS[r.kind as usize], r.u, r.r);
             }
         }
