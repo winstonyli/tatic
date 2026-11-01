@@ -171,7 +171,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Screen**: a random-input test that refutes a claimed law before proving it. `tests/church_bv/rewrite.rs#SCREEN_INPUTS`
 - **Specialisation trace**: the list of beta-v steps replayed by the independent checker. `src/spec_check.rs#Step`
 - **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `tests/church_bv/miner.rs#laws_of`
-- **Straggler-first selection**: with `EXTRAS_SELECT=straggler` the miner classifies a pool of extras under the mine's base rules and keeps the first n stragglers; `cheap` keeps the n with the fewest rewrite steps; `small` ranks by steps then by the straggler's normal-form size (so it keys mine 0, where steps are all 0); `novel` and `reinforce` put the stragglers the fewest (or most) candidate left sides of the served stragglers reach first, then fewest steps. One rank per straggler (`rank_of`), so each is a key, not a mode. `tests/church_bv/miner.rs#kept_indices`
+- **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified. `tests/church_bv/miner.rs#kept_indices`
 - **Stream / salt**: operator-set law streams, interleaved round-robin; the salt reshuffles. `tests/church_bv/search.rs#stream_sequence`
 - **Sweep**: three cold loops for one salt and build. `tests/church_bv/driver.rs#sweep`
 - **TermStore**: the hash-consing store of terms. `src/term.rs#TermStore`

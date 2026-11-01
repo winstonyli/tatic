@@ -163,3 +163,5 @@ the recorded arm) against `small` (B), salts 1-3 and 4-6. Win: held(small) < hel
 not a rule win. Else null; then the dead-key gap is a property of the stream, not of the key, and `PARKED.md` records it.
 
 j3 result (2026-10-31): no rule win. `small` -31 and +22 held-out M against `cheap` (within sigma), match -3.7%/-9.7%, op -5.7%/-14.7% at equal walk, job CPU 13-16% lower but load noise: instruction count 1.95% lower (`v06j3-icount`, `v06j3-icount-sm`). Runs `v06j3-g1`, `g2`; `docs/tier-cycle.md`, "The cheap variant".
+
+b1 (2026-10-31): `Keep` collapsed to `First` and `Small` (`EXTRAS_SELECT=first|small`); `straggler`, `cheap`, `novel`, `reinforce`, the reach and correlation logging and `rank_of` are deleted, recoverable from `6bdf573`. The recorded gates above name the old keys as run.

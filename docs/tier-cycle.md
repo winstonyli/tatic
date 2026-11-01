@@ -7714,6 +7714,7 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
   `small` does 1.95% fewer instructions, against a spread of 0.02% (`cheap`) and 0.09% (`small`): real and well above noise,
   and an order of magnitude below the 13-16% the job CPU suggested (load noise). Per loop the cost moves both ways (loop 2
   388 G to 449 G, loop 3 883 G to 776 G), as the rules differ. One salt only; a cost claim of about 2%.
+  `EXTRAS_SELECT` is now `first` or `small`; the earlier keys named in the sections above ran as recorded and are deleted from the code (recover from `6bdf573`).
 
 ## The JIT and the target machine
 
