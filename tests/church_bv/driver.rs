@@ -23,7 +23,7 @@
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md, docs/tier-cycle.md "Count and slicing"): every mine
 //! with rule rounds also mines its own `EXTRAS_N` laws, the next the filter keeps from the stream sequence grown as deep
 //! as the held-out bands (`scope_extras`, fresh slices); off with ABLATE=gen; GEN_DRAW=d draws them from the sequence at
-//! salt + 1000 d instead. POOL=p with EXTRAS_SELECT=first|straggler|cheap hands each mine p x n laws and the miner keeps n: the first n, the first n stragglers, or the n stragglers with the fewest rewrite steps
+//! salt + 1000 d instead. POOL=p with EXTRAS_SELECT=first|straggler|cheap|novel|reinforce hands each mine p x n laws and the miner keeps n: the first n, the first n stragglers, the n stragglers with the fewest rewrite steps, or (novel, reinforce) those a served-straggler candidate does not, or does, reach first (then fewest steps)
 //! under that mine's base rules (`RULEMINER_EXTRAS_*`, `miner::kept_indices`). POOL>1 needs a selector.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
@@ -203,7 +203,7 @@ fn extra_slices(len: usize, loops: usize, mines: usize, n: usize) -> Result<Vec<
     Ok((0..k).map(|j| j * n..(j + 1) * n).collect())
 }
 
-/// The driver variables `POOL` and `EXTRAS_SELECT` (`first`, `straggler` or `cheap`): the miner cuts each mine's pool of `POOL x n`
+/// The driver variables `POOL` and `EXTRAS_SELECT` (`first`, `straggler`, `cheap`, `novel` or `reinforce`): the miner cuts each mine's pool of `POOL x n`
 /// extras down to `n` (`miner::kept_indices`). Unset is today's draw (pool 1, the mine's n extras as they come); a pool of
 /// more than one needs a selector, and a pool of 0 is an error.
 fn extras_select(select: Option<&str>, pool: usize) -> Result<Option<crate::miner::Keep>, String> {
@@ -212,7 +212,7 @@ fn extras_select(select: Option<&str>, pool: usize) -> Result<Option<crate::mine
     }
     match select {
         Some(s) => crate::miner::Keep::parse(s).map(Some),
-        None if pool > 1 => Err(format!("POOL {pool} needs EXTRAS_SELECT=first|straggler|cheap")),
+        None if pool > 1 => Err(format!("POOL {pool} needs EXTRAS_SELECT=first|straggler|cheap|novel|reinforce")),
         None => Ok(None),
     }
 }
@@ -303,6 +303,7 @@ fn extras_select_parses_and_needs_a_selector_for_a_pool() {
     assert_eq!(extras_select(Some("first"), 4), Ok(Some(Keep::First)));
     assert_eq!(extras_select(Some("straggler"), 1), Ok(Some(Keep::Straggler)));
     assert_eq!(extras_select(Some("cheap"), 4), Ok(Some(Keep::Cheap)));
+    assert_eq!(extras_select(Some("novel"), 4), Ok(Some(Keep::Novel)));
     assert!(extras_select(Some("bogus"), 1).unwrap_err().contains("EXTRAS_SELECT"));
     assert!(extras_select(None, 4).unwrap_err().contains("EXTRAS_SELECT"));
     assert!(extras_select(None, 0).unwrap_err().contains("POOL"));
