@@ -115,3 +115,7 @@ equal work from the random arms' walk-per-n (about 1.0-1.1 M per n), and runs th
 arm: held(cheap) < held(random of equal work) - 76 on both salt sets at job CPU <= 1.1x. A pool that is too short for pool 8 is
 reported as such (the gate says how far the sequence falls short). The tally is the answer to "is n 160 a knee": cheap wins at
 n 80 and 240 too (a curve), only at 160 (a point), or nowhere but 160 on salts 4-6 only (noise).
+
+Knee chart result (2026-10-31): cheap wins at n 80 (-104, -171) and n 160 (-111, -205) against random of equal work, and
+loses at n 240 (+166, +157) and at pool 8 (+130, +1). A curve at small n that reverses past about 500 M of walk work.
+`docs/tier-cycle.md`, "The cheap variant" (runs `v06k-g1` to `g12`).
