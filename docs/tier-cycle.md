@@ -7918,7 +7918,10 @@ carry). Checked, uniformly in the position N and with per-bit `GoodBool` hypothe
 false laws are rejected (one control, `add x y = x xor y`, is only ill-typed, so weak). The per-width proofs cost 70 ms at
 n = 8, 3.4 s at 32 and 32.6 s at 64 for `add x 0 = x` (bit-vector doc, §17-21; not re-run here). Not shown: the bridge from
 a stream to the fixed-width `Bv_n` tuple (restricting a stream to n bits needs a lookup that eliminates a symbolic `Nat0`
-into `Sort1`, which `Nat0` cannot do; the escapes, indexing by `Nat1` or threading witnesses at `Sort2`, are unbuilt), any
+into `Sort1`, which `Nat0` cannot do; the escapes, indexing by `Nat1` or threading witnesses at `Sort2`, are unbuilt). Two more routes fail on paper by the same level rule (inference from the level table in the spike's header, not built; a
+build would confirm it): a stream over an abstract bit type `B : Sort0` (so `Nat0` could eliminate into it) cannot be
+instantiated at `Bool0 : Sort1`, and carrying shifted streams in the fold state instead of a position numeral still leaves the
+tuple lookup `Nat0 -> Bool0` unbuilt, any
 bitwise or comparison law, and `mul` (a second induction). So "the kernel lacks an induction principle" in the parked goal-D
 entry is too strong for `add`; what is missing is the bridge and the rest of the operators.
 
