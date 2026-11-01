@@ -161,3 +161,5 @@ Assumption: a smaller normal form means fewer subterms, fewer candidates and les
 the recorded arm) against `small` (B), salts 1-3 and 4-6. Win: held(small) < held(cheap) - 76 on both salt sets at job CPU
 <= 1.1x cheap's; a CPU saving at equal held-out M (job CPU <= 0.9x on both sets, held within sigma) is reported as a cost win,
 not a rule win. Else null; then the dead-key gap is a property of the stream, not of the key, and `PARKED.md` records it.
+
+j3 result (2026-10-31): no rule win. `small` -31 and +22 held-out M against `cheap` (within sigma), match -3.7%/-9.7%, op -5.7%/-14.7% at equal walk, job CPU 13-16% lower but against a cached, load-sensitive `cheap` figure. Runs `v06j3-g1`, `g2`; `docs/tier-cycle.md`, "The cheap variant".
