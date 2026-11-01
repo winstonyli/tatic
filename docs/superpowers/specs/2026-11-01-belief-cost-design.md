@@ -2,6 +2,8 @@
 status: draft
 ---
 
+> Not run (decision f1, 2026-11-01): kept for a claim source whose label costs more than the model; see `PARKED.md`, "Belief layer stage 2".
+
 # Belief layer stage 2: predicting the cheap path's misses (design)
 
 Amends `docs/superpowers/specs/2026-10-31-belief-layer-design.md` (done; its stage 1 stopped at the gate, `docs/tier-cycle.md`,
