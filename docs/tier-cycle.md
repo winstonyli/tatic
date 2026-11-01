@@ -7908,22 +7908,34 @@ variables, so nothing composes into a longer chain. This closes the parked trigg
 inlining" for this corpus: it does not, so a workload with depth has to be written, not derived. Limits: 23 small terms, the
 specialiser inlines only known closures, and a count of trees does not measure what a larger program would give.
 
-**Laws uniform in the width: two of them check on the unchanged kernel (spike, 2026-11-01; `tests/church_bv/uniform_width.rs`,
-6 tests, 0.02 s).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md` §53:
-bits as streams, a bit-serial adder whose carry is a fold, and induction on the position. The kernel has no cumulativity,
-so one Church `Nat` cannot index the inputs and also count the fold (the state would mention its own type); the spike
-uses two, `Nat0` for the streams' index and `Nat1` for the count, with the state `Sigma(Nat0, Bool0)` (position numeral,
+**Laws uniform in the width: two of them check on the unchanged kernel, and one reaches `Bv_n` (spike, 2026-11-01;
+`tests/church_bv/uniform_width.rs`).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md`
+§53: bits as streams, a bit-serial adder whose carry is a fold, and induction on the position. The kernel has no cumulativity,
+so one Church `Nat` cannot index the inputs and also count the fold (the state would mention its own type); the spike uses
+two, `Nat_k` for the streams' index and `Nat_(k+1)` for the count, with the state `Sigma(Nat_k, Bool0)` (position numeral,
 carry). Checked, uniformly in the position N and with per-bit `GoodBool` hypotheses on the stream bits as in
-`tests/church_lemmas.rs`: `add x 0 = x` (1.0 ms) and `add x y = add y x` (0.8 ms), plus the prefix form for every n. Five
-false laws are rejected (one control, `add x y = x xor y`, is only ill-typed, so weak). The per-width proofs cost 70 ms at
-n = 8, 3.4 s at 32 and 32.6 s at 64 for `add x 0 = x` (bit-vector doc, §17-21; not re-run here). Not shown: the bridge from
-a stream to the fixed-width `Bv_n` tuple (restricting a stream to n bits needs a lookup that eliminates a symbolic `Nat0`
-into `Sort1`, which `Nat0` cannot do; the escapes, indexing by `Nat1` or threading witnesses at `Sort2`, are unbuilt). Two more routes fail on paper by the same level rule (inference from the level table in the spike's header, not built; a
-build would confirm it): a stream over an abstract bit type `B : Sort0` (so `Nat0` could eliminate into it) cannot be
-instantiated at `Bool0 : Sort1`, and carrying shifted streams in the fold state instead of a position numeral still leaves the
-tuple lookup `Nat0 -> Bool0` unbuilt, any
-bitwise or comparison law, and `mul` (a second induction). So "the kernel lacks an induction principle" in the parked goal-D
-entry is too strong for `add`; what is missing is the bridge and the rest of the operators.
+`tests/church_lemmas.rs`: `add x 0 = x` and `add x y = add y x`, plus the prefix form for every n (about 1 ms each at k = 0).
+Five false laws are rejected (one control, `add x y = x xor y`, is only ill-typed, so weak). `add x 0 = x` is one induction
+whose statement is the state equality `st M = (embed M, false)`; two statements (`fst = embed`, `snd = false`) would put an
+`Id` on `Bool0` in the induction motive's sort, which is only `Sort(k+1)`, and it checks at every level k = 0 to 3.
+
+*The bridge to the fixed-width tuple works (`bridge_add_zero`, n = 1 to 32).* `Pi x:Bv_n. GoodBv x -> Id(Bv_n, add x 0, x)`, the
+statement of `encoding::add_zero_proof` itself, is proved from the uniform theorem. Inside the `GoodBv` step the bits `a_i` and
+witnesses `ga_i` are variables; the stream reads them off with a lookup `i Cw proj0 rot a.. ga..`, where `proj0` picks `a_0` and
+`rot` shifts the tuple by one and pads with false. The uniform theorem asks for `GoodBool (x i)` at every position, a `Sort2`
+claim, so the lookup must return `W = Sigma(b:Bool0, GoodBool b)`, and a `Nat_k` eliminates only into `Sort k`: the index is a
+`Nat2` and the count a `Nat3` (k = 2). Each output bit is the theorem at the numeral i (its `Good` witness a closed term), and the
+tuple equality is a chain of rewrites of those bits. The adder's carry circuit is `encoding::ripple_carry`'s, so the stream
+adder's bit i is convertible to `encoding::add`'s and no circuit-equivalence proof is needed. Wrong statements (`add x 1 = x`, and
+`add x 2^(n-1) = x`) are rejected at n = 1 to 3. Cost, one run, shared machine: the bridge checks in 0.8 ms at n = 4, 1.5 ms at 8,
+5.1 at 16 and 21.9 at 32, while `add_zero_proof` checks in 0.2, 0.4, 0.9 and 2.7 ms, so the bridge is about 8 times slower to
+check here, and building its term costs 14 ms at n = 4, 82 ms at 8, 631 ms at 16 and 6.1 s at 32 (the numerals and `Good`
+witnesses are O(i) each: quadratic). It is not a speed win. What it shows is that a law proved once for every width is the same
+statement as the fixed-width law, so a uniform proof can serve every `Bv_n`; each n still needs its own bridge instance, not one
+for all n. (The 70 ms at n = 8, 3.4 s at 32 and 32.6 s at 64 quoted for per-width proofs earlier come from the bit-vector doc, §17-21,
+a different construction; `add_zero_proof` is far cheaper, so those numbers are no baseline for this.) Not shown: any bitwise or
+comparison law, and `mul` (a second induction). So "the kernel lacks an induction principle" in the parked goal-D entry is too
+strong for `add`; what is missing is the rest of the operators.
 
 **Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
 2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.

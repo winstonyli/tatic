@@ -36,6 +36,8 @@ enum T {
     Sig(&'static str, Box<T>, Box<T>),
     Pair(&'static str, Box<T>, Box<T>, Box<T>),
     SigRec(Box<T>, Box<T>, Box<T>),
+    /// A closed kernel term built elsewhere (`encoding.rs`).
+    K(Expr),
 }
 use T::*;
 fn b(t: T) -> Box<T> {
@@ -110,6 +112,7 @@ fn comp(t: &T, env: &mut Vec<&'static str>) -> Expr {
             let (ea, ec) = (comp(a, env), comp(c, env));
             kernel::pair(ef, ea, ec)
         }
+        K(e) => *e,
         SigRec(m, st, tg) => {
             let (em, es, et) = (comp(m, env), comp(st, env), comp(tg, env));
             kernel::sigrec(em, es, et)
@@ -142,11 +145,12 @@ fn or_() -> T {
 fn xor_() -> T {
     bool2(ap3(v("a"), v("C"), ap3(v("b"), v("C"), v("f"), v("t")), ap3(v("b"), v("C"), v("t"), v("f"))))
 }
-fn maj(a: T, c: T, d: T) -> T {
-    ap2(or_(), ap2(and_(), a.clone(), c.clone()), ap2(and_(), d, ap2(or_(), a, c)))
-}
 fn xor(a: T, c: T) -> T {
     ap2(xor_(), a, c)
+}
+/// The next carry, in the circuit `encoding::ripple_carry` uses (so the adder's bits are convertible to `encoding::add`'s).
+fn maj(a: T, c: T, d: T) -> T {
+    ap2(or_(), ap2(and_(), a.clone(), c.clone()), ap2(and_(), d, xor(a, c)))
 }
 fn nat(k: u32) -> T {
     pi_("C", s(k), pi_("z", v("C"), pi_("s", arr(v("C"), v("C")), v("C"))))
@@ -427,7 +431,17 @@ fn e_sanity_adder_computes_and_more_controls() {
 // Nat0 can only eliminate into Sort0 and Bool0 is Sort1, so the lookup indexes by Nat1 (which eliminates into Sort1).
 // sx := \i:Nat1. x Bool0 (i (Bool0^n -> Bool0) proj_0 rot), proj_0 a_0..a_(n-1) = a_0 and rot p a_0..a_(n-1) = p a_1..a_(n-1) false,
 // so proj_k picks a_k and runs off the end into false.
-const AN: [&str; 8] = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7"];
+/// Variable names `a<i>` and `ga<i>` for up to 64 bits.
+const AN_NAMES: [&str; 64] = ["a0", "a1", "a2", "a3", "a4", "a5", "a6", "a7", "a8", "a9", "a10", "a11", "a12", "a13", "a14", "a15", "a16", "a17", "a18", "a19", "a20", "a21", "a22", "a23", "a24", "a25", "a26", "a27", "a28", "a29", "a30", "a31", "a32", "a33", "a34", "a35", "a36", "a37", "a38", "a39", "a40", "a41", "a42", "a43", "a44", "a45", "a46", "a47", "a48", "a49", "a50", "a51", "a52", "a53", "a54", "a55", "a56", "a57", "a58", "a59", "a60", "a61", "a62", "a63"];
+const GN_NAMES: [&str; 64] = ["ga0", "ga1", "ga2", "ga3", "ga4", "ga5", "ga6", "ga7", "ga8", "ga9", "ga10", "ga11", "ga12", "ga13", "ga14", "ga15", "ga16", "ga17", "ga18", "ga19", "ga20", "ga21", "ga22", "ga23", "ga24", "ga25", "ga26", "ga27", "ga28", "ga29", "ga30", "ga31", "ga32", "ga33", "ga34", "ga35", "ga36", "ga37", "ga38", "ga39", "ga40", "ga41", "ga42", "ga43", "ga44", "ga45", "ga46", "ga47", "ga48", "ga49", "ga50", "ga51", "ga52", "ga53", "ga54", "ga55", "ga56", "ga57", "ga58", "ga59", "ga60", "ga61", "ga62", "ga63"];
+#[allow(non_snake_case)]
+fn AN(i: usize) -> &'static str {
+    AN_NAMES[i]
+}
+#[allow(non_snake_case)]
+fn GN(i: usize) -> &'static str {
+    GN_NAMES[i]
+}
 fn arrows(n: usize, res: T) -> T {
     (0..n).fold(res, |acc, _| arr(bool0(), acc))
 }
@@ -438,18 +452,16 @@ fn tuple(bits: &[T]) -> T {
     lm("C", s(1), lm("k", arrows(bits.len(), v("C")), bits.iter().fold(v("k"), |f, a| ap(f, a.clone()))))
 }
 fn proj0(n: usize) -> T {
-    (0..n).rev().fold(v(AN[0]), |body, i| lm(AN[i], bool0(), body))
+    (0..n).rev().fold(v(AN(0)), |body, i| lm(AN(i), bool0(), body))
 }
 fn rot(n: usize) -> T {
     let cn = arrows(n, bool0());
-    let call = (1..n).fold(v("p"), |f, i| ap(f, v(AN[i])));
+    let call = (1..n).fold(v("p"), |f, i| ap(f, v(AN(i))));
     let call = ap(call, ff());
-    lm("p", cn, (0..n).rev().fold(call, |body, i| lm(AN[i], bool0(), body)))
+    lm("p", cn, (0..n).rev().fold(call, |body, i| lm(AN(i), bool0(), body)))
 }
 fn lookup(n: usize) -> T {
-    lm("x", bvt(n), lm("i", nat(1), ap2(ap(v("x"), bool0()), ap3(v("i"), arrows(n, bool0()), proj0(n), rot(n)).clone().pipe(|t| t), ff()).pipe(|_| {
-        ap(ap(v("x"), bool0()), ap3(v("i"), arrows(n, bool0()), proj0(n), rot(n)))
-    })))
+    lm("x", bvt(n), lm("i", nat(1), ap(ap(v("x"), bool0()), ap3(v("i"), arrows(n, bool0()), proj0(n), rot(n)))))
 }
 
 #[test]
@@ -460,7 +472,7 @@ fn bridge_probe_lookup_types_and_reads_the_tuple() {
     let num1 = |k: u32| (0..k).fold(zero(1), |e, _| ap(succ(1), e));
     let x = tuple(&[tt(), ff(), tt()]);
     for (k, want) in [tt(), ff(), tt(), ff(), ff()].iter().enumerate() {
-        let got = ex(&ap2(lookup(n), x.clone(), num1(k as u32)).pipe(|_| ap(ap(lookup(n), x.clone()), num1(k as u32))));
+        let got = ex(&ap(ap(lookup(n), x.clone()), num1(k as u32)));
         assert!(kernel::def_eq(&got, &ex(want)), "bit {k}");
     }
 }
@@ -469,5 +481,145 @@ fn bridge_probe_lookup_types_and_reads_the_tuple() {
 fn b_add_zero_at_higher_levels() {
     for k in [1, 2, 3] {
         run(&format!("b at level {k}"), &stmt_b(k, false), &proof_b(k, false)).unwrap();
+    }
+}
+
+// ---------- the bridge: `add x 0 = x` on a Bv_n tuple, from the uniform theorem ----------
+// Inside the `GoodBv` step the bits a_i and their witnesses ga_i are variables. The stream is read off them with the
+// lookup above, but the lookup must also hand back the witness `GoodBool (x i)` the uniform theorem asks for at every
+// position, which lives in Sort2; so it eliminates the index into W := Sigma(b:Bool0, GoodBool b) : Sort2, which needs the
+// index to be a Nat2 (level k = 2, the count a Nat3). Each output bit is the uniform theorem at the numeral i, and the
+// tuple equality is a chain of rewrites of those bits (the adder's carry circuit is `encoding::ripple_carry`'s, so the
+// uniform adder's bit i is convertible to `encoding::add`'s).
+fn wty() -> T {
+    Sig("b", b(bool0()), b(ap(goodbool(), v("b"))))
+}
+fn fstw(u: T) -> T {
+    SigRec(b(lm("_s", wty(), bool0())), b(lm("a", bool0(), lm("b", ap(goodbool(), v("a")), v("a")))), b(u))
+}
+fn sndw(u: T) -> T {
+    SigRec(b(lm("_s", wty(), ap(goodbool(), fstw(v("_s"))))), b(lm("a", bool0(), lm("b", ap(goodbool(), v("a")), v("b")))), b(u))
+}
+/// `Pi a_0..a_(n-1). GoodBool a_0 -> .. -> GoodBool a_(n-1) -> W`
+fn cw(n: usize) -> T {
+    let mut t = wty();
+    for j in (0..n).rev() {
+        t = pi_(GN(j), ap(goodbool(), v(AN(j))), t);
+    }
+    for j in (0..n).rev() {
+        t = pi_(AN(j), bool0(), t);
+    }
+    t
+}
+fn lam_bits(n: usize, mut body: T) -> T {
+    for j in (0..n).rev() {
+        body = lm(GN(j), ap(goodbool(), v(AN(j))), body);
+    }
+    for j in (0..n).rev() {
+        body = lm(AN(j), bool0(), body);
+    }
+    body
+}
+fn proj0w(n: usize) -> T {
+    lam_bits(n, Pair("b", b(ap(goodbool(), v("b"))), b(v(AN(0))), b(v(GN(0)))))
+}
+fn rotw(n: usize) -> T {
+    let gf = lm("P", arr(bool0(), s(1)), lm("h1", ap(v("P"), tt()), lm("h0", ap(v("P"), ff()), v("h0"))));
+    let mut call = v("p");
+    for j in 1..n {
+        call = ap(call, v(AN(j)));
+    }
+    call = ap(call, ff());
+    for j in 1..n {
+        call = ap(call, v(GN(j)));
+    }
+    call = ap(call, gf);
+    lm("p", cw(n), lam_bits(n, call))
+}
+/// The stream position read as a W: `i Cw proj0 rot a.. ga..`
+fn sw(n: usize, i: T) -> T {
+    let mut t = ap3(i, cw(n), proj0w(n), rotw(n));
+    for j in 0..n {
+        t = ap(t, v(AN(j)));
+    }
+    for j in 0..n {
+        t = ap(t, v(GN(j)));
+    }
+    t
+}
+/// The `Good` witness for the numeral `m` at level `k + 1`.
+fn goodnum(k: u32, m: u32) -> T {
+    let numeral = |j: u32| (0..j).fold(zero(k + 1), |e, _| ap(succ(k + 1), e));
+    let mut g = lm("P", arr(nat(k + 1), s(k + 1)), lm("h0", ap(v("P"), zero(k + 1)), lm("hs",
+        pi_("m", nat(k + 1), arr(ap(v("P"), v("m")), ap(v("P"), ap(succ(k + 1), v("m"))))), v("h0"))));
+    for j in 1..=m {
+        let prev = g.clone();
+        g = lm("P", arr(nat(k + 1), s(k + 1)), lm("h0", ap(v("P"), zero(k + 1)), lm("hs",
+            pi_("m", nat(k + 1), arr(ap(v("P"), v("m")), ap(v("P"), ap(succ(k + 1), v("m"))))),
+            ap2(v("hs"), numeral(j - 1), ap3(prev, v("P"), v("h0"), v("hs"))))));
+    }
+    g
+}
+/// `(proof, statement)` of `Pi x:Bv_n. GoodBv x -> Id(Bv_n, add x (lit 0), x)`, by the uniform theorem.
+fn bridge_add_zero(n: usize) -> (Expr, Expr) {
+    let k = 2;
+    let (_, stmt) = super::encoding::add_zero_proof(n, 0);
+    let numeral = |j: usize| (0..j).fold(zero(k + 1), |e, _| ap(succ(k + 1), e));
+    let xs = lm("i", nat(k), fstw(sw(n, v("i"))));
+    let gxs = lm("i", nat(k), sndw(sw(n, v("i"))));
+    let sum_i = |i: usize| sumbit(k, xs.clone(), zs(k), numeral(i));
+    let e_i = |i: usize| ap(ap(ap(ap(proof_b(k, false), numeral(i)), goodnum(k, i as u32)), xs.clone()), gxs.clone());
+    // G_j := Id(Bv, mk(a_<j, S_j.., S_(n-1)), mk a), G_n = refl; G_j from G_(j+1) by rewriting S_j to a_j
+    let mk_a = tuple(&(0..n).map(|i| v(AN(i))).collect::<Vec<_>>());
+    let mut g = rfl(mk_a.clone());
+    for j in (0..n).rev() {
+        let fam = lm("t", bool0(), idt(bvt(n), tuple(&(0..n).map(|i| if i < j { v(AN(i)) } else if i == j { v("t") } else { sum_i(i) }).collect::<Vec<_>>()), mk_a.clone()));
+        g = rew(bool0(), sum_i(j), v(AN(j)), e_i(j), fam, g);
+    }
+    let step = lam_bits(n, g);
+    let bv = K(super::encoding::bv_ty(n));
+    let motive = lm("x", bv.clone(), idt(bv.clone(), ap2(K(super::encoding::add(n)), v("x"), K(super::encoding::lit(n, 0))), v("x")));
+    let proof = lm("x", bv, lm("gb", ap(K(super::encoding::good_bv(n)), v("x")), ap2(v("gb"), motive, step)));
+    (ex(&proof), stmt)
+}
+
+#[test]
+fn bridge_add_zero_checks_for_small_n() {
+    for n in [1usize, 2, 3] {
+        let (pf, stmt) = bridge_add_zero(n);
+        let t0 = Instant::now();
+        let r = kernel::check(&Ctx::new(), &pf, &stmt);
+        println!("[bridge n={n}] {} in {:.1} ms", if r.is_ok() { "ACCEPTED" } else { "REJECTED" }, t0.elapsed().as_secs_f64() * 1e3);
+        if let Err(m) = r {
+            panic!("bridge n={n}: {}", m.chars().take(900).collect::<String>());
+        }
+    }
+}
+
+#[test]
+fn bridge_rejects_wrong_statements() {
+    for n in [1usize, 2, 3] {
+        let (pf, _) = bridge_add_zero(n);
+        for lit in [1u128, 1 << (n - 1)] {
+            let (_, wrong) = super::encoding::add_zero_proof(n, lit);
+            assert!(kernel::check(&Ctx::new(), &pf, &wrong).is_err(), "n={n}: add x {lit} = x accepted");
+        }
+    }
+}
+
+#[test]
+#[ignore]
+fn bridge_scaling() {
+    for n in [4usize, 6, 8, 12, 16, 24, 32] {
+        let t0 = Instant::now();
+        let (pf, stmt) = bridge_add_zero(n);
+        let built = t0.elapsed();
+        let t1 = Instant::now();
+        let r = kernel::check(&Ctx::new(), &pf, &stmt);
+        println!("BRIDGE n={n}: built {:.1} ms, check {:.1} ms, {}", built.as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3, if r.is_ok() { "accepted".to_string() } else { format!("REJECTED {}", r.unwrap_err().chars().take(200).collect::<String>()) });
+        let (p2, s2) = super::encoding::add_zero_proof(n, 0);
+        let t2 = Instant::now();
+        let r2 = kernel::check(&Ctx::new(), &p2, &s2);
+        println!("PERWIDTH n={n}: check {:.1} ms, {}", t2.elapsed().as_secs_f64() * 1e3, r2.is_ok());
     }
 }
