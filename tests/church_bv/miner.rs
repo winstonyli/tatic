@@ -189,6 +189,9 @@ fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option
         let from = x.from.min(named.len());
         let pool_stragglers = (from..named.len()).filter(|&i| cost(i).is_some()).count();
         println!("RULEMINER extras: kept {} of {} pool laws, {pool_stragglers} stragglers in the pool", keep.len() - from, named.len() - from);
+        let steps = |it: &mut dyn Iterator<Item = usize>| it.filter_map(&cost).fold((0i64, 0i64, 0usize), |(s, m, c), v| (s + v, m.max(v), c + 1));
+        let (kept, all) = (steps(&mut keep.iter().copied().filter(|&i| i >= from)), steps(&mut (from..named.len())));
+        println!("RULEMINER extras steps: kept {} stragglers, sum {}, max {}; pool {} stragglers, sum {}, max {}", kept.2, kept.0, kept.1, all.2, all.0, all.1);
         clock.phase("extras selection");
     }
     assemble(keep.into_iter().map(|i| outcomes[i].clone()).collect(), guard_k, loud, clock)
