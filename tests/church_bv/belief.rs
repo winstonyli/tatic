@@ -678,3 +678,38 @@ mod review_fix_tests {
         assert_eq!(selfs, 0, "{selfs} of {} sampled claims are a term against itself", st.sample.len());
     }
 }
+
+/// Spike (d1, 2026-11-01): what the screen-pass claims `verdict` leaves unproved are, from a dump (`$BELIEF_TSV`, every
+/// `$BELIEF_STEP`-th unproved claim). Per claim: whether it has `shr1`, whether it holds on every width-6 input, and
+/// whether `prove_rule` (the every-input route, width 4) proves it and in how long.
+#[test]
+#[ignore]
+fn belief_shr1_spike() {
+    use crate::rewrite::{parse_term, prove_rule};
+    let rows = read_rows(&std::env::var("BELIEF_TSV").expect("BELIEF_TSV: the claim dump"));
+    let step: usize = std::env::var("BELIEF_STEP").map_or(1, |v| v.parse().unwrap());
+    let pick: Vec<&Row> = rows.iter().filter(|r| r.label == Label::Unproved && in_subset(r, 0)).step_by(step).collect();
+    let job = &mut Job::new(Setup::process());
+    let mut w6 = ValueMemo::exhaustive(6, 3);
+    // (claims, with shr1, true at width 6, proved by prove_rule, proved with shr1, seconds in prove_rule)
+    let (mut n, mut with_shr1, mut true6, mut proved, mut proved_shr1, mut secs) = (0, 0, 0, 0, 0, 0.0);
+    tatic::kernel::scoped(|| {
+        for r in pick {
+            let (u, v) = (parse_term(&r.u), parse_term(&r.r));
+            let has = r.u.contains("shr1") || r.r.contains("shr1");
+            let agree = w6.agree(&u, &v);
+            let t0 = std::time::Instant::now();
+            let ok = prove_rule(job, 4, 1 + u.max_var().max(v.max_var()), &u, &v).is_some();
+            secs += t0.elapsed().as_secs_f64();
+            n += 1;
+            with_shr1 += has as usize;
+            true6 += agree as usize;
+            proved += ok as usize;
+            proved_shr1 += (ok && has) as usize;
+            if !ok || !agree || !has {
+                println!("SHR1 odd: key {} kind {} shr1 {has} true6 {agree} proved {ok}: {} -> {}", KEYS[r.key as usize], KINDS[r.kind as usize], r.u, r.r);
+            }
+        }
+    });
+    println!("SHR1 unproved screen-pass claims {n}: with shr1 {with_shr1}, true at width 6 {true6}, proved by prove_rule {proved} (with shr1 {proved_shr1}), {secs:.1} s in prove_rule");
+}
