@@ -42,7 +42,7 @@ The rewriter and provers (`tests/church_bv/`):
 - `search.rs`: the law supply (`tests/church_bv/search.rs#stream_sequence`), rule admission (`tests/church_bv/search.rs#rule_admissible`) and cost (`tests/church_bv/search.rs#law_cost`), and the bodies of the two worker tasks: serving (`tests/church_bv/search.rs#rule_set_kernel_check_task`) and mining (`tests/church_bv/search.rs#rule_miner`).
 
 The belief layer (`tests/church_bv/`):
-- `belief.rs`: a calibrated estimate of whether a claimed equality is refuted or unprovable, from its shape and the cheap evidence it has passed; it orders and budgets work and never accepts a claim. Pure statistics (`tests/church_bv/belief.rs#auc`, grouped folds `tests/church_bv/belief.rs#fold_of`) sit under the estimators, the claim dump and the report.
+- `belief.rs`: a calibrated estimate of whether a claimed equality is refuted or unprovable, from its shape and the cheap evidence it has passed; it is meant to order and budget work (nothing reads a belief yet) and never accepts a claim. Pure statistics (`tests/church_bv/belief.rs#auc`, grouped folds `tests/church_bv/belief.rs#fold_of`) sit under the estimators, the claim dump and the report.
 
 The miner, driver, loop and gate:
 - `miner.rs`: how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
@@ -111,7 +111,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 
 - **ABLATE**: environment switch that turns a named rule or prover part off. `tests/church_bv/job.rs#ablated`
 - **Batch**: B consecutive laws of a loop's window, served before they are mined. `tests/church_bv/driver.rs#run_loop`
-- **Belief layer**: P(a claimed equality is refuted or unprovable) from shape and evidence; orders and budgets work, never accepts a claim. `tests/church_bv/belief.rs#auc`
+- **Belief layer**: P(a claimed equality is refuted or unprovable) from shape and evidence; meant to order and budget work (nothing reads it yet), never accepts a claim. `tests/church_bv/belief.rs#auc`
 - **Beta-v**: contracting an application of a lambda to a value only; full beta is unsound under call-by-value with errors and `Rec`. `src/spec_check.rs#check`
 - **Bounded join**: bounded two-sided search that rewrites both sides with the rules plus assoc/comm until they meet. `tests/church_bv/rewrite.rs#join_eq`
 - **CacheEntry**: the per-hash JIT outcome; every variant but `Compiled` is served by the interpreter. `src/jit.rs#CacheEntry`

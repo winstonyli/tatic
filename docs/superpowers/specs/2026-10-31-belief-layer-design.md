@@ -74,7 +74,7 @@ new and the old table is a comparison, not a target. "Proved" is the class table
 position in its key's sample, which orders the proving deadline).
 
 **Cap, as run (2026-11-01).** A pilot (`2026-11-01-belief-pilot-plus64-b`) tried 1000 claims in 3.5 s, so the cap is the
-whole 20000-claim sample per key and every claim is tried; the run is `2026-11-01-belief-dump-all`. Outcome: the
+whole 20000-claim sample per key and every claim is tried; the run is `2026-11-01-belief-dump-all-2`. Outcome: the
 stage-1 gate found 0 hard negatives, so stage 2 did not start (`docs/tier-cycle.md`, "The belief layer's calibration
 milestone stops at its first gate"); the rest is parked (`PARKED.md`, "Belief layer stage 2").
 
