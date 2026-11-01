@@ -380,7 +380,7 @@ fn belief_dump() {
                 } else if verdict(job, 4, u, r).is_some() {
                     if index % 20 == 0 {
                         checked += 1;
-                        agree += prove_rule(job, 4, 1 + u.max_var().max(r.max_var()), u, r).is_some() as usize;
+                        agree += prove_rule(&mut job, 4, 1 + u.max_var().max(r.max_var()), u, r).is_some() as usize;
                     }
                     Label::Proved
                 } else {
@@ -689,7 +689,7 @@ fn belief_shr1_spike() {
     let rows = read_rows(&std::env::var("BELIEF_TSV").expect("BELIEF_TSV: the claim dump"));
     let step: usize = std::env::var("BELIEF_STEP").map_or(1, |v| v.parse().unwrap());
     let pick: Vec<&Row> = rows.iter().filter(|r| r.label == Label::Unproved && in_subset(r, 0)).step_by(step).collect();
-    let job = &mut Job::new(Setup::process());
+    let mut job = Job::new(Setup::process());
     let mut w6 = ValueMemo::exhaustive(6, 3);
     // (claims, with shr1, true at width 6, proved by prove_rule, proved with shr1, seconds in prove_rule)
     let (mut n, mut with_shr1, mut true6, mut proved, mut proved_shr1, mut secs) = (0, 0, 0, 0, 0, 0.0);
@@ -698,7 +698,10 @@ fn belief_shr1_spike() {
             let (u, v) = (parse_term(&r.u), parse_term(&r.r));
             let has = r.u.contains("shr1") || r.r.contains("shr1");
             if n % 50 == 0 {
-                w6 = ValueMemo::exhaustive(6, 3); // the memo grows with every subterm: 3 GB by claim ~100 otherwise
+                // both grow with every claim (the memo 3 GB by claim ~100, the job's lemmas until the paging file ran out)
+                w6 = ValueMemo::exhaustive(6, 3);
+                job = Job::new(Setup::process());
+                println!("SHR1 progress: {n} claims, {secs:.0} s in prove_rule");
             }
             let agree = w6.agree(&u, &v);
             let t0 = std::time::Instant::now();
