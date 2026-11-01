@@ -7624,7 +7624,6 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
 | n 240 | 4-6 | 4591 (1359 s) | 4434 (1207 s) | **+157** | no |
 | n 160, pool 8 (walk 555 M, 525 M) | 1-3 | 4990 (920 s) | 4860, n 495 (985 s) | **+130** | no |
 | n 160, pool 8 | 4-6 | 4718 (967 s) | 4717 (1081 s) | +1 | no |
-| | 4718 (967 s) | 4717 (1081 s) | +1 | no |
 
   Sigma 76. So cheap selection beats a random draw of equal work at n 80 and n 160 (by 104-205 held-out M, 2-3% of the
   total, on both salt sets) and loses at n 240 (+157-166) and with a pool of 8 (no gain, and more work than pool 4 at n 160:
