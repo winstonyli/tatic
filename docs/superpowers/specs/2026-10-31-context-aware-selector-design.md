@@ -149,3 +149,5 @@ lines give the pool's min, max, distinct values and the correlation of reach wit
 most mines; else park, as a graded key that is a function of steps adds nothing.
 
 Crossover result (2026-10-31): `cheap` wins at n 120 (-194, -78) and loses at n 200 (+163, +136) and n 240 (+166, +157) against random of equal work. Mine 0's kept steps are all 0 (no mined rules) and mine 1 keeps nearly all its stragglers past n about 160. `docs/tier-cycle.md`, "The cheap variant" (runs `v06h2-g1` to `g6`).
+
+g2 result (2026-10-31): null. `novel` +86 and +88 against `cheap`, `reinforce` +314 and -24 (runs `v06g2-g1` to `g4`); the graded reach splits the pool (11-18 distinct values) but does not choose better extras in either direction. `docs/tier-cycle.md`, "The cheap variant".

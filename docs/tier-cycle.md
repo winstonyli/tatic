@@ -7674,6 +7674,24 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
   - So `cheap` helps when it can leave stragglers out of the mine 1 pool (n at most about 160 of about 150-200 stragglers)
     and costs what straggler-first costs when it cannot. A larger pool did not help (pool 8, n 160) because the pool's extra
     stragglers raise the work for a key that only ranks by mined-rule steps.
+
+- **Graded reach keys (2026-10-31; runs `v06g2-probe`, `v06g2-g1` to `g4`; rule in the spec addendum "g2").** The class is the
+  number of candidate left sides (from the served stragglers) that reach a straggler: 11-18 distinct values per pool, correlation
+  with steps about 0 (-0.02 to 0.11), so unlike the binary class it splits the pool. `novel` keeps the fewest-reached first,
+  `reinforce` the most, each then by steps. At n 160, pool 4, against `cheap` (4721 and 4569):
+
+| key | salts | held-out M | against cheap | walk against cheap | wins |
+|---|---|---|---|---|---|
+| novel | 1-3 | 4807 | +86 | 472 M against 488 M | no |
+| novel | 4-6 | 4657 | +88 | 499 M against 545 M | no |
+| reinforce | 1-3 | 5035 | +314 | 483 M against 488 M | no |
+| reinforce | 4-6 | 4545 | -24 | 500 M against 545 M | no |
+
+  Null on both (sigma 76). `novel` is worse on both salt sets by 86-88 (it also did 3-9% less work, which explains part of
+  that); `reinforce` swings from +314 to -24, so it is noise around `cheap` or worse. The rules changed in every loop (0 of 9
+  same), so the key does move the mine; it just does not move it toward a better frontier. Reach by served candidates is not a
+  useful signal for choosing extras, in either direction. With the binary class (`v06n-g1` to `g4`) and the stage-1 scorer this
+  is the third per-law signal that fails to beat `cheap`/random.
   (the pool is not the limit; the cost key is).
 ## The JIT and the target machine
 
