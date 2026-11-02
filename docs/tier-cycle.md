@@ -7962,8 +7962,15 @@ symbolic carry, so a joint induction shows the shift's fold and the adder's fold
 with `GoodBool` of the carry kept in a `Sigma` component, which puts its motive in `Sort2` and needs k >= 1), then a zero-left-operand
 lemma and lemma Y for the trailing zero multiplier bits; lemma Y's `GoodBool` hypothesis had to become conditional on the position
 being good. Level rule met on the way: a case split on a `GoodBool` witness admits motives into `Sort1` only, so the split is on a
-`Bool0` equality lifted to the state with `rew`. Still unbuilt: `mul 1 y = y` (a symbolic multiplier), commutativity, and any
-law uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
+`Bool0` equality lifted to the state with `rew`. `mul 1 y = y` with a SYMBOLIC multiplier (`uniform_symmul.rs`) is also bridged, to `Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit 1) y, y)`,
+n = 1 to 4 in the default tests (6 and 7 in the ignored scaling test): the multiplier bits are the `GoodBv` step's variables, each partial
+product `and(y_j, e_j)` stays stuck, and the proof splits on the witnesses of `y_p` and `y_j` for p < j only. It is positionwise at numerals
+(not uniform in the position; the hinted "disjoint add" lemma needs shl facts at a symbolic position and was not attempted) and needs
+k0 = 1, since the multiplicand is the closed one-hot stream. The fill-bit flip is rejected by this bridge for n >= 2 (at n = 1 there is no
+shift). Cost: check 52 against 15 ms at n = 6 and 369 against 45 ms at n = 7 versus the per-width baseline (2-8x slower), build 1.1 s and
+4.4 s against 0.06 and 0.2 s; the term grows about 4x in memory per bit and n = 8 hit the 8 GB cap (peak 9.2 GB), a cost of the
+positionwise construction (a binomial tree of clones), not a kernel finding. Still unbuilt: commutativity, a symbolic multiplicand with
+a symbolic multiplier, the uniform-in-position form of `mul 1 y = y`, and any law uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
 3.6 ms at n = 4, 14.4 against 14.2 at n = 5, 68 against 55 at n = 6, so roughly even there (build 21 to 232 ms against 0.5 to 48).
 For the older laws, bridge against per-width baseline (one run): `mul x 1 = x` 9.1 against 3.4 ms at n = 4 and 287 against 69 ms at n = 6 (the reviewer's rerun: 1435 against
 375 ms); `mul x 0 = 0` against a baseline that is just `refl`, so no fair comparison. A first accumulator that repeated each operand
