@@ -7962,8 +7962,8 @@ symbolic carry, so a joint induction shows the shift's fold and the adder's fold
 with `GoodBool` of the carry kept in a `Sigma` component, which puts its motive in `Sort2` and needs k >= 1), then a zero-left-operand
 lemma and lemma Y for the trailing zero multiplier bits; lemma Y's `GoodBool` hypothesis had to become conditional on the position
 being good. Level rule met on the way: a case split on a `GoodBool` witness admits motives into `Sort1` only, so the split is on a
-`Bool0` equality lifted to the state with `rew`. `mul 1 y = y` with a SYMBOLIC multiplier (`uniform_symmul.rs`) is also bridged, to `Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit 1) y, y)`,
-(this paragraph and the next describe the first two bridges, both since deleted; the one in `uniform_symmul.rs` is the stage-wise bridge further down). The first, positionwise, bridge was tested for n = 1 to 4 in the default tests (6 and 7 in the ignored scaling test): the multiplier bits are the `GoodBv` step's variables, each partial
+`Bool0` equality lifted to the state with `rew`. `mul 1 y = y` with a SYMBOLIC multiplier was bridged three ways, to `Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit 1) y, y)`; the first two
+bridges are deleted and the third, stage-wise one is the only bridge now (`uniform_symmul.rs`, further down). The first, positionwise, bridge was tested for n = 1 to 4 in the default tests (6 and 7 in the ignored scaling test): the multiplier bits are the `GoodBv` step's variables, each partial
 product `and(y_j, e_j)` stays stuck, and the proof splits on the witnesses of `y_p` and `y_j` for p < j only. It is positionwise at numerals
 (not uniform in the position; the hinted "disjoint add" lemma needs shl facts at a symbolic position and was not attempted) and needs
 k0 = 1, since the multiplicand is the closed one-hot stream. The fill-bit flip is rejected by this bridge for n >= 2 (at n = 1 there is no
