@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # v0.6 follow-up: does a law's context in the mine carry a signal that a per-law scorer cannot see? (design)
@@ -179,11 +179,8 @@ is not larger by more than 5%, on both the primary and the replication salts; ot
 - w1 only; w2 only if `transfer_labels` is cheap to recover.
 - The Q1 gate uses a paired bootstrap over mines, not the random ranker's sd, because the quantity compared is a paired difference.
 
-## Open for the user
+## Decisions (the user, 2026-11-01)
 
-- Whether Q1's gate (bootstrap interval above 0 at both k, against both baselines, and 5 of 7 salts) is the right bar, or a smaller
-  effect should proceed to the gate.
-- Whether a null here should close the `PARKED.md` stage-2 entry for count and context features (leaving only the GPU model) or only
-  record it.
-- Whether the served-only partial mine (group 3) is acceptable as a cost and a miner refactor, or group 3 should be dropped so scoring
-  stays free and the miner untouched.
+Approved as written. m1: the strict Q1 bar (bootstrap interval above 0 at both k against both baselines, and 5 of 7 salts). n1: keep
+group 3 (the served-only partial mine and the `mine` refactor). o1: a null is recorded only; the stage-2 `PARKED.md` entry stays.
+The first plan covers stage 0 and stage 1 only; stage 2 gets its own plan if Q1 passes.
