@@ -17,7 +17,10 @@
 //     does not scale: 2.6, 10.6, 26, 130, 736, 4238 ms for n = 2, 4, 5, 6, 7, 8 (peak commit 1.9 GB at n = 7, 8), super-polynomial.
 //     The cost is the kernel's conversion of the statement's fixed-width `mul(n)` against the stream product `acc_n` on the
 //     stuck symbolic bits (at n = 8: bit 7 takes 2196 ms, bit 6 takes 1180 ms; `symmul_uniform_conv_cost`), not the proof.
-//     This is an improvement on the positionwise bridge (which could not run n = 8 in 8 GB), not a polynomial result.
+//     Against the positionwise bridge of `uniform_symmul.rs` the gain is in build time and memory only (build 46 and 85 ms against
+//     95 and 1465 ms at n = 4 and 6; n = 8 runs in 8 GB where the positionwise one could not), not in check time: where both run
+//     the check time is no faster (13.8 against 6.5 ms at n = 4, 141 against 117 ms at n = 6, 731 ms at n = 7 against 369 ms
+//     recorded in `docs/tier-cycle.md`). It is not a polynomial result.
 //
 // Pieces (all closed terms, shared by the later stages as handles; the per-stage terms are O(n) in distinct nodes, O(n^2) over all stages):
 //   * `Z0`:  look(0..0) p = false (an induction whose step is the identity: the shifted zero tuple is the zero tuple).
@@ -537,4 +540,8 @@ fn header_states_what_the_size_and_cost_claims_depend_on() {
     assert!(header.contains("distinct nodes"), "the header's O(n) claim must say it counts distinct (shared) nodes");
     assert!(header.contains("unfolded"), "the header must give the unfolded growth");
     assert!(header.contains("does not scale"), "the header must say the end-to-end check does not scale");
+    // against the positionwise bridge the gain is build time and memory only; the check is no faster where both run
+    assert!(!header.contains("improvement on the positionwise bridge"), "the header must not claim a bare improvement over the positionwise bridge");
+    assert!(header.contains("build time and memory"), "the header must say where the gain over the positionwise bridge is");
+    assert!(header.contains("check time is no faster"), "the header must say the check time is no faster where both bridges run");
 }
