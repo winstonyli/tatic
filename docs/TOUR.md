@@ -49,6 +49,7 @@ The belief layer (`tests/church_bv/`):
 
 The miner, driver, loop and gate:
 - `miner.rs`: how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
+- `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`tests/church_bv/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`tests/church_bv/miner.rs#dump_pool`, `scripts/ctx_dump.sh`) and nothing at run time reads it.
 - `tools/runs/` (own crate): the recorded-run runner and gate. `tools/shr_probe.py`: a probe script.
 - `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/` and `experiments/` (older experiment scripts), `tour_check.sh`.
 - `benches/`: criterion benchmarks of execution and proofs.

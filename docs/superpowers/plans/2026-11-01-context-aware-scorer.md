@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # Context-aware scorer, stages 0 and 1 (offline veto) Implementation Plan

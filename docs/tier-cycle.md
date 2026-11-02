@@ -7602,6 +7602,44 @@ and keeps the best n by score; the label is miner credit (a straggler a chosen r
   What is left is that count features of a law do not predict which laws help a mine (an inference: a law's value depends
   on the other laws in the mine, which a per-law score cannot see).
 
+### A context model over the extras: the offline veto (2026-11-01; v0.6 follow-up, Q1)
+
+Question (`docs/superpowers/specs/2026-11-01-context-aware-scorer-design.md`, stages 0 and 1; plan
+`docs/superpowers/plans/2026-11-01-context-aware-scorer.md`): does a model that sees a law in the context of its mine (35
+columns: the 26 per-law counts, three percentiles of steps, size and fallbacks among the pool's stragglers, four likenesses to
+the served stragglers' normal forms, two marginal-coverage columns after a served-only cover) rank the credited laws of a mine
+better than the per-law model and the `small` key? Offline only, nothing reaches the kernel (`tests/church_bv/ctx_scorer.rs`,
+`scripts/ctx_dump.sh`).
+
+- **Stage 1 reproduced** (`ctx_scorer::reproduce_stage1` on the cached labels of `2026-10-31-v06-labels`): fit on salts 4-9, test
+  salt 10: AUC test 0.6913, train 0.7109, size-only 0.5282 (recorded 0.691 / 0.711 / 0.528); 13,398 laws, 3,282 credited, 42 mines.
+- **Dump** (`2026-11-01-ctx-dump`, salts 4-10, `POOL=4`, `EXTRAS_SELECT=first`, `POOL_DUMP=1`): 42 mines, 4.9 minutes, peak commit
+  5.8 GB (probe `2026-11-01-ctx-dump-s4-2`: 44 s, 6.3 GB). Per mine a pool of 1276 laws with raw per-law facts, the served
+  stragglers' normal forms, and `RULEMINER label:` lines. The dump changes no chosen rule, `rules.txt` or `m.tsv`; its own
+  classification and quiet served-only cover add to the process's WORK counters (walk 269217 to 371189 in the small smoke loop),
+  so a dump arm's WORK is not comparable with another arm's.
+- **Labelled slice**: the first 319 pool laws of each mine, 13,398 in all; 5 later copies of a law text dropped (first occurrence
+  kept, salts ascending); 4,728 live stragglers, 3,177 credited (about 112 stragglers per slice).
+- **Q1** (`ctx_scorer::q1_report`, runs `2026-11-01-ctx-q1-3` and `-4`, identical output; leave-one-salt-out, fit on labelled
+  stragglers, 2000-resample paired bootstrap over the 42 mines, seed 1). Held-out AUC (mean over salts): context 0.7344,
+  per-law 0.6397. Capture = credited laws in the top k of a slice, summed over the 42 mines:
+
+| k | ceiling | context | per-law | `small` | random (200 shuffles) | d = context - per-law, mean per mine, 95% | e = context - `small`, 95% | salts with d and e > 0 |
+|---|---|---|---|---|---|---|---|---|
+| 80 | 2879 | 2481 | 2378 | 2316 | 796 | 2.45 [1.43, 3.62] | 3.93 [2.81, 5.12] | 7 of 7 |
+| 160 | 3177 | 3177 | 3177 | 3177 | 1593 | 0 [0, 0] | 0 [0, 0] | 0 of 7 |
+
+- **Verdict: FAIL under the approved strict bar (m1: both k).** The gate is met at k = 80 (both intervals above zero, 7 of 7
+  salts). At k = 160 it cannot be met by any ranker: a slice holds about 112 stragglers, so every straggler-first ranker, `small`
+  included, already captures all 3,177 credited laws ("no room", as the spec anticipated). The strict verdict therefore rests on
+  the k = 160 column alone; k = 80 is the one column that discriminates.
+- **Ablation at k = 80** (capture sums, full model 2481): drop group 3 (marginal coverage) 2429, drop group 1 (percentiles) 2451,
+  drop group 2 (likeness to served) 2481, drop the per-law block 2457 (the three context groups alone beat the per-law model's
+  2378). Group 3 carries the most signal, group 1 some, group 2 none at k = 80.
+- **Limits**: labels exist only for the slice, so Q1 ranks within the slice (Q2 would rank the whole pool, where 957 laws per mine
+  never had a label); capture counts credited laws, not held-out M or CPU, and stage 1's offline AUC was also real while its gate
+  failed (above), so this shows no curve shift.
+
 ### Selecting the extras by straggler verdict: better per n, not per CPU (2026-10-31; v0.6, second try)
 
 Question (`docs/superpowers/specs/2026-10-31-context-aware-selector-design.md`): does filling each mine's n extra slots with

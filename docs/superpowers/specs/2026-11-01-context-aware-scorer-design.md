@@ -12,6 +12,9 @@ the latter). Prior specs: `2026-10-31-learned-proposer-design.md` (stage 1, done
 (done; the `small` key is v0.6's answer). Decision of 2026-11-01 (the user's pick, k2): try a context-aware model before stage 2
 (the cycle). The user asked to skip the questions, so the choices below are mine, listed in "Calls I made".
 
+Result of stages 0 and 1 (2026-11-01): the Q1 gate as written reads FAIL (met at k = 80, no room at k = 160); numbers and the
+ablation are in `docs/tier-cycle.md`, "A context model over the extras". Stage 2 (Q2) has no plan and waits for the user.
+
 ## Why
 
 Three scorers over per-law count features were worse than or equal to random (held-out M +20 to +486 against random, several cells
