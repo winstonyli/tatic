@@ -7933,9 +7933,32 @@ check here, and building its term costs 14 ms at n = 4, 82 ms at 8, 631 ms at 16
 witnesses are O(i) each: quadratic). It is not a speed win. What it shows is that a law proved once for every width is the same
 statement as the fixed-width law, so a uniform proof can serve every `Bv_n`; each n still needs its own bridge instance, not one
 for all n. (The 70 ms at n = 8, 3.4 s at 32 and 32.6 s at 64 quoted for per-width proofs earlier come from the bit-vector doc, §17-21,
-a different construction; `add_zero_proof` is far cheaper, so those numbers are no baseline for this.) Not shown: any bitwise or
-comparison law, and `mul` (a second induction). So "the kernel lacks an induction principle" in the parked goal-D entry is too
-strong for `add`; what is missing is the rest of the operators.
+a different construction; `add_zero_proof` is far cheaper, so those numbers are no baseline for this.) So "the kernel lacks an
+induction principle" in the parked goal-D entry is too strong for `add`.
+
+*The same route carries the bitwise and `lt` laws (`tests/church_bv/uniform_bitwise.rs`, 2026-11-01).* Four bitwise laws
+(`xor x x = 0`, `and` commutes, absorption, De Morgan; the last two nest operators) and `lt x x = 0`, `lt x 0 = 0` are proved
+uniformly in the position and bridged to the statements of `encoding::bitwise` and `encoding::lt_u`, accepted at n = 4, 8, 16,
+24 and 32 (default tests check n = 1 to 3), and wrong statements are rejected (well-typed and false, by the reviewer's mutation
+checks). The bitwise laws are uniform only in the trivial sense (a per-bit lemma over positions, no induction); `lt` is the
+second real induction (the borrow chain, circuit of `ripple_carry(sub=true)`). The encoding has no per-width proof of these
+laws, so the baseline is a per-bit case split written in the same file: it checks at 2.0 to 3.2 ms at n = 32 against 3.6 to
+4.4 ms for the uniform route, and builds in 8 to 25 ms against 39 to 77 ms (reviewer's run, shared machine). Again no speed win.
+
+*`mul` is only partly reachable (`tests/church_bv/uniform_mul.rs`, 2026-11-01).* A single fold over the multiplier's positions
+is ill-typed: the stream adder raises the index level (`Bits(k) -> Bits(k+1)`) and nothing lowers it (kernel messages "lambda
+domain mismatch: (Pi Type2. ...) vs (Pi Type1. ...)", and "inferred Type3, expected Type1" for a `Nat_k -> Nat_(k+1)` map, both
+pinned by a test). So the shift-and-add loop is unrolled in the meta-language, one level per multiplier bit: the law is
+uniform in the output position and the multiplicand stream, not in the multiplier's width, and the multiplier must be a
+literal. With that, `mul x 0 = 0` and `mul x 1 = x` are proved and bridged to a `mul(n)` defined in the test from
+`encoding::add` and `encoding::bitwise` (the encoding has no `mul`), accepted for n = 1 to 6 (checked n = 1 to 3 in the default
+tests). The reviewer's caveat is material: in both laws every shifted partial product is masked by a zero multiplier bit, so
+the shift is never observed by a proof (flipping `shl_bv`'s fill bit left the bridge tests passing; only the
+literal-multiplication computation test catches it). The built result shows that the nested adder types and chains, not that a
+shift-dependent law (`mul x 2 = x + x`, `mul 1 y = y`, commutativity) can be proved. Bridge check against the per-width
+baseline (one run): `mul x 1 = x` 9.1 against 3.4 ms at n = 4 and 287 against 69 ms at n = 6 (the reviewer's rerun: 1435 against
+375 ms); `mul x 0 = 0` against a baseline that is just `refl`, so no fair comparison. A first accumulator that repeated each operand
+three times grew as 3^j (14.6 s to build at n = 4) and hit the 8 GB cap at n = 5; sharing the accumulator as a closed term made the build linear.
 
 **Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
 2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.
