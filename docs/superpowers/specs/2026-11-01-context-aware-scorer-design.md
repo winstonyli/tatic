@@ -14,7 +14,7 @@ the latter). Prior specs: `2026-10-31-learned-proposer-design.md` (stage 1, done
 
 Result of stages 0 and 1 (2026-11-01): the Q1 gate as first approved (k in {80, 160}) read FAIL (no room at k = 160); the user
 amended it to k in {40, 80} (a2) and it reads PASS. Numbers and the ablation are in `docs/tier-cycle.md`, "A context model over
-the extras". Stage 2 (Q2) has no plan and waits for the user.
+the extras". Stage 2 (Q2) is planned in `docs/superpowers/plans/2026-11-01-ctx-scorer-q2.md`.
 
 ## Why
 
@@ -86,8 +86,8 @@ distribution it will rank in Q2. Columns (F = 26 + 3 + 4 + 2 = 35):
   the pool's stragglers (`score_laws(chosen, pool_stragglers)`): (a) 1 if this law's own base verdict is still a straggler under
   the chosen rules; (b) the fraction of pool stragglers with the same left-side root operator that stay uncovered. This is the one
   feature that is a function of the set, not of the law and the base, so it is the real test of the interaction claim. It is
-  label-independent (no extras in the served-only mine) but not free: it is a partial mine per mine, counted in CPU. It needs
-  `mine` split into a callable pipeline (`mine_served_only(job, laws) -> Vec<(Term, Term)>`), a refactor of the miner, not a column.
+  label-independent (no extras in the served-only mine) but not free: it is a partial mine per mine, counted in CPU. It would need
+  `mine` split into a callable pipeline (`mine_served_only(job, laws) -> Vec<(Term, Term)>`); not built (decision c1 drops group 3).
 
 No feature uses the label or any extras-mine result. Standardise each column on the training rows (mean 0, sd 1; a column with
 sd = 0 is dropped and noted). Stage 1's fit already standardised (`Scorer`), so the per-law arm is the same fit on the same 26
@@ -112,11 +112,17 @@ One mechanism, offline first. Nothing in the kernel changes; no score reaches th
   a new dataset (same salts 4 to 10, same distribution, new law slices) with new counts, recorded when it runs. Assertions at stage
   0: the first n laws of each pool equal that mine's `laws_extra` prefix (the dump's own consistency); no law text repeats across
   salts or across the six mines of a salt (else leave-one-salt-out leaks).
-- **Q2 hook** (only if Q1 passes): a new `Keep::Ctx` in `laws_for` ranks the whole pool by score (non-stragglers last, ties and
-  non-stragglers in stream order) and takes the first n. `EXTRAS_SELECT=ctx` plus a weights file selects it. Runnable check: with
-  all-zero weights `Keep::Ctx` must choose the same rules and give the same held-out M as `Keep::First` (identical chosen rules and
-  M, not identical CPU, since `First` cuts before `classify`); that needs the zero-weight order to be plain stream order over all
-  laws, so `Keep::Ctx` does not use `kept_indices`' stragglers-first partition when the scores tie.
+- **Q2 hook** (only if Q1 passes): a new `Keep::Ctx` in `laws_for` ranks the pool's stragglers by score (ties in stream order),
+  then its other laws in stream order, and takes the first n (`kept_indices` with the rank from `ctx_scorer::ctx_ranks`, the path
+  `Keep::Small` takes). `EXTRAS_SELECT=ctx` plus `CTX_WEIGHTS=<file>` selects it. Runnable check, amended 2026-11-01: the original
+  said that with all-zero weights `Keep::Ctx` must equal `Keep::First`, which contradicts "non-stragglers last" (`First` keeps the
+  pool's first n, about 63% of them clean); the check is instead that equal scores give the stragglers in stream order, then the
+  rest (a unit test of `ctx_ranks`).
+- **Q2 feature set, amended 2026-11-01 (decision c1):** Q2 uses the 33 columns without group 3. Group 3 needs a served-only cover
+  inside every mine, whose work and CPU count against the 5% work cap, and its direction caveat (it ranks first the laws the
+  served rules already cover; `docs/tier-cycle.md`) is untested at Q2. The `mine` refactor above is therefore not built. The choice
+  rests on Q1 clearing its bar with these 33 columns (plan `2026-11-01-ctx-scorer-q2.md`, Task 1); a failure there returns the
+  decision to the user (the 35-column model).
 
 ## Stages
 
@@ -142,15 +148,19 @@ feature-group ablation (drop each of groups 1 to 3, and the per-law features) is
 signal is absent. Limitation, recorded either way: labels exist only for the slice, so Q1 ranks within the slice; Q2 ranks the whole
 pool, where 957 laws never had a label.
 
-**Stage 2: Q2, the gate (only if stage 1 passes; its own plan).** Arms at n in {80, 160}: `small`, the context arm, random of equal
+**Stage 2: Q2, the gate (only if stage 1 passes; plan `docs/superpowers/plans/2026-11-01-ctx-scorer-q2.md`; decisions c1 and d1 of
+2026-11-01: 33 columns, `POOL=4`).** Arms at n in {80, 160}: `small`, the context arm, random of equal
 walk work (the knee-chart construction), and two further redraws of both the random and the `small` arms (`GEN_DRAW=3`, `4`) so that
 sigma is measured at these n and for the arm compared against (sigma 76 rests on two random-arm redraws at n = 319); mines per
 salt stay six. The context weights are fit on salts 4 to 10 and evaluated on salts 1 to 3, disjoint from training. Replication:
 weights refit on salts 7 to 10 only (24 mines, a thinner fit, stated as such), evaluated on salts 4 to 6. Metrics as `streams_ab.sh`:
-held-out M per band, walk and match counts (deterministic), job CPU including the scoring and the served-only mine (load noise about
-+-10%, a cross-check), and instruction counts (`icount.ps1`) for the work ratio. Pre-registered rule: the context arm passes if
-held-out M is below the `small` arm's by more than the larger of sigma and the measured `small` redraw spread at both n AND the work
-is not larger by more than 5%, on both the primary and the replication salts; otherwise null.
+held-out M per band, walk and match counts (deterministic), job CPU including the scoring (load noise about
++-10%, a cross-check). Amended 2026-11-01: the work ratio is the summed WORK `walk` count (the knee chart's basis), not
+`icount.ps1` instruction counts: the arms run as whole sweeps with their own environments, which `icount.ps1` cannot reproduce.
+Pre-registered rule: the context arm passes if
+held-out M is below the `small` arm's by more than the larger of sigma and the measured `small` redraw spread (the largest
+|redraw - draw 0| over `GEN_DRAW` 3 and 4, as sigma 76 was read) at both n AND the walk work is not larger by more than 5%, on both
+the primary and the replication salts; otherwise null (`scripts/q2_verdict.sh`).
 
 ## Risks and checks
 
@@ -171,8 +181,8 @@ is not larger by more than 5%, on both the primary and the replication salts; ot
 - The stage-0 reproduction check and the Q1 report are kept as ignored tests, with the run ids.
 - Docs: the result goes in `docs/tier-cycle.md` (a section beside "A learned scorer over the extras"), the `PARKED.md` entry is updated
   (trigger met or not; it cites the removed scorer as `71cb240`, this spec as `8d9ceaf^`, the same code; unify on `8d9ceaf^`), and
-  `docs/TOUR.md` plus `bash scripts/tour_check.sh` only if a tour module changes (the `miner.rs` refactor for the served-only mine
-  would).
+  `docs/TOUR.md` plus `bash scripts/tour_check.sh` in the commit that changes a tour cite (`Keep::Ctx` does; no served-only
+  refactor is built, see decision c1).
 
 ## Calls I made (not the user's; the user asked to skip the questions)
 
@@ -192,3 +202,7 @@ is not larger by more than 5%, on both the primary and the replication salts; ot
 Approved as written. m1: the strict Q1 bar (bootstrap interval above 0 at both k against both baselines, and 5 of 7 salts). n1: keep
 group 3 (the served-only partial mine and the `mine` refactor). o1: a null is recorded only; the stage-2 `PARKED.md` entry stays.
 The first plan covers stage 0 and stage 1 only; stage 2 gets its own plan if Q1 passes.
+
+Amended 2026-11-01 after Q1: a2: the Q1 bar is k in {40, 80} (Q1 passes). c1: Q2 uses the 33 columns without group 3, so n1 is
+superseded for Q2 (no served-only cover, no `mine` refactor; group 3 over-credits laws the served rules already cover). d1: pool 4,
+n in {80, 160}. The Q2 plan is `docs/superpowers/plans/2026-11-01-ctx-scorer-q2.md`.
