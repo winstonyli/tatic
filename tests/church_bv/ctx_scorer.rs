@@ -644,9 +644,10 @@ pub fn q1(mines: &[Mine], ks: &[usize]) -> String {
         let cap = |o: &[Vec<usize>]| -> Vec<f64> { (0..mines.len()).map(|mi| capture_at_k(&o[mi], &mines[mi].y, k) as f64).collect() };
         let (ctx, per, sm) = (cap(&orders[0]), cap(&orders[1]), cap(&small));
         let rand: Vec<f64> = mines.iter().map(|m| random_capture(&(0..m.y.len()).filter(|&i| m.live[i]).map(|i| m.y[i]).collect::<Vec<_>>(), k, 1..=200)).collect();
+        let rand_s: Vec<f64> = live_strag.iter().map(|y| random_capture(y, k, 1..=200)).collect();
         let ceiling: usize = positives.iter().map(|&p| p.min(k)).sum();
         let sum = |v: &[f64]| v.iter().sum::<f64>();
-        writeln!(t, "k={k}: ceiling {ceiling}; capture sums: context {}, per-law {}, small {}, random {:.1}", sum(&ctx), sum(&per), sum(&sm), sum(&rand)).unwrap();
+        writeln!(t, "k={k}: ceiling {ceiling}; capture sums: context {}, per-law {}, small {}, random {:.1}, random stragglers-first {:.1}", sum(&ctx), sum(&per), sum(&sm), sum(&rand), sum(&rand_s)).unwrap();
         if sum(&sm) >= 0.99 * ceiling as f64 {
             writeln!(t, "k={k}: no room: the `small` key is at the ceiling, so no ranker can beat it here").unwrap();
             no_room.push(k);

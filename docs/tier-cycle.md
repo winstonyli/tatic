@@ -7635,6 +7635,15 @@ better than the per-law model and the `small` key? Offline only, nothing reaches
   holds about 112 stragglers, so every straggler-first ranker, `small` included, already captures all 3,177 credited laws ("no
   room"). The user amended the bar to {40, 80} (decision a2, 2026-11-01) after seeing that result, not before; the k = 80 numbers
   are the same under both bars.
+- **Random column caveat**: the `random` column shuffles all live labelled laws, clean ones included, so it is far below the
+  straggler-first rankers by construction. A random order of the stragglers only (runs `2026-11-01-ctx-q1s` and `-q1s-2`,
+  identical) captures 1130 at k = 40 and 2245 at k = 80, so the real margins over chance are context +31% / +11% and `small`
+  +13% / +3%.
+- **Group 3 reads which way?** Of the stragglers in the labelled slices (before the 5 duplicates were dropped), those the
+  served-only cover already closes (group 3 flag 0) are credited 618 of 651 times (95%); the uncovered ones 2560 of 4078 (63%).
+  So group 3 ranks first the laws the served rules would cover anyway, which capture counts as credit but which add no new rule to
+  the mine. No leakage (the flag needs no label), but capture over-rewards this, and it may not carry over to held-out M or to
+  Q2. The signal is a statement about credit, not marginal value.
 - **Ablation** (capture sums, k = 40 / 80; full model 1476 / 2481): drop group 3 (marginal coverage) 1399 / 2429, drop group 1
   (percentiles) 1414 / 2451, drop group 2 (likeness to served) 1485 / 2481, drop the per-law block 1438 / 2457 (the three context
   groups alone beat the per-law model's 1329 / 2378). Groups 3 and 1 carry the signal; group 2 adds nothing.
