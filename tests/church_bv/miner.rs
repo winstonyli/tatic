@@ -120,28 +120,53 @@ fn mine(setup: &Arc<Setup>, extra: &[(Term, Term)]) -> (Vec<String>, usize) {
             // base rules may loop; a step budget per law bounds them (the built-in rules never reach it)
             let budget = if base.is_empty() { UNBOUNDED } else { LAW_STEPS };
             let laws = laws(job, &cfg, budget, &clock);
-            let (cands, rivals) = candidates(&laws, cfg.no_dup_lhs, &base, extra);
-            clock.phase("candidate generation");
-            // keep candidates whose left side matches a subterm of some straggler's normalized terms
-            let applicable = |l: &Term| laws.stragglers.iter().any(|s| reaches(l, s));
-            let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(CANDIDATE_CAP).collect();
-            println!("RULEMINER {} applicable candidates (cap {CANDIDATE_CAP})", cands.len());
-            // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules of
-            // this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
-            // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
-            let rules = job.rules().mined().to_vec();
-            let prover = Prover { rules, n: laws.n };
-            let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover.filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
-            println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
-            clock.phase("provable filter");
-            let scorer = Scorer::new(&laws, &cfg, base.clone());
-            let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, &cfg, &clock);
-            // the main job's join work from here on
-            let (Chosen { chosen, covered, .. }, main) = job.spent(|job| rounds.play(job));
-            rounds.report(&covered, main.join);
-            (chosen.iter().map(rule_show).collect(), rounds.proofs.iter().filter(|p| **p == Some(false)).count())
+            let (chosen, rolled_back) = cover(job, &laws, &cfg, &base, &clock, extra, false);
+            (chosen.iter().map(rule_show).collect(), rolled_back)
         })
     })
+}
+
+/// The rounds of a mine over `laws`: the chosen rules and how many winners failed their proofs and rolled the rounds back.
+/// `quiet` mines without a trace: no `chosen` record, no report or time lines (`mine` is loud; the pool dump covers the
+/// served stragglers alone and must leave the loop's `rules.txt` and the logs as a mine without it does).
+fn cover(job: &mut Job, laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)], clock: &Clock, extra: &[(Term, Term)], quiet: bool) -> (Vec<(Term, Term)>, usize) {
+    let (cands, rivals) = candidates(laws, cfg.no_dup_lhs, base, extra, !quiet);
+    if !quiet {
+        clock.phase("candidate generation");
+    }
+    // keep candidates whose left side matches a subterm of some straggler's normalized terms
+    let applicable = |l: &Term| laws.stragglers.iter().any(|s| reaches(l, s));
+    let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(CANDIDATE_CAP).collect();
+    if !quiet {
+        println!("RULEMINER {} applicable candidates (cap {CANDIDATE_CAP})", cands.len());
+    }
+    // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules of
+    // this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
+    // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
+    let rules = job.rules().mined().to_vec();
+    let prover = Prover { rules, n: laws.n };
+    let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover.filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
+    if !quiet {
+        println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
+        clock.phase("provable filter");
+    }
+    let scorer = Scorer::new(laws, cfg, base.to_vec());
+    let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, cfg, clock);
+    rounds.quiet = quiet;
+    // the main job's join work from here on
+    let (Chosen { chosen, covered, .. }, main) = job.spent(|job| rounds.play(job));
+    if !quiet {
+        rounds.report(&covered, main.join);
+    }
+    (chosen, rounds.proofs.iter().filter(|p| **p == Some(false)).count())
+}
+
+/// Whether each of the pool's `laws` is still a straggler with the `base` rules and the `chosen` ones installed (`mine`'s
+/// own installation), each rewritten under `budget` steps.
+fn still_stragglers(job: &mut Job, base: &[(Term, Term)], chosen: &[(Term, Term)], pool: &[(String, Term, Term)], budget: i64, fast: bool) -> Vec<bool> {
+    let setup = job.setup().clone();
+    let rules = job.rules().with_mined(&setup, base.iter().chain(chosen).cloned().collect());
+    job.with_rules(rules, |job| classify(job, pool, budget, fast, false).iter().map(|o| matches!(o, Outcome::Straggler(..))).collect())
 }
 
 /// The laws mined for: the stragglers (laws the base rules leave with a machine proof, or do not close) and a guard sample
@@ -301,7 +326,7 @@ fn reaches(l: &Term, s: &Scored) -> bool {
 }
 
 /// The candidate rules for the stragglers (P3, P4), one per left side, and the other right sides of each left side (`rivals`).
-fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Term, Term)]) -> (Vec<(Term, Term)>, hashbrown::HashMap<Term, Vec<(Term, Term)>>) {
+fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Term, Term)], loud: bool) -> (Vec<(Term, Term)>, hashbrown::HashMap<Term, Vec<(Term, Term)>>) {
     let (n, kv, stragglers) = (laws.n, laws.kv, &laws.stragglers);
     // the pool's rules go down in the rule order, ties broken by `tie_greater` (reassociation rules; section 70); the step
     // budget and the same-term check in `rule_step` still back up termination, and soundness is unaffected
@@ -309,7 +334,9 @@ fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Te
     // at most `POOL_VARS` variables (cutting subterms into variables), and look for a smaller term over the same variables
     // with the same values (`Pool`)
     let mut pool = Pool::new(n);
-    println!("RULEMINER pool of {} terms, {} distinct functions", pool.terms, pool.index.len());
+    if loud {
+        println!("RULEMINER pool of {} terms, {} distinct functions", pool.terms, pool.index.len());
+    }
     // patterns seen (`None`), and cross-side rules seen (`Some(rhs)`)
     let mut seen_pat: hashbrown::HashSet<(Term, Option<Term>)> = Default::default();
     let mut cands: Vec<(Term, Term)> = vec![];
@@ -376,7 +403,9 @@ fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Te
         let before = cands.len();
         let in_force: hashbrown::HashSet<&Term> = base.iter().map(|(l, _)| l).collect();
         cands.retain(|(l, _)| !in_force.contains(l));
-        println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
+        if loud {
+            println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
+        }
     }
     // per left side, the smallest right side only, ties by `Term`'s order. Scoring every right side instead (each left side's rival
     // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle.md)
@@ -395,7 +424,9 @@ fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Te
         v.remove(0);
     });
     cands.dedup_by(|a, b| a.0 == b.0);
-    println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
+    if loud {
+        println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
+    }
     (cands, rivals)
 }
 
@@ -707,6 +738,8 @@ struct Rounds<'a> {
     /// rivals' proofs (`best_rival`), proved and failed, and their time: unlike a winner's, on this thread
     rival_proofs: [usize; 2],
     rival_time: std::time::Duration,
+    /// no `chosen` record and no progress lines (`cover`)
+    quiet: bool,
 }
 
 /// The candidates a round scores, by their gain's bound, largest first, ties to the earlier: those not chosen already. A
@@ -770,6 +803,13 @@ impl<'a> Rounds<'a> {
             skipped: 0,
             rival_proofs: [0; 2],
             rival_time: std::time::Duration::ZERO,
+            quiet: false,
+        }
+    }
+
+    fn phase(&self, label: &str) {
+        if !self.quiet {
+            self.clock.phase(label);
         }
     }
 
@@ -952,15 +992,15 @@ impl<'a> Rounds<'a> {
         });
         self.scorings += next;
         self.skipped += order.len() - next;
-        self.clock.phase(&format!("round over {} of {} candidates", next, provable.len()));
+        self.phase(&format!("round over {} of {} candidates", next, provable.len()));
         let Some(i) = winner else { return None };
         let g = results[i].as_ref().unwrap().0;
         // in the rivals' order, as when they were scored one after another here
-        let (t, mut proved) = (Instant::now(), [0usize; 2]);
+        let (t, mut proved, quiet) = (Instant::now(), [0usize; 2], self.quiet);
         let rival = best_rival(rivals_of(i), &rival_gains, g, chosen, |rv| {
             let b = self.prover.prove(job, rv);
             proved[!b as usize] += 1;
-            if !b {
+            if !b && !quiet {
                 println!("RULEMINER rival not provable: {}", rule_show(rv));
             }
             b
@@ -976,11 +1016,15 @@ impl<'a> Rounds<'a> {
         while open.len() > keep {
             let o = open.remove(0);
             if o.proof.is_none_or(|i| self.resolve(i)) {
-                println!("{}", o.line);
-                job.setup().result("chosen", &o.rule);
+                if !self.quiet {
+                    println!("{}", o.line);
+                    job.setup().result("chosen", &o.rule);
+                }
                 continue;
             }
-            println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(&self.provable[i])));
+            if !self.quiet {
+                println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(&self.provable[i])));
+            }
             for v in open.drain(..) {
                 if let Some(i) = v.proof {
                     self.resolve(i);
@@ -1015,7 +1059,7 @@ impl<'a> Rounds<'a> {
                 };
                 let next = self.state(job, s.chosen.iter().chain([&rule]).cloned().collect());
                 let line = format!("RULEMINER chosen (+{} fixed, -{} size): {} -> {}", self.scorer.count(&next.covered) - self.scorer.count(&s.covered), s.size - next.size, rule.0.show(), rule.1.show());
-                self.clock.phase("rule-set evaluation");
+                self.phase("rule-set evaluation");
                 open.push(Open { before: s, round, proof, line, rule: rule_show(&rule) });
                 (s, round) = (next, round + 1);
                 // the newest three rounds stay open: a winner's proof (about 87 ms on cmp3d) runs while the next three rounds are
@@ -1190,6 +1234,65 @@ fn the_pool_is_cut_by_the_stragglers_verdict() {
     assert_eq!(straggler_names(&both, ex(1, Keep::First)), base, "the first pool law is the clean one: no new straggler");
     assert_eq!(straggler_names(&both, ex(0, Keep::Small)), base, "keep 0 reads no extra");
     assert_eq!(straggler_names(&both, Some(ExtrasKeep { from: 1000, n: 1, by: Keep::Small })), straggler_names(&both, None), "from past the end is the whole file as served");
+}
+
+/// What a quiet `cover` of the stream mine's laws (`ROLLBACK_LAWS`) under `setup` does: how many rules it chose and, per law
+/// (as plain values, the kernel scope lets no terms out), whether it is a straggler under the base (by `classify` and by
+/// `still_stragglers` with nothing chosen) and with the chosen rules.
+struct QuietCover {
+    chosen: usize,
+    by_classify: Vec<bool>,
+    none: Vec<bool>,
+    with: Vec<bool>,
+}
+
+fn quiet_cover(setup: &Arc<Setup>) -> QuietCover {
+    let laws: Vec<(String, Term, Term)> = ROLLBACK_LAWS
+        .lines()
+        .map(|s| {
+            let (a, b) = s.split_once(" = ").unwrap();
+            (s.to_string(), parse_term(a), parse_term(b))
+        })
+        .collect();
+    let job = &mut Job::new(setup.clone());
+    let clock = Clock(std::cell::Cell::new(Instant::now()));
+    let (chosen, by_classify, none, with) = tatic::kernel::scoped(|| {
+        let cfg = MinerConfig::new(setup);
+        let l = laws_of(job, laws.clone(), 0, true, UNBOUNDED, &clock, false);
+        let chosen = cover(job, &l, &cfg, &[], &clock, &[], true).0;
+        let by_classify: Vec<bool> = classify(job, &laws, UNBOUNDED, true, false).iter().map(|o| matches!(o, Outcome::Straggler(..))).collect();
+        let (none, with) = (still_stragglers(job, &[], &[], &laws, UNBOUNDED, true), still_stragglers(job, &[], &chosen, &laws, UNBOUNDED, true));
+        (chosen.len(), by_classify, none, with)
+    });
+    QuietCover { chosen, by_classify, none, with }
+}
+
+fn fast_env(file: &std::path::Path) -> Vec<(String, String)> {
+    vec![("RULEMINER_LAWFILE".to_string(), "unused".to_string()), ("RULEMINER_FAST".to_string(), "1".to_string()), ("CTX_TEST_RESULTS".to_string(), file.display().to_string())]
+}
+
+/// With nothing chosen the pool's stragglers are the base's; a rule the quiet cover chose closes at least one of them.
+#[test]
+fn a_chosen_rule_flips_a_straggler_to_covered() {
+    let setup = Setup::with_env(fast_env(std::path::Path::new("unused")));
+    let QuietCover { chosen, by_classify, none, with } = quiet_cover(&setup);
+    assert!(chosen > 0, "the stream mine's laws leave a rule to choose");
+    assert_eq!(none, by_classify, "no chosen rules is the base classification");
+    let (a, b) = (none.iter().filter(|s| **s).count(), with.iter().filter(|s| **s).count());
+    assert!(a > 0 && b < a, "the chosen rules close a straggler: {a} -> {b}");
+    assert!(with.iter().zip(&none).all(|(w, n)| !w || *n), "a clean law stays clean");
+}
+
+/// A quiet cover leaves no `chosen` record in the setup's result file.
+#[test]
+fn a_quiet_cover_records_no_chosen_rule() {
+    let file = std::env::temp_dir().join(format!("quiet_cover_{}.tsv", std::process::id()));
+    let setup = Setup::for_task(fast_env(&file), std::fs::File::create(&file).unwrap());
+    let chosen = quiet_cover(&setup).chosen;
+    let recorded = std::fs::read_to_string(&file).unwrap();
+    std::fs::remove_file(&file).ok();
+    assert!(chosen > 0);
+    assert!(!recorded.contains("chosen"), "a quiet cover records nothing: {recorded:?}");
 }
 
 /// `by=first` is today's mine rule for rule: a file with a pool and `KEEP` of the first law chooses what the file without the
