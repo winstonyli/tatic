@@ -268,7 +268,7 @@ fn build(n: usize, fill: bool, stages: usize) -> Cx {
     cx
 }
 /// the hypotheses of `Dc` / `Dx` at stage s (multiplier bit s), as proofs
-fn hyps_c(n: usize, s: usize) -> Vec<T> {
+pub(crate) fn hyps_c(n: usize, s: usize) -> Vec<T> {
     (0..n)
         .map(|m| {
             if m < s {
@@ -279,7 +279,7 @@ fn hyps_c(n: usize, s: usize) -> Vec<T> {
         })
         .collect()
 }
-fn hyps_x(n: usize, s: usize) -> Vec<T> {
+pub(crate) fn hyps_x(n: usize, s: usize) -> Vec<T> {
     (0..n)
         .map(|m| {
             if m < s {

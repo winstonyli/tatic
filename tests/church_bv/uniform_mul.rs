@@ -352,10 +352,10 @@ pub(crate) fn shl_bv(n: usize, fill: bool) -> T {
     let body = (0..n).rev().fold(call, |body, j| lm(AN(j), bool0(), body));
     lm("x", bvt(n), lm("C", s(1), lm("k", arrows(n, v("C")), ap2(v("x"), v("C"), body))))
 }
-fn rep(n: usize, bit: T) -> T {
+pub(crate) fn rep(n: usize, bit: T) -> T {
     tuple(&vec![bit; n])
 }
-fn band(n: usize, p: T, q: T) -> T {
+pub(crate) fn band(n: usize, p: T, q: T) -> T {
     ap2(K(encoding::bitwise(n, &|a, c| encoding::and(a, c))), p, q)
 }
 pub(crate) fn mul_bv(n: usize) -> Expr {
