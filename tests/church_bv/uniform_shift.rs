@@ -107,29 +107,12 @@ pub(crate) fn z_stmt(k: u32) -> T {
             idt(state(k), st(k, maj, v("za"), v("zc"), v("N")), pair_s(k, embed(k, v("N")), ff())))))))
 }
 pub(crate) fn z_proof(k: u32) -> T {
-    let stn = |m: T| st(k, maj, v("za"), v("zc"), m);
-    let target = |m: T| pair_s(k, embed(k, m), ff());
-    let eq_ty = |m: T| idt(state(k), stn(m.clone()), target(m));
+    let eq_ty = |m: T| idt(state(k), st(k, maj, v("za"), v("zc"), m.clone()), pair_s(k, embed(k, m), ff()));
     let gty = |m: T| gk(k, embed(k, m));
-    let pmf = |m: T| sig2(gty(m.clone()), eq_ty(m));
-    let em = embed(k, v("m"));
-    let ge_m = pr1(gty(v("m")), eq_ty(v("m")), v("ih"));
-    let eq_m = pr2(gty(v("m")), eq_ty(v("m")), v("ih"));
     // a (embed m) = false, so maj(a, c, false) = false whatever c is
-    let to_false = rew(bool0(), ap(v("za"), em.clone()), ff(), ap2(v("hu"), em.clone(), ge_m.clone()),
+    let pn = carry_false(k, &v("za"), &v("zc"), &|em, ge_m| rew(bool0(), ap(v("za"), em.clone()), ff(), ap2(v("hu"), em.clone(), ge_m),
         lm("b", bool0(), idt(bool0(), maj(v("b"), ap(v("zc"), em.clone()), ff()), ff())),
-        rfl(ff()));
-    let h = rew(bool0(), maj(ap(v("za"), em.clone()), ap(v("zc"), em.clone()), ff()), ff(), to_false,
-        lm("t", bool0(), idt(state(k), pair_s(k, ap(succ(k), em.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))),
-        rfl(pair_s(k, ap(succ(k), em.clone()), ff())));
-    let eq_new = rew(state(k), stn(v("m")), target(v("m")), eq_m,
-        lm("t", state(k), idt(state(k), ap(step(k, maj, v("za"), v("zc")), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))), h);
-    let sm = ap(succ(k + 1), v("m"));
-    let step_ = lm("m", nat(k + 1), lm("ih", pmf(v("m")),
-        mk2(gty(sm.clone()), eq_ty(sm), gsucc(k, em, ge_m), eq_new)));
-    let z = zero(k + 1);
-    let base = mk2(gty(z.clone()), eq_ty(z), gzero(k), rfl(pair_s(k, zero(k), ff())));
-    let pn = ap3(v("g"), lm("M", nat(k + 1), pmf(v("M"))), base, step_);
+        rfl(ff())));
     lm("N", nat(k + 1), lm("g", ap(good1(k), v("N")), lm("za", bits(k), lm("zc", bits(k),
         lm("hu", pi_("i", nat(k), arr(gk(k, v("i")), idt(bool0(), ap(v("za"), v("i")), ff()))),
             pr2(gty(v("N")), eq_ty(v("N")), pn))))))

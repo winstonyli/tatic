@@ -165,6 +165,30 @@ fn y_stmt(k: u32, zero_right: bool) -> T {
         arr(pi_("i", nat(k), arr(gk(k, v("i")), idt(bool0(), ap(v("su"), v("i")), ap(v("sw"), v("i"))))),
             idt(bool0(), sumbit(k, a, c, v("N")), ap(v("sw"), embed(k, v("N"))))))))))
 }
+/// The induction behind the carry lemmas Y (zero right) and Z (`uniform_shift.rs`, zero left): with `g : Good N` free, a
+/// proof of `Sigma (Good_k (embed N)) (st(maj, a, c, N) = (embed N, false))`, given `to_false(em, ge_m)`, a proof of
+/// `maj(a em, c em, false) = false` from the goodness `ge_m` of `em = embed m` (the zero operand makes the carry stay false).
+pub(crate) fn carry_false(k: u32, a: &T, c: &T, to_false: &dyn Fn(T, T) -> T) -> T {
+    let stn = |m: T| st(k, maj, a.clone(), c.clone(), m);
+    let target = |m: T| pair_s(k, embed(k, m), ff());
+    let eq_ty = |m: T| idt(state(k), stn(m.clone()), target(m));
+    let gty = |m: T| gk(k, embed(k, m));
+    let pmf = |m: T| sig2(gty(m.clone()), eq_ty(m));
+    let em = embed(k, v("m"));
+    let ge_m = pr1(gty(v("m")), eq_ty(v("m")), v("ih"));
+    let eq_m = pr2(gty(v("m")), eq_ty(v("m")), v("ih"));
+    let h = rew(bool0(), maj(ap(a.clone(), em.clone()), ap(c.clone(), em.clone()), ff()), ff(), to_false(em.clone(), ge_m.clone()),
+        lm("t", bool0(), idt(state(k), pair_s(k, ap(succ(k), em.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))),
+        rfl(pair_s(k, ap(succ(k), em.clone()), ff())));
+    let eq_new = rew(state(k), stn(v("m")), target(v("m")), eq_m,
+        lm("t", state(k), idt(state(k), ap(step(k, maj, a.clone(), c.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))), h);
+    let sm = ap(succ(k + 1), v("m"));
+    let step_ = lm("m", nat(k + 1), lm("ih", pmf(v("m")),
+        mk2(gty(sm.clone()), eq_ty(sm), gsucc(k, em, ge_m), eq_new)));
+    let z = zero(k + 1);
+    let base = mk2(gty(z.clone()), eq_ty(z), gzero(k), rfl(pair_s(k, zero(k), ff())));
+    ap3(v("g"), lm("M", nat(k + 1), pmf(v("M"))), base, step_)
+}
 pub(crate) fn y_proof(k: u32, zero_right: bool) -> T {
     let (a, c) = if zero_right { (v("su"), zs(k)) } else { (zs(k), v("su")) };
     let stn = |m: T| st(k, maj, a.clone(), c.clone(), m);
@@ -172,39 +196,20 @@ pub(crate) fn y_proof(k: u32, zero_right: bool) -> T {
     let e = |m: T| embed(k, m);
     let eq_ty = |m: T| idt(state(k), stn(m.clone()), target(m));
     let gty = |m: T| gk(k, e(m));
-    let em = e(v("m"));
-    let sm = ap(succ(k + 1), v("m"));
     let zsl = |p: T| ap(zs(k), p); // reduces to ff
     // the carry stays false: right-zero needs the known stream's goodness; left-zero is by computation
-    let h = if zero_right {
-        let ge_m = pr1(gty(v("m")), eq_ty(v("m")), v("ih"));
-        let to_false = rew(bool0(), ap(v("su"), em.clone()), ap(v("sw"), em.clone()), ap2(v("hu"), em.clone(), ge_m.clone()),
-            lm("b", bool0(), idt(bool0(), maj(v("b"), zsl(em.clone()), ff()), ff())),
-            cases1(ap2(v("gw"), em.clone(), ge_m), &|bb| maj(bb, zsl(em.clone()), ff()), &|_| ff()));
-        rew(bool0(), maj(ap(v("su"), em.clone()), zsl(em.clone()), ff()), ff(), to_false,
-            lm("t", bool0(), idt(state(k), pair_s(k, ap(succ(k), em.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))),
-            rfl(pair_s(k, ap(succ(k), em.clone()), ff())))
-    } else {
-        rfl(pair_s(k, ap(succ(k), em.clone()), ff()))
-    };
-    let eq_old = if zero_right { pr2(gty(v("m")), eq_ty(v("m")), v("ih")) } else { v("ih") };
-    let eq_new = rew(state(k), stn(v("m")), target(v("m")), eq_old,
-        lm("t", state(k), idt(state(k), ap(step(k, maj, a.clone(), c.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))), h);
-    let refl0 = rfl(pair_s(k, zero(k), ff()));
-    let (pm, base, step_) = if zero_right {
-        let pmf = |m: T| sig2(gty(m.clone()), eq_ty(m));
-        let ge_new = gsucc(k, em.clone(), pr1(gty(v("m")), eq_ty(v("m")), v("ih")));
-        (lm("M", nat(k + 1), pmf(v("M"))),
-         mk2(gty(zero(k + 1)), eq_ty(zero(k + 1)), gzero(k), refl0),
-         lm("m", nat(k + 1), lm("ih", pmf(v("m")), mk2(gty(sm.clone()), eq_ty(sm.clone()), ge_new, eq_new))))
-    } else {
-        (lm("M", nat(k + 1), eq_ty(v("M"))), refl0,
-         lm("m", nat(k + 1), lm("ih", eq_ty(v("m")), eq_new)))
-    };
-    let pn = ap3(v("g"), pm, base, step_);
     let (eq_n, ge_n) = if zero_right {
+        let pn = carry_false(k, &a, &c, &|em, ge_m| rew(bool0(), ap(v("su"), em.clone()), ap(v("sw"), em.clone()), ap2(v("hu"), em.clone(), ge_m.clone()),
+            lm("b", bool0(), idt(bool0(), maj(v("b"), zsl(em.clone()), ff()), ff())),
+            cases1(ap2(v("gw"), em.clone(), ge_m), &|bb| maj(bb, zsl(em.clone()), ff()), &|_| ff())));
         (pr2(gty(v("N")), eq_ty(v("N")), pn.clone()), pr1(gty(v("N")), eq_ty(v("N")), pn))
     } else {
+        let em = e(v("m"));
+        let eq_new = rew(state(k), stn(v("m")), target(v("m")), v("ih"),
+            lm("t", state(k), idt(state(k), ap(step(k, maj, a.clone(), c.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))),
+            rfl(pair_s(k, ap(succ(k), em), ff())));
+        let pn = ap3(v("g"), lm("M", nat(k + 1), eq_ty(v("M"))), rfl(pair_s(k, zero(k), ff())),
+            lm("m", nat(k + 1), lm("ih", eq_ty(v("m")), eq_new)));
         (pn, ap2(ge_proof(k), v("N"), v("g")))
     };
     let en = e(v("N"));
