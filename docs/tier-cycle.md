@@ -7952,11 +7952,20 @@ pinned by a test). So the shift-and-add loop is unrolled in the meta-language, o
 uniform in the output position and the multiplicand stream, not in the multiplier's width, and the multiplier must be a
 literal. With that, `mul x 0 = 0` and `mul x 1 = x` are proved and bridged to a `mul(n)` defined in the test from
 `encoding::add` and `encoding::bitwise` (the encoding has no `mul`), accepted for n = 1 to 6 (checked n = 1 to 3 in the default
-tests). The reviewer's caveat is material: in both laws every shifted partial product is masked by a zero multiplier bit, so
-the shift is never observed by a proof (flipping `shl_bv`'s fill bit left the bridge tests passing; only the
-literal-multiplication computation test catches it). The built result shows that the nested adder types and chains, not that a
-shift-dependent law (`mul x 2 = x + x`, `mul 1 y = y`, commutativity) can be proved. Bridge check against the per-width
-baseline (one run): `mul x 1 = x` 9.1 against 3.4 ms at n = 4 and 287 against 69 ms at n = 6 (the reviewer's rerun: 1435 against
+tests). The reviewer's caveat was material: in both laws every shifted partial product is masked by a zero multiplier bit, so
+no proof observed the shift (flipping `shl_bv`'s fill bit left the bridge tests passing; only the literal-multiplication
+computation tests caught it). `mul x 2 = x + x` (`uniform_shift.rs`) closes that: it is proved uniformly in the output position
+and bridged to `Pi x:Bv_n. GoodBv x -> Id(Bv_n, mul(n) x (lit 2), add x x)` for n = 2 to 4 (n = 5, 6 in the scaling test), and
+flipping the fill bit of `shl_bv` or of the stream shift is now REJECTED by the bridge check itself while the old `mul x 0` and
+`mul x 1` bridges still accept the mutant. The proof is not the hinted carry induction on `x + x`: `maj(a,a,c) = a` is stuck on a
+symbolic carry, so a joint induction shows the shift's fold and the adder's fold for `x + x` run in step (`AD M = SH M` as states,
+with `GoodBool` of the carry kept in a `Sigma` component, which puts its motive in `Sort2` and needs k >= 1), then a zero-left-operand
+lemma and lemma Y for the trailing zero multiplier bits; lemma Y's `GoodBool` hypothesis had to become conditional on the position
+being good. Level rule met on the way: a case split on a `GoodBool` witness admits motives into `Sort1` only, so the split is on a
+`Bool0` equality lifted to the state with `rew`. Still unbuilt: `mul 1 y = y` (a symbolic multiplier), commutativity, and any
+law uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
+3.6 ms at n = 4, 14.4 against 14.2 at n = 5, 68 against 55 at n = 6, so roughly even there (build 21 to 232 ms against 0.5 to 48).
+For the older laws, bridge against per-width baseline (one run): `mul x 1 = x` 9.1 against 3.4 ms at n = 4 and 287 against 69 ms at n = 6 (the reviewer's rerun: 1435 against
 375 ms); `mul x 0 = 0` against a baseline that is just `refl`, so no fair comparison. A first accumulator that repeated each operand
 three times grew as 3^j (14.6 s to build at n = 4) and hit the 8 GB cap at n = 5; sharing the accumulator as a closed term made the build linear.
 
