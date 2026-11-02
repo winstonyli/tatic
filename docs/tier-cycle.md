@@ -7683,7 +7683,7 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
   it.
 - **Reading (inference).** The cheapest stragglers of a pool are worth more than a random law per unit of work, and the
   pool of 4n holds only so many of them: past n about 160 the kept laws are the dearer stragglers and the arm pays what
-  straggler-first pays. What would confirm: the kept laws' steps per n (not logged). A larger pool did not help, which fits
+  straggler-first pays. What would confirm: the kept laws' steps per n (not logged). A larger pool did not help, which fits (the pool is not the limit; the cost key is).
 
 - **Coverage keys (2026-10-31; runs `v06n-g1` to `g4`; rule in the spec addendum "c1: coverage keys").** `novel` and `reinforce`
   rank the pool's stragglers by whether a candidate left side the served stragglers propose reaches them, then by steps. At
@@ -7744,7 +7744,6 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
   same), so the key does move the mine; it just does not move it toward a better frontier. Reach by served candidates is not a
   useful signal for choosing extras, in either direction. With the binary class (`v06n-g1` to `g4`) and the stage-1 scorer this
   is the third per-law signal that fails to beat `cheap`/random.
-  (the pool is not the limit; the cost key is).
 
 - **A key under an empty base (2026-10-31; runs `v06j3-g1`, `g2`; rule in the spec addendum "j3").** `small` ranks by (steps,
   normal-form size): `cheap` with ties by size in mine 1, smallest normal form first in mine 0. n 160, pool 4, against `cheap`
