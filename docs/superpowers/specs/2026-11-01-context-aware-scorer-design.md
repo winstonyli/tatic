@@ -86,8 +86,8 @@ distribution it will rank in Q2. Columns (F = 26 + 3 + 4 + 2 = 35):
   `mine` split into a callable pipeline (`mine_served_only(job, laws) -> Vec<(Term, Term)>`), a refactor of the miner, not a column.
 
 No feature uses the label or any extras-mine result. Standardise each column on the training rows (mean 0, sd 1; a column with
-sd = 0 is dropped and noted). Stage 1 used raw counts; the per-law arm is refit with standardisation too, for a like-for-like
-comparison, and the unstandardised fit is kept only for the reproduction check. The weights file records the feature layout and a
+sd = 0 is dropped and noted). Stage 1's fit already standardised (`Scorer`), so the per-law arm is the same fit on the same 26
+columns, now with a runtime width so that the same code fits the 35-column and the ablated models. The weights file records the feature layout and a
 layout version, so `laws_for` refuses a mismatch; cutting a group means a new layout version.
 
 ## Architecture
@@ -97,13 +97,17 @@ One mechanism, offline first. Nothing in the kernel changes; no score reaches th
 - **`tests/church_bv/ctx_scorer.rs`** (new, test-only): `features(law, pool_ctx) -> [f32; 35]`, a logistic `fit`/`score`/`auc`/text I/O
   recovered from `8d9ceaf^:tests/church_bv/scorer.rs` (deterministic, no dependency), and the offline report.
 - **Dump.** `classify`, `Outcome`, `Scored` and `kept_indices` are private to `miner.rs`, and `Outcome::Clean` and `Skipped` carry no
-  steps or size, so the dump is a `#[cfg(test)]` function inside `miner.rs`, not stderr scraping. It re-runs the classify pass with
-  `POOL=4` over all 1276 laws and writes, per mine, one TSV row per pool law: salt, mine, law, pool index, straggler flag, steps,
-  size, fallbacks (stragglers only; empty otherwise), the group 2 and 3 columns, and y for laws in the labelled slice. Labels come
-  from the cached gate folders (`laws_extra_*.txt` plus `mine_*.log`, as `dump_labels` reads them), joined by law text. Assertions at
-  stage 0: the first n laws of each POOL=4 pool equal that mine's cached `laws_extra_*.txt` (else the labels are of another slice:
-  stop); no law text repeats across salts or across the six mines of a salt (else leave-one-salt-out leaks); the cached folders still
-  exist (else regenerate them as a recorded run).
+  steps or size, so the dump is an env-gated path inside `miner.rs` (`RULEMINER_POOL_DUMP=<file>`), not stderr scraping. A mine's
+  base rules include the rules chosen by the earlier mines of its loop, so the pool can only be classified inside a real arm run:
+  the dump is a fresh arm run with `POOL=4 EXTRAS_SELECT=first` (the miner mines the first n, so chosen rules and labels are the
+  random arm's) whose `First` path, when the dump is on, also classifies the whole pool (1276 laws) and writes, per mine, one TSV
+  row per pool law: pool index, law, straggler flag, steps, size, fallbacks (stragglers only; empty otherwise) and the group 2 and
+  3 columns. Labels come from that run's own `mine_<m>.log` (`RULEMINER label:`), joined by law text; the labelled slice is the
+  first n pool laws. The cached `v06-labels` folders cannot supply labels for the pool: the driver cuts mine j's slice at
+  j x POOL x n, so with POOL=4 every mine but the first reads different laws than the cached POOL=1 run. The dump run is therefore
+  a new dataset (same salts 4 to 10, same distribution, new law slices) with new counts, recorded when it runs. Assertions at stage
+  0: the first n laws of each pool equal that mine's `laws_extra` prefix (the dump's own consistency); no law text repeats across
+  salts or across the six mines of a salt (else leave-one-salt-out leaks).
 - **Q2 hook** (only if Q1 passes): a new `Keep::Ctx` in `laws_for` ranks the whole pool by score (non-stragglers last, ties and
   non-stragglers in stream order) and takes the first n. `EXTRAS_SELECT=ctx` plus a weights file selects it. Runnable check: with
   all-zero weights `Keep::Ctx` must choose the same rules and give the same held-out M as `Keep::First` (identical chosen rules and
@@ -112,13 +116,13 @@ One mechanism, offline first. Nothing in the kernel changes; no score reaches th
 
 ## Stages
 
-**Stage 0: dump and reproduce.** Build the dump over salts 4 to 10 (7 salts x 6 mines = 42 mines, 13,398 labelled laws, 3,282
-credited, as recorded). Reproduction check before anything else: label counts equal the recorded 13,398 / 3,282 / 42 exactly, and
-the recovered unstandardised per-law model, fit on salts 4 to 9 and tested on salt 10 (the stage-1 split, `docs/tier-cycle.md`),
-reproduces test AUC 0.691 and train 0.711 within 0.005, and the size-only baseline (the size-sum feature alone, as stage 1 defined
-it) 0.528 within 0.005. Else stop and report. Expected duration: the classify pass is 4 times stage 1's (42 mines), plus 42
-served-only mines; probe one mine first and state the figure before the full dump (run through `run.ps1`, `-MaxMemGB 8`,
-`-Affinity CFF`).
+**Stage 0: reproduce, then dump.** Reproduction check before anything else, on the cached `v06-labels` label TSV (recovered
+`dump_labels`): 42 mines, 13,398 labelled laws, 3,282 credited as recorded, and the recovered per-law model (26 columns, as stage 1), fit on
+salts 4 to 9 and tested on salt 10 (the stage-1 split, `docs/tier-cycle.md`), reproduces test AUC 0.691 and train 0.711 within
+0.005, and the size-only baseline (the size-sum feature alone, as stage 1 defined it) 0.528 within 0.005. Else stop and report.
+Then build the dump over salts 4 to 10 (7 salts x 6 mines = 42 mines; new counts, recorded). Expected duration: a classify pass
+over 1276 laws per mine (4 times the stage-1 one) plus a served-only cover per mine on top of the arm run; probe one salt first and
+state the figure before the full dump (run through `run.ps1`, `-MaxMemGB 8`, `-Affinity CFF`).
 
 **Stage 1: Q1, offline, leave-one-salt-out.** For each held-out salt s: fit the per-law and context models (standardised, on
 stragglers) on the other six salts. In each of s's six mines, rank the 319 labelled laws by each ranker and count y = 1 in the top k,
