@@ -7,7 +7,19 @@
 // position `p`, false past the end) and `lower` is the chain of `embed`s down to Nat_1. It is proved for EVERY good position,
 // with no per-position case tree; the bridge to `Bv_n` is the instance at the numerals.
 //
-// Pieces (all closed terms, shared by the later stages as handles; the per-stage terms are O(n) in size, O(n^2) over all stages):
+// Size and cost, stated with what they depend on (measured by `header_states_what_the_size_and_cost_claims_depend_on` and the
+// ignored scaling tests):
+//   * Sizes below count DISTINCT nodes, i.e. they hold only because the kernel shares subterms (the stages are handles). The
+//     bridge has 2052, 3193, 4434, 5785, 7237 distinct nodes for n = 2..6 (about quadratic), but its fully unfolded tree is
+//     3.97e6, 4.8e7, 4.8e8, 4.3e9, 3.7e10 nodes: about 8-10x per bit, the same shape as the old `uniform_symmul.rs`. Anything
+//     that unfolds the term (printing it, a checker without sharing) sees the exponential size.
+//   * The stream theorem itself is cheap: H_n checks in 7.4, 9.2, 18.7 ms for n = 4, 6, 8. The END-TO-END bridge check
+//     does not scale: 2.6, 10.6, 26, 130, 736, 4238 ms for n = 2, 4, 5, 6, 7, 8 (peak commit 1.9 GB at n = 7, 8), super-polynomial.
+//     The cost is the kernel's conversion of the statement's fixed-width `mul(n)` against the stream product `acc_n` on the
+//     stuck symbolic bits (at n = 8: bit 7 takes 2196 ms, bit 6 takes 1180 ms; `symmul_uniform_conv_cost`), not the proof.
+//     This is an improvement on the positionwise bridge (which could not run n = 8 in 8 GB), not a polynomial result.
+//
+// Pieces (all closed terms, shared by the later stages as handles; the per-stage terms are O(n) in distinct nodes, O(n^2) over all stages):
 //   * `Z0`:  look(0..0) p = false (an induction whose step is the identity: the shifted zero tuple is the zero tuple).
 //   * `D`:   a pointwise lemma for the lookup. For `f(u, w)` with `f(ff, ff) = ff` (hypothesis `hp`) and tuples `a, c, r` with
 //            `f(a_m, c_m) = r_m` for each m < n:  f(look a p, look c p) = look r p at every good p (or `= ff` when `f(a_m, c_m) = ff`).
@@ -507,4 +519,22 @@ fn symmul_uniform_conv_cost() {
         }
         println!("SYMMUL_UNIFORM_CONV n={n}: {}", line.join(", "));
     }
+}
+
+/// The header's size and cost claims are the measured ones. The bridge's DAG (distinct nodes) grows polynomially but its
+/// fully unfolded tree grows about 8-10x per bit, so "O(n)" holds only with the kernel's sharing; and the header must say that
+/// the end-to-end check time does not scale (it is super-polynomial, in the conversion of the statement's `mul(n)`).
+#[test]
+fn header_states_what_the_size_and_cost_claims_depend_on() {
+    let sizes: Vec<(usize, u128)> = (2..=5usize).map(|n| kernel::term_sizes(&bridge_proof(n, false))).collect();
+    println!("[uniform symmul sizes] (distinct, unfolded) for n=2..5: {sizes:?}");
+    for w in sizes.windows(2) {
+        assert!(w[1].0 < w[0].0 * 2, "distinct nodes grew by 2x or more in one bit: {sizes:?}");
+        assert!(w[1].1 > w[0].1 * 4, "unfolded size grew by less than 4x in one bit: {sizes:?}");
+    }
+    let src = include_str!("uniform_symmul_uniform.rs");
+    let header: String = src.lines().take_while(|l| l.starts_with("//")).collect::<Vec<_>>().join("\n");
+    assert!(header.contains("distinct nodes"), "the header's O(n) claim must say it counts distinct (shared) nodes");
+    assert!(header.contains("unfolded"), "the header must give the unfolded growth");
+    assert!(header.contains("does not scale"), "the header must say the end-to-end check does not scale");
 }
