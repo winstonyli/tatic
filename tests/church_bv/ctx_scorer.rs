@@ -284,12 +284,209 @@ fn reproduce_stage1() {
     }
 }
 
+/// The columns of the context model: the per-law block, then group 1 (3), group 2 (4), group 3 (2).
+pub const WIDTH: usize = PER_LAW + 3 + 4 + 2;
+
+/// One law of a mine's pool, from the dump. `steps`, `size`, `fallbacks` and `uncovered` mean something only for a straggler
+/// (the laws the base rules leave); `uncovered` is whether it is still one after the served-only cover.
+#[derive(Clone)]
+pub struct PoolLaw {
+    pub law: (Term, Term),
+    pub straggler: bool,
+    pub steps: i64,
+    pub size: i64,
+    pub fallbacks: u64,
+    pub uncovered: bool,
+}
+
+/// The percentile of each value among `values`: (average rank - 1) / (m - 1), equal values sharing the average rank, 0.5 for
+/// a single value.
+pub fn percentiles(values: &[f64]) -> Vec<f64> {
+    let m = values.len();
+    if m == 1 {
+        return vec![0.5];
+    }
+    let mut order: Vec<usize> = (0..m).collect();
+    order.sort_by(|&i, &j| values[i].total_cmp(&values[j]));
+    let mut out = vec![0.0; m];
+    let mut i = 0;
+    while i < m {
+        let mut j = i;
+        while j + 1 < m && values[order[j + 1]] == values[order[i]] {
+            j += 1;
+        }
+        let avg = (i + j) as f64 / 2.0; // zero-based average rank
+        for &k in &order[i..=j] {
+            out[k] = avg / (m - 1) as f64;
+        }
+        i = j + 1;
+    }
+    out
+}
+
+/// Group 1, per pool law: the percentiles of its steps, normal-form size and fallbacks among the pool's stragglers; zeros for
+/// a law that is not a straggler.
+pub fn group1(pool: &[PoolLaw]) -> Vec<[f32; 3]> {
+    let idx: Vec<usize> = (0..pool.len()).filter(|&i| pool[i].straggler).collect();
+    let col = |f: &dyn Fn(&PoolLaw) -> f64| percentiles(&idx.iter().map(|&i| f(&pool[i])).collect::<Vec<_>>());
+    let (a, b, c) = (col(&|l| l.steps as f64), col(&|l| l.size as f64), col(&|l| l.fallbacks as f64));
+    let mut out = vec![[0.0f32; 3]; pool.len()];
+    for (k, &i) in idx.iter().enumerate() {
+        out[i] = [a[k] as f32, b[k] as f32, c[k] as f32];
+    }
+    out
+}
+
+fn ops_of(ts: &[&Term]) -> [usize; OPN] {
+    let mut c = [0usize; OPN];
+    ts.iter().for_each(|t| op_counts(t, &mut c));
+    c
+}
+
+/// Sum of the element-wise minima over the sum of the maxima; 0 when both are empty.
+fn jaccard(a: &[usize; OPN], b: &[usize; OPN]) -> f32 {
+    let (lo, hi): (usize, usize) = (0..OPN).fold((0, 0), |(l, h), i| (l + a[i].min(b[i]), h + a[i].max(b[i])));
+    if hi == 0 {
+        0.0
+    } else {
+        lo as f32 / hi as f32
+    }
+}
+
+/// The operator at the top of a term; a leaf has none.
+fn root(t: &Term) -> Option<usize> {
+    match *t.node() {
+        Node::Op(o, ..) => Some(o),
+        _ => None,
+    }
+}
+
+/// Group 2, per pool law, against `served` (the served stragglers' normal forms): the Jaccard of the law's operator multiset
+/// (both sides) with the multiset union (element-wise maximum) of the served normal forms'; the same for the left side alone;
+/// the fraction of `served` whose left-side root operator is the law's; the same for the right side. Zeros when nothing is
+/// served, and for a side that is a leaf.
+pub fn group2(pool: &[PoolLaw], served: &[(Term, Term)]) -> Vec<[f32; 4]> {
+    let union = |side: &dyn Fn(&(Term, Term)) -> Vec<Term>| -> [usize; OPN] {
+        served.iter().fold([0usize; OPN], |mut u, s| {
+            let c = ops_of(&side(s).iter().collect::<Vec<_>>());
+            (0..OPN).for_each(|i| u[i] = u[i].max(c[i]));
+            u
+        })
+    };
+    let (both_u, left_u) = (union(&|s| vec![s.0, s.1]), union(&|s| vec![s.0]));
+    let frac = |r: Option<usize>, side: &dyn Fn(&(Term, Term)) -> Term| -> f32 {
+        match (r, served.len()) {
+            (Some(o), n) if n > 0 => served.iter().filter(|s| root(&side(s)) == Some(o)).count() as f32 / n as f32,
+            _ => 0.0,
+        }
+    };
+    pool.iter()
+        .map(|l| {
+            if served.is_empty() {
+                return [0.0; 4];
+            }
+            [jaccard(&ops_of(&[&l.law.0, &l.law.1]), &both_u), jaccard(&ops_of(&[&l.law.0]), &left_u), frac(root(&l.law.0), &|s| s.0), frac(root(&l.law.1), &|s| s.1)]
+        })
+        .collect()
+}
+
+/// Group 3, per pool law: 1 if it is a straggler the served-only cover leaves uncovered, and the fraction of the pool's
+/// stragglers with the same left-side root operator that stay uncovered. Zeros for a law that is not a straggler.
+pub fn group3(pool: &[PoolLaw]) -> Vec<[f32; 2]> {
+    pool.iter()
+        .map(|l| {
+            let Some(o) = root(&l.law.0).filter(|_| l.straggler) else { return [(l.straggler && l.uncovered) as u8 as f32, 0.0] };
+            let same: Vec<&PoolLaw> = pool.iter().filter(|m| m.straggler && root(&m.law.0) == Some(o)).collect();
+            [l.uncovered as u8 as f32, same.iter().filter(|m| m.uncovered).count() as f32 / same.len() as f32]
+        })
+        .collect()
+}
+
+/// The `WIDTH` columns of every pool law, in pool order.
+pub fn rows(pool: &[PoolLaw], served: &[(Term, Term)]) -> Vec<Vec<f32>> {
+    let (g1, g2, g3) = (group1(pool), group2(pool, served), group3(pool));
+    (0..pool.len()).map(|i| per_law_features(&pool[i].law).iter().chain(&g1[i]).chain(&g2[i]).chain(&g3[i]).copied().collect()).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn p(a: &str, b: &str) -> (Term, Term) {
         (parse_term(a), parse_term(b))
+    }
+
+    fn pl(a: &str, b: &str, straggler: bool, steps: i64, uncovered: bool) -> PoolLaw {
+        PoolLaw { law: p(a, b), straggler, steps, size: steps, fallbacks: steps as u64, uncovered }
+    }
+
+    #[test]
+    fn percentiles_share_the_average_rank_for_ties() {
+        assert_eq!(percentiles(&[1.0, 2.0, 2.0, 3.0]), vec![0.0, 0.5, 0.5, 1.0]);
+        assert_eq!(percentiles(&[3.0, 1.0]), vec![1.0, 0.0]);
+    }
+
+    #[test]
+    fn percentiles_of_one_value_is_half() {
+        assert_eq!(percentiles(&[7.0]), vec![0.5]);
+        assert!(percentiles(&[]).is_empty());
+    }
+
+    #[test]
+    fn group1_is_zero_for_non_stragglers_and_in_unit_range() {
+        let pool = vec![pl("add(x, y)", "add(y, x)", true, 3, true), pl("and(x, y)", "and(y, x)", false, 9, false), pl("or(x, y)", "or(y, x)", true, 8, false)];
+        let g = group1(&pool);
+        assert_eq!(g[1], [0.0; 3]);
+        assert_eq!((g[0], g[2]), ([0.0; 3], [1.0; 3]));
+        assert!(g.iter().flatten().all(|v| (0.0..=1.0).contains(v)));
+    }
+
+    #[test]
+    fn group2_identical_operator_multiset_gives_jaccard_one() {
+        let pool = vec![pl("add(x, y)", "add(y, x)", true, 1, true)];
+        let g = group2(&pool, &[p("add(x, y)", "add(y, x)")]);
+        assert_eq!(g[0], [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    #[test]
+    fn group2_with_no_served_stragglers_is_zero_not_nan() {
+        let pool = vec![pl("add(x, y)", "add(y, x)", true, 1, true)];
+        assert_eq!(group2(&pool, &[])[0], [0.0; 4]);
+        // a law that is all leaves has no operator and matches nothing
+        let leaf = vec![pl("x", "x", true, 1, true)];
+        assert_eq!(group2(&leaf, &[p("add(x, y)", "add(y, x)")])[0], [0.0; 4]);
+    }
+
+    #[test]
+    fn group3_is_zero_for_clean_laws_and_the_uncovered_fraction_otherwise() {
+        let pool = vec![
+            pl("add(x, y)", "add(y, x)", true, 1, true),
+            pl("add(x, 0)", "x", true, 2, false),
+            pl("and(x, y)", "and(y, x)", false, 0, false),
+            pl("and(x, x)", "x", true, 3, true),
+        ];
+        let g = group3(&pool);
+        assert_eq!(g[0], [1.0, 0.5]); // one of the two `add` stragglers stays uncovered
+        assert_eq!(g[1], [0.0, 0.5]);
+        assert_eq!(g[2], [0.0, 0.0]);
+        assert_eq!(g[3], [1.0, 1.0]);
+    }
+
+    #[test]
+    fn rows_are_deterministic_35_wide_and_finite() {
+        let pool = vec![pl("add(x, y)", "add(y, x)", true, 1, true), pl("and(x, y)", "and(y, x)", false, 0, false)];
+        let served = [p("sub(x, y)", "sub(y, x)")];
+        let (a, b) = (rows(&pool, &served), rows(&pool, &served));
+        assert_eq!(a, b);
+        assert!(a.iter().all(|r| r.len() == WIDTH && WIDTH == 35 && r.iter().all(|v| v.is_finite())));
+    }
+
+    #[test]
+    fn a_pool_with_no_stragglers_gives_finite_columns() {
+        let pool = vec![pl("and(x, y)", "and(y, x)", false, 0, false)];
+        let r = rows(&pool, &[]);
+        assert!(r[0].iter().all(|v| v.is_finite()));
+        assert_eq!(&r[0][PER_LAW..], &[0.0; 9]);
     }
 
     #[test]
