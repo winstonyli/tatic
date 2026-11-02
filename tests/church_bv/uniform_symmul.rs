@@ -49,7 +49,7 @@ use tatic::kernel::{self, Expr};
 
 // ---------- the statement ----------
 #[derive(Clone, Copy, Debug)]
-pub(crate) enum Rhs {
+enum Rhs {
     Y,
     Lit(u128),
     /// every bit negated
@@ -67,7 +67,7 @@ fn mul_y(n: usize, fill: bool, xlit: u128) -> T {
     ap2(K(mul_bv_fill(n, fill)), K(encoding::lit(n, xlit)), v("y"))
 }
 /// `Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit xlit) y, rhs)`, the `mul` built with the shift's fill bit `fill`.
-pub(crate) fn bridge_stmt(n: usize, fill: bool, xlit: u128, rhs: Rhs) -> Expr {
+fn bridge_stmt(n: usize, fill: bool, xlit: u128, rhs: Rhs) -> Expr {
     let bv = K(encoding::bv_ty(n));
     let r = match rhs {
         Rhs::Y => v("y"),
