@@ -7979,8 +7979,16 @@ smaller than the positionwise bridge (build 85 against 1465 ms at n = 6; peak 38
 END-TO-END bridge check is no faster and not polynomial: 130, 736, 4238 ms at n = 6, 7, 8 (positionwise 117 and 369 at n = 6, 7; 33.6 s and
 5.4 GB at n = 9, about 6x per bit). The cost is the kernel converting the statement's fixed-width `mul(n)` on stuck symbolic bits against the
 stream product (at n = 8 bit 7 alone takes 2.2 s), not the proof; the term's distinct nodes are quadratic in n but its unfolded tree grows
-8 to 10x per bit. A stage-wise opaque-accumulator bridge, which would avoid that conversion, was not tried. Still unbuilt: commutativity, a
-symbolic multiplicand with a symbolic multiplier, that bridge, and any law uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
+8 to 10x per bit. The stage-wise bridge (`uniform_symmul_opaque.rs`) avoids that conversion and the check becomes polynomial: each accumulator stage is a
+closed handle `ACC_j`, `S_j` states `Id(Bv_n, ACC_j a.., T_j)` with `T_j = (a_0..a_(j-1), ff..ff)`, and `S_(j+1)` rewrites with `S_j` and then
+applies a stage lemma `add T_j P_j = T_(j+1)` proved directly at the `Bv` level (one case split on the witnesses of `a_i`, `a_j` per position
+`i < j`, each carry shown false by a `rew` chain), so no step converts more than one add. Bridge check 10 to 14 ms at n = 8 against 3.9 to 4.4 s
+(300 to 390 times faster over two runs), then 17, 43, 133, 211, 382 ms at n = 10, 12, 16, 20, 24 (roughly n^3; peak commit 257 MB at n = 8, 640 MB
+at n = 24); the one remaining conversion, `mul(n) (lit 1) (tuple a)` against `ACC_n`, takes 0.3 to 3.3 ms at n = 4 to 8 and 163 ms at n = 24. The
+build is not cheaper (300 against 128 ms at n = 8, 20 s at n = 24) and the unfolded term still doubles per bit, so the check is cheap
+because the kernel shares subterms. The fill-bit flip is rejected at the stage that shifts (with fill true, `S_1` checks and `S_2` to `S_4` are rejected), not only
+at the final conversion. It is the first width-uniform bridge that scales; against the per-width baseline it was not timed, so no speed win is claimed. Still unbuilt: commutativity, a symbolic multiplicand with a symbolic multiplier, and any law
+uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
 3.6 ms at n = 4, 14.4 against 14.2 at n = 5, 68 against 55 at n = 6, so roughly even there (build 21 to 232 ms against 0.5 to 48).
 For the older laws, bridge against per-width baseline (one run): `mul x 1 = x` 9.1 against 3.4 ms at n = 4 and 287 against 69 ms at n = 6 (the reviewer's rerun: 1435 against
 375 ms); `mul x 0 = 0` against a baseline that is just `refl`, so no fair comparison. A first accumulator that repeated each operand

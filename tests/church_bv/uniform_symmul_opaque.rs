@@ -21,7 +21,7 @@
 // Result (one run each on a shared machine, CPU load 30-80%; `symmul_opaque_scaling`, raw rows under `claude-runs/tatic`, runs
 // `2026-11-01-opaque-*`): the end-to-end check is polynomial. Bridge check in ms, this module against the stream bridge of
 // `uniform_symmul_uniform.rs` (same statement): n = 4: 2.3-3.0 against 11; n = 6: 6.6-7.0 against 153; n = 7: 9.9 against 832;
-// n = 8: 10.0-10.2 against 3945 (about 390 times faster); then 16.8, 43, 133, 211, 382 for n = 10, 12, 16, 20, 24 (roughly n^3).
+// n = 8: 10.0-10.2 against 3945 (300 to 390 times faster over two runs); then 16.8, 43, 133, 211, 382 for n = 10, 12, 16, 20, 24 (roughly n^3).
 // Each stage `S_j` checks in time about linear in j (n = 24: 3 ms for S_1, 115 for S_12, 306 for S_24), and the one remaining
 // conversion `mul(n) (lit 1) (tuple a) == ACC_n a..` takes 3.1 ms at n = 8, 40 at 16, 163 at 24 (also polynomial, about 40% of the
 // bridge at n = 24). Peak commit: 257 MB at n = 8 (against 1890 MB with the stream bridge also built), 640 MB at n = 24.
@@ -312,7 +312,7 @@ fn header_size_claims_are_the_measured_ones() {
     let src = include_str!("uniform_symmul_opaque.rs");
     let header: String = src.lines().take_while(|l| l.starts_with("//")).collect::<Vec<_>>().join("
 ");
-    for phrase in ["polynomial", "390 times faster", "BUILD is larger", "Not built"] {
+    for phrase in ["polynomial", "300 to 390 times faster", "BUILD is larger", "Not built"] {
         assert!(header.contains(phrase), "the header must say: {phrase}");
     }
 }
