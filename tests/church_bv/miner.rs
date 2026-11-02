@@ -257,7 +257,7 @@ fn dump_pool(job: &mut Job, named: &[(String, Term, Term)], from: usize, cfg: &M
 /// The indices of the `len` laws a mine reads, ascending: the served laws `..from` and `n` of the pool `from..`. The pool's
 /// stragglers (the laws `rank` gives `Some`) come first, smallest rank first and equal ranks in stream order, then, short of
 /// `n`, its other laws in order; `rank` of `None` everywhere is the pool's first `n`. Asked of pool indices only.
-fn kept_indices(len: usize, from: usize, n: usize, rank: &dyn Fn(usize) -> Option<(i64, i64)>) -> Vec<usize> {
+pub(crate) fn kept_indices(len: usize, from: usize, n: usize, rank: &dyn Fn(usize) -> Option<(i64, i64)>) -> Vec<usize> {
     let from = from.min(len);
     let mut keep: Vec<usize> = (0..from).collect();
     let (mut s, rest): (Vec<usize>, Vec<usize>) = (from..len).partition(|&i| rank(i).is_some());

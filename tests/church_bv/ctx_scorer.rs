@@ -433,6 +433,259 @@ pub fn rows(pool: &[PoolLaw], served: &[(Term, Term)]) -> Vec<Vec<f32>> {
     (0..pool.len()).map(|i| per_law_features(&pool[i].law).iter().chain(&g1[i]).chain(&g2[i]).chain(&g3[i]).copied().collect()).collect()
 }
 
+/// SplitMix64: a seeded generator for the shuffles and the bootstrap (no dependency, the same stream on every machine).
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let z = (self.0 ^ (self.0 >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next() % n as u64) as usize
+    }
+}
+
+/// How many of the first `k` laws of `order` (indices into `y`) are positive.
+pub fn capture_at_k(order: &[usize], y: &[bool], k: usize) -> usize {
+    order.iter().take(k).filter(|&&i| y[i]).count()
+}
+
+/// The mean, over one shuffle per seed, of the positives among the first `k` of `y` (the labels of the laws a random ranker
+/// orders).
+pub fn random_capture(y: &[bool], k: usize, seeds: std::ops::RangeInclusive<u64>) -> f64 {
+    let (mut total, mut runs) = (0usize, 0usize);
+    for seed in seeds {
+        let (mut v, mut rng) = (y.to_vec(), Rng(seed));
+        for i in (1..v.len()).rev() {
+            v.swap(i, rng.below(i + 1));
+        }
+        total += v.iter().take(k).filter(|&&b| b).count();
+        runs += 1;
+    }
+    total as f64 / runs.max(1) as f64
+}
+
+/// The `Small` key (`miner::Keep::Small`) over the first `slice` laws of a pool: stragglers by (steps, size), equal keys in stream
+/// order, then the other laws in stream order.
+pub fn small_order(pool: &[PoolLaw], slice: usize) -> Vec<usize> {
+    let (mut s, rest): (Vec<usize>, Vec<usize>) = (0..slice.min(pool.len())).partition(|&i| pool[i].straggler);
+    s.sort_by_key(|&i| (pool[i].steps, pool[i].size));
+    s.into_iter().chain(rest).collect()
+}
+
+/// The order a model ranks the live laws: stragglers by descending score (equal scores in stream order), then the other live
+/// laws in stream order.
+fn score_order(scores: &[f64], straggler: &[bool], live: &[bool]) -> Vec<usize> {
+    let mut s: Vec<usize> = (0..scores.len()).filter(|&i| live[i] && straggler[i]).collect();
+    s.sort_by(|&a, &b| scores[b].total_cmp(&scores[a]));
+    s.extend((0..scores.len()).filter(|&i| live[i] && !straggler[i]));
+    s
+}
+
+/// The 95% percentile interval of the mean of `diffs` over `resamples` resamples with replacement.
+pub fn bootstrap_interval(diffs: &[f64], resamples: usize, seed: u64) -> (f64, f64) {
+    if diffs.is_empty() {
+        return (0.0, 0.0);
+    }
+    let (mut rng, n) = (Rng(seed), diffs.len());
+    let mut means: Vec<f64> = (0..resamples).map(|_| (0..n).map(|_| diffs[rng.below(n)]).sum::<f64>() / n as f64).collect();
+    means.sort_by(f64::total_cmp);
+    (means[resamples * 25 / 1000], means[(resamples * 975 / 1000).min(resamples - 1)])
+}
+
+/// The Q1 bar (m1) at one k: both intervals clear zero from below and at least 5 salts have d and e both above zero.
+pub fn gate_ok(d: (f64, f64), e: (f64, f64), salts_both: usize) -> bool {
+    d.0 > 0.0 && e.0 > 0.0 && salts_both >= 5
+}
+
+/// Each held-out salt with the other salts, ascending.
+pub fn loo_split(salts: &[usize]) -> Vec<(usize, Vec<usize>)> {
+    let mut all = salts.to_vec();
+    all.sort_unstable();
+    all.dedup();
+    all.iter().map(|&s| (s, all.iter().copied().filter(|&t| t != s).collect())).collect()
+}
+
+/// One mine of the dump: its pool (all `4n` laws), the served stragglers' normal forms, and for the first `n` pool laws (the
+/// labelled slice) whether the mine's log credits them (`y`) and whether they are the first occurrence of their text across
+/// the loaded mines (`live`; a later copy is dropped from rankings and fits).
+pub struct Mine {
+    pub salt: usize,
+    pub pool: Vec<PoolLaw>,
+    pub served: Vec<(Term, Term)>,
+    pub y: Vec<bool>,
+    pub live: Vec<bool>,
+}
+
+/// Every mine under the arm folders `dirs` (a `dump_<m>_pool.tsv` with its `dump_<m>_served.txt`, `laws_extra_<m>.txt` and
+/// `mine_<m>.log`), by salt then path, with the number of later duplicate laws dropped. Refused: a pool whose first `n` laws are
+/// not the first `n` lines of `laws_extra`, a repeat inside one mine's slice, a credited law the dump calls clean.
+pub fn load_mines(dirs: &[&std::path::Path], n: usize) -> Result<(Vec<Mine>, usize), String> {
+    let mut files = vec![];
+    dirs.iter().for_each(|d| walk(d, &mut files));
+    files.retain(|f| f.file_name().is_some_and(|s| s.to_string_lossy().starts_with("dump_") && s.to_string_lossy().ends_with("_pool.tsv")));
+    files.sort_by_key(|f| (salt_of(&f.to_string_lossy()), f.clone()));
+    let (mut mines, mut seen, mut dropped) = (vec![], std::collections::HashSet::new(), 0);
+    for f in files {
+        let shown = f.display().to_string();
+        let name = f.file_name().unwrap().to_string_lossy().replace("dump_", "").replace("_pool.tsv", "");
+        let salt = salt_of(&shown).ok_or(format!("{shown}: no s<salt>_ folder"))?;
+        let read = |file: String| std::fs::read_to_string(f.with_file_name(&file)).map_err(|e| format!("{shown}: {file}: {e}"));
+        let (tsv, extras, log, served) = (read(format!("dump_{name}_pool.tsv"))?, read(format!("laws_extra_{name}.txt"))?, read(format!("mine_{name}.log"))?, read(format!("dump_{name}_served.txt"))?);
+        let pool = read_pool(&tsv);
+        let texts: Vec<&str> = extras.lines().filter(|l| !l.is_empty()).collect();
+        if pool.len() < n || texts.len() < n {
+            return Err(format!("{shown}: {} pool laws and {} laws_extra lines, fewer than n = {n}", pool.len(), texts.len()));
+        }
+        for (i, line) in tsv.lines().take(n).enumerate() {
+            if line.split('\t').nth(1) != Some(texts[i]) {
+                return Err(format!("{shown}: pool law {i} is not laws_extra line {i}"));
+            }
+        }
+        let slice = texts[..n].join("\n");
+        let own: std::collections::HashSet<&str> = texts[..n].iter().copied().collect();
+        if own.len() < n {
+            return Err(format!("{shown}: a law repeats inside the first {n} laws_extra lines"));
+        }
+        let y: Vec<bool> = mine_labels(&slice, &log, "label").map_err(|e| format!("{shown}: {e}"))?.into_iter().map(|r| r.1).collect();
+        if let Some(i) = (0..n).find(|&i| y[i] && !pool[i].straggler) {
+            return Err(format!("{shown}: law {i} is credited but the dump says it is no straggler"));
+        }
+        let live: Vec<bool> = texts[..n].iter().map(|t| seen.insert(t.to_string())).collect();
+        dropped += live.iter().filter(|&&l| !l).count();
+        let served = served
+            .lines()
+            .filter(|l| !l.is_empty())
+            .map(|l| l.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).ok_or(format!("{shown}: served line is not `lhs = rhs`: {l:?}")))
+            .collect::<Result<Vec<_>, _>>()?;
+        mines.push(Mine { salt, pool, served, y, live });
+    }
+    Ok((mines, dropped))
+}
+
+/// The model variants of the ablation, as the columns each reads: the context model, the per-law model, then the context model
+/// without group 1, 2, 3 and without the per-law block (the bias stays).
+fn variants() -> Vec<(&'static str, Vec<usize>)> {
+    let without = |lo: usize, hi: usize| (0..WIDTH).filter(|&c| c < lo || c >= hi).collect::<Vec<_>>();
+    vec![
+        ("context", (0..WIDTH).collect()),
+        ("per-law", (0..PER_LAW).collect()),
+        ("drop group 1", without(PER_LAW, PER_LAW + 3)),
+        ("drop group 2", without(PER_LAW + 3, PER_LAW + 7)),
+        ("drop group 3", without(PER_LAW + 7, WIDTH)),
+        ("drop per-law", (0..1).chain(PER_LAW..WIDTH).collect()),
+    ]
+}
+
+fn project(x: &[f32], cols: &[usize]) -> Vec<f32> {
+    cols.iter().map(|&c| x[c]).collect()
+}
+
+/// The Q1 report. Leave-one-salt-out: for each salt, fit every variant on the labelled live stragglers of the other salts, rank
+/// that salt's mines (stragglers by score, the rest in stream order), and compare the capture at each k of `ks` with the
+/// per-law model, the `small` key and a random ranker. d = context - per-law and e = context - small per mine, bootstrapped
+/// over the mines; the last line is the verdict of the gate at every k.
+pub fn q1(mines: &[Mine], ks: &[usize]) -> String {
+    use std::fmt::Write;
+    let mut salts: Vec<usize> = mines.iter().map(|m| m.salt).collect();
+    salts.sort_unstable();
+    salts.dedup();
+    let feats: Vec<Vec<Vec<f32>>> = mines.iter().map(|m| rows(&m.pool, &m.served)[..m.y.len()].to_vec()).collect();
+    let vs = variants();
+    let mut orders: Vec<Vec<Vec<usize>>> = vec![vec![vec![]; mines.len()]; vs.len()];
+    let mut fold_auc: Vec<Vec<f64>> = vec![vec![]; 2];
+    for (held, _) in loo_split(&salts) {
+        for (vi, (_, cols)) in vs.iter().enumerate() {
+            let mut train = vec![];
+            for (mi, m) in mines.iter().enumerate().filter(|(_, m)| m.salt != held) {
+                for i in (0..m.y.len()).filter(|&i| m.live[i] && m.pool[i].straggler) {
+                    train.push((project(&feats[mi][i], cols), m.y[i]));
+                }
+            }
+            assert!(!train.is_empty(), "salt {held}: no labelled stragglers outside it to fit on");
+            let model = fit(&train);
+            let mut scored = vec![];
+            for (mi, m) in mines.iter().enumerate().filter(|(_, m)| m.salt == held) {
+                let scores: Vec<f64> = (0..m.y.len()).map(|i| model.score(&project(&feats[mi][i], cols))).collect();
+                let strag: Vec<bool> = (0..m.y.len()).map(|i| m.pool[i].straggler).collect();
+                orders[vi][mi] = score_order(&scores, &strag, &m.live);
+                scored.extend((0..m.y.len()).filter(|&i| m.live[i] && strag[i]).map(|i| (scores[i], m.y[i])));
+            }
+            if vi < 2 {
+                fold_auc[vi].push(auc(&scored));
+            }
+        }
+    }
+    let small: Vec<Vec<usize>> = mines
+        .iter()
+        .map(|m| {
+            let mut o = small_order(&m.pool, m.y.len());
+            o.retain(|&i| m.live[i]);
+            o
+        })
+        .collect();
+    let live_strag: Vec<Vec<bool>> = mines.iter().map(|m| (0..m.y.len()).filter(|&i| m.live[i] && m.pool[i].straggler).map(|i| m.y[i]).collect()).collect();
+    let positives: Vec<usize> = live_strag.iter().map(|v| v.iter().filter(|&&b| b).count()).collect();
+    let mut t = String::new();
+    let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    writeln!(t, "Q1 {} mines, {} salts, slice {} laws; live stragglers {}, credited {}", mines.len(), salts.len(), mines.first().map_or(0, |m| m.y.len()), live_strag.iter().map(Vec::len).sum::<usize>(), positives.iter().sum::<usize>()).unwrap();
+    for &s in &salts {
+        let (ms, ps) = (mines.iter().filter(|m| m.salt == s).count(), mines.iter().enumerate().filter(|(_, m)| m.salt == s).map(|(i, _)| positives[i]).sum::<usize>());
+        let st: usize = mines.iter().enumerate().filter(|(_, m)| m.salt == s).map(|(i, _)| live_strag[i].len()).sum();
+        writeln!(t, "salt {s}: {ms} mines, {st} live stragglers, {ps} credited").unwrap();
+    }
+    writeln!(t, "held-out AUC (mean over salts): context {:.4}, per-law {:.4}", mean(&fold_auc[0]), mean(&fold_auc[1])).unwrap();
+    let (mut pass, mut met, mut no_room) = (true, vec![], vec![]);
+    for &k in ks {
+        let cap = |o: &[Vec<usize>]| -> Vec<f64> { (0..mines.len()).map(|mi| capture_at_k(&o[mi], &mines[mi].y, k) as f64).collect() };
+        let (ctx, per, sm) = (cap(&orders[0]), cap(&orders[1]), cap(&small));
+        let rand: Vec<f64> = mines.iter().map(|m| random_capture(&(0..m.y.len()).filter(|&i| m.live[i]).map(|i| m.y[i]).collect::<Vec<_>>(), k, 1..=200)).collect();
+        let ceiling: usize = positives.iter().map(|&p| p.min(k)).sum();
+        let sum = |v: &[f64]| v.iter().sum::<f64>();
+        writeln!(t, "k={k}: ceiling {ceiling}; capture sums: context {}, per-law {}, small {}, random {:.1}", sum(&ctx), sum(&per), sum(&sm), sum(&rand)).unwrap();
+        if sum(&sm) >= 0.99 * ceiling as f64 {
+            writeln!(t, "k={k}: no room: the `small` key is at the ceiling, so no ranker can beat it here").unwrap();
+            no_room.push(k);
+        }
+        let (d, e): (Vec<f64>, Vec<f64>) = (0..mines.len()).map(|i| (ctx[i] - per[i], ctx[i] - sm[i])).unzip();
+        let (di, ei) = (bootstrap_interval(&d, 2000, 1), bootstrap_interval(&e, 2000, 1));
+        let by_salt = |v: &[f64]| -> Vec<f64> { salts.iter().map(|&s| (0..mines.len()).filter(|&i| mines[i].salt == s).map(|i| v[i]).sum()).collect() };
+        let (ds, es) = (by_salt(&d), by_salt(&e));
+        let both = (0..salts.len()).filter(|&j| ds[j] > 0.0 && es[j] > 0.0).count();
+        let ok = gate_ok(di, ei, both);
+        pass &= ok;
+        if ok {
+            met.push(k);
+        }
+        writeln!(t, "k={k}: d (context - per-law) mean {:.3}, 95% [{:.3}, {:.3}]; salts above 0: {}/{}", mean(&d), di.0, di.1, ds.iter().filter(|&&x| x > 0.0).count(), salts.len()).unwrap();
+        writeln!(t, "k={k}: e (context - small) mean {:.3}, 95% [{:.3}, {:.3}]; salts above 0: {}/{}", mean(&e), ei.0, ei.1, es.iter().filter(|&&x| x > 0.0).count(), salts.len()).unwrap();
+        writeln!(t, "k={k}: per-salt d {ds:?}, e {es:?}; salts with both above 0: {both}/{}; gate {}", salts.len(), if ok { "met" } else { "not met" }).unwrap();
+        let abl: Vec<String> = vs.iter().enumerate().map(|(vi, (name, _))| format!("{name} {}", sum(&cap(&orders[vi])))).collect();
+        writeln!(t, "k={k}: ablation capture sums: {}", abl.join(", ")).unwrap();
+    }
+    writeln!(t, "gate met at k in {met:?}; no room at k in {no_room:?}").unwrap();
+    writeln!(t, "verdict {}", if pass { "PASS" } else { "FAIL" }).unwrap();
+    t
+}
+
+/// `Q1_DIRS=<arm folder>;<arm folder>.. <exe> ctx_scorer::q1_report --exact --ignored --nocapture`: the offline answer to Q1 on a
+/// pool dump (`scripts/ctx_dump.sh`): prints the report; a FAIL is a result, not an error.
+#[test]
+#[ignore]
+fn q1_report() {
+    let setup = &job::Setup::process();
+    let dirs = setup.var("Q1_DIRS").expect("Q1_DIRS");
+    let dirs: Vec<&std::path::Path> = dirs.split(';').map(std::path::Path::new).collect();
+    let (mines, dropped) = load_mines(&dirs, 319).unwrap_or_else(|e| panic!("{e}"));
+    assert_eq!(mines.len(), 42, "the dump has 42 mines");
+    println!("LOADED {} mines, {dropped} later duplicate laws dropped from the {} labelled", mines.len(), mines.len() * 319);
+    print!("{}", q1(&mines, &[80, 160]));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -607,5 +860,154 @@ mod tests {
         assert_eq!(salt_of("C:/runs/state/none"), None);
         assert_eq!(salt_of("C:\\runs\\s7_A\\x"), Some(7), "backslash paths");
         assert_eq!(salt_of("C:/runs/s3_old/s9_B/x"), Some(9), "the folder nearest the file wins");
+    }
+
+    #[test]
+    fn capture_at_k_counts_positives_in_the_top_k() {
+        let (order, y) = ([2, 0, 1, 3], [true, false, true, false]);
+        assert_eq!(capture_at_k(&order, &y, 2), 2);
+        assert_eq!(capture_at_k(&order, &y, 1), 1);
+        assert_eq!(capture_at_k(&order, &y, 0), 0);
+        assert_eq!(capture_at_k(&order, &y, 99), 2, "k past the order counts the whole order");
+        assert_eq!(capture_at_k(&[3, 1], &y, 2), 0, "only the ordered laws count");
+    }
+
+    #[test]
+    fn random_capture_of_all_positives_is_k() {
+        assert_eq!(random_capture(&[true; 10], 4, 1..=200), 4.0);
+        assert_eq!(random_capture(&[true; 10], 20, 1..=200), 10.0, "k past the laws counts them all");
+        assert_eq!(random_capture(&[false; 10], 4, 1..=200), 0.0);
+        let one = random_capture(&[true, false, false, false], 2, 1..=200);
+        assert!((one - 0.5).abs() < 0.1, "one positive in four, top two: {one}");
+    }
+
+    #[test]
+    fn small_order_matches_kept_indices_semantics() {
+        let st = |steps: i64, size: i64| PoolLaw { law: p("x", "x"), straggler: true, steps, size, fallbacks: 0, uncovered: false };
+        let clean = || PoolLaw { law: p("x", "x"), straggler: false, steps: 0, size: 0, fallbacks: 0, uncovered: false };
+        let pool = vec![clean(), st(2, 5), clean(), st(0, 9), st(2, 3), clean()];
+        assert_eq!(small_order(&pool, 6), vec![3, 4, 1, 0, 2, 5], "stragglers by (steps, size), then the rest in stream order");
+        assert_eq!(small_order(&pool, 4), vec![3, 1, 0, 2], "a slice reads only its first laws");
+        let rank = |i: usize| pool[i].straggler.then_some((pool[i].steps, pool[i].size));
+        for m in 0..=6 {
+            let mut top = small_order(&pool, 6)[..m].to_vec();
+            top.sort_unstable();
+            assert_eq!(top, super::super::miner::kept_indices(6, 0, m, &rank), "the first {m}");
+        }
+    }
+
+    #[test]
+    fn bootstrap_interval_of_a_constant_positive_sample_excludes_zero() {
+        let (lo, hi) = bootstrap_interval(&[3.0; 42], 2000, 7);
+        assert!(lo > 0.0 && lo == 3.0 && hi == 3.0, "{lo} {hi}");
+        let signs: Vec<f64> = (0..42).map(|i| if i % 2 == 0 { 1.0 } else { -1.0 }).collect();
+        let (lo, hi) = bootstrap_interval(&signs, 2000, 7);
+        assert!(lo < 0.0 && hi > 0.0, "a mean of zero straddles it: {lo} {hi}");
+    }
+
+    #[test]
+    fn bootstrap_is_deterministic_for_a_seed() {
+        let xs: Vec<f64> = (0..42).map(|i| (i * 37 % 11) as f64 - 3.0).collect();
+        assert_eq!(bootstrap_interval(&xs, 2000, 7), bootstrap_interval(&xs, 2000, 7));
+        assert_ne!(bootstrap_interval(&xs, 2000, 7), bootstrap_interval(&xs, 2000, 8));
+    }
+
+    #[test]
+    fn the_gate_needs_both_intervals_and_five_salts() {
+        assert!(gate_ok((0.1, 0.3), (0.2, 0.5), 5));
+        assert!(!gate_ok((0.0, 0.3), (0.2, 0.5), 7), "d's interval touches zero");
+        assert!(!gate_ok((0.1, 0.3), (-0.1, 0.5), 7), "e's interval straddles zero");
+        assert!(!gate_ok((0.1, 0.3), (0.2, 0.5), 4), "four salts of seven");
+    }
+
+    #[test]
+    fn loo_split_never_shares_a_salt() {
+        let s = loo_split(&[5, 4, 6, 4]);
+        assert_eq!(s, vec![(4, vec![5, 6]), (5, vec![4, 6]), (6, vec![4, 5])], "sorted, repeats collapsed");
+        assert!(s.iter().all(|(held, train)| !train.contains(held)));
+    }
+
+    const FIVE: [&str; 5] = ["add(x, y) = add(y, x)", "and(x, y) = and(y, x)", "or(x, y) = or(y, x)", "xor(x, y) = xor(y, x)", "add(x, 0) = x"];
+
+    /// Writes one mine under `root/s<salt>_A/cold_streams_streams_1_none/`: a pool dump whose first law is a straggler, the
+    /// `laws_extra` file `extras`, one served law and a log crediting the pool's first law.
+    fn write_mine(root: &std::path::Path, salt: usize, m: &str, pool: &[&str], extras: &[&str]) {
+        let d = root.join(format!("s{salt}_A")).join("cold_streams_streams_1_none");
+        std::fs::create_dir_all(&d).unwrap();
+        let tsv: String = pool.iter().enumerate().map(|(i, l)| if i == 0 { format!("{i}\t{l}\t1\t2\t9\t0\t0\n") } else { format!("{i}\t{l}\t0\t\t\t\t0\n") }).collect();
+        std::fs::write(d.join(format!("dump_{m}_pool.tsv")), tsv).unwrap();
+        std::fs::write(d.join(format!("dump_{m}_served.txt")), "sub(y, 0) = y\n").unwrap();
+        std::fs::write(d.join(format!("laws_extra_{m}.txt")), extras.join("\n") + "\n").unwrap();
+        std::fs::write(d.join(format!("mine_{m}.log")), format!("RULEMINER 1 stragglers of 9 laws, 0.0s base (0 unproved)\nRULEMINER label: 1 {}\n", pool[0])).unwrap();
+    }
+
+    fn scratch(tag: &str) -> std::path::PathBuf {
+        let root = std::env::temp_dir().join(format!("ctx_scorer_{tag}_{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        root
+    }
+
+    #[test]
+    fn load_mines_drops_later_duplicates_and_counts_them() {
+        let root = scratch("dup");
+        write_mine(&root, 4, "0", &FIVE, &FIVE);
+        let b = [FIVE[2], FIVE[1], FIVE[3], FIVE[0], FIVE[4]]; // its first two laws repeat salt 4's
+        write_mine(&root, 5, "0", &b, &b);
+        let (mines, dropped) = load_mines(&[&root.join("s4_A"), &root.join("s5_A")], 3).unwrap();
+        assert_eq!((mines.len(), dropped), (2, 2));
+        assert_eq!(mines[0].live, vec![true, true, true]);
+        assert_eq!(mines[1].live, vec![false, false, true], "the first occurrence (salt 4) stays, later copies go");
+        assert_eq!((mines[0].salt, mines[1].salt, mines[0].y.len(), mines[0].pool.len(), mines[0].served.len()), (4, 5, 3, 5, 1));
+        assert_eq!(mines[0].y, vec![true, false, false], "the log credits the pool's first law");
+    }
+
+    #[test]
+    fn load_mines_stops_when_the_first_n_pool_laws_do_not_match_laws_extra() {
+        let root = scratch("mismatch");
+        let swapped = [FIVE[1], FIVE[0], FIVE[2], FIVE[3], FIVE[4]];
+        write_mine(&root, 4, "0", &FIVE, &swapped);
+        let err = load_mines(&[&root.join("s4_A")], 3).err().expect("a refusal");
+        assert!(err.contains("laws_extra"), "{err}");
+    }
+
+    #[test]
+    fn load_mines_stops_on_a_repeat_inside_one_mines_own_file() {
+        let root = scratch("repeat");
+        let twice = [FIVE[0], FIVE[1], FIVE[0], FIVE[3], FIVE[4]];
+        write_mine(&root, 4, "0", &twice, &twice);
+        let err = load_mines(&[&root.join("s4_A")], 3).err().expect("a refusal");
+        assert!(err.contains("repeat"), "{err}");
+    }
+
+    #[test]
+    fn load_mines_stops_when_a_credited_law_is_no_straggler() {
+        let root = scratch("credit");
+        write_mine(&root, 4, "0", &FIVE, &FIVE);
+        let log = root.join("s4_A/cold_streams_streams_1_none/mine_0.log");
+        std::fs::write(&log, format!("RULEMINER 1 stragglers of 9 laws, 0.0s base (0 unproved)\nRULEMINER label: 1 {}\n", FIVE[1])).unwrap();
+        let err = load_mines(&[&root.join("s4_A")], 3).err().expect("a refusal");
+        assert!(err.contains("straggler"), "{err}");
+    }
+
+    /// A mine of 20 pool laws (the first 15 labelled) built from `seed` alone.
+    fn synthetic(salt: usize, seed: usize) -> Mine {
+        let nest = |op: &str, d: usize| (0..d).fold("x".to_string(), |s, _| format!("{op}({s}, y)"));
+        let pool: Vec<PoolLaw> = (0..20)
+            .map(|i| {
+                let j = i + seed;
+                PoolLaw { law: p(&nest("add", j % 5 + 1), &nest("and", j % 3 + 1)), straggler: j % 3 != 0, steps: (j % 7) as i64, size: (j % 11) as i64, fallbacks: (j % 2) as u64, uncovered: j % 4 == 0 }
+            })
+            .collect();
+        let y: Vec<bool> = (0..15).map(|i| pool[i].straggler && (i + seed) % 4 < 2).collect();
+        Mine { salt, pool, served: vec![p("add(x, y)", "add(y, x)")], y, live: vec![true; 15] }
+    }
+
+    #[test]
+    fn q1_is_deterministic_and_reports_both_ks_and_a_verdict() {
+        let mines: Vec<Mine> = (4..=10).flat_map(|s| (0..2).map(move |m| synthetic(s, s * 2 + m))).collect();
+        let (a, b) = (q1(&mines, &[3, 6]), q1(&mines, &[3, 6]));
+        assert_eq!(a, b);
+        assert!(a.contains("k=3") && a.contains("k=6") && a.contains("verdict"), "{}", a);
+        assert!(a.contains("drop group 1") && a.contains("drop per-law"), "{}", a);
     }
 }
