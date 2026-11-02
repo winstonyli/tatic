@@ -12,8 +12,9 @@ the latter). Prior specs: `2026-10-31-learned-proposer-design.md` (stage 1, done
 (done; the `small` key is v0.6's answer). Decision of 2026-11-01 (the user's pick, k2): try a context-aware model before stage 2
 (the cycle). The user asked to skip the questions, so the choices below are mine, listed in "Calls I made".
 
-Result of stages 0 and 1 (2026-11-01): the Q1 gate as written reads FAIL (met at k = 80, no room at k = 160); numbers and the
-ablation are in `docs/tier-cycle.md`, "A context model over the extras". Stage 2 (Q2) has no plan and waits for the user.
+Result of stages 0 and 1 (2026-11-01): the Q1 gate as first approved (k in {80, 160}) read FAIL (no room at k = 160); the user
+amended it to k in {40, 80} (a2) and it reads PASS. Numbers and the ablation are in `docs/tier-cycle.md`, "A context model over
+the extras". Stage 2 (Q2) has no plan and waits for the user.
 
 ## Why
 
@@ -129,7 +130,7 @@ state the figure before the full dump (run through `run.ps1`, `-MaxMemGB 8`, `-A
 
 **Stage 1: Q1, offline, leave-one-salt-out.** For each held-out salt s: fit the per-law and context models (standardised, on
 stragglers) on the other six salts. In each of s's six mines, rank the 319 labelled laws by each ranker and count y = 1 in the top k,
-k in {80, 160} (about n/4 and n/2). Rankers: the per-law model, the context model, the `small` key (the order `kept_indices` gives
+k in {40, 80} (about n/8 and n/4; amended 2026-11-01 from {80, 160} by the user, decision a2, after Q1 showed no room at k = 160: a slice holds about 112 stragglers). Rankers: the per-law model, the context model, the `small` key (the order `kept_indices` gives
 under `small`, restricted to the 319 labelled laws), and random (mean over 200 seeded shuffles of the 319, seeds 1 to 200). Also
 AUC, the number of stragglers and positives per slice, and the ceiling min(k, positives): if `small` is already near the ceiling at
 k = 160 there is no room and the report says so.

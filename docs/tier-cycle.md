@@ -7626,16 +7626,18 @@ better than the per-law model and the `small` key? Offline only, nothing reaches
 
 | k | ceiling | context | per-law | `small` | random (200 shuffles) | d = context - per-law, mean per mine, 95% | e = context - `small`, 95% | salts with d and e > 0 |
 |---|---|---|---|---|---|---|---|---|
+| 40 | 1680 | 1476 | 1329 | 1281 | 399 | 3.50 [2.74, 4.36] | 4.64 [3.86, 5.43] | 7 of 7 |
 | 80 | 2879 | 2481 | 2378 | 2316 | 796 | 2.45 [1.43, 3.62] | 3.93 [2.81, 5.12] | 7 of 7 |
-| 160 | 3177 | 3177 | 3177 | 3177 | 1593 | 0 [0, 0] | 0 [0, 0] | 0 of 7 |
+| 160 (first bar, dropped) | 3177 | 3177 | 3177 | 3177 | 1593 | 0 [0, 0] | 0 [0, 0] | 0 of 7 |
 
-- **Verdict: FAIL under the approved strict bar (m1: both k).** The gate is met at k = 80 (both intervals above zero, 7 of 7
-  salts). At k = 160 it cannot be met by any ranker: a slice holds about 112 stragglers, so every straggler-first ranker, `small`
-  included, already captures all 3,177 credited laws ("no room", as the spec anticipated). The strict verdict therefore rests on
-  the k = 160 column alone; k = 80 is the one column that discriminates.
-- **Ablation at k = 80** (capture sums, full model 2481): drop group 3 (marginal coverage) 2429, drop group 1 (percentiles) 2451,
-  drop group 2 (likeness to served) 2481, drop the per-law block 2457 (the three context groups alone beat the per-law model's
-  2378). Group 3 carries the most signal, group 1 some, group 2 none at k = 80.
+- **Verdict: PASS at k in {40, 80}** (runs `2026-11-01-ctx-q1k` and `-q1k-2`, identical output; both intervals above zero at
+  both k, 7 of 7 salts). The approved bar was k in {80, 160} (m1) and read FAIL: at k = 160 no ranker can win, because a slice
+  holds about 112 stragglers, so every straggler-first ranker, `small` included, already captures all 3,177 credited laws ("no
+  room"). The user amended the bar to {40, 80} (decision a2, 2026-11-01) after seeing that result, not before; the k = 80 numbers
+  are the same under both bars.
+- **Ablation** (capture sums, k = 40 / 80; full model 1476 / 2481): drop group 3 (marginal coverage) 1399 / 2429, drop group 1
+  (percentiles) 1414 / 2451, drop group 2 (likeness to served) 1485 / 2481, drop the per-law block 1438 / 2457 (the three context
+  groups alone beat the per-law model's 1329 / 2378). Groups 3 and 1 carry the signal; group 2 adds nothing.
 - **Limits**: labels exist only for the slice, so Q1 ranks within the slice (Q2 would rank the whole pool, where 957 laws per mine
   never had a label); capture counts credited laws, not held-out M or CPU, and stage 1's offline AUC was also real while its gate
   failed (above), so this shows no curve shift.

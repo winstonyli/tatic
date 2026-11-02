@@ -683,7 +683,7 @@ fn q1_report() {
     let (mines, dropped) = load_mines(&dirs, 319).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(mines.len(), 42, "the dump has 42 mines");
     println!("LOADED {} mines, {dropped} later duplicate laws dropped from the {} labelled", mines.len(), mines.len() * 319);
-    print!("{}", q1(&mines, &[80, 160]));
+    print!("{}", q1(&mines, &[40, 80]));
 }
 
 #[cfg(test)]
