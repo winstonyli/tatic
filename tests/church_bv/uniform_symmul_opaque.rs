@@ -266,6 +266,7 @@ fn ns_from_env(default: &[usize]) -> Vec<usize> {
 
 /// Run by exact name; `SYMMUL_NS=4,6,8` picks the widths. Prints the build time, every stage's check time (each against its own
 /// statement), the end-to-end bridge check, and the time of the single conversion `mul(n) (lit 1) (tuple a) == ACC_n a..`.
+/// With `SYMMUL_BASE=1` it also builds and checks the per-width baseline of `uniform_symmul.rs` (2^n leaves per output bit) for the same n.
 /// With `SYMMUL_OLD=1` it also builds and checks the bridge of `uniform_symmul_uniform.rs` for the same n (its n = 9 takes 34 s and
 /// 5.4 GB: keep n <= 8 then). The peak memory of a run is in the wrapper's `run.json`, not printed here.
 #[test]
@@ -296,6 +297,13 @@ fn symmul_opaque_scaling() {
             let old_built = t2.elapsed().as_secs_f64() * 1e3;
             let (r2, ms2) = timed_check(&old, &stmt);
             println!("SYMMUL_OLD n={n}: uniform bridge built {old_built:.1} ms, check {ms2:.2} ms ({})", if r2.is_ok() { "accepted" } else { "REJECTED" });
+        }
+        if std::env::var("SYMMUL_BASE").is_ok() {
+            let t3 = Instant::now();
+            let base = super::uniform_symmul::baseline_proof(n);
+            let base_built = t3.elapsed().as_secs_f64() * 1e3;
+            let (r3, ms3) = timed_check(&base, &stmt);
+            println!("SYMMUL_BASE n={n}: per-width baseline built {base_built:.1} ms, check {ms3:.2} ms ({}); opaque bridge built {built:.1} ms, check {ms:.2} ms", if r3.is_ok() { "accepted" } else { "REJECTED" });
         }
     }
 }

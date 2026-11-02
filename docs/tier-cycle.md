@@ -7987,7 +7987,12 @@ applies a stage lemma `add T_j P_j = T_(j+1)` proved directly at the `Bv` level 
 at n = 24); the one remaining conversion, `mul(n) (lit 1) (tuple a)` against `ACC_n`, takes 0.3 to 3.3 ms at n = 4 to 8 and 163 ms at n = 24. The
 build is not cheaper (300 against 128 ms at n = 8, 20 s at n = 24) and the unfolded term still doubles per bit, so the check is cheap
 because the kernel shares subterms. The fill-bit flip is rejected at the stage that shifts (with fill true, `S_1` checks and `S_2` to `S_4` are rejected), not only
-at the final conversion. It is the first width-uniform bridge that scales; against the per-width baseline it was not timed, so no speed win is claimed. Still unbuilt: commutativity, a symbolic multiplicand with a symbolic multiplier, and any law
+at the final conversion. Against the per-width proof of the same statement (a case split on all n bits for every output bit, 2^n leaves per bit) it wins
+from n = 8 on, in the check and in build plus check (one contended run, run `2026-11-01-opaque-vs-base-b`: CPU 77% with a game running, the
+timed form was refused, so read ratios, not milliseconds): check 4.8 against 2.3 ms at n = 4, 32 against 9.8 at n = 6, 187 against 16 at n = 8,
+547 against 28 at n = 9, 1357 against 33 at n = 10 (2x growing to 41x); build 8 against 40 ms at n = 4, 139 against 200 at n = 6, 1.5 s against
+0.48 s at n = 8, 15.4 s against 1.1 s at n = 10, so the baseline is cheaper to build and check below n = 6 or 7 and the bridge wins above, the
+gap growing about 2.5x per bit. The first width-uniform route that beats the per-width proof, for this law. Still unbuilt: commutativity, a symbolic multiplicand with a symbolic multiplier, and any law
 uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
 3.6 ms at n = 4, 14.4 against 14.2 at n = 5, 68 against 55 at n = 6, so roughly even there (build 21 to 232 ms against 0.5 to 48).
 For the older laws, bridge against per-width baseline (one run): `mul x 1 = x` 9.1 against 3.4 ms at n = 4 and 287 against 69 ms at n = 6 (the reviewer's rerun: 1435 against

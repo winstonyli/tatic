@@ -299,7 +299,7 @@ fn direct_bit(n: usize, j: usize, idx: usize, bits: &[T]) -> T {
     };
     ap3(v(GN(idx)), lm("$b", bool0(), motive_body(v("$b"))), direct_bit(n, j, idx + 1, &with(tt())), direct_bit(n, j, idx + 1, &with(ff())))
 }
-fn baseline_proof(n: usize) -> Expr {
+pub(crate) fn baseline_proof(n: usize) -> Expr {
     let bv = K(encoding::bv_ty(n));
     let a: Vec<T> = (0..n).map(y).collect();
     let lhs = |i: usize| proj_bit(n, i, ap2(K(mul_bv_fill(n, false)), K(encoding::lit(n, 1)), tuple(&a)));
