@@ -21,18 +21,28 @@ use std::time::Instant;
 use tatic::kernel::{self, Ctx, Expr};
 
 // ---------- stage A: the stream multiplier ----------
-/// `Bits(k) -> Bits(k+1)`: bit N of the result is `x (N-1)`, false at N = 0. The fold over the count carries (position, the value
-/// `x` had at the position before).
+/// One step of the shift's fold: (position, x at the previous position) -> (position + 1, x at this position).
+pub(crate) fn shl_step(k: u32, x: T) -> T {
+    lm("u", state(k), pair_s(k, ap(succ(k), fst(k, v("u"))), ap(x, fst(k, v("u")))))
+}
+/// The shift's fold over the count `n`, starting from (zero, `fill`).
+pub(crate) fn shl_state(k: u32, x: T, fill: bool, n: T) -> T {
+    ap3(n, state(k), pair_s(k, zero(k), if fill { tt() } else { ff() }), shl_step(k, x))
+}
+/// `Bits(k) -> Bits(k+1)`: bit N of the result is `x (N-1)`, and the fill bit at N = 0 (false for the real shift; `fill = true`
+/// is the mutant the shift tests use). The fold over the count carries (position, the value `x` had at the position before).
+pub(crate) fn shl_fill(k: u32, x: T, fill: bool) -> T {
+    lm("N", nat(k + 1), snd(k, shl_state(k, x, fill, v("N"))))
+}
 pub(crate) fn shl(k: u32, x: T) -> T {
-    let stp = lm("u", state(k), pair_s(k, ap(succ(k), fst(k, v("u"))), ap(x, fst(k, v("u")))));
-    lm("N", nat(k + 1), snd(k, ap3(v("N"), state(k), pair_s(k, zero(k), ff()), stp)))
+    shl_fill(k, x, false)
 }
 /// `x << j`, in `Bits(k0 + j)`.
-pub(crate) fn shl_n(k0: u32, j: usize, x: T) -> T {
-    (0..j).fold(x, |e, i| shl(k0 + i as u32, e))
+pub(crate) fn shl_n(k0: u32, j: usize, x: T, fill: bool) -> T {
+    (0..j).fold(x, |e, i| shl_fill(k0 + i as u32, e, fill))
 }
 /// The partial product stream at level `l`: `i -> and(yb, sh i)`.
-fn tm(l: u32, yb: T, sh: T) -> T {
+pub(crate) fn tm(l: u32, yb: T, sh: T) -> T {
     lm("i", nat(l), and2(yb, ap(sh, v("i"))))
 }
 /// The sum stream, `Bits(k+1)`.
@@ -42,26 +52,33 @@ pub(crate) fn add_stream(k: u32, a: T, c: T) -> T {
 /// `\x. acc_j x` as a CLOSED kernel term, `Bits(k0) -> Bits(k0 + j)`. `acc_j` mentions `acc_(j-1)` three times (the adder reads
 /// each operand in its step and again in its sum), so spelling it as a meta-level tree is 3^j in size and exhausted 8 GB at
 /// j = 5; the closed `Expr` handle is shared, and each level is applied to `x` instead.
-fn acc_fn(k0: u32, ys: &[T], j: usize) -> Expr {
+pub(crate) fn acc_fn(k0: u32, ys: &[T], j: usize, fill: bool) -> Expr {
     if j == 0 {
         return ex(&lm("x", bits(k0), zs(k0)));
     }
     let l = k0 + (j - 1) as u32;
-    let prev = K(acc_fn(k0, ys, j - 1));
-    ex(&lm("x", bits(k0), add_stream(l, ap(prev, v("x")), tm(l, ys[j - 1].clone(), shl_n(k0, j - 1, v("x"))))))
+    let prev = K(acc_fn(k0, ys, j - 1, fill));
+    ex(&lm("x", bits(k0), add_stream(l, ap(prev, v("x")), tm(l, ys[j - 1].clone(), shl_n(k0, j - 1, v("x"), fill)))))
 }
 /// `acc_j x`, in `Bits(k0 + j)`.
-fn acc_upto(k0: u32, ys: &[T], x: T, j: usize) -> T {
-    ap(K(acc_fn(k0, ys, j)), x)
+pub(crate) fn acc_upto(k0: u32, ys: &[T], x: T, j: usize) -> T {
+    acc_upto_fill(k0, ys, x, j, false)
+}
+pub(crate) fn acc_upto_fill(k0: u32, ys: &[T], x: T, j: usize, fill: bool) -> T {
+    ap(K(acc_fn(k0, ys, j, fill)), x)
 }
 /// The stream product of `x : Bits(k0)` and the multiplier bits `ys` (meta-level bools), in `Bits(k0 + ys.len())`.
 pub(crate) fn mul_stream(k0: u32, ys: &[T], x: T) -> T {
     acc_upto(k0, ys, x, ys.len())
 }
-fn bit_of(y: u128, j: usize) -> T {
+/// `mul_stream` with the shift's fill bit chosen (the mutation tests of `uniform_shift.rs`).
+pub(crate) fn mul_stream_fill(k0: u32, ys: &[T], x: T, fill: bool) -> T {
+    ap(K(acc_fn(k0, ys, ys.len(), fill)), x)
+}
+pub(crate) fn bit_of(y: u128, j: usize) -> T {
     if (y >> j) & 1 == 1 { tt() } else { ff() }
 }
-fn ybits(m: usize, y: u128) -> Vec<T> {
+pub(crate) fn ybits(m: usize, y: u128) -> Vec<T> {
     (0..m).map(|j| bit_of(y, j)).collect()
 }
 
@@ -115,40 +132,40 @@ fn a_single_nested_fold_is_ill_typed() {
 
 // ---------- stage B: the adder keeps a known stream ----------
 // `Good_k i` for `i : Nat_k`: the induction witness with motives in Sort k (`good1 (k-1)`).
-fn gk(k: u32, i: T) -> T {
+pub(crate) fn gk(k: u32, i: T) -> T {
     ap(good1(k - 1), i)
 }
 /// `Pi N:Nat_(k+1). Good_(k+1) N -> Good_k (embed N)`: the numerals the fold reads are good.
-fn ge_proof(k: u32) -> T {
+pub(crate) fn ge_proof(k: u32) -> T {
     lm("N", nat(k + 1), lm("g", ap(good1(k), v("N")),
         ap3(v("g"), lm("M", nat(k + 1), gk(k, embed(k, v("M")))), gzero(k),
             lm("m", nat(k + 1), lm("ih", gk(k, embed(k, v("m"))), gsucc(k, embed(k, v("m")), v("ih")))))))
 }
 // non-dependent pairs
-fn sig2(a: T, c: T) -> T {
+pub(crate) fn sig2(a: T, c: T) -> T {
     Sig("_p", b(a), b(c))
 }
-fn mk2(_a_ty: T, c_ty: T, a: T, c: T) -> T {
+pub(crate) fn mk2(_a_ty: T, c_ty: T, a: T, c: T) -> T {
     Pair("_p", b(c_ty), b(a), b(c))
 }
-fn pr1(a_ty: T, c_ty: T, p: T) -> T {
+pub(crate) fn pr1(a_ty: T, c_ty: T, p: T) -> T {
     SigRec(b(lm("_s", sig2(a_ty.clone(), c_ty.clone()), a_ty.clone())), b(lm("a", a_ty, lm("b", c_ty, v("a")))), b(p))
 }
-fn pr2(a_ty: T, c_ty: T, p: T) -> T {
+pub(crate) fn pr2(a_ty: T, c_ty: T, p: T) -> T {
     SigRec(b(lm("_s", sig2(a_ty.clone(), c_ty.clone()), c_ty.clone())), b(lm("a", a_ty, lm("b", c_ty, v("b")))), b(p))
 }
 
 /// The adder keeps a stream that is known pointwise (at good positions) to be `sw`, when the other operand is the zero stream:
-/// `Pi N:Nat_(k+1). Good N -> Pi su sw:Bits(k). (Pi i. GoodBool (sw i)) -> (Pi i:Nat_k. Good_k i -> su i = sw i)
+/// `Pi N:Nat_(k+1). Good N -> Pi su sw:Bits(k). (Pi i:Nat_k. Good_k i -> GoodBool (sw i)) -> (Pi i:Nat_k. Good_k i -> su i = sw i)
 ///    -> sumbit(su, zs, N) = sw (embed N)`   (`zero_right`), or with `sumbit(zs, su, N)` (the zero operand first).
 fn y_stmt(k: u32, zero_right: bool) -> T {
     let (a, c) = if zero_right { (v("su"), zs(k)) } else { (zs(k), v("su")) };
     pi_("N", nat(k + 1), arr(ap(good1(k), v("N")), pi_("su", bits(k), pi_("sw", bits(k),
-        arr(pi_("i", nat(k), ap(goodbool(), ap(v("sw"), v("i")))),
+        arr(pi_("i", nat(k), arr(gk(k, v("i")), ap(goodbool(), ap(v("sw"), v("i"))))),
         arr(pi_("i", nat(k), arr(gk(k, v("i")), idt(bool0(), ap(v("su"), v("i")), ap(v("sw"), v("i"))))),
             idt(bool0(), sumbit(k, a, c, v("N")), ap(v("sw"), embed(k, v("N"))))))))))
 }
-fn y_proof(k: u32, zero_right: bool) -> T {
+pub(crate) fn y_proof(k: u32, zero_right: bool) -> T {
     let (a, c) = if zero_right { (v("su"), zs(k)) } else { (zs(k), v("su")) };
     let stn = |m: T| st(k, maj, a.clone(), c.clone(), m);
     let target = |m: T| pair_s(k, embed(k, m), ff());
@@ -161,9 +178,9 @@ fn y_proof(k: u32, zero_right: bool) -> T {
     // the carry stays false: right-zero needs the known stream's goodness; left-zero is by computation
     let h = if zero_right {
         let ge_m = pr1(gty(v("m")), eq_ty(v("m")), v("ih"));
-        let to_false = rew(bool0(), ap(v("su"), em.clone()), ap(v("sw"), em.clone()), ap2(v("hu"), em.clone(), ge_m),
+        let to_false = rew(bool0(), ap(v("su"), em.clone()), ap(v("sw"), em.clone()), ap2(v("hu"), em.clone(), ge_m.clone()),
             lm("b", bool0(), idt(bool0(), maj(v("b"), zsl(em.clone()), ff()), ff())),
-            cases1(ap(v("gw"), em.clone()), &|bb| maj(bb, zsl(em.clone()), ff()), &|_| ff()));
+            cases1(ap2(v("gw"), em.clone(), ge_m), &|bb| maj(bb, zsl(em.clone()), ff()), &|_| ff()));
         rew(bool0(), maj(ap(v("su"), em.clone()), zsl(em.clone()), ff()), ff(), to_false,
             lm("t", bool0(), idt(state(k), pair_s(k, ap(succ(k), em.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))),
             rfl(pair_s(k, ap(succ(k), em.clone()), ff())))
@@ -192,13 +209,13 @@ fn y_proof(k: u32, zero_right: bool) -> T {
     };
     let en = e(v("N"));
     let f = |bb: T| if zero_right { xor(xor(bb, zsl(en.clone())), ff()) } else { xor(xor(zsl(en.clone()), bb), ff()) };
-    let leaf = rew(bool0(), ap(v("su"), en.clone()), ap(v("sw"), en.clone()), ap2(v("hu"), en.clone(), ge_n),
+    let leaf = rew(bool0(), ap(v("su"), en.clone()), ap(v("sw"), en.clone()), ap2(v("hu"), en.clone(), ge_n.clone()),
         lm("b", bool0(), idt(bool0(), f(v("b")), ap(v("sw"), en.clone()))),
-        cases1(ap(v("gw"), en.clone()), &|bb| f(bb), &|bb| bb));
+        cases1(ap2(v("gw"), en.clone(), ge_n), &|bb| f(bb), &|bb| bb));
     let fin = rew(state(k), stn(v("N")), target(v("N")), eq_n,
         lm("t", state(k), idt(bool0(), sumfn(k, a.clone(), c.clone(), v("t")), ap(v("sw"), en.clone()))), leaf);
     lm("N", nat(k + 1), lm("g", ap(good1(k), v("N")), lm("su", bits(k), lm("sw", bits(k),
-        lm("gw", pi_("i", nat(k), ap(goodbool(), ap(v("sw"), v("i")))),
+        lm("gw", pi_("i", nat(k), arr(gk(k, v("i")), ap(goodbool(), ap(v("sw"), v("i"))))),
         lm("hu", pi_("i", nat(k), arr(gk(k, v("i")), idt(bool0(), ap(v("su"), v("i")), ap(v("sw"), v("i"))))), fin))))))
 }
 
@@ -215,17 +232,17 @@ fn the_good_embed_lemma_and_the_adder_lemmas_check_at_every_level() {
 
 // ---------- the multiplier laws, uniformly in the output position ----------
 #[derive(Clone, Copy, PartialEq, Debug)]
-enum Law {
+pub(crate) enum Law {
     /// `mul x 0 = 0`
     Zero,
     /// `mul x 1 = x`
     One,
 }
-fn law_y(law: Law, m: usize) -> Vec<T> {
+pub(crate) fn law_y(law: Law, m: usize) -> Vec<T> {
     ybits(m, if law == Law::One { 1 } else { 0 })
 }
 /// `t : Nat_(k0+m)` lowered to `Nat_k0`.
-fn lower(k0: u32, m: usize, t: T) -> T {
+pub(crate) fn lower(k0: u32, m: usize, t: T) -> T {
     (0..m).rev().fold(t, |t, j| embed(k0 + j as u32, t))
 }
 /// `Pi x:Bits(k0). [(Pi i. GoodBool (x i)) ->] Pi N:Nat_(k0+m). Good N -> Id(Bool0, mul_stream x N, rhs)`, where `rhs` is false
@@ -241,7 +258,7 @@ fn mul_stmt(k0: u32, m: usize, law: Law, ys: &[T], rhs_override: Option<T>) -> T
 fn wchain(k0: u32, j: usize, w0: T) -> T {
     (0..j).fold(w0, |w, i| lm("i", nat(k0 + i as u32 + 1), ap(w, embed(k0 + i as u32, v("i")))))
 }
-fn mul_proof(k0: u32, m: usize, law: Law) -> T {
+pub(crate) fn mul_proof(k0: u32, m: usize, law: Law) -> T {
     let ys = law_y(law, m);
     let x = v("x");
     let (w0, gw0) = match law {
@@ -264,7 +281,7 @@ fn mul_proof(k0: u32, m: usize, law: Law) -> T {
         };
         let y = K(ex(&y_proof(kj, zero_right)));
         h = lm("N", nat(kj + 1), lm("g", ap(good1(kj), v("N")),
-            ap(ap(ap(ap(ap2(y, v("N"), v("g")), su), wj), gwj), hu)));
+            ap(ap(ap(ap(ap2(y, v("N"), v("g")), su), wj), lm("gi", nat(kj), lm("gg", gk(kj, v("gi")), ap(gwj, v("gi"))))), hu)));
     }
     let core = lm("x", bits(k0), h);
     if law == Law::One {
@@ -309,7 +326,7 @@ fn mul_uniform_rejects_wrong_statements() {
         rej("mul x 3 = x", mul_stmt(k0, m, Law::One, &ybits(m, 3), None), &p1);
         // the lemma with a false right-hand side
         let bad_y = pi_("N", nat(k0 + 1), arr(ap(good1(k0), v("N")), pi_("su", bits(k0), pi_("sw", bits(k0),
-            arr(pi_("i", nat(k0), ap(goodbool(), ap(v("sw"), v("i")))),
+            arr(pi_("i", nat(k0), arr(gk(k0, v("i")), ap(goodbool(), ap(v("sw"), v("i"))))),
             arr(pi_("i", nat(k0), arr(gk(k0, v("i")), idt(bool0(), ap(v("su"), v("i")), ap(v("sw"), v("i"))))),
                 idt(bool0(), sumbit(k0, v("su"), zs(k0), v("N")), tt())))))));
         rej("lemma Y with rhs true", bad_y, &y_proof(k0, true));
@@ -325,8 +342,8 @@ fn mul_uniform_rejects_wrong_statements() {
 // bridge needs no equality between circuits: `mul(n) (mk a..) (lit v)` and the stream product at the numeral i are convertible
 // (the adder's bits are `encoding::ripple`'s, and `shl_bv^j` at i is `a_(i-j)` or false, as the stream `shl` reads it).
 /// `\x:Bv_n. \C k. x C (\a_0..a_(n-1). k false a_0 .. a_(n-2))`
-fn shl_bv(n: usize) -> T {
-    let call = (0..n - 1).fold(ap(v("k"), ff()), |f, j| ap(f, v(AN(j))));
+pub(crate) fn shl_bv(n: usize, fill: bool) -> T {
+    let call = (0..n - 1).fold(ap(v("k"), if fill { tt() } else { ff() }), |f, j| ap(f, v(AN(j))));
     let body = (0..n).rev().fold(call, |body, j| lm(AN(j), bool0(), body));
     lm("x", bvt(n), lm("C", s(1), lm("k", arrows(n, v("C")), ap2(v("x"), v("C"), body))))
 }
@@ -337,9 +354,13 @@ fn band(n: usize, p: T, q: T) -> T {
     ap2(K(encoding::bitwise(n, &|a, c| encoding::and(a, c))), p, q)
 }
 pub(crate) fn mul_bv(n: usize) -> Expr {
+    mul_bv_fill(n, false)
+}
+/// `mul_bv` with the shift's fill bit chosen (`true` is the mutant of the shift tests).
+pub(crate) fn mul_bv_fill(n: usize, fill: bool) -> Expr {
     let mut acc = K(encoding::lit(n, 0));
     for j in 0..n {
-        let sh = (0..j).fold(v("x"), |e, _| ap(shl_bv(n), e));
+        let sh = (0..j).fold(v("x"), |e, _| ap(shl_bv(n, fill), e));
         acc = ap2(K(encoding::add(n)), acc, band(n, rep(n, v(YB(j))), sh));
     }
     let body = (0..n).rev().fold(ap2(acc, v("C"), v("k")), |body, j| lm(YB(j), bool0(), body));
@@ -362,7 +383,7 @@ fn bridge_stmt(n: usize, ylit: u128, rhs: Rhs) -> Expr {
         idt(bv, ap2(K(mul_bv(n)), v("x"), K(encoding::lit(n, ylit))), r))))
 }
 /// The proof, from the uniform theorem of `law` at k0 = 2 (the lookup returns `W`, see `uniform_width::bridge_add_zero`).
-fn bridge_proof(n: usize, law: Law) -> Expr {
+pub(crate) fn bridge_proof(n: usize, law: Law) -> Expr {
     let (k0, kn) = (2u32, 2 + n as u32);
     let (xs, gxs) = (stream(XN, n), wstream(XN, n));
     let uni = K(ex(&mul_proof(k0, n, law)));
@@ -452,7 +473,7 @@ fn bridge_rejects_wrong_statements() {
 // ---------- the per-width baselines ----------
 // Zero: `mul x 0 = 0` is a computation once the `GoodBv` step opens `x`: the step is `refl`. (Without opening, `x` is a stuck
 // variable.) One: nested case splits on the bits a_0 .. a_j for output bit j (2^(j+1) leaves), built here, not in the encoding.
-fn proj_bit(n: usize, j: usize, t: T) -> T {
+pub(crate) fn proj_bit(n: usize, j: usize, t: T) -> T {
     ap2(t, bool0(), (0..n).rev().fold(v(AN(j)), |body, i| lm(AN(i), bool0(), body)))
 }
 fn direct_bit(n: usize, j: usize, idx: usize, bits: &[T]) -> T {
