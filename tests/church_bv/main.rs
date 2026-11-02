@@ -22,6 +22,7 @@ mod uniform_bitwise;
 mod uniform_mul;
 mod uniform_shift;
 mod uniform_symmul;
+mod uniform_symmul_uniform;
 mod uniform_width;
 mod work;
 #[allow(unused_imports)]

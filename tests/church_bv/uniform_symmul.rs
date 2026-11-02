@@ -29,7 +29,7 @@ use std::time::Instant;
 use tatic::kernel::{self, Expr};
 
 /// The level of the streams' index at stage 0. `x = e_0` reads `Bool0` out of `Nat_1`, so k0 = 1 is enough.
-const K0: u32 = 1;
+pub(crate) const K0: u32 = 1;
 
 /// The one-hot stream `e_0` (the literal 1) in `Bits(K0)`: `i -> i Bool0 tt (\_. ff)`.
 fn x_one() -> T {
@@ -39,7 +39,7 @@ fn y(j: usize) -> T {
     v(AN(j))
 }
 /// `acc_sym(j) : Bool0^j -> Bits(K0) -> Bits(K0 + j)`, CLOSED: `\y_0..y_(j-1). \x. acc_j` (the shift's fill bit is `fill`).
-fn acc_sym(j: usize, fill: bool) -> Expr {
+pub(crate) fn acc_sym(j: usize, fill: bool) -> Expr {
     let mut body = lm("x", bits(K0), acc_body(j, fill));
     for i in (0..j).rev() {
         body = lm(YB(i), bool0(), body);
@@ -54,11 +54,11 @@ fn acc_body(j: usize, fill: bool) -> T {
     let prev = ap((0..j - 1).fold(K(acc_sym(j - 1, fill)), |f, i| ap(f, v(YB(i)))), v("x"));
     add_stream(l, prev, tm(l, v(YB(j - 1)), shl_n(K0, j - 1, v("x"), fill)))
 }
-fn apn(f: T, args: &[T]) -> T {
+pub(crate) fn apn(f: T, args: &[T]) -> T {
     args.iter().fold(f, |f, a| ap(f, a.clone()))
 }
 /// `acc_j` applied to the multiplier bits `ys` and the multiplicand `x`: a stream in `Bits(K0 + j)`.
-fn big_a(acc: &[Expr], j: usize, ys: &[T], x: &T) -> T {
+pub(crate) fn big_a(acc: &[Expr], j: usize, ys: &[T], x: &T) -> T {
     ap(apn(K(acc[j]), &ys[..j]), x.clone())
 }
 /// The j-th partial product stream, `y_j & (x << j)`, in `Bits(K0 + j)`.
@@ -149,7 +149,7 @@ fn eq_table(n: usize, fill: bool) -> Vec<Vec<T>> {
 
 // ---------- the bridge to Bv_n ----------
 #[derive(Clone, Copy, Debug)]
-enum Rhs {
+pub(crate) enum Rhs {
     Y,
     Lit(u128),
     /// every bit negated
@@ -163,11 +163,11 @@ fn map_bits(n: usize, t: T, f: &dyn Fn(usize, T) -> T) -> T {
     let body = (0..n).rev().fold(call, |body, j| lm(AN(j), bool0(), body));
     lm("C", s(1), lm("k", arrows(n, v("C")), ap2(t, v("C"), body)))
 }
-fn mul_y(n: usize, fill: bool, xlit: u128) -> T {
+pub(crate) fn mul_y(n: usize, fill: bool, xlit: u128) -> T {
     ap2(K(mul_bv_fill(n, fill)), K(encoding::lit(n, xlit)), v("y"))
 }
 /// `Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit xlit) y, rhs)`, the `mul` built with the shift's fill bit `fill`.
-fn bridge_stmt(n: usize, fill: bool, xlit: u128, rhs: Rhs) -> Expr {
+pub(crate) fn bridge_stmt(n: usize, fill: bool, xlit: u128, rhs: Rhs) -> Expr {
     let bv = K(encoding::bv_ty(n));
     let r = match rhs {
         Rhs::Y => v("y"),
