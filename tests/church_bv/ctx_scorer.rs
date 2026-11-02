@@ -402,6 +402,31 @@ pub fn group3(pool: &[PoolLaw]) -> Vec<[f32; 2]> {
         .collect()
 }
 
+/// The pool dump's file (`RULEMINER_POOL_DUMP`): a line per pool law, tab-separated: its index in the pool, the law as
+/// `lhs = rhs`, whether it is a straggler (0/1), its steps, normal-form size and machine proofs (empty for a clean law), and
+/// whether it is still a straggler after the served-only cover (0/1). The facts are raw; the features are computed from them.
+pub fn pool_tsv(rows: &[(usize, String, Option<(i64, i64, u64)>, bool)]) -> String {
+    rows.iter()
+        .map(|(i, law, facts, uncovered)| match facts {
+            Some((steps, size, fallbacks)) => format!("{i}\t{law}\t1\t{steps}\t{size}\t{fallbacks}\t{}\n", *uncovered as u8),
+            None => format!("{i}\t{law}\t0\t\t\t\t{}\n", *uncovered as u8),
+        })
+        .collect()
+}
+
+/// The pool `pool_tsv` wrote, in order.
+pub fn read_pool(tsv: &str) -> Vec<PoolLaw> {
+    tsv.lines()
+        .map(|line| {
+            let f: Vec<&str> = line.split('\t').collect();
+            assert_eq!(f.len(), 7, "a pool line has 7 fields: {line:?}");
+            let (lhs, rhs) = f[1].split_once(" = ").unwrap_or_else(|| panic!("a pool law is `lhs = rhs`: {line:?}"));
+            let num = |s: &str| s.parse::<i64>().unwrap_or(0);
+            PoolLaw { law: (parse_term(lhs), parse_term(rhs)), straggler: f[2] == "1", steps: num(f[3]), size: num(f[4]), fallbacks: num(f[5]) as u64, uncovered: f[6] == "1" }
+        })
+        .collect()
+}
+
 /// The `WIDTH` columns of every pool law, in pool order.
 pub fn rows(pool: &[PoolLaw], served: &[(Term, Term)]) -> Vec<Vec<f32>> {
     let (g1, g2, g3) = (group1(pool), group2(pool, served), group3(pool));
@@ -418,6 +443,25 @@ mod tests {
 
     fn pl(a: &str, b: &str, straggler: bool, steps: i64, uncovered: bool) -> PoolLaw {
         PoolLaw { law: p(a, b), straggler, steps, size: steps, fallbacks: steps as u64, uncovered }
+    }
+
+    #[test]
+    fn pool_tsv_has_one_line_per_law_and_empty_cells_for_clean_laws() {
+        let rows = vec![(0, "add(x, y) = add(y, x)".to_string(), Some((3, 7, 2)), true), (1, "and(x, y) = and(y, x)".to_string(), None, false)];
+        let text = pool_tsv(&rows);
+        let lines: Vec<&str> = text.lines().collect();
+        assert_eq!(lines, vec!["0\tadd(x, y) = add(y, x)\t1\t3\t7\t2\t1", "1\tand(x, y) = and(y, x)\t0\t\t\t\t0"]);
+    }
+
+    #[test]
+    fn read_pool_inverts_pool_tsv() {
+        let rows = vec![(0, "add(x, y) = add(y, x)".to_string(), Some((3, 7, 2)), true), (1, "and(x, y) = and(y, x)".to_string(), None, false), (2, "or(x, y) = or(y, x)".to_string(), Some((1, 4, 1)), false)];
+        let pool = read_pool(&pool_tsv(&rows));
+        assert_eq!(pool.len(), 3);
+        assert!(pool[0].straggler && pool[0].uncovered && (pool[0].steps, pool[0].size, pool[0].fallbacks) == (3, 7, 2));
+        assert!(!pool[1].straggler && !pool[1].uncovered);
+        assert!(pool[2].straggler && !pool[2].uncovered);
+        assert!(pool[1].law == p("and(x, y)", "and(y, x)"));
     }
 
     #[test]

@@ -37,6 +37,10 @@ pub struct MinerConfig {
     /// `RULEMINER_EXTRAS_FROM=<i>`, `_KEEP=<n>`, `_BY=first|small` (all three or none): the lawfile's laws from line `i` are a
     /// pool of extras and the mine keeps `n` of them (`kept_indices`); the laws before `i` are always read.
     pub extras: Option<ExtrasKeep>,
+    /// `RULEMINER_POOL_DUMP=<prefix>` (with `extras` by `first`): before cutting the pool, classify it and write the raw facts
+    /// the context scorer needs to `<prefix>_pool.tsv` (`ctx_scorer::pool_tsv`) and `<prefix>_served.txt` (the served
+    /// stragglers' normal forms); the mine itself runs as without it.
+    pub pool_dump: Option<String>,
 }
 
 /// How a mine picks its extras from the pool: `First` the first `n`, `Small` the stragglers the base rules leave, fewest
@@ -86,6 +90,7 @@ impl MinerConfig {
                     by: Keep::parse(need("RULEMINER_EXTRAS_BY")).unwrap_or_else(|e| panic!("RULEMINER_EXTRAS_BY: {e}")),
                 }
             }),
+            pool_dump: s.var("RULEMINER_POOL_DUMP").map(String::from),
         }
     }
 }
@@ -119,7 +124,7 @@ fn mine(setup: &Arc<Setup>, extra: &[(Term, Term)]) -> (Vec<String>, usize) {
         job.with_rules(base_rules, |job| {
             // base rules may loop; a step budget per law bounds them (the built-in rules never reach it)
             let budget = if base.is_empty() { UNBOUNDED } else { LAW_STEPS };
-            let laws = laws(job, &cfg, budget, &clock);
+            let laws = laws(job, &cfg, &base, budget, &clock);
             let (chosen, rolled_back) = cover(job, &laws, &cfg, &base, &clock, extra, false);
             (chosen.iter().map(rule_show).collect(), rolled_back)
         })
@@ -181,18 +186,22 @@ struct Laws {
 
 /// The laws of `cfg` and their stragglers under the rules installed on this thread (P1, P2), each rewritten under `budget`
 /// steps.
-fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
+fn laws(job: &mut Job, cfg: &MinerConfig, base: &[(Term, Term)], budget: i64, clock: &Clock) -> Laws {
     let named = read_named_laws(&cfg.lawfile);
     clock.phase("law building");
-    laws_for(job, named, &cfg.extras, cfg.guard, cfg.fast, budget, clock, true)
+    laws_for(job, named, cfg, base, budget, clock, true)
 }
 
 /// `laws_of` over the laws a mine reads: all of `named`, or, with `extras`, its served laws and `extras.n` of the pool after
 /// them. `First` cuts the pool before classifying, so it costs and chooses what a file without the pool does; `Small`
 /// classifies the pool and keeps its stragglers first, the fewest rewrite steps then the smallest normal form first.
-fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option<ExtrasKeep>, guard_k: usize, fast: bool, budget: i64, clock: &Clock, loud: bool) -> Laws {
-    let Some(x) = extras else { return laws_of(job, named, guard_k, fast, budget, clock, loud) };
+fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, cfg: &MinerConfig, base: &[(Term, Term)], budget: i64, clock: &Clock, loud: bool) -> Laws {
+    let (guard_k, fast) = (cfg.guard, cfg.fast);
+    let Some(x) = &cfg.extras else { return laws_of(job, named, guard_k, fast, budget, clock, loud) };
     if x.by == Keep::First {
+        if let Some(prefix) = &cfg.pool_dump {
+            dump_pool(job, &named, x.from, cfg, base, budget, clock, prefix);
+        }
         named = kept_indices(named.len(), x.from, x.n, &|_| None).into_iter().map(|i| named[i].clone()).collect();
         return laws_of(job, named, guard_k, fast, budget, clock, loud);
     }
@@ -212,6 +221,37 @@ fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, extras: &Option
         clock.phase("extras selection");
     }
     assemble(keep.into_iter().map(|i| outcomes[i].clone()).collect(), guard_k, loud, clock)
+}
+
+/// The pool dump (`MinerConfig::pool_dump`) of `named`, whose pool starts at line `from`: classify every law under the
+/// installed base, cover the served stragglers alone (a quiet `cover`), and write, per pool law, whether it is a straggler
+/// (steps, normal-form size, machine proofs) and whether it stays one under `base` plus those rules, with the served
+/// stragglers' normal forms. Nothing here changes what the mine goes on to do.
+#[allow(clippy::too_many_arguments)]
+fn dump_pool(job: &mut Job, named: &[(String, Term, Term)], from: usize, cfg: &MinerConfig, base: &[(Term, Term)], budget: i64, clock: &Clock, prefix: &str) {
+    let from = from.min(named.len());
+    let outcomes = classify(job, named, budget, cfg.fast, false);
+    let served: Vec<Outcome> = outcomes[..from].to_vec();
+    let served_normal_forms: String = served
+        .iter()
+        .filter_map(|o| match o {
+            Outcome::Straggler(s, ..) => Some(format!("{} = {}\n", s.3[0].show(), s.3[1].show())),
+            _ => None,
+        })
+        .collect();
+    let (chosen, _) = cover(job, &assemble(served, cfg.guard, false, clock), cfg, base, clock, &[], true);
+    let uncovered = still_stragglers(job, base, &chosen, &named[from..], budget, cfg.fast);
+    let rows: Vec<(usize, String, Option<(i64, i64, u64)>, bool)> = (from..named.len())
+        .map(|i| {
+            let facts = match &outcomes[i] {
+                Outcome::Straggler(s, _, steps) => Some((*steps, (s.3[0].size() + s.3[1].size()) as i64, s.4)),
+                _ => None,
+            };
+            (i - from, named[i].0.clone(), facts, uncovered[i - from] && facts.is_some())
+        })
+        .collect();
+    std::fs::write(format!("{prefix}_pool.tsv"), crate::ctx_scorer::pool_tsv(&rows)).expect("write the pool dump");
+    std::fs::write(format!("{prefix}_served.txt"), served_normal_forms).expect("write the served stragglers");
 }
 
 /// The indices of the `len` laws a mine reads, ascending: the served laws `..from` and `n` of the pool `from..`. The pool's
@@ -1210,14 +1250,44 @@ fn served_and_pool() -> (usize, String, String, String) {
 
 /// The names of the stragglers `laws_for` leaves a mine with (a whole mine is too slow to run per case).
 fn straggler_names(text: &str, extras: Option<ExtrasKeep>) -> Vec<String> {
+    straggler_names_dumping(text, extras, None)
+}
+
+/// `straggler_names` with the pool dump to `prefix` (`RULEMINER_POOL_DUMP`).
+fn straggler_names_dumping(text: &str, extras: Option<ExtrasKeep>, prefix: Option<String>) -> Vec<String> {
     let named = |s: &str| {
         let (a, b) = s.split_once(" = ").unwrap();
         (s.to_string(), parse_term(a), parse_term(b))
     };
     let laws: Vec<_> = text.lines().map(named).collect();
-    let job = &mut Job::new(Setup::process());
+    let setup = Setup::with_env(vec![("RULEMINER_LAWFILE".to_string(), "unused".to_string()), ("RULEMINER_FAST".to_string(), "1".to_string()), ("RULEMINER_GUARD".to_string(), "0".to_string())]);
+    let job = &mut Job::new(setup.clone());
     let clock = Clock(std::cell::Cell::new(Instant::now()));
-    tatic::kernel::scoped(|| laws_for(job, laws, &extras, 0, true, UNBOUNDED, &clock, false).stragglers.iter().map(|s| s.0.clone()).collect())
+    let mut cfg = MinerConfig::new(&setup);
+    (cfg.extras, cfg.pool_dump) = (extras, prefix);
+    tatic::kernel::scoped(|| laws_for(job, laws, &cfg, &[], UNBOUNDED, &clock, false).stragglers.iter().map(|s| s.0.clone()).collect())
+}
+
+/// The pool dump of a `first` mine writes one line per pool law with its facts and the served stragglers' normal forms, and
+/// the mine reads the laws it would without it.
+#[test]
+fn the_pool_dump_writes_facts_and_changes_nothing() {
+    let (from, served, clean, strag) = served_and_pool();
+    let both = format!("{served}{clean}\n{strag}\n");
+    let ex = Some(ExtrasKeep { from, n: 1, by: Keep::First });
+    let prefix = std::env::temp_dir().join(format!("pool_dump_{}", std::process::id())).display().to_string();
+    let without = straggler_names(&both, ex);
+    let with = straggler_names_dumping(&both, ex, Some(prefix.clone()));
+    let (pool_file, served_file) = (format!("{prefix}_pool.tsv"), format!("{prefix}_served.txt"));
+    let (pool, forms) = (std::fs::read_to_string(&pool_file).unwrap(), std::fs::read_to_string(&served_file).unwrap());
+    std::fs::remove_file(&pool_file).ok();
+    std::fs::remove_file(&served_file).ok();
+    assert_eq!(with, without, "the dump changes no law the mine reads");
+    let pool = crate::ctx_scorer::read_pool(&pool);
+    assert_eq!(pool.len(), 2, "one line per pool law, not per kept law");
+    assert!(!pool[0].straggler && !pool[0].uncovered, "the clean law is no straggler");
+    assert!(pool[1].straggler && pool[1].steps >= 0 && pool[1].size > 0 && pool[1].fallbacks > 0);
+    assert_eq!(forms.lines().count(), straggler_names(&served, None).len(), "one normal form per served straggler");
 }
 
 /// `small` keeps the pool's straggler over its clean law that comes first; `first` keeps the clean law and is today's

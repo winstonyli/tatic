@@ -24,7 +24,9 @@
 //! with rule rounds also mines its own `EXTRAS_N` laws, the next the filter keeps from the stream sequence grown as deep
 //! as the held-out bands (`scope_extras`, fresh slices); off with ABLATE=gen; GEN_DRAW=d draws them from the sequence at
 //! salt + 1000 d instead. POOL=p with EXTRAS_SELECT=first|small hands each mine p x n laws and the miner keeps n: the first n, or the n stragglers with the fewest rewrite steps (then the smallest normal form; a shortfall is filled with the pool's other laws in order); `first` with POOL>1 only serves as a control
-//! under that mine's base rules (`RULEMINER_EXTRAS_*`, `miner::kept_indices`). POOL>1 needs a selector.
+//! under that mine's base rules (`RULEMINER_EXTRAS_*`, `miner::kept_indices`). POOL>1 needs a selector. POOL_DUMP=1 (with
+//! `first`) also writes each mine's classified pool to LOOP_OUT/dump_<name>_pool.tsv and the served stragglers' normal forms to
+//! dump_<name>_served.txt (`RULEMINER_POOL_DUMP`, `miner::dump_pool`, `ctx_scorer::pool_tsv`); the mine is unchanged.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
 //! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the stream sequence, built once
@@ -807,6 +809,11 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
                 env.push(("RULEMINER_EXTRAS_FROM".into(), served.to_string()));
                 env.push(("RULEMINER_EXTRAS_KEEP".into(), keep.to_string()));
                 env.push(("RULEMINER_EXTRAS_BY".into(), by.to_string()));
+                // after `lawfile` was read: the dump is a switch of the miner (`MinerConfig::pool_dump`), which reads only `first` pools
+                if setup.flag("POOL_DUMP", false) {
+                    assert_eq!(by, "first", "POOL_DUMP dumps the pool of a `first` mine, not of EXTRAS_SELECT={by}");
+                    env.push(("RULEMINER_POOL_DUMP".into(), out.join(format!("dump_{name}")).display().to_string()));
+                }
             }
         }
         let records = worker.run("search::rule_miner", &env, &log).unwrap_or_else(|| panic!("rule_miner failed (see {})", log.display()));
