@@ -1,11 +1,11 @@
-// Spike (2026-11-01; builds on `uniform_mul.rs`, `uniform_symmul_uniform.rs`): `mul 1 y = y` with a SYMBOLIC multiplier, bridged
+// Spike (2026-11-01; builds on `uniform_mul.rs`, `uniform_symmul_stream.rs`): `mul 1 y = y` with a SYMBOLIC multiplier, bridged
 // STAGE BY STAGE at the `Bv_n` level, so that the kernel never has to convert the statement's whole fixed-width `mul(n)` against a
 // differently shaped term.
 //     Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit 1) y, y)         (`bridge_stmt`; `mul(n) x y`: the multiplicand FIRST)
 //
 // This module holds the statement (`bridge_stmt`, `Rhs`, the negative variants), the stage-wise proof and a per-width baseline (the
 // reference for the scaling comparison). The stream theorem uniform in the position, a standalone result, is in
-// `uniform_symmul_uniform.rs`; this bridge does not use it, only its case-split hypotheses (`hyps_c`, `hyps_x`).
+// `uniform_symmul_stream.rs`; this bridge does not use it, only its case-split hypotheses (`hyps_c`, `hyps_x`).
 //
 // `mul(n) x y` unrolls to `ACC_n` with `ACC_0 = lit 0` and `ACC_(j+1) = add ACC_j (and (rep y_j) (shl^j x))`. Here:
 //   * `ACC_j` is a CLOSED handle `\y_0..y_(j-1). ..` (`acc_table`), whose body applies the previous handle: conversion of a stage's
@@ -16,7 +16,7 @@
 //   * `L_j` is proved directly at the Bv level for the symbolic bits (no stream, no induction): `tuple_chain` over the n output bits,
 //     each `xor(xor(u_i, w_i), c_i) = T_(j+1)_i` with `u_i`, `w_i` the bits of the two operands and `c_i` the ripple carry
 //     (`encoding::ripple`'s circuit, as `maj`). The carry is shown `ff` by a chain `E_(i+1)` of rewrites, one case split (on the
-//     witnesses of `a_i` and `a_j`) per position `i < j`; the sum bits are then the case splits of `uniform_symmul_uniform.rs`
+//     witnesses of `a_i` and `a_j`) per position `i < j`; the sum bits are then the case splits of `uniform_symmul_stream.rs`
 //     (`hyps_c`, `hyps_x`). A case split on a `GoodBool` witness admits `Sort1` motives only, so every split is on a `Bool0` equality
 //     and the `Bv_n` equality is assembled with `rew`.
 //   * the bridge is `gb motive (\a.. ga.. . S_n a.. ga..)`; the one conversion left is `mul(n) (lit 1) (tuple a)` against `ACC_n a..`
@@ -41,7 +41,7 @@
 // there is nothing to compare it against here.
 use super::encoding;
 use super::uniform_mul::{band, mul_bv_fill, proj_bit, rep, shl_bv};
-use super::uniform_symmul_uniform::{apn, hyps_c, hyps_x, yv};
+use super::uniform_symmul_stream::{apn, hyps_c, hyps_x, yv};
 use super::uniform_width::T::*;
 use super::uniform_width::*;
 use std::time::Instant;
@@ -63,7 +63,7 @@ fn map_bits(n: usize, t: T, f: &dyn Fn(usize, T) -> T) -> T {
     let body = (0..n).rev().fold(call, |body, j| lm(AN(j), bool0(), body));
     lm("C", s(1), lm("k", arrows(n, v("C")), ap2(t, v("C"), body)))
 }
-pub(crate) fn mul_y(n: usize, fill: bool, xlit: u128) -> T {
+fn mul_y(n: usize, fill: bool, xlit: u128) -> T {
     ap2(K(mul_bv_fill(n, fill)), K(encoding::lit(n, xlit)), v("y"))
 }
 /// `Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit xlit) y, rhs)`, the `mul` built with the shift's fill bit `fill`.

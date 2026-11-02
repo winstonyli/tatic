@@ -1,28 +1,22 @@
-// Spike (2026-11-01, task a1; builds on `uniform_symmul.rs`, `uniform_mul.rs`, `uniform_shift.rs`): `mul 1 y = y` with a SYMBOLIC
-// multiplier, UNIFORM IN THE POSITION. `uniform_symmul.rs` proves it positionwise at numerals (the proof term is a tree over an
-// `E(j, q)` table and grows about 4x per bit). Here the stream theorem, for the multiplier bits `a_0..a_(n-1)` (variables with
-// `GoodBool` witnesses `ga_m`, bound by the `GoodBv` step) and the one-hot multiplicand `e_0`, is
+// Spike (2026-11-01, task a1; builds on `uniform_mul.rs`, `uniform_shift.rs`): the stream form of `mul 1 y = y` with a SYMBOLIC
+// multiplier, UNIFORM IN THE POSITION, a standalone result: it is NOT bridged to `Bv_n` (the bridge of `mul 1 y = y` is the
+// stage-wise one of `uniform_symmul.rs`, which does not use this theorem; it shares only `hyps_c` and `hyps_x`).
+// For the multiplier bits `a_0..a_(n-1)` (variables with `GoodBool` witnesses `ga_m`, as the `GoodBv` step binds them) and the
+// one-hot multiplicand `e_0`, the theorem is
 //     Pi i:Nat_(K0+n). Good i -> Id(Bool0, acc_n i, look(a_0..a_(n-1)) (lower i))
 // where `look(t) p = t Bool0 (p (Bool^n -> Bool0) proj0 rot)` is the lookup of `uniform_width.rs` (tuple `t` read at the Nat_1
 // position `p`, false past the end) and `lower` is the chain of `embed`s down to Nat_1. It is proved for EVERY good position,
-// with no per-position case tree; the bridge to `Bv_n` is the instance at the numerals.
+// with no per-position case tree. The older positionwise route (the proof a tree over the positions, at numerals) and the bridge of
+// this theorem to `Bv_n` are gone; their measurements are in `docs/tier-cycle.md` ("Laws uniform in the width").
 //
-// Size and cost, stated with what they depend on (measured by `header_states_what_the_size_and_cost_claims_depend_on` and the
-// ignored scaling tests):
-//   * Sizes below count DISTINCT nodes, i.e. they hold only because the kernel shares subterms (the stages are handles). The
-//     bridge has 2052, 3193, 4434, 5785, 7237 distinct nodes for n = 2..6 (about quadratic), but its fully unfolded tree is
-//     3.97e6, 4.8e7, 4.8e8, 4.3e9, 3.7e10 nodes: about 8-10x per bit, the same shape as the old `uniform_symmul.rs`. Anything
-//     that unfolds the term (printing it, a checker without sharing) sees the exponential size.
-//   * The stream theorem itself is cheap: H_n checks in 7.4, 9.2, 18.7 ms for n = 4, 6, 8. The END-TO-END bridge check
-//     does not scale: 2.6, 10.6, 26, 130, 736, 4238 ms for n = 2, 4, 5, 6, 7, 8 (peak commit 385 MB at n = 7, 1.9 GB at n = 8), super-polynomial.
-//     The cost is the kernel's conversion of the statement's fixed-width `mul(n)` against the stream product `acc_n` on the
-//     stuck symbolic bits (at n = 8: bit 7 takes 2196 ms, bit 6 takes 1180 ms; `symmul_uniform_conv_cost`), not the proof.
-//     Against the positionwise bridge of `uniform_symmul.rs` the gain is in build time and memory only (build 46 and 85 ms against
-//     95 and 1465 ms at n = 4 and 6; n = 8 runs in 8 GB where the positionwise one could not), not in check time: where both run
-//     the check time is no faster (13.8 against 6.5 ms at n = 4, 141 against 117 ms at n = 6, 731 ms at n = 7 against 369 ms
-//     recorded in `docs/tier-cycle.md`). It is not a polynomial result.
+// Cost, as measured by the ignored `symmul_uniform_stage_scaling` (per-stage check times, no bridge): the stream theorem H_n checks
+// in 7.4, 9.2, 18.7 ms for n = 4, 6, 8. Sizes count DISTINCT nodes, i.e. they hold only because the kernel shares subterms (the
+// stages are handles): H_n has 1821, 2858, 3986, 5233, 6554 distinct nodes for n = 2..6 (about quadratic), but its fully unfolded
+// tree is 1.9e6, 1.5e7, 1.1e8, 8.1e8, 5.6e9 nodes, about 7-8x per bit. Anything that unfolds the term (printing it, a checker
+// without sharing) sees the exponential size.
 //
 // Pieces (all closed terms, shared by the later stages as handles; the per-stage terms are O(n) in distinct nodes, O(n^2) over all stages):
+//   * `acc_sym`: the stream accumulator of `uniform_mul.rs` with the multiplier bits as arguments of a closed term.
 //   * `Z0`:  look(0..0) p = false (an induction whose step is the identity: the shifted zero tuple is the zero tuple).
 //   * `D`:   a pointwise lemma for the lookup. For `f(u, w)` with `f(ff, ff) = ff` (hypothesis `hp`) and tuples `a, c, r` with
 //            `f(a_m, c_m) = r_m` for each m < n:  f(look a p, look c p) = look r p at every good p (or `= ff` when `f(a_m, c_m) = ff`).
@@ -40,10 +34,8 @@
 // The multiplicand is the stream `e_0 := look(1,0,..,0)`, convertible at every numeral to the old `i Bool0 tt (\_. ff)` (a lemma
 // `i Bool0 tt (\_. ff) = look(1,0,..)(i)` would need `Z0` inside an induction step that has no goodness of `m`).
 use super::uniform_mul::*;
-use super::uniform_symmul::{bridge_stmt, Rhs};
 use super::uniform_width::T::*;
 use super::uniform_width::*;
-use std::time::Instant;
 use tatic::kernel::{self, Expr};
 
 /// The level of the streams' index at stage 0. `x = e_0` reads `Bool0` out of `Nat_1`, so k0 = 1 is enough.
@@ -380,20 +372,6 @@ fn h_stmt(n: usize, j: usize, fill: bool) -> Expr {
     ex(&t)
 }
 
-// ---------- the bridge ----------
-pub(crate) fn bridge_proof(n: usize, fill: bool) -> Expr {
-    let kn = K0 + n as u32;
-    let cx = build(n, fill, n);
-    let ys: Vec<T> = (0..n).map(yv).collect();
-    let th = apn(K(cx.h[n]), &all_args(n));
-    let prod = big_a(&cx.acc, n, &ys, &K(cx.x));
-    let e_i = |i: usize| ap2(th.clone(), numeral(kn, i), goodnum(kn - 1, i as u32));
-    let g = tuple_chain(n, &|i| ap(prod.clone(), numeral(kn, i)), &|i| yv(i), &e_i);
-    let bv = K(super::encoding::bv_ty(n));
-    let motive = lm("y", bv.clone(), idt(bv.clone(), super::uniform_symmul::mul_y(n, fill, 1), v("y")));
-    ex(&lm("y", bv, lm("gb", ap(K(super::encoding::good_bv(n)), v("y")), ap2(v("gb"), motive, lam_bits(XN, n, g)))))
-}
-
 // ---------- tests ----------
 fn chk(name: &str, pf: &Expr, stmt: &Expr) {
     let (r, ms) = timed_check(pf, stmt);
@@ -454,84 +432,7 @@ fn the_stream_theorem_holds_at_every_good_position() {
     }
 }
 
-#[test]
-fn bridge_checks_for_small_n() {
-    for n in 1..=4usize {
-        let (pf, stmt) = (bridge_proof(n, false), bridge_stmt(n, false, 1, Rhs::Y));
-        chk(&format!("uniform symmul bridge mul 1 y = y n={n}"), &pf, &stmt);
-    }
-}
-
-#[test]
-fn bridge_rejects_wrong_statements() {
-    for n in 1..=4usize {
-        let pf = bridge_proof(n, false);
-        let mut wrong: Vec<(&str, Expr)> = vec![
-            ("mul 1 y = 0", bridge_stmt(n, false, 1, Rhs::Lit(0))),
-            ("mul 1 y = not y", bridge_stmt(n, false, 1, Rhs::NotY)),
-            ("mul 1 y = y with bit 0 flipped", bridge_stmt(n, false, 1, Rhs::Flip0)),
-            ("mul 0 y = y", bridge_stmt(n, false, 0, Rhs::Y)),
-        ];
-        if n >= 2 {
-            wrong.push(("mul 2 y = y", bridge_stmt(n, false, 2, Rhs::Y)));
-            wrong.push(("mul 3 y = y", bridge_stmt(n, false, 3, Rhs::Y)));
-        }
-        for (name, stmt) in wrong {
-            kernel::typecheck(&stmt).unwrap_or_else(|e| panic!("{name} is ill-typed: {e}"));
-            let (r, _) = timed_check(&pf, &stmt);
-            let m = r.expect_err(&format!("n={n}: {name} was accepted"));
-            if n == 2 {
-                println!("[uniform symmul wrong n={n} {name}] REJECTED: {}", m.chars().take(100).collect::<String>());
-            }
-        }
-    }
-}
-
-/// The shift's fill bit flipped, in the fixed-width `mul(n)` (statement) and in the stream construction. At n = 1 there is no
-/// shift and the mutant is the same function.
-#[test]
-fn flipping_the_shifts_fill_bit_is_caught_for_n_at_least_2() {
-    for n in 1..=4usize {
-        let stmt = bridge_stmt(n, true, 1, Rhs::Y);
-        kernel::typecheck(&stmt).unwrap_or_else(|e| panic!("mutant statement is ill-typed: {e}"));
-        let (r, _) = timed_check(&bridge_proof(n, false), &stmt);
-        if n == 1 {
-            assert!(r.is_ok(), "n=1 has no shift: the mutant is the same function");
-            println!("[uniform symmul mutant n=1] no shift at n=1: ACCEPTED, as it must be");
-        } else {
-            let m = r.expect_err(&format!("n={n}: the real proof accepted the mutant mul"));
-            println!("[uniform symmul mutant n={n}] real proof vs shl_bv fill=true: REJECTED: {}", m.chars().take(140).collect::<String>());
-            // and the proof built with the mutated stream shift too
-            let (r2, _) = timed_check(&bridge_proof(n, true), &stmt);
-            let m2 = r2.expect_err(&format!("n={n}: the fully mutated proof was accepted"));
-            println!("[uniform symmul mutant n={n}] mutant stream shift too: REJECTED: {}", m2.chars().take(140).collect::<String>());
-        }
-    }
-    // the stream construction with the mutated shift: Psh (its base case) no longer checks
-    let (stmt, pf) = psh(3, 1, &oh(3, 0), true);
-    let (r, _) = timed_check(&ex(&pf), &ex(&stmt));
-    let m = r.expect_err("Psh with fill=true was accepted");
-    println!("[uniform symmul mutant] Psh with the stream shift's fill=true: REJECTED: {}", m.chars().take(140).collect::<String>());
-}
-
-/// Run by exact name.
-#[test]
-#[ignore]
-fn symmul_uniform_scaling() {
-    let ns: Vec<usize> = std::env::var("SYMMUL_NS").ok()
-        .map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect())
-        .unwrap_or_else(|| vec![2, 4]);
-    for n in ns {
-        let t0 = Instant::now();
-        let (pf, stmt) = (bridge_proof(n, false), bridge_stmt(n, false, 1, Rhs::Y));
-        let built = t0.elapsed().as_secs_f64() * 1e3;
-        let (r, ms) = timed_check(&pf, &stmt);
-        println!("SYMMUL_UNIFORM n={n}: bridge built {built:.1} ms, check {ms:.2} ms ({})", if r.is_ok() { "accepted" } else { "REJECTED" });
-    }
-}
-
-
-/// Per-stage check times of the stream theorem alone (no bridge). Run by exact name; `SYMMUL_NS` as above.
+/// Per-stage check times of the stream theorem alone. Run by exact name; `SYMMUL_NS=4,6,8` picks the widths.
 #[test]
 #[ignore]
 fn symmul_uniform_stage_scaling() {
@@ -545,52 +446,32 @@ fn symmul_uniform_stage_scaling() {
     }
 }
 
-/// Where the bridge's check time goes: the stream theorem is cheap (`symmul_uniform_stage_scaling`); the rest is the kernel's
-/// conversion of the statement's `mul(n) (lit 1) (tuple a)` bit i against the stream product `acc_n` at the numeral i, both on
-/// the stuck symbolic bits. Times `def_eq` of the two, one output bit at a time, closed over the bits.
+/// The shift's fill bit flipped, at the lemma level: the shift transports a lookup (`Psh`) only for the real fill bit `false`,
+/// because its base case is the state `(zero, fill)`; with `fill = true` the lemma no longer checks.
 #[test]
-#[ignore]
-fn symmul_uniform_conv_cost() {
-    let ns: Vec<usize> = std::env::var("SYMMUL_NS").ok()
-        .map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect())
-        .unwrap_or_else(|| vec![4]);
-    for n in ns {
-        let kn = K0 + n as u32;
-        let cx = build(n, false, 0);
-        let ys: Vec<T> = (0..n).map(yv).collect();
-        let prod = big_a(&cx.acc, n, &ys, &K(cx.x));
-        let abits = |body: T| (0..n).rev().fold(body, |b, j| lm(AN(j), bool0(), b));
-        let a: Vec<T> = (0..n).map(yv).collect();
-        let mut line = vec![];
-        for i in 0..n {
-            let l = ex(&abits(ap(prod.clone(), numeral(kn, i))));
-            let r = ex(&abits(proj_bit(n, i, ap2(K(mul_bv_fill(n, false)), K(super::encoding::lit(n, 1)), tuple(&a)))));
-            let t0 = Instant::now();
-            let ok = kernel::def_eq(&l, &r);
-            line.push(format!("bit {i}: {:.1} ms{}", t0.elapsed().as_secs_f64() * 1e3, if ok { "" } else { " NOT EQUAL" }));
-        }
-        println!("SYMMUL_UNIFORM_CONV n={n}: {}", line.join(", "));
-    }
+fn psh_rejects_the_shifts_fill_bit_mutation() {
+    let (stmt, pf) = psh(3, 1, &oh(3, 0), true);
+    let (r, _) = timed_check(&ex(&pf), &ex(&stmt));
+    let m = r.expect_err("Psh with fill=true was accepted");
+    println!("[stream mutant] Psh with the stream shift's fill=true: REJECTED: {}", m.chars().take(140).collect::<String>());
+    // control: the same lemma with the real fill bit is accepted
+    let (stmt, pf) = psh(3, 1, &oh(3, 0), false);
+    chk("Psh n=3 k=1 fill=false", &ex(&pf), &ex(&stmt));
 }
 
-/// The header's size and cost claims are the measured ones. The bridge's DAG (distinct nodes) grows polynomially but its
-/// fully unfolded tree grows about 8-10x per bit, so "O(n)" holds only with the kernel's sharing; and the header must say that
-/// the end-to-end check time does not scale (it is super-polynomial, in the conversion of the statement's `mul(n)`).
+/// The header's cost claim is the measured one: the stream theorem's distinct nodes (shared handles) grow about quadratically
+/// over the stages and its fully unfolded tree is larger.
 #[test]
-fn header_states_what_the_size_and_cost_claims_depend_on() {
-    let sizes: Vec<(usize, u128)> = (2..=5usize).map(|n| kernel::term_sizes(&bridge_proof(n, false))).collect();
-    println!("[uniform symmul sizes] (distinct, unfolded) for n=2..5: {sizes:?}");
+fn header_states_what_the_size_claims_depend_on() {
+    let sizes: Vec<(usize, u128)> = (2..=6usize).map(|n| kernel::term_sizes(&build(n, false, n).h[n])).collect();
+    println!("[stream sizes] (distinct, unfolded) of H_n for n=2..6: {sizes:?}");
     for w in sizes.windows(2) {
         assert!(w[1].0 < w[0].0 * 2, "distinct nodes grew by 2x or more in one bit: {sizes:?}");
         assert!(w[1].1 > w[0].1 * 4, "unfolded size grew by less than 4x in one bit: {sizes:?}");
     }
-    let src = include_str!("uniform_symmul_uniform.rs");
+    let src = include_str!("uniform_symmul_stream.rs");
     let header: String = src.lines().take_while(|l| l.starts_with("//")).collect::<Vec<_>>().join("\n");
-    assert!(header.contains("distinct nodes"), "the header's O(n) claim must say it counts distinct (shared) nodes");
-    assert!(header.contains("unfolded"), "the header must give the unfolded growth");
-    assert!(header.contains("does not scale"), "the header must say the end-to-end check does not scale");
-    // against the positionwise bridge the gain is build time and memory only; the check is no faster where both run
-    assert!(!header.contains("improvement on the positionwise bridge"), "the header must not claim a bare improvement over the positionwise bridge");
-    assert!(header.contains("build time and memory"), "the header must say where the gain over the positionwise bridge is");
-    assert!(header.contains("check time is no faster"), "the header must say the check time is no faster where both bridges run");
+    for phrase in ["distinct nodes", "NOT bridged", "docs/tier-cycle.md", "7.4, 9.2, 18.7 ms"] {
+        assert!(header.contains(phrase), "the header must say: {phrase}");
+    }
 }
