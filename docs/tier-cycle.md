@@ -7963,23 +7963,23 @@ with `GoodBool` of the carry kept in a `Sigma` component, which puts its motive 
 lemma and lemma Y for the trailing zero multiplier bits; lemma Y's `GoodBool` hypothesis had to become conditional on the position
 being good. Level rule met on the way: a case split on a `GoodBool` witness admits motives into `Sort1` only, so the split is on a
 `Bool0` equality lifted to the state with `rew`. `mul 1 y = y` with a SYMBOLIC multiplier (`uniform_symmul.rs`) is also bridged, to `Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit 1) y, y)`,
-n = 1 to 4 in the default tests (6 and 7 in the ignored scaling test): the multiplier bits are the `GoodBv` step's variables, each partial
+(this paragraph and the next describe the first two bridges, both since deleted; the one in `uniform_symmul.rs` is the stage-wise bridge further down). The first, positionwise, bridge was tested for n = 1 to 4 in the default tests (6 and 7 in the ignored scaling test): the multiplier bits are the `GoodBv` step's variables, each partial
 product `and(y_j, e_j)` stays stuck, and the proof splits on the witnesses of `y_p` and `y_j` for p < j only. It is positionwise at numerals
 (not uniform in the position; the hinted "disjoint add" lemma needs shl facts at a symbolic position and was not attempted) and needs
 k0 = 1, since the multiplicand is the closed one-hot stream. The fill-bit flip is rejected by this bridge for n >= 2 (at n = 1 there is no
 shift). Cost: check 52 against 15 ms at n = 6 and 369 against 45 ms at n = 7 versus the per-width baseline (2-8x slower), build 1.1 s and
 4.4 s against 0.06 and 0.2 s; the term grows about 4x in memory per bit and n = 8 hit the 8 GB cap (peak 9.2 GB), a cost of the
-positionwise construction (a binomial tree of clones), not a kernel finding. The uniform-in-position form (`uniform_symmul_uniform.rs`) is built too: for every good position `i`, `acc_n i = look(a_0..a_(n-1)) (lower i)`,
+positionwise construction (a binomial tree of clones), not a kernel finding. The uniform-in-position form (once `uniform_symmul_uniform.rs`; its stream theorem is now `uniform_symmul_stream.rs`, its bridge deleted) was built too: for every good position `i`, `acc_n i = look(a_0..a_(n-1)) (lower i)`,
 with no per-position case tree, from a pointwise lookup lemma (D: one induction on the position, instances for the carry staying false and
 for the sum bit), a lemma that the stream shift transports a lookup (a joint induction with `Good (embed M)`, as in the carry lemmas), and
 a per-stage theorem on `carry_false`; the multiplicand is the stream `look(1,0,..,0)`, convertible at every numeral to the old one, so the
-`Bv_n` statement is unchanged. Bridged for n = 1 to 4 (default tests), 5 to 9 in the scaling test. What it buys and what it does not:
+`Bv_n` statement is unchanged. It was bridged for n = 1 to 4 (default tests), 5 to 9 in the scaling test. What it buys and what it does not:
 the stream theorem is cheap (stage check 7 to 19 ms for n = 4 to 8, about 2 ms of build per bit) and the build and memory are far
 smaller than the positionwise bridge (build 85 against 1465 ms at n = 6; peak 385 MB at n = 7 against 4.3 GB; n = 8 runs in 8 GB), but the
 END-TO-END bridge check is no faster and not polynomial: 130, 736, 4238 ms at n = 6, 7, 8 (positionwise 117 and 369 at n = 6, 7; 33.6 s and
 5.4 GB at n = 9, about 6x per bit). The cost is the kernel converting the statement's fixed-width `mul(n)` on stuck symbolic bits against the
 stream product (at n = 8 bit 7 alone takes 2.2 s), not the proof; the term's distinct nodes are quadratic in n but its unfolded tree grows
-8 to 10x per bit. The stage-wise bridge (`uniform_symmul_opaque.rs`) avoids that conversion and the check becomes polynomial: each accumulator stage is a
+8 to 10x per bit. The stage-wise bridge (once `uniform_symmul_opaque.rs`; now `uniform_symmul.rs`, the only bridge) avoids that conversion and the check becomes polynomial: each accumulator stage is a
 closed handle `ACC_j`, `S_j` states `Id(Bv_n, ACC_j a.., T_j)` with `T_j = (a_0..a_(j-1), ff..ff)`, and `S_(j+1)` rewrites with `S_j` and then
 applies a stage lemma `add T_j P_j = T_(j+1)` proved directly at the `Bv` level (one case split on the witnesses of `a_i`, `a_j` per position
 `i < j`, each carry shown false by a `rew` chain), so no step converts more than one add. Bridge check 10 to 14 ms at n = 8 against 3.9 to 4.4 s
