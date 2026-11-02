@@ -20,17 +20,6 @@ use super::uniform_width::*;
 use std::time::Instant;
 use tatic::kernel::{self, Ctx, Expr};
 
-fn numeral(k: u32, j: usize) -> T {
-    (0..j).fold(zero(k), |e, _| ap(succ(k), e))
-}
-fn and2(a: T, c: T) -> T {
-    ap2(and_(), a, c)
-}
-/// `GoodBool ff`.
-fn goodff() -> T {
-    lm("P", arr(bool0(), s(1)), lm("h1", ap(v("P"), tt()), lm("h0", ap(v("P"), ff()), v("h0"))))
-}
-
 // ---------- stage A: the stream multiplier ----------
 /// `Bits(k) -> Bits(k+1)`: bit N of the result is `x (N-1)`, false at N = 0. The fold over the count carries (position, the value
 /// `x` had at the position before).
@@ -129,16 +118,6 @@ fn a_single_nested_fold_is_ill_typed() {
 fn gk(k: u32, i: T) -> T {
     ap(good1(k - 1), i)
 }
-fn gzero(k: u32) -> T {
-    lm("P", arr(nat(k), s(k)), lm("h0", ap(v("P"), zero(k)), lm("hs",
-        pi_("m", nat(k), arr(ap(v("P"), v("m")), ap(v("P"), ap(succ(k), v("m"))))), v("h0"))))
-}
-/// `g : Good_k e` gives `Good_k (succ e)`.
-fn gsucc(k: u32, e: T, g: T) -> T {
-    lm("P", arr(nat(k), s(k)), lm("h0", ap(v("P"), zero(k)), lm("hs",
-        pi_("m", nat(k), arr(ap(v("P"), v("m")), ap(v("P"), ap(succ(k), v("m"))))),
-        ap2(v("hs"), e, ap3(g, v("P"), v("h0"), v("hs"))))))
-}
 /// `Pi N:Nat_(k+1). Good_(k+1) N -> Good_k (embed N)`: the numerals the fold reads are good.
 fn ge_proof(k: u32) -> T {
     lm("N", nat(k + 1), lm("g", ap(good1(k), v("N")),
@@ -171,7 +150,7 @@ fn y_stmt(k: u32, zero_right: bool) -> T {
 }
 fn y_proof(k: u32, zero_right: bool) -> T {
     let (a, c) = if zero_right { (v("su"), zs(k)) } else { (zs(k), v("su")) };
-    let stn = |m: T| st(k, a.clone(), c.clone(), m);
+    let stn = |m: T| st(k, maj, a.clone(), c.clone(), m);
     let target = |m: T| pair_s(k, embed(k, m), ff());
     let e = |m: T| embed(k, m);
     let eq_ty = |m: T| idt(state(k), stn(m.clone()), target(m));
@@ -193,7 +172,7 @@ fn y_proof(k: u32, zero_right: bool) -> T {
     };
     let eq_old = if zero_right { pr2(gty(v("m")), eq_ty(v("m")), v("ih")) } else { v("ih") };
     let eq_new = rew(state(k), stn(v("m")), target(v("m")), eq_old,
-        lm("t", state(k), idt(state(k), ap(step(k, a.clone(), c.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))), h);
+        lm("t", state(k), idt(state(k), ap(step(k, maj, a.clone(), c.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))), h);
     let refl0 = rfl(pair_s(k, zero(k), ff()));
     let (pm, base, step_) = if zero_right {
         let pmf = |m: T| sig2(gty(m.clone()), eq_ty(m));
@@ -345,13 +324,6 @@ fn mul_uniform_rejects_wrong_statements() {
 // i.e. exactly `acc_upto` with tuples for streams (mask first, as in `tm`). Bit i of acc_j is the stream circuit's bit i, so the
 // bridge needs no equality between circuits: `mul(n) (mk a..) (lit v)` and the stream product at the numeral i are convertible
 // (the adder's bits are `encoding::ripple`'s, and `shl_bv^j` at i is `a_(i-j)` or false, as the stream `shl` reads it).
-macro_rules! names {
-    ($p:literal; $($i:literal)*) => { [$(concat!($p, $i)),*] };
-}
-const YB_NAMES: [&str; 32] = names!("yb"; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31);
-fn yb(i: usize) -> &'static str {
-    YB_NAMES[i]
-}
 /// `\x:Bv_n. \C k. x C (\a_0..a_(n-1). k false a_0 .. a_(n-2))`
 fn shl_bv(n: usize) -> T {
     let call = (0..n - 1).fold(ap(v("k"), ff()), |f, j| ap(f, v(AN(j))));
@@ -368,9 +340,9 @@ pub(crate) fn mul_bv(n: usize) -> Expr {
     let mut acc = K(encoding::lit(n, 0));
     for j in 0..n {
         let sh = (0..j).fold(v("x"), |e, _| ap(shl_bv(n), e));
-        acc = ap2(K(encoding::add(n)), acc, band(n, rep(n, v(yb(j))), sh));
+        acc = ap2(K(encoding::add(n)), acc, band(n, rep(n, v(YB(j))), sh));
     }
-    let body = (0..n).rev().fold(ap2(acc, v("C"), v("k")), |body, j| lm(yb(j), bool0(), body));
+    let body = (0..n).rev().fold(ap2(acc, v("C"), v("k")), |body, j| lm(YB(j), bool0(), body));
     ex(&lm("x", bvt(n), lm("y", bvt(n), lm("C", s(1), lm("k", arrows(n, v("C")), ap2(v("y"), v("C"), body))))))
 }
 
@@ -392,8 +364,7 @@ fn bridge_stmt(n: usize, ylit: u128, rhs: Rhs) -> Expr {
 /// The proof, from the uniform theorem of `law` at k0 = 2 (the lookup returns `W`, see `uniform_width::bridge_add_zero`).
 fn bridge_proof(n: usize, law: Law) -> Expr {
     let (k0, kn) = (2u32, 2 + n as u32);
-    let xs = lm("i", nat(2), fstw(sw(n, v("i"))));
-    let gxs = lm("i", nat(2), sndw(sw(n, v("i"))));
+    let (xs, gxs) = (stream(XN, n), wstream(XN, n));
     let uni = K(ex(&mul_proof(k0, n, law)));
     let prod = mul_stream(k0, &law_y(law, n), xs.clone());
     let target = |i: usize| if law == Law::Zero { ff() } else { v(AN(i)) };
@@ -402,29 +373,18 @@ fn bridge_proof(n: usize, law: Law) -> Expr {
         let t = if law == Law::One { ap2(uni.clone(), xs.clone(), gxs.clone()) } else { ap(uni.clone(), xs.clone()) };
         ap2(t, numeral(kn, i), goodnum(kn - 1, i as u32))
     };
-    let tup = |f: &dyn Fn(usize) -> T| tuple(&(0..n).map(f).collect::<Vec<_>>());
-    let all_r = tup(&target);
-    let mut g = rfl(all_r.clone());
-    for j in (0..n).rev() {
-        let fam = lm("t", bool0(), idt(bvt(n), tup(&|i| if i < j { target(i) } else if i == j { v("t") } else { l_i(i) }), all_r.clone()));
-        g = rew(bool0(), l_i(j), target(j), e_i(j), fam, g);
-    }
+    let g = tuple_chain(n, &l_i, &target, &e_i);
     let bv = K(encoding::bv_ty(n));
     let rhs_of = |x: T| if law == Law::Zero { K(encoding::lit(n, 0)) } else { x };
     let ylit = if law == Law::One { 1 } else { 0 };
     let motive = lm("x", bv.clone(), idt(bv.clone(), ap2(K(mul_bv(n)), v("x"), K(encoding::lit(n, ylit))), rhs_of(v("x"))));
-    ex(&lm("x", bv, lm("gb", ap(K(encoding::good_bv(n)), v("x")), ap2(v("gb"), motive, lam_bits(n, g)))))
+    ex(&lm("x", bv, lm("gb", ap(K(encoding::good_bv(n)), v("x")), ap2(v("gb"), motive, lam_bits(XN, n, g)))))
 }
 fn bridge_rhs(law: Law) -> Rhs {
     if law == Law::One { Rhs::X } else { Rhs::Lit(0) }
 }
 fn bridge_ylit(law: Law) -> u128 {
     if law == Law::One { 1 } else { 0 }
-}
-fn timed_check(pf: &Expr, stmt: &Expr) -> (Result<(), String>, f64) {
-    let t0 = Instant::now();
-    let r = kernel::check(&Ctx::new(), pf, stmt);
-    (r, t0.elapsed().as_secs_f64() * 1e3)
 }
 
 /// `mul(n)` is a multiplier: on closed literals it computes the product mod 2^n.
@@ -519,15 +479,9 @@ fn baseline_proof(n: usize, law: Law) -> Expr {
     } else {
         let a: Vec<T> = (0..n).map(|i| v(AN(i))).collect();
         let lhs = |i: usize| proj_bit(n, i, ap2(K(mul_bv(n)), tuple(&a), K(encoding::lit(n, 1))));
-        let tup = |f: &dyn Fn(usize) -> T| tuple(&(0..n).map(f).collect::<Vec<_>>());
-        let mut g = rfl(tuple(&a));
-        for j in (0..n).rev() {
-            let fam = lm("t", bool0(), idt(bvt(n), tup(&|i| if i < j { a[i].clone() } else if i == j { v("t") } else { lhs(i) }), tuple(&a)));
-            g = rew(bool0(), lhs(j), a[j].clone(), direct_bit(n, j, 0, &a), fam, g);
-        }
-        g
+        tuple_chain(n, &lhs, &|i| a[i].clone(), &|j| direct_bit(n, j, 0, &a))
     };
-    ex(&lm("x", bv.clone(), lm("gb", ap(K(encoding::good_bv(n)), v("x")), ap2(v("gb"), lm("x", bv.clone(), motive(v("x"))), lam_bits(n, step)))))
+    ex(&lm("x", bv.clone(), lm("gb", ap(K(encoding::good_bv(n)), v("x")), ap2(v("gb"), lm("x", bv.clone(), motive(v("x"))), lam_bits(XN, n, step)))))
 }
 
 #[test]

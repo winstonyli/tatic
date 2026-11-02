@@ -12,64 +12,11 @@ use super::encoding;
 use super::uniform_width::T::*;
 use super::uniform_width::*;
 use std::time::Instant;
-use tatic::kernel::{self, Ctx, Expr};
+use tatic::kernel::Expr;
 
-// ---------- the second tuple's variable names (the first uses uniform_width's `AN`/`GN`) ----------
-macro_rules! names {
-    ($p:literal; $($i:literal)*) => { [$(concat!($p, $i)),*] };
-}
-const CN_NAMES: [&str; 32] = names!("c"; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31);
-const GC_NAMES: [&str; 32] = names!("gc"; 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24 25 26 27 28 29 30 31);
-fn cn(i: usize) -> &'static str {
-    CN_NAMES[i]
-}
-fn gc(i: usize) -> &'static str {
-    GC_NAMES[i]
-}
-/// (bit names, witness names) of one tuple's variables.
-type Nm = (fn(usize) -> &'static str, fn(usize) -> &'static str);
-const XN: Nm = (AN, GN);
-const YN: Nm = (cn, gc);
-
-/// `lam_bits` for either name set.
-fn lam_bits_n(nm: Nm, n: usize, mut body: T) -> T {
-    for j in (0..n).rev() {
-        body = lm(nm.1(j), ap(goodbool(), v(nm.0(j))), body);
-    }
-    for j in (0..n).rev() {
-        body = lm(nm.0(j), bool0(), body);
-    }
-    body
-}
-/// `sw` for either name set: the stream position `i` read as a `W` off the tuple `nm`.
-fn sw_n(nm: Nm, n: usize, i: T) -> T {
-    let mut t = ap3(i, cw(n), proj0w(n), rotw(n));
-    for j in 0..n {
-        t = ap(t, v(nm.0(j)));
-    }
-    for j in 0..n {
-        t = ap(t, v(nm.1(j)));
-    }
-    t
-}
-/// The stream and its witness stream read off the tuple (index `Nat2`, see `uniform_width::bridge_add_zero`).
-fn stream(nm: Nm, n: usize) -> T {
-    lm("i", nat(2), fstw(sw_n(nm, n, v("i"))))
-}
-fn wstream(nm: Nm, n: usize) -> T {
-    lm("i", nat(2), sndw(sw_n(nm, n, v("i"))))
-}
-fn numeral(k: u32, j: usize) -> T {
-    (0..j).fold(zero(k), |e, _| ap(succ(k), e))
-}
+// (the name sets `XN`, `YN` and the stream readers `stream`, `wstream` are `uniform_width`'s)
 
 // ---------- bit-level gates ----------
-fn and2(a: T, c: T) -> T {
-    ap2(and_(), a, c)
-}
-fn or2(a: T, c: T) -> T {
-    ap2(or_(), a, c)
-}
 /// Exactly `encoding::not_` (one gate).
 fn not_t(a: T) -> T {
     ap(lm("a", bool0(), lm("C", s(0), lm("t", v("C"), lm("f", v("C"), ap3(v("a"), v("C"), v("f"), v("t")))))), a)
@@ -194,12 +141,6 @@ fn uni_proof(law: &Law, k: u32) -> T {
     }
 }
 
-fn timed_check(pf: &Expr, stmt: &Expr) -> (Result<(), String>, f64) {
-    let t0 = Instant::now();
-    let r = kernel::check(&Ctx::new(), pf, stmt);
-    (r, t0.elapsed().as_secs_f64() * 1e3)
-}
-
 #[test]
 fn bitwise_uniform_theorems_check_at_every_level() {
     for law in &LAWS {
@@ -242,7 +183,7 @@ fn bridge(law: &Law, n: usize, mode: Mode, wrong: bool) -> (Expr, Expr) {
         pi_("x", bv.clone(), pi_("y", bv.clone(), arr(good("x"), arr(good("y"), body(v("x"), v("y"))))))
     };
     // the per-position bits and the proof of lhs_j = rhs_j
-    let bits_at = |j: usize| if a1 { vec![v(AN(j))] } else { vec![v(AN(j)), v(cn(j))] };
+    let bits_at = |j: usize| if a1 { vec![v(AN(j))] } else { vec![v(AN(j)), v(CN(j))] };
     let lhs_j = |j: usize| (law.lhs)(&bits_at(j));
     let rhs_j = |j: usize| (law.rhs)(&bits_at(j));
     let (l, r) = (law.lhs, law.rhs);
@@ -251,7 +192,7 @@ fn bridge(law: &Law, n: usize, mode: Mode, wrong: bool) -> (Expr, Expr) {
             if a1 {
                 cases1(v(GN(j)), &|b| l(&[b]), &|b| r(&[b]))
             } else {
-                cases2(v(GN(j)), v(gc(j)), v(cn(j)), bool0(), &|a, c| l(&[a, c]), &|a, c| r(&[a, c]))
+                cases2(v(GN(j)), v(GC(j)), v(CN(j)), bool0(), &|a, c| l(&[a, c]), &|a, c| r(&[a, c]))
             }
         }
         Mode::Uniform => {
@@ -266,22 +207,15 @@ fn bridge(law: &Law, n: usize, mode: Mode, wrong: bool) -> (Expr, Expr) {
             ap(t, numeral(2, j))
         }
     };
-    // the chain: G_n = refl (tuple of rhs); G_j rewrites lhs_j to rhs_j inside the tuple
-    let tup = |f: &dyn Fn(usize) -> T| tuple(&(0..n).map(f).collect::<Vec<_>>());
-    let all_r = tup(&rhs_j);
-    let mut g = rfl(all_r.clone());
-    for j in (0..n).rev() {
-        let fam = lm("t", bool0(), idt(bvt(n), tup(&|i| if i < j { rhs_j(i) } else if i == j { v("t") } else { lhs_j(i) }), all_r.clone()));
-        g = rew(bool0(), lhs_j(j), rhs_j(j), eq_j(j), fam, g);
-    }
+    let g = tuple_chain(n, &lhs_j, &rhs_j, &eq_j);
     let vl_true = |x: T, y: T| idt(bv.clone(), (law.vlhs)(n, x.clone(), y.clone()), (law.vrhs)(n, x, y));
     let proof = if a1 {
         let motive = lm("x", bv.clone(), vl_true(v("x"), v("x")));
-        lm("x", bv.clone(), lm("gb", good("x"), ap2(v("gb"), motive, lam_bits_n(XN, n, g))))
+        lm("x", bv.clone(), lm("gb", good("x"), ap2(v("gb"), motive, lam_bits(XN, n, g))))
     } else {
-        let mk_a = tup(&|i| v(AN(i)));
+        let mk_a = tuple_of(n, &|i| v(AN(i)));
         let motive_y = lm("y", bv.clone(), vl_true(mk_a, v("y")));
-        let step_x = lam_bits_n(XN, n, ap2(v("gy"), motive_y, lam_bits_n(YN, n, g)));
+        let step_x = lam_bits(XN, n, ap2(v("gy"), motive_y, lam_bits(YN, n, g)));
         let motive_x = lm("x", bv.clone(), vl_true(v("x"), v("y")));
         lm("x", bv.clone(), lm("y", bv.clone(), lm("gx", good("x"), lm("gy", good("y"),
             ap2(v("gx"), motive_x, step_x)))))
@@ -345,13 +279,6 @@ fn borrow(a: T, b: T, c: T) -> T {
     let na = xor(a, tt());
     or2(and2(na.clone(), b.clone()), and2(c, xor(na, b)))
 }
-fn step_lt(k: u32, x: T, y: T) -> T {
-    lm("u", state(k), pair_s(k, ap(succ(k), fst(k, v("u"))),
-        borrow(ap(x, fst(k, v("u"))), ap(y, fst(k, v("u"))), snd(k, v("u")))))
-}
-fn st_lt(k: u32, x: T, y: T, n: T) -> T {
-    ap3(n, state(k), pair_s(k, zero(k), ff()), step_lt(k, x, y))
-}
 
 #[derive(Clone, Copy, PartialEq)]
 enum Lt {
@@ -386,12 +313,12 @@ impl Lt {
 fn lt_stmt(which: Lt, k: u32, wrong: bool) -> T {
     let r = if wrong { tt() } else { ff() };
     pi_("N", nat(k + 1), arr(ap(good1(k), v("N")), pi_("x", bits(k), arr(gbits(k, "x"),
-        idt(bool0(), snd(k, st_lt(k, v("x"), which.y(k), v("N"))), r)))))
+        idt(bool0(), snd(k, st(k, borrow, v("x"), which.y(k), v("N"))), r)))))
 }
 /// One induction on the count, as `proof_b`: `st M = (embed M, false)`, then `snd`.
 fn lt_proof(which: Lt, k: u32) -> T {
     let y = which.y(k);
-    let stx = |m: T| st_lt(k, v("x"), y.clone(), m);
+    let stx = |m: T| st(k, borrow, v("x"), y.clone(), m);
     let target = |m: T| pair_s(k, embed(k, m), ff());
     let pm = lm("M", nat(k + 1), idt(state(k), stx(v("M")), target(v("M"))));
     let em = embed(k, v("m"));
@@ -401,7 +328,7 @@ fn lt_proof(which: Lt, k: u32) -> T {
         rfl(pair_s(k, ap(succ(k), em.clone()), ff())));
     let step_ = lm("m", nat(k + 1), lm("ih", idt(state(k), stx(v("m")), target(v("m"))),
         rew(state(k), stx(v("m")), target(v("m")), v("ih"),
-            lm("t", state(k), idt(state(k), ap(step_lt(k, v("x"), y.clone()), v("t")), pair_s(k, ap(succ(k), em), ff()))),
+            lm("t", state(k), idt(state(k), ap(step(k, borrow, v("x"), y.clone()), v("t")), pair_s(k, ap(succ(k), em), ff()))),
             h)));
     let pn = ap3(v("g"), pm, rfl(pair_s(k, zero(k), ff())), step_);
     let fin = rew(state(k), stx(v("N")), target(v("N")), pn,
@@ -432,7 +359,7 @@ fn lt_uniform_rejects_false_laws() {
     // and a law that is false: the borrow of `x` against `1`s is not always 0 (lt 0 1 = 1)
     let ones = lm("i", nat(1), tt());
     let bad = pi_("N", nat(2), arr(ap(good1(1), v("N")), pi_("x", bits(1), arr(gbits(1, "x"),
-        idt(bool0(), snd(1, st_lt(1, v("x"), ones, v("N"))), ff())))));
+        idt(bool0(), snd(1, st(1, borrow, v("x"), ones, v("N"))), ff())))));
     assert!(timed_check(&ex(&lt_proof(Lt::Zero, 1)), &ex(&bad)).0.is_err(), "lt x 1s = 0 was accepted");
 }
 
@@ -470,11 +397,11 @@ fn lt_bridge(which: Lt, n: usize, wrong: LtWrong) -> (Expr, Expr) {
     let good = ap(K(encoding::good_bv(n)), v("x"));
     let stmt = pi_("x", bv.clone(), arr(good.clone(), idt(bv1.clone(), lt_vec(v("x"), wrong), rhs)));
     let e = ap(ap(ap(ap(lt_proof(which, k), numeral(k + 1, n)), goodnum(k, n as u32)), xs.clone()), gxs);
-    let bnd = snd(k, st_lt(k, xs, ys, numeral(k + 1, n)));
+    let bnd = snd(k, st(k, borrow, xs, ys, numeral(k + 1, n)));
     let fam = lm("t", bool0(), idt(bv1.clone(), tuple(&[v("t")]), tuple(&[ff()])));
     let g = rew(bool0(), bnd, ff(), e, fam, rfl(tuple(&[ff()])));
     let motive = lm("x", bv.clone(), idt(bv1, lt_vec(v("x"), LtWrong::None), lit(1, 0)));
-    let proof = lm("x", bv, lm("gb", good, ap2(v("gb"), motive, lam_bits_n(XN, n, g))));
+    let proof = lm("x", bv, lm("gb", good, ap2(v("gb"), motive, lam_bits(XN, n, g))));
     (ex(&proof), ex(&stmt))
 }
 
