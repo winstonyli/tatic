@@ -40,21 +40,49 @@
 // The multiplicand is the stream `e_0 := look(1,0,..,0)`, convertible at every numeral to the old `i Bool0 tt (\_. ff)` (a lemma
 // `i Bool0 tt (\_. ff) = look(1,0,..)(i)` would need `Z0` inside an induction step that has no goodness of `m`).
 use super::uniform_mul::*;
-use super::uniform_symmul::{acc_sym, big_a, bridge_stmt, Rhs, K0};
+use super::uniform_symmul::{bridge_stmt, Rhs};
 use super::uniform_width::T::*;
 use super::uniform_width::*;
 use std::time::Instant;
 use tatic::kernel::{self, Expr};
 
+/// The level of the streams' index at stage 0. `x = e_0` reads `Bool0` out of `Nat_1`, so k0 = 1 is enough.
+const K0: u32 = 1;
+
 /// A leaked `&'static str` name `<p><i>` (the binder names the term builder wants).
 fn nm(p: &str, i: usize) -> &'static str {
     Box::leak(format!("{p}{i}").into_boxed_str())
 }
-fn yv(j: usize) -> T {
+/// The multiplier bit variable `a_j`.
+pub(crate) fn yv(j: usize) -> T {
     v(AN(j))
 }
-fn apv(f: T, args: Vec<T>) -> T {
-    args.into_iter().fold(f, ap)
+pub(crate) fn apn(f: T, args: &[T]) -> T {
+    args.iter().fold(f, |f, a| ap(f, a.clone()))
+}
+
+// ---------- the stream accumulator with the multiplier bits as arguments ----------
+/// `acc_sym(j) : Bool0^j -> Bits(K0) -> Bits(K0 + j)`, CLOSED: `\y_0..y_(j-1). \x. acc_j` (the shift's fill bit is `fill`): the
+/// stream accumulator of `uniform_mul.rs` with the multiplier bits as ARGUMENTS of a closed term, so it can be applied to the
+/// variables `a_j` and still be shared (a meta-level tree over `a_j` is 3^j in size, the reason `acc_fn` is closed).
+fn acc_sym(j: usize, fill: bool) -> Expr {
+    let mut body = lm("x", bits(K0), acc_body(j, fill));
+    for i in (0..j).rev() {
+        body = lm(YB(i), bool0(), body);
+    }
+    ex(&body)
+}
+fn acc_body(j: usize, fill: bool) -> T {
+    if j == 0 {
+        return zs(K0);
+    }
+    let l = K0 + (j - 1) as u32;
+    let prev = ap((0..j - 1).fold(K(acc_sym(j - 1, fill)), |f, i| ap(f, v(YB(i)))), v("x"));
+    add_stream(l, prev, tm(l, v(YB(j - 1)), shl_n(K0, j - 1, v("x"), fill)))
+}
+/// `acc_j` applied to the multiplier bits `ys` and the multiplicand `x`: a stream in `Bits(K0 + j)`.
+fn big_a(acc: &[Expr], j: usize, ys: &[T], x: &T) -> T {
+    ap(apn(K(acc[j]), &ys[..j]), x.clone())
 }
 
 // ---------- tuples (meta-level lists of n bits) ----------
@@ -165,7 +193,7 @@ fn d_lemma(n: usize, f: &dyn Fn(T, T) -> T, with_r: bool) -> (T, T) {
     }
     args.extend((1..n).map(|m| v(nm("dh", m))));
     args.push(v("hp"));
-    let step = lm("m", nat(K0), lm("ih", pt(v("m")), lam_all(apv(v("ih"), args))));
+    let step = lm("m", nat(K0), lm("ih", pt(v("m")), lam_all(apn(v("ih"), &args))));
     let pn = ap3(v("g"), lm("M", nat(K0), pt(v("M"))), base, step);
     let proof = lm("b", bool0(), lm("hp", hp_ty, lm("p", nat(K0), lm("g", gk(K0, v("p")), pn))));
     (stmt, proof)
@@ -185,7 +213,7 @@ fn d_app(lem: Expr, b: T, hp: T, p: T, gp: T, a: &[T], c: &[T], r: Option<&[T]>,
         args.extend_from_slice(r);
     }
     args.extend(hyps);
-    apv(K(lem), args)
+    apn(K(lem), &args)
 }
 
 // ---------- Psh: the shift transports a lookup ----------
@@ -251,7 +279,7 @@ fn build(n: usize, fill: bool, stages: usize) -> Cx {
         let pe = K(ex(&psh(n, k, &oh(n, s), fill).1));
         let hxs = K(hx[s]);
         let sx = K(ssh[s]);
-        hx.push(ex(&lm("M", nat(k + 1), lm("g", ap(good1(k), v("M")), apv(pe, vec![sx, hxs, v("M"), v("g")])))));
+        hx.push(ex(&lm("M", nat(k + 1), lm("g", ap(good1(k), v("M")), apn(pe, &[sx, hxs, v("M"), v("g")])))));
     }
     let dx = ex(&d_lemma(n, &f_x, true).1);
     let dc = ex(&d_lemma(n, &f_c, false).1);
@@ -300,7 +328,7 @@ fn stage(cx: &Cx, s: usize) -> Expr {
     let su = big_a(&cx.acc, s, &ys, &K(cx.x));
     let sv = tm(kj, yv(s), K(cx.ssh[s]));
     let (as_, os, an) = (a_tuple(n, s), oh(n, s), a_tuple(n, s + 1));
-    let ih = |e: T, ge: T| ap2(apv(K(cx.h[s]), all_args(n)), e, ge);
+    let ih = |e: T, ge: T| ap2(apn(K(cx.h[s]), &all_args(n)), e, ge);
     let hxs = |e: T, ge: T| ap2(K(cx.hx[s]), e, ge);
     let la = |e: T| look(n, &as_, low(kj, e));
     let cc = |e: T| and2(yv(s), look(n, &os, low(kj, e)));
@@ -357,7 +385,7 @@ pub(crate) fn bridge_proof(n: usize, fill: bool) -> Expr {
     let kn = K0 + n as u32;
     let cx = build(n, fill, n);
     let ys: Vec<T> = (0..n).map(yv).collect();
-    let th = apv(K(cx.h[n]), all_args(n));
+    let th = apn(K(cx.h[n]), &all_args(n));
     let prod = big_a(&cx.acc, n, &ys, &K(cx.x));
     let e_i = |i: usize| ap2(th.clone(), numeral(kn, i), goodnum(kn - 1, i as u32));
     let g = tuple_chain(n, &|i| ap(prod.clone(), numeral(kn, i)), &|i| yv(i), &e_i);
@@ -371,6 +399,27 @@ fn chk(name: &str, pf: &Expr, stmt: &Expr) {
     let (r, ms) = timed_check(pf, stmt);
     println!("[{name}] {} in {ms:.2} ms", if r.is_ok() { "ACCEPTED" } else { "REJECTED" });
     r.unwrap_or_else(|m| panic!("{name}: {}", m.chars().take(1200).collect::<String>()));
+}
+
+#[test]
+fn the_symbolic_accumulator_is_well_typed_and_multiplies() {
+    for j in 0..=4usize {
+        let f = acc_sym(j, false);
+        let ty = kernel::typecheck(&f).unwrap_or_else(|m| panic!("acc_sym({j}): {m}"));
+        let want = (0..j).rev().fold(arr(bits(K0), bits(K0 + j as u32)), |t, _| arr(bool0(), t));
+        assert!(kernel::def_eq(&ty, &ex(&want)), "acc_sym({j}) has the wrong type");
+    }
+    // with literal multiplier bits it is the product of the one-hot stream 1 (`i -> i Bool0 tt (\_. ff)`) and y: bit p of y
+    // (p < m), zero above
+    let x_one = lm("i", nat(K0), ap3(v("i"), bool0(), tt(), lm("_", bool0(), ff())));
+    let m = 4usize;
+    for yval in 0..(1u128 << m) {
+        let prod = ap(apn(K(acc_sym(m, false)), &ybits(m, yval)), K(ex(&x_one)));
+        for p in 0..m + 2 {
+            let got = ex(&ap(prod.clone(), numeral(K0 + m as u32, p)));
+            assert!(kernel::def_eq(&got, &ex(&bit_of(yval, p))), "1 * {yval}: bit {p}");
+        }
+    }
 }
 
 #[test]
