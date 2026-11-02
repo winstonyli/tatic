@@ -14,7 +14,7 @@
 //     3.97e6, 4.8e7, 4.8e8, 4.3e9, 3.7e10 nodes: about 8-10x per bit, the same shape as the old `uniform_symmul.rs`. Anything
 //     that unfolds the term (printing it, a checker without sharing) sees the exponential size.
 //   * The stream theorem itself is cheap: H_n checks in 7.4, 9.2, 18.7 ms for n = 4, 6, 8. The END-TO-END bridge check
-//     does not scale: 2.6, 10.6, 26, 130, 736, 4238 ms for n = 2, 4, 5, 6, 7, 8 (peak commit 1.9 GB at n = 7, 8), super-polynomial.
+//     does not scale: 2.6, 10.6, 26, 130, 736, 4238 ms for n = 2, 4, 5, 6, 7, 8 (peak commit 385 MB at n = 7, 1.9 GB at n = 8), super-polynomial.
 //     The cost is the kernel's conversion of the statement's fixed-width `mul(n)` against the stream product `acc_n` on the
 //     stuck symbolic bits (at n = 8: bit 7 takes 2196 ms, bit 6 takes 1180 ms; `symmul_uniform_conv_cost`), not the proof.
 //     Against the positionwise bridge of `uniform_symmul.rs` the gain is in build time and memory only (build 46 and 85 ms against

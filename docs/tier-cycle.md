@@ -7969,8 +7969,18 @@ product `and(y_j, e_j)` stays stuck, and the proof splits on the witnesses of `y
 k0 = 1, since the multiplicand is the closed one-hot stream. The fill-bit flip is rejected by this bridge for n >= 2 (at n = 1 there is no
 shift). Cost: check 52 against 15 ms at n = 6 and 369 against 45 ms at n = 7 versus the per-width baseline (2-8x slower), build 1.1 s and
 4.4 s against 0.06 and 0.2 s; the term grows about 4x in memory per bit and n = 8 hit the 8 GB cap (peak 9.2 GB), a cost of the
-positionwise construction (a binomial tree of clones), not a kernel finding. Still unbuilt: commutativity, a symbolic multiplicand with
-a symbolic multiplier, the uniform-in-position form of `mul 1 y = y`, and any law uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
+positionwise construction (a binomial tree of clones), not a kernel finding. The uniform-in-position form (`uniform_symmul_uniform.rs`) is built too: for every good position `i`, `acc_n i = look(a_0..a_(n-1)) (lower i)`,
+with no per-position case tree, from a pointwise lookup lemma (D: one induction on the position, instances for the carry staying false and
+for the sum bit), a lemma that the stream shift transports a lookup (a joint induction with `Good (embed M)`, as in the carry lemmas), and
+a per-stage theorem on `carry_false`; the multiplicand is the stream `look(1,0,..,0)`, convertible at every numeral to the old one, so the
+`Bv_n` statement is unchanged. Bridged for n = 1 to 4 (default tests), 5 to 9 in the scaling test. What it buys and what it does not:
+the stream theorem is cheap (stage check 7 to 19 ms for n = 4 to 8, about 2 ms of build per bit) and the build and memory are far
+smaller than the positionwise bridge (build 85 against 1465 ms at n = 6; peak 385 MB at n = 7 against 4.3 GB; n = 8 runs in 8 GB), but the
+END-TO-END bridge check is no faster and not polynomial: 130, 736, 4238 ms at n = 6, 7, 8 (positionwise 117 and 369 at n = 6, 7; 33.6 s and
+5.4 GB at n = 9, about 6x per bit). The cost is the kernel converting the statement's fixed-width `mul(n)` on stuck symbolic bits against the
+stream product (at n = 8 bit 7 alone takes 2.2 s), not the proof; the term's distinct nodes are quadratic in n but its unfolded tree grows
+8 to 10x per bit. A stage-wise opaque-accumulator bridge, which would avoid that conversion, was not tried. Still unbuilt: commutativity, a
+symbolic multiplicand with a symbolic multiplier, that bridge, and any law uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
 3.6 ms at n = 4, 14.4 against 14.2 at n = 5, 68 against 55 at n = 6, so roughly even there (build 21 to 232 ms against 0.5 to 48).
 For the older laws, bridge against per-width baseline (one run): `mul x 1 = x` 9.1 against 3.4 ms at n = 4 and 287 against 69 ms at n = 6 (the reviewer's rerun: 1435 against
 375 ms); `mul x 0 = 0` against a baseline that is just `refl`, so no fair comparison. A first accumulator that repeated each operand
