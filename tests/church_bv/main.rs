@@ -7,6 +7,7 @@ use job::{Job, Setup};
 
 mod belief;
 mod classes;
+mod ctx_scorer;
 mod corpus;
 mod driver;
 mod encoding;
