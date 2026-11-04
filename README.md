@@ -128,11 +128,11 @@ each.)
 The full routine, run after every change:
 
 ```sh
-cargo build --all-targets
-cargo test --lib --bins
-cargo clippy --all-targets
-cargo test --release --test compile_fuzz --test kernel_fuzz \
-           --test kernel_soundness_fuzz --test syntax_fuzz
+cargo build --workspace --all-targets
+cargo test --workspace --lib --bins
+cargo clippy --workspace --all-targets
+cargo test --release --test compile_fuzz --test syntax_fuzz
+cargo test --release -p tatic-kernel --test kernel_fuzz --test kernel_soundness_fuzz
 cargo test --release --lib ir_fuzz -- --ignored
 cargo test --release --test church_bv a_large_check -- --ignored
 cargo bench
