@@ -31,7 +31,7 @@ anything else is served by the interpreter. Kernel-checked equivalence proofs
 cover only the terms in the proof fragment, and a term runs compiled only
 with a proof covering every input (the installation gate, below). Alongside the JIT, the
 repository holds a Church-encoded bit-vector library and a rewrite-rule miner
-(`tests/church_bv/`), which are research experiments and are
+(`crates/tatic/tests/church_bv/`), which are research experiments and are
 not needed to use the JIT.
 
 ## Requirements
@@ -69,11 +69,11 @@ still need a whole-term machine proof. The measured results are in
 
 - The laws come from the streams: `search::stream_sequence(salt)`, the operator-set
   streams round-robin, built once per process and salt; a phase is a residue class
-  mod `STREAM_STRIDE`. Held-out laws are in `tests/church_bv/held_*.txt`. The
+  mod `STREAM_STRIDE`. Held-out laws are in `crates/tatic/tests/church_bv/held_*.txt`. The
   design is in the spec
   [`2026-10-22-class-table-normal-form-design.md`](docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md),
   §9.
-- The driver is the ignored test `driver::loop_stream` (`tests/church_bv/driver.rs`):
+- The driver is the ignored test `driver::loop_stream` (`crates/tatic/tests/church_bv/driver.rs`):
   `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> <church_bv test exe> driver::loop_stream --exact --ignored --nocapture`.
   `none` only serves, `ref` mines once on the whole stream, `loop` mines after
   each batch. It writes `<dir>/m.tsv` (one row per batch: M, laws, rules in
@@ -82,7 +82,7 @@ still need a whole-term machine proof. The measured results are in
   `driver::sweep` with `SWEEP=cold:streams` (the only stage) runs three cold
   loops on phases 1-3 into `SWEEP_OUT=<dir>`; `scripts/streams_ab.sh` is the gate
   built on it (A/B per salt, plus held-out M under each loop's rules).
-- The miner (`search::rule_miner` in `tests/church_bv/search.rs`) takes its
+- The miner (`search::rule_miner` in `crates/tatic/tests/church_bv/search.rs`) takes its
   settings from `RULEMINER_*` environment variables; the driver passes its laws
   as a file (`RULEMINER_LAWFILE`). Two options: `NODUPLHS` (no candidate whose left side
   already has a rule in force; on by default, `0` turns it off) and `GUARD=<k>`
@@ -104,10 +104,10 @@ repository (see the previous section).
 ## Quick start
 
 ```sh
-cargo run --release             # runs the demo in src/bin/demo.rs
-cargo run --release --bin repl  # an interactive REPL (src/bin/repl.rs)
+cargo run --release             # runs the demo in crates/tatic/src/bin/demo.rs
+cargo run --release --bin repl  # an interactive REPL (crates/tatic/src/bin/repl.rs)
 cargo test                      # unit tests across all modules
-cargo bench                     # criterion benchmarks (benches/) -- see below
+cargo bench                     # criterion benchmarks (crates/tatic/benches/) -- see below
 cargo test --profile sweep --test church_bv --no-run  # fat-LTO build for sweeps and timing (Cargo.toml)
 cargo build --release --manifest-path tools/runs/Cargo.toml  # gates and timings of sweeps (Windows), tools/runs
 ```
@@ -120,7 +120,7 @@ JIT, and prints timing plus which ones got a kernel-checked equivalence
 proof. (Two capturing-closure terms appear side by side, compiled via
 *different* dispatch paths: one reached by over-applying a literal
 lambda's saturated-call result, the other by calling a closure-typed
-*parameter* — see `lower_wat.rs`'s module docs and `src/bin/demo.rs`'s comments on
+*parameter* — see `lower_wat.rs`'s module docs and `crates/tatic/src/bin/demo.rs`'s comments on
 each.)
 
 ## Validation
@@ -142,7 +142,7 @@ cargo run --release
 `cargo bench` is in that list deliberately. It used to be left out on the
 reasoning that `--all-targets` already builds the benchmarks — which it
 does, and which is exactly why a stack overflow sat unnoticed in
-`benches/execution.rs` until someone ran them (`RELATED_WORK.md` §30).
+`crates/tatic/benches/execution.rs` until someone ran them (`RELATED_WORK.md` §30).
 Building a target proves nothing about running it.
 
 A full `cargo bench` takes a while — `fib_30`'s interpreter bar alone is
@@ -194,13 +194,13 @@ Defender's real-time protection, the CPU load and the large-page privilege.
  proof.rs <----> tatic-kernel (Pi/Sort/Id/W/Sigma type theory)
 ```
 
-Files are under `src/lang/`, `src/jit/`, `src/verify/`, `src/support/` and `src/testing/` (layers in `docs/TOUR.md`); `jit.rs` and `proof.rs` sit at the top; the kernel is the crate `crates/tatic-kernel`.
+Files are under `crates/tatic/src/lang/`, `crates/tatic/src/jit/`, `crates/tatic/src/verify/`, `crates/tatic/src/support/` and `crates/tatic/src/testing/` (layers in `docs/TOUR.md`); `jit.rs` and `proof.rs` sit at the top; the kernel is the crate `crates/tatic-kernel`.
 
 | Module | Role |
 |---|---|
 | `term.rs` | Content-addressed term store. Hash-conses a small higher-order language (`Var`/`Lit`/`Prim`/`If`/`Abs`/`App`/`Rec`) by BLAKE3 content hash, so structurally identical terms — however independently constructed — always share one hash and one cache entry. |
 | `syntax.rs` | A real, parseable surface syntax for that language, so a term doesn't have to be hand-built through `term.rs`'s De Bruijn-index builders. A small recursive-descent parser (no separate AST — each grammar production interns directly via `TermStore`) with ordinary named-variable scoping (`\x y. x + y`, `let`, `rec f x = ...`), translating names to De Bruijn indices as it parses; `print` is the reverse direction, a precedence-aware pretty-printer back to source text. |
-| `samples.rs` | The sample terms, written as source: the benchmarks', the demo's, the corpus unit tests and `tests/golden_wat.rs` run over. Terms only unit tests use are in `test_corpus.rs`. |
+| `samples.rs` | The sample terms, written as source: the benchmarks', the demo's, the corpus unit tests and `crates/tatic/tests/golden_wat.rs` run over. Terms only unit tests use are in `test_corpus.rs`. |
 | `test_corpus.rs` (test-only) | Terms only unit tests use: the shapes that unit tests in several files share (as source, through `samples::source`), and three terms the parser can't express (one with a free variable, one built past `spec_check::MAX_NODES`, and a doubled DAG whose text is exponentially long). |
 | `eval.rs` | The reference interpreter (call-by-value). Defines correctness: everything else is judged against this. Supports the *full* language, including arbitrary higher-order closures. Trampolined for its own tail positions (an `If`'s chosen branch, and applying a value that resolves the current call), mirroring `lower_wat.rs`'s own `loop`/`br` lowering at the interpreter level: a tail-recursive term runs at any depth without growing the native stack, while a genuinely non-tail-recursive one (naive `fib`, say) still grows it, exactly as it would grow a Wasm `call` chain in the compiled reading. |
 | `compile.rs` | Term analysis and the IR builder. Decides which terms fall in the compilable "first-order arithmetic with self-recursion and closures" fragment (`classify`, shared with `proof.rs`; `free_vars`; closure-arity inference; the combinator registry, including compile-time partial-application wrappers) and builds `ir.rs`'s IR for them (`build`). `try_compile` is a tree-size gate (§47), then build, then `ir::check`, then `lower_wat::lower`. Anything outside the fragment is rejected -- the compiler only needs to be sound, not complete. `compile_specialised` is the pipeline driver: it runs `specialise.rs`, checks the result with `spec_check.rs`, then calls `try_compile` on the specialised `h'` whenever the checker accepted its trace and `h'` compiles, and on `h` otherwise (no trace, a rejected trace, or an `h'` outside the fragment). For a specialised fragment the claim is: compiles `h'`, which decompiles to itself (§35) and is certificate-checked ≡ `h`, not kernel-checked -- see §37 of `RELATED_WORK.md`. |
@@ -272,7 +272,7 @@ Unary minus on an integer literal parses as a negative literal (`-5` is
 `print` parenthesises one where unary minus would otherwise bind
 differently (`f (-2)`, since `f -2` is the subtraction `f - 2`).
 
-`src/bin/repl.rs` is a small interactive REPL built on `syntax::parse`/
+`crates/tatic/src/bin/repl.rs` is a small interactive REPL built on `syntax::parse`/
 `print`: each line is parsed, run through the JIT (falling back to the
 interpreter automatically, same as ever), and reported with whether it
 got a kernel-checked proof. `let NAME = EXPR` (no `in`) defines `NAME` for
@@ -485,7 +485,7 @@ This is stated precisely because it would be easy to overclaim here.
   directly-called literal lambda's own top-level body: `call_ref`'s
   postulated return type is no longer a blanket `Int` assumption
   (`combinator_return_type` classifies it structurally, per `Hash`, once
-  — see its docs in `src/proof/closures.rs` for how), so a combinator whose
+  — see its docs in `crates/tatic/src/proof/closures.rs` for how), so a combinator whose
   own body resolves to `Clo` gets an honest proof whether it's used as a
   bare *value* or *called* directly (including over-applied — see
   `lower_wat.rs`'s row above and its "Over-application" docs); and for a capturing
@@ -604,7 +604,7 @@ what that would take.
 
 ## Benchmarks
 
-`benches/` has two [criterion](https://docs.rs/criterion) suites (`cargo
+`crates/tatic/benches/` has two [criterion](https://docs.rs/criterion) suites (`cargo
 bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
 
 - `execution.rs` — interpreter vs. JIT, cold (compile + verify) vs. warm
@@ -693,7 +693,7 @@ bench`, or `cargo bench --bench execution` / `--bench proofs` for one):
 
 ## Fuzzing
 
-**Differential**: `tests/compile_fuzz.rs` (`cargo test --test compile_fuzz`) generates
+**Differential**: `crates/tatic/tests/compile_fuzz.rs` (`cargo test --test compile_fuzz`) generates
 random terms — biased toward the closure/capture/self-recursion
 interactions two real indexing bugs turned up in earlier, hand-derived
 rather than found by any test failure — and checks that `jit::JitEngine`
@@ -844,7 +844,7 @@ check kept passing, confirming these tests actually discriminate a real,
 narrow false-equality bug rather than merely reacting to wholesale
 breakage.
 
-**Round-trip**: `tests/syntax_fuzz.rs` fuzzes a third property, on a third
+**Round-trip**: `crates/tatic/tests/syntax_fuzz.rs` fuzzes a third property, on a third
 layer: `syntax.rs`'s own `parse(print(h)) == h` (exact content-hash
 equality) for a random, well-scoped term across every constructor
 (`Prim` with all eight operators, `If`, `Abs`, `App`, `Rec` of random
@@ -985,7 +985,7 @@ proof speed); the longer list this section kept until 2026-10-27 is in
   an honest single type for "either `Clo_1` or `Clo_2`" (`RELATED_WORK.md`
   §9 and §12).
 - Widening the compilable fragment further: more primitives.
-- REPL hint bug (`src/bin/repl.rs`, the `EvalError::TypeError` arm): a
+- REPL hint bug (`crates/tatic/src/bin/repl.rs`, the `EvalError::TypeError` arm): a
   line that evaluates to a function prints the hint
   ``e.g. `{printed} 1 2` ``, which is invalid syntax whenever the printed
   term is a lambda/`rec`/`if` -- `\x. x + -5` yields `\v0. v0 + -5 1 2`

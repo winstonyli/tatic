@@ -40,7 +40,7 @@ kernel plus a rule miner. The tiers form a cycle rather than a stack:
 
 ## Metrics
 
-How the results are measured (code: `tests/church_bv/driver.rs` and its module doc; the gate's lines: `scripts/streams_ab.sh`).
+How the results are measured (code: `crates/tatic/tests/church_bv/driver.rs` and its module doc; the gate's lines: `scripts/streams_ab.sh`).
 - **Serving and mining.** A loop's law stream is cut into batches. Each batch is served (every law checked) under the
   rules in force *before* it is mined, so its M is what the stream costs as rules arrive.
 - **M** (per batch, lower is better): the laws the rules did not settle by rewriting alone, i.e. those that needed a
@@ -51,11 +51,11 @@ How the results are measured (code: `tests/church_bv/driver.rs` and its module d
   bounded join closed with no machine proof. **reached:** terms the join's searches reached, its cost, which M does not
   show. **rules:** rules in force at the end.
 - **Held-out M:** a loop's rules checked on laws no loop serves, in four bands by law size
-  (`tests/church_bv/held_{11,13,15,17}.txt`, 1000 laws each; "The frontier on the gate"). The gate's `held` sums it over the
+  (`crates/tatic/tests/church_bv/held_{11,13,15,17}.txt`, 1000 laws each; "The frontier on the gate"). The gate's `held` sums it over the
   bands and loops.
 - **Free share** of a band: the share of its laws proved with no whole-term machine proof. Under the table alone (no mined
   rules) it is the table's share; mining's gain, in points, is the difference, and it is the frontier's measure.
-- **Work counts** (`tests/church_bv/work.rs`): `interp` and `match_pat` nodes, `join_walk` calls and `Term::op` builds, summed
+- **Work counts** (`crates/tatic/tests/church_bv/work.rs`): `interp` and `match_pat` nodes, `join_walk` calls and `Term::op` builds, summed
   per arm. They repeat within a few ppm, so they price a change where job CPU varies by 5-11% ("Work counts as the gate's
   cost").
 - **Loop seconds** (`secs`): each loop's own time, summed in the tables; sweeps run in two lanes, so the sum exceeds wall.
@@ -560,7 +560,7 @@ Every step the search takes is a proved rule, AC or commutativity, so a join giv
 join removes the floor"). Rows: `rows/floor/bound_*.tsv` (family, library, steps or `none`, law, seconds, equal on random
 inputs, the equation of a one-step join).
 
-*The bounded join removes the floor (2026-10-17, 43c6d8f, cad853e, 8d5b29d).* `join_eq` (`tests/church_bv/rewrite.rs`)
+*The bounded join removes the floor (2026-10-17, 43c6d8f, cad853e, 8d5b29d).* `join_eq` (`crates/tatic/tests/church_bv/rewrite.rs`)
 is the probe's search building plans. Where `prove_eq` or the `lt` path of `rewrite_plan` would fall back to the whole-term
 machine proof, it searches breadth-first from both normal forms at once over these steps:
 - every rule in force (built-in, promoted, mined, not ablated, not being proved), in both directions where a direction
@@ -1403,7 +1403,7 @@ width 4 or on the screen.)
   numbers hold for that distribution only. Differences were measured at width 8; the proofs are generic.
 
 *The belief layer's calibration milestone stops at its first gate (2026-11-01; runs `2026-11-01-belief-dump-all-2`, 5 min,
-at commit 72c992d (clean tree), and its pilot `2026-11-01-belief-pilot-plus64-b`; code `tests/church_bv/belief.rs`, no patch;
+at commit 72c992d (clean tree), and its pilot `2026-11-01-belief-pilot-plus64-b`; code `crates/tatic/tests/church_bv/belief.rs`, no patch;
 report text in the dump run's `report.log`; a first dump, `2026-11-01-belief-dump-all`, gave the same totals and gate
 result before a review moved `shr1` claims out of the bitwise kind; spec `docs/superpowers/specs/2026-10-31-belief-layer-design.md`).* The dump re-draws
 the claims with `Classes::build` (20000 merges per key, the four keys of 2026-10-22; its enumerator differs, so the mix
@@ -1512,7 +1512,7 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
   process (1.6-1.9 s). Computed from counts, the structures it keeps are about 50 MB: 431494 interned nodes (56 B each before allocator overhead, about 30 MB), the interner's 1048576
   cells (8 MB) and the class map's 458752 slots (about 11 MB). The rest fits the value vectors of the build (387 B per
   bit-vector representative in two vectors inside a third, about 500 B with their headers, about 125 MB), dropped when the
-  build returns while the commit stays at its peak. The probes run on mimalloc (`tests/church_bv/main.rs`) with large
+  build returns while the commit stays at its peak. The probes run on mimalloc (`crates/tatic/tests/church_bv/main.rs`) with large
   OS pages allowed, which commit up front (65 MB at start) and are never returned. With them off, as a sweep's
   children run them (`MIMALLOC_ALLOW_LARGE_OS_PAGES=0`), a build peaks at 211-221 MB from 4 MB at start, and
   `mi_collect(true)` after it brings the commit to 95-98 MB (run `2026-10-23-class-collect-b`, 230bc3b plus
@@ -1542,8 +1542,8 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
 `2026-10-23-class-key`, `-class-held`, `-class-commit`; scripts `class_key.sh`, `class_held.sh`, `class_commit.sh` in
 `docs/runs/2026-10-23/scripts/`, the last on d5ea1aa plus `patches/class_commit.patch`; held-out laws in
 `docs/runs/2026-10-23/fixtures/held`).* Plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`, Tasks 1-4:
-`tests/church_bv/classes.rs` builds the table once per process from a key baked into the test binary
-(`tests/church_bv/class_key.txt`), with parse-first representatives and a verdict (bitwise, or a carry encoding over
+`crates/tatic/tests/church_bv/classes.rs` builds the table once per process from a key baked into the test binary
+(`crates/tatic/tests/church_bv/class_key.txt`), with parse-first representatives and a verdict (bitwise, or a carry encoding over
 `shr1` atoms) for each replacement it makes.
 - **The key: 432 inputs in 26 rounds** (283 at width 8, 133 at width 4, 16 at width 3), against the probe's 387 in 16
   rounds. The refuter now also tries every width-3 input, which the probe never did ("A key refined by
@@ -1888,7 +1888,7 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
 *Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs
 `2026-10-24-work-aa-s1-2`, `-work-overhead-1-2`, `-work-overhead-2-1-2`, `-work-aa-{1-2,...,9-10}`,
 `-work-assoc-{1-2,...,9-10}`; scripts and outputs in `docs/runs/2026-10-24/`).* Counts at four sites (`interp` and
-`match_pat` nodes, `join_walk` calls, `Term::op` builds; `tests/church_bv/work.rs`), summed per arm by `streams_ab.sh`.
+`match_pat` nodes, `join_walk` calls, `Term::op` builds; `crates/tatic/tests/church_bv/work.rs`), summed per arm by `streams_ab.sh`.
 - **Determinism: within a few ppm, not exact.** A/A over salts 1-10, max spread per salt: interp 14.9 ppm, walk 0,
   match 11.8 ppm, op 0.08 ppm; job CPU 10.9% on the same quiet runs (twice the 5.4% of the earlier baseline). Only the
   mining tasks differ: the miner's scoring queue and its proofs run alongside the rounds, so how much speculative work is
@@ -2471,7 +2471,7 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     (`stack_sample.ps1`, no debugger) put all 40 inside `embeds`' code (38 named `embeds`, 2 its inlined `Term::node`)
     and all 40 under `rewrite` called from a mine's
     `Scorer::score_laws` (frames in `docs/runs/2026-10-28/rows/2026-10-28-hang-j0.txt` and `-hang-j100n688.txt`).
-    `embeds` (`tests/church_bv/rewrite.rs`) is the cycle cut's homeomorphic-embedding test, run by `cut_at` against
+    `embeds` (`crates/tatic/tests/church_bv/rewrite.rs`) is the cycle cut's homeomorphic-embedding test, run by `cut_at` against
     the terms on the rewrite path (before the fix only those no larger than the term at hand), innermost first, both
     for the cut itself and for the memo's check of a cached result. It recursed
     both on "match at this node" and "skip a node of t", with no memo and no size check inside the recursion, so one
@@ -3342,7 +3342,7 @@ preferences and all 27 rule and unit files identical on both salts; wall 194 aga
 
 **A trusted lemma cache per loop (2026-10-12).** A lemma is only ever used as a parameter of its statement, so a loop's
 processes share statements, not proofs: each statement a process checks goes to `LOOP_OUT/lemmas.bin` (`LEMMA_CACHE`, set by
-`driver::run_loop`, deleted when the loop starts and ends; `tests/church_bv/lemma_cache.rs`), and a later process binds it
+`driver::run_loop`, deleted when the loop starts and ends; `crates/tatic/tests/church_bv/lemma_cache.rs`), and a later process binds it
 with no build and no check. Sound as long as every statement in the file was checked by this build: the header holds a
 hash of the exe, and a wrong key can only make a later check fail. Statements are stored in a new binary `Expr` format
 (`kernel::bin`, a node table, closed terms only). `LEMMA_RECHECK=1` builds and checks every lemma anyway and asserts the
@@ -3903,8 +3903,8 @@ a miss. Terms are unchanged (hash-consing already made a rebuilt lambda the same
       - `ABLATE`'s set and the fixed rules and table;
       - `TRACE_RULES`, `RULE_HITS`, `RULE_CONFLICTS`, `LEMMA_HITS` and `PROF` (`RULE_HITS`, `LEMMA_HITS` and `PROF` since removed, 2026-10-21);
       - the lemma cache, its counters and its recheck flag.
-    - `task::task_state_is_classified` scans tests/church_bv at test time and fails on any other lock, once-cell, atomic or `static mut` static that is not on its pure list. A temporary `PROBE` static made it fail as it should.
-    - Limits: the scan reads declarations line by line, so a type alias or a struct hiding a lock would get past it; none exists. It covers tests/church_bv only; src/'s statics are thread-locals or unreachable from tasks.
+    - `task::task_state_is_classified` scans crates/tatic/tests/church_bv at test time and fails on any other lock, once-cell, atomic or `static mut` static that is not on its pure list. A temporary `PROBE` static made it fail as it should.
+    - Limits: the scan reads declarations line by line, so a type alias or a struct hiding a lock would get past it; none exists. It covers crates/tatic/tests/church_bv only; crates/tatic/src/'s statics are thread-locals or unreachable from tasks.
     - Since 2026-10-21 (cleanup C15) `SCREENS`, `TREE_CANDS`, `TREE_ENCS` and `MEMO` are `task::SharedMemo`s, a type the scan trusts as it trusts `PerTask`; each says at its declaration why it is pure. The list keeps the term table, `promoted_rules`' table, the exe identity, the task machinery and `env_echo`'s nonce.
     - Since 2026-10-21 (cleanup C1, docs/superpowers/plans/2026-10-21-rewrite-context.md Task 3) task state is no longer a static: `worker` builds a `job::Setup` per task (`Setup::for_task(pairs, results)`: the environment merged as above, `ABLATE`'s set, the fixed rules and table, the lemma cache and its counters, the result file) and passes it to the task function; each rewriting thread holds a `job::Job` over it. `task::begin`/`end`/`result`/`task_env`, `PerTask`, `PerTaskArc` and `rewrite::env_var`'s `ENV` are gone, and the scan's pure list holds only memos (plus `job.rs`'s process `Setup` and job-id counter). `TRACE_RULES` and `RULE_CONFLICTS` are thread-locals until the plan's later tasks move them into the job.
     - Since 2026-10-22 (C1, the same plan's Tasks 4-8) the rewriter's per-thread state is in the `Job` too: its rules, preferences and switches, the rewrite state, the join store and costs, the rule conflicts, and the lemma parameters with the proofs over them (`Lemmas`, which took `PARAMS`, `shared_lemma`'s entries and `TREE_LAWS`). The fresh thread per task remains only for the pure thread-local memos (`OP_CACHE`, `BUFS`, `TERMS`, `CLOSED`, `COUNTING`, `CONSTANTS`, `BODIES`). The scan is now `job::hidden_state_is_classified`: it also fails on a thread-local not on that list, and outside `job.rs` on a whole job swapped or assigned; a listed static that no longer exists fails it too. A temporary thread-local `ZZ` and a `mem::swap(job, other)` in rewrite.rs made it fail as it should.
@@ -4904,7 +4904,7 @@ the count", 11 min) the join search dominates: `score_laws` 84.5% inclusive, `jo
 with `stream_sequence` 11.9%, `verdict` 9.7% and `eq_pos` 8.6%. Both `verdict` and `eq_pos` spent their time in one loop:
 every input tuple at widths 1-5, two recursive `interp`s and an allocation per tuple.
 
-*One exhaustive check for both (2026-10-26, 14a21d4).* `bitwise_holds` (`tests/church_bv/rewrite.rs`) replaces that
+*One exhaustive check for both (2026-10-26, 14a21d4).* `bitwise_holds` (`crates/tatic/tests/church_bv/rewrite.rs`) replaces that
 loop in both places: per width it builds every input once (`ValueMemo::exhaustive`, one byte per value) and compares
 the two terms' whole value vectors (`first_difference`); a test pins it to the per-tuple answer on every add-free pair
 of the generator's terms (`bitwise_holds_is_the_per_tuple_check`). Gate `2026-10-26-cu15-ab` against R (salts 1-3,
@@ -4972,7 +4972,7 @@ below in "Why normalize is slow on a cold stream". Three levers, the first two m
   the salt and each law's own text, so restricting keeps the order. The merge of the streams (`build_sequence`) does not
   commute with restricting, so the 2-growth sequence is not the merged 4-growth one filtered (below, "Deriving the
   2-growth sequence from the 4-growth build"). A sweep builds both sequences at one salt unless `GEN_DRAW` is set
-  (`window` and `scope_extras` in `tests/church_bv/driver.rs`).
+  (`window` and `scope_extras` in `crates/tatic/tests/church_bv/driver.rs`).
 
 Chosen 2026-10-28: exact value-class ids in `ValueMemo` (`ValueMemo::class`, one id per distinct vector; commit
 `cd7dacb`). The three map keys that copied a 4096-byte vector (`pool_conjectures`, `miner::Pool`'s two indexes) key on
@@ -5060,7 +5060,7 @@ two touch uninitialized memory. The full `church_bv` suite passes (161), both se
 without it, as in the typed rows and the spike (addresses masked; `docs/runs/2026-10-29/scripts/zw_diff.sh`,
 `docs/runs/2026-10-29/rows/2026-10-29-zerofill2-disasm.txt`). Counted as above (the pin test, 3 runs per round on
 CPU 4) with `STREAM_THREADS=1` (default 4, "The streams in parallel"), set in `B.exe.env` and `C.exe.env` because
-the elevated count task runs the exe in its own environment (`Setup::process`, `tests/church_bv/job.rs`); a direct
+the elevated count task runs the exe in its own environment (`Setup::process`, `crates/tatic/tests/church_bv/job.rs`); a direct
 run of the unpatched exe printed `ENV STREAM_THREADS=1` and "on 1 threads". Two rounds, unpatched then patched and
 then the reverse (runs `2026-10-29-zerofill2-icount-*`, `docs/runs/2026-10-29/rows/2026-10-29-zerofill2-icount.txt`):
 298.10 G instructions with the patch against 302.46 G without (best of 6; -1.44%, medians -1.40%). The arms' ranges
@@ -5127,7 +5127,7 @@ the 4.49 M steps that have a representative.
 
 *Deriving the 2-growth sequence from the 4-growth build (survey, 2026-10-28; nothing built).* A sweep's parent builds
 both before any loop starts, the 2-growth one first (`scope_extras` calls `served_laws`, hence `window`, before
-`stream_sequence` at `held_levels`; `tests/church_bv/driver.rs`), on 4 threads each; its children read law files and
+`stream_sequence` at `held_levels`; `crates/tatic/tests/church_bv/driver.rs`), on 4 threads each; its children read law files and
 build nothing. Filtering the merged 4-growth sequence to depth 2 does not give the 2-growth one: `build_sequence`
 merges round-robin by position within each stream, and a stream's 4-growth list is 1.5-7.0 times its 2-growth list
 (median 3.0 over the 54 non-empty streams), so positions differ. (Streams [x1 at depth 3, x2, x3] and [y1, y2 at depth
@@ -6179,7 +6179,7 @@ Two unifying mechanisms follow (the first is built in the next section; the seco
 - **Canonical handles end to end.** Builders and their callers keep terms as interned nodes rather than `Expr`
   values, so a term already built is passed on, not rebuilt. It would remove most of the builders' 7.1 M re-finds,
   `canonical_inputs`' interning on entry and `args_id`'s interning of non-canonical arguments, but it changes the
-  builder interface across `tests/church_bv`.
+  builder interface across `crates/tatic/tests/church_bv`.
 
 **Per-node facts in the node header (2026-10-13).** Each node keeps its last `hc::uses(x, d, m)` answer in a `Cell<u32>`
 that fills the header's former padding (`Node<Expr>` stays `Expr` + 16 bytes): the query (d and m below 2^15) and the
@@ -6214,7 +6214,7 @@ So about 4 M of the 8.6 M hits (45-50%) are inputs the caller already held as a 
 which handles would not remove. The builders were about 7% of busy samples for 7.1 M finds (above), and a held input's
 find lands on a node just read, so canonical handles would save at most about 3.5%, less in practice. Most of the held
 inputs come through a few places: `apps` (callers pass `Vec<Expr>`), the `and`/`or`/`xor` wrappers, `arrow`, and
-`infer_rc`. Parked: at most about 3.5% for a builder-interface change across `tests/church_bv`.
+`infer_rc`. Parked: at most about 3.5% for a builder-interface change across `crates/tatic/tests/church_bv`.
 
 **Two shift memos (probe, reverted, no patch kept, 2026-10-13).** Of the 2.8 M rebuilt terms, 0.98 M are
 `shift_memo_child` results. `postulates`' `cong1`, `trans_proof` and `cong_n` shift through a `ShiftMemo` that lives
@@ -6223,7 +6223,7 @@ for one call. It never reads or writes hc's per-scope `shifts` table, which `shi
 the answer for 0.40 M of the misses (39%), the same node each time, although `ShiftMemo`'s own results are never
 added to it. One shift memo, hc's table with `ShiftMemo` deleted, would take all of these. The question was whether
 anything shifts large shared terms through `cong_n` outside a scope, where hc's table is off. There a shift without
-`ShiftMemo` would walk every path of the shared term. It does: `src/proof` builds its `cong_n` and `trans_proof`
+`ShiftMemo` would walk every path of the shared term. It does: `crates/tatic/src/proof` builds its `cong_n` and `trans_proof`
 chains with no scope open, and that is where `ShiftMemo` made the proof DAG 5x smaller (7f78291).
 
 **One shift memo (2026-10-13).** `cong1`, `trans_proof` and `cong_n` now each open an `InternScope` and shift through
@@ -6469,7 +6469,7 @@ The first two rows are the leaves of case trees: at each split, `g motive on_tru
 eliminating a bit, and `refl` at a leaf. Checking a leaf `refl(a)` against the motive at that leaf's bits reduces both
 sides: the motive `(\b. body) bit` on the expected side, and on the inferred side `a`, a gate term written as
 Church-encoded lambdas applied to bits. A first reading charged them to `bit_lemma`, which has the same shape, but a
-count of builder calls in the same run (temporary prints, reverted) found `bit_lemma` called 0 times and `lemma_n` (`tests/church_bv/encoding.rs`) 392 times:
+count of builder calls in the same run (temporary prints, reverted) found `bit_lemma` called 0 times and `lemma_n` (`crates/tatic/tests/church_bv/encoding.rs`) 392 times:
 
 | Case bits `k` | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 |
 |---|---|---|---|---|---|---|---|---|---|
@@ -7199,7 +7199,7 @@ Scheme 1's caveats, with mitigations:
   The n=16 and n=32 rows swing about 2× between pairs for both arms (contention). Every pair at every n goes to B, at 0.42-0.64 of the base's median.
 - **Decision rule** (plan): keep the port if rule 33 at n=64 is faster and `proof_cost_split` is not slower beyond its spread. Both hold by a wide margin, and the gcd gate passes (plan departure 11 expected small proofs to pay the full interning; they take about half the time instead).
 - **Departures from the spec** are listed in the plan (1-13) and recorded in the spec. Made during execution:
-  - every `benches/proofs.rs` iteration runs in its own region, not only the gcd ones;
+  - every `crates/tatic/benches/proofs.rs` iteration runs in its own region, not only the gcd ones;
   - `Spaces::from_key` became `expr_of`, since it reads the epoch through `self` (clippy's `wrong_self_convention`).
 - **`docs/learned-vs-fixed.md`:** no row changes; no learned or fixed part moved.
 - **Parked:**
@@ -7608,7 +7608,7 @@ Question (`docs/superpowers/specs/2026-11-01-context-aware-scorer-design.md`, st
 `docs/superpowers/plans/2026-11-01-context-aware-scorer.md`): does a model that sees a law in the context of its mine (35
 columns: the 26 per-law counts, three percentiles of steps, size and fallbacks among the pool's stragglers, four likenesses to
 the served stragglers' normal forms, two marginal-coverage columns after a served-only cover) rank the credited laws of a mine
-better than the per-law model and the `small` key? Offline only, nothing reaches the kernel (`tests/church_bv/ctx_scorer.rs`,
+better than the per-law model and the `small` key? Offline only, nothing reaches the kernel (`crates/tatic/tests/church_bv/ctx_scorer.rs`,
 `scripts/ctx_dump.sh`).
 
 - **Stage 1 reproduced** (`ctx_scorer::reproduce_stage1` on the cached labels of `2026-10-31-v06-labels`): fit on salts 4-9, test
@@ -7867,11 +7867,11 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
 
 **Compiled evaluation for conversion, and the wasm JIT (survey, no code, 2026-10-13).** The profile now favors
 evaluating faster rather than less, the case Rocq's `vm_compute` and `native_compute` serve. The repo's JIT
-(`src/jit.rs`, `compile.rs`, `lower_wat.rs`) is not that tool:
+(`crates/tatic/src/jit.rs`, `compile.rs`, `lower_wat.rs`) is not that tool:
 - It compiles `term.rs` programs typed `Int -> ... -> Int` to wasm, not kernel `Expr` (with `J`, `WRec`, `SigRec`).
-  Nothing in `kernel.rs` or `tests/church_bv` calls it; the kernel checks the JIT's proofs, not the reverse.
+  Nothing in `kernel.rs` or `crates/tatic/tests/church_bv` calls it; the kernel checks the JIT's proofs, not the reverse.
 - It is not end-to-end sound by its own account: its kernel theorem is stated over `proof.rs`'s `denote`, a model of
-  the compiler, not over the WAT that runs (`src/jit.rs` header). Using it, or anything like it, for conversion would put
+  the compiler, not over the WAT that runs (`crates/tatic/src/jit.rs` header). Using it, or anything like it, for conversion would put
   the compiler, wasmtime and the postulated `Int` in the trusted base.
 - The 2026-09-30 options table (bitvector spec §35, row 7) already rated native/VM reflection "trusted base grows; does
   not help the symbolic lemma", verdict "different problem".
@@ -7926,7 +7926,7 @@ opens with "if a high-level transformation is found to be equivalent to a low-le
 target machine, use that for future invocations", and the loop compiles proved laws into rewrite rules. Today they
 share nothing:
 
-| | JIT (`src/`) | Loop (`tests/church_bv`) |
+| | JIT (`crates/tatic/src/`) | Loop (`crates/tatic/tests/church_bv`) |
 |---|---|---|
 | Terms | `term.rs`: `Int` is i64, wrapping (`eval.rs:137-150`); `Add Sub Mul Div Mod Lt Le Eq` (`term.rs:15-23`), `Lt` signed; no bitwise ops or shifts | `rewrite.rs` `Term`: width-n words; `add sub xor and or shl1 shr1 lt`, `lt` unsigned (`rewrite.rs:58`) |
 | What is proved | a term equals its compiled form, over `proof.rs`'s `denote` (a model of the compiler) with `Int` postulated | a law, by the kernel, at one width (`prove_rule(n, ..)`); width-generic proofs are not built |
@@ -7949,7 +7949,7 @@ instruction count. If the mined rules never fire on the JIT's programs, A's cycl
 
 *Result (2026-10-17, probe reverted; `docs/runs/2026-10-12/patches/option_a_probe.patch`): nearly nothing to run on.*
 The 24 distinct add/sub-only rules in the 11 mined and hand rule files (of 203 rule lines; the rest use `lt`, `xor` or
-shifts, which `term.rs` lacks) were matched against every node of `tests/rule_match_census.rs`'s 19 builders (the
+shifts, which `term.rs` lacks) were matched against every node of `crates/tatic/tests/rule_match_census.rs`'s 19 builders (the
 benchmark terms, so `test_corpus` less its two `(150)` loop variants and three IR fixtures, plus
 `redundant_arithmetic_recursion`): 286 nodes, 32 of them add or sub, 4 an add or sub over another. Two rules fire, both
 on one node, `add(sub(v2, v1), v0)` in `over_application_if_between_closures`, and both only reorder it: 0 instructions
@@ -8002,12 +8002,12 @@ inlining" for this corpus: it does not, so a workload with depth has to be writt
 specialiser inlines only known closures, and a count of trees does not measure what a larger program would give.
 
 **Laws uniform in the width: two of them check on the unchanged kernel, and one reaches `Bv_n` (spike, 2026-11-01;
-`tests/church_bv/uniform/width.rs`).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md`
+`crates/tatic/tests/church_bv/uniform/width.rs`).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md`
 §53: bits as streams, a bit-serial adder whose carry is a fold, and induction on the position. The kernel has no cumulativity,
 so one Church `Nat` cannot index the inputs and also count the fold (the state would mention its own type); the spike uses
 two, `Nat_k` for the streams' index and `Nat_(k+1)` for the count, with the state `Sigma(Nat_k, Bool0)` (position numeral,
 carry). Checked, uniformly in the position N and with per-bit `GoodBool` hypotheses on the stream bits as in
-`tests/church_lemmas.rs`: `add x 0 = x` and `add x y = add y x`, plus the prefix form for every n (about 1 ms each at k = 0).
+`crates/tatic-kernel/tests/church_lemmas.rs`: `add x 0 = x` and `add x y = add y x`, plus the prefix form for every n (about 1 ms each at k = 0).
 Five false laws are rejected (one control, `add x y = x xor y`, is only ill-typed, so weak). `add x 0 = x` is one induction
 whose statement is the state equality `st M = (embed M, false)`; two statements (`fst = embed`, `snd = false`) would put an
 `Id` on `Bool0` in the induction motive's sort, which is only `Sort(k+1)`, and it checks at every level k = 0 to 3.
@@ -8029,7 +8029,7 @@ for all n. (The 70 ms at n = 8, 3.4 s at 32 and 32.6 s at 64 quoted for per-widt
 a different construction; `add_zero_proof` is far cheaper, so those numbers are no baseline for this.) So "the kernel lacks an
 induction principle" in the parked goal-D entry is too strong for `add`.
 
-*The same route carries the bitwise and `lt` laws (`tests/church_bv/uniform/bitwise.rs`, 2026-11-01).* Four bitwise laws
+*The same route carries the bitwise and `lt` laws (`crates/tatic/tests/church_bv/uniform/bitwise.rs`, 2026-11-01).* Four bitwise laws
 (`xor x x = 0`, `and` commutes, absorption, De Morgan; the last two nest operators) and `lt x x = 0`, `lt x 0 = 0` are proved
 uniformly in the position and bridged to the statements of `encoding::bitwise` and `encoding::lt_u`, accepted at n = 4, 8, 16,
 24 and 32 (default tests check n = 1 to 3), and wrong statements are rejected (well-typed and false, by the reviewer's mutation
@@ -8038,7 +8038,7 @@ second real induction (the borrow chain, circuit of `ripple_carry(sub=true)`). T
 laws, so the baseline is a per-bit case split written in the same file: it checks at 2.0 to 3.2 ms at n = 32 against 3.6 to
 4.4 ms for the uniform route, and builds in 8 to 25 ms against 39 to 77 ms (reviewer's run, shared machine). Again no speed win.
 
-*`mul` is only partly reachable (`tests/church_bv/uniform/mul.rs`, 2026-11-01).* A single fold over the multiplier's positions
+*`mul` is only partly reachable (`crates/tatic/tests/church_bv/uniform/mul.rs`, 2026-11-01).* A single fold over the multiplier's positions
 is ill-typed: the stream adder raises the index level (`Bits(k) -> Bits(k+1)`) and nothing lowers it (kernel messages "lambda
 domain mismatch: (Pi Type2. ...) vs (Pi Type1. ...)", and "inferred Type3, expected Type1" for a `Nat_k -> Nat_(k+1)` map, both
 pinned by a test). So the shift-and-add loop is unrolled in the meta-language, one level per multiplier bit: the law is
@@ -8186,7 +8186,7 @@ Sources: [Crocus](https://cs.wellesley.edu/~avh/veri-isle-preprint.pdf), [WasmCe
 [sail-riscv Lean script](https://raw.githubusercontent.com/Verified-zkEVM/evm-asm/main/scripts/regen-sail-model.sh).
 
 **Mined rules at width 64, and compiled programs proved equal from them (probes, reverted, no patch kept,
-2026-10-14).** Two probes in `tests/church_bv/rewrite.rs` at e49847e, on the 37 rules of cmp3d's own library
+2026-10-14).** Two probes in `crates/tatic/tests/church_bv/rewrite.rs` at e49847e, on the 37 rules of cmp3d's own library
 (`cmp3d_own_rules.txt` without its `OVER` lines). Machine load about 30% CPU at the start of each; Defender real-time
 protection off.
 
@@ -8409,8 +8409,8 @@ An invariant across an `if` needs a case split on the condition bit at Sort0, wh
 paragraph.
 
 **An invariant across an `if` (probe 2026-10-17, `docs/runs/2026-10-12/patches/if_invariant_probe.patch`; its pieces
-are kept since: `good_lt`, the lowering and `lowering_and_lt_witnesses_check` in `tests/church_bv/encoding.rs`, `choose`
-and `if_inv` in `tests/church_bv/wasm.rs`, next-but-one paragraph).**
+are kept since: `good_lt`, the lowering and `lowering_and_lt_witnesses_check` in `crates/tatic/tests/church_bv/encoding.rs`, `choose`
+and `if_inv` in `crates/tatic/tests/church_bv/wasm.rs`, next-but-one paragraph).**
 Derivable, with no kernel change, and cheap. Three pieces, all checked:
 - **A Sort0 split from the Sort1 witness.** `GoodBool0 a = Pi P:(Bool0 -> Sort0). P true -> P false -> P a` is a
   Sort1 type, so `GoodBool a` eliminates at the motive `\b. GoodBool0 b`: `lower_bit : Pi a. GoodBool a -> GoodBool0 a`
@@ -8445,7 +8445,7 @@ Check times, machine at 32% CPU from other jobs, Defender real-time protection o
 
 Concrete: `choose (lt_u 0 1) x y` is `x`, `choose (lt_u 1 0) x y` is `y` and not `x`, by conversion at n=4 and 64.
 
-**Wasm programs as kernel data, kept (2026-10-17; `tests/church_bv/wasm.rs`, test `wasm_programs_as_kernel_data`).**
+**Wasm programs as kernel data, kept (2026-10-17; `crates/tatic/tests/church_bv/wasm.rs`, test `wasm_programs_as_kernel_data`).**
 The instruction-list encoding, rebuilt a third time and now in the tree. A program is a Church-encoded instruction tree
 typed by its start and end stacks, `Prog S T = Pi F:(Sort2 -> Sort2). F T -> push -> bin -> cmp -> dup -> if -> loop
 -> store -> load -> F S`, each constructor taking the rest of the program, so `p1 ++ p2` puts `p2` at `p1`'s nil. Its
