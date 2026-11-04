@@ -24,6 +24,17 @@ richer inductive-type mechanism) or to classical Church-style Higher-Order
 Logic (HOL4/HOL Light/Isabelle/HOL, which stays simply-typed — no
 dependent types at all, quantification over predicates/functions instead).
 
+Pollack's "How to Believe a Machine-Checked Proof" (BRICS RS-97-18, 1997)
+states the design this placement serves. Believe a proof by checking it
+independently with a checker small enough to understand, preferably in
+LCF style (a typed abstract type whose only constructors are the inference
+rules), and then ask "what theorem is it": the formal statement and the
+definitions it uses hereditarily must be read and accepted by a person,
+because the checker only vouches for the derivation. tatic's trusted
+checker is the `tatic-kernel` crate, which imports nothing from `tatic`
+(`crates/tatic-kernel`), and the caveat that a proof is about `denote`, not
+the emitted WAT (`docs/TOUR.md`), is the "what theorem is it" question.
+
 This placement is *why* `prove_tail_recursive_universal` (`src/proof.rs`)
 can't induct on a bare inductive `Nat` the way a CIC-based system would —
 predicativity forbids the impredicative encoding that would let one

@@ -117,6 +117,13 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Marginal extras selection (h1b, v0.6)** — what: pick pool laws by what they add to the mine (for example stragglers whose candidate left side no kept law has yet, or those still uncovered after a first greedy pass over the served stragglers), instead of the first n stragglers. Why parked: straggler-first (h1a) bought held-out M at 1.4-1.9x the CPU of a random draw of the same n, and doubling n was the cheaper route (r638 4600 at 910 s against h319 4498 at 1252 s); h1b targets the same cost only if it cuts mine work, which is not shown. Trigger: a selection that reaches a random arm's held-out M at lower job CPU (the rule in `docs/superpowers/specs/2026-10-31-context-aware-selector-design.md`), or a way to drop the cost of proving the extra stragglers. Evidence: `docs/tier-cycle.md`, "Selecting the extras by straggler verdict" (runs `v06h-smoke`, `v06h-g1` to `g5`, 2026-10-31). Status: parked.
 
 - **Extras selection: test gaps left from the v0.6 review** — what: no test for the driver's `run_loop` env push (`n == pool` and the bad-value panic messages are tested since 2026-10-31). Why parked: the selector is off by default after the null result (`docs/tier-cycle.md`, "Selecting the extras by straggler verdict"); the pool-start miscount (now `read_named_laws(..).len()`) and the config-parse test are fixed. Trigger: a rerun of the selector (h1b). Evidence: final review of 2026-10-31. Status: parked.
+- **Classify mined-rule failures by Lakatos's counterexample taxonomy** — what: label each rule the miner proposes and the
+  gate rejects as a global counterexample (refutes the claim), a local-but-not-global one (refutes a lemma, not the
+  claim) or a monster to exclude by sharpening the definition, as in Lakatos, *Proofs and Refutations* (1976), then
+  check whether the label predicts which repair (guard, narrower rule, new definition) works. Why parked: a research
+  lens suggested by the mentor's reading, 2026-11-04; nothing measured, no known failure that needs it. Trigger: a
+  loop's rejected rules cluster by cause and the repair choice is still ad hoc. Evidence: none yet (the lens is
+  untested on `docs/tier-cycle.md`'s rejected-rule data). Status: parked.
 
 ## Rewriter, rule order and the floor
 
