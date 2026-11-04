@@ -2196,7 +2196,6 @@ pub mod bin;
 #[cfg(test)]
 mod tests;
 
-
 // The allocator the lib's tests are timed under (`tatic/src/lib.rs`): the wall-clock ratio tests in `tests.rs`
 // measure against it. The integration tests in `tests/` time nothing, so they stay on the system heap.
 #[cfg(test)]

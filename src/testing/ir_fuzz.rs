@@ -282,7 +282,7 @@ fn closure_templates_agree_under_both_dispatch_modes() {
 
 // ---- Random well-typed IR ---------------------------------------------
 
-/// The crate's SplitMix64 stream, drawn in `usize` and percent.
+/// The `tatic-rng` crate's SplitMix64 stream, drawn in `usize` and percent.
 struct Rng(tatic_rng::SplitMix64);
 impl Rng {
     fn next(&mut self) -> u64 {

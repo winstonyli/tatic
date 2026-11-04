@@ -1,6 +1,6 @@
 //! Builders over `Globals`: `Postulates` (assumed constants and parameter scopes) and `NatPostulates` (a postulated
-//! Bool/Nat construction). Nothing here is read by the checker; a term built with it is checked like any other. A child
-//! module of `kernel` so it keeps access to the private fields of `Globals` and `Ctx`.
+//! Bool/Nat construction). Nothing here is read by the checker; a term built with it is checked like any other. A
+//! module of the kernel crate, so it keeps access to the private fields of `Globals` and `Ctx`.
 
 use super::*;
 

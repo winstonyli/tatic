@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # The kernel as its own workspace crate
@@ -145,9 +145,8 @@ allocator. The same allocator line in `tatic`'s `lib.rs` stays (SR6 is not this 
 
 ### Dependency fallout in `tatic`
 
-`tatic` keeps `hashbrown`, `im`, `stacker` (used by `lang/term.rs`, `jit/*`, and `src/kernel*`, of which only `kernel*` leaves). The
-plan greps each: a dependency used only by the kernel would move out of the root manifest (none expected: `lang/term.rs` and
-`jit/*` use all three).
+`tatic` keeps `hashbrown` (also used by `lang/term.rs`, `jit/*`). Grep after the move showed `im` and `stacker` were used
+only by the kernel, so they left the root manifest.
 
 ### Documentation and checks
 

@@ -3813,7 +3813,7 @@ a miss. Terms are unchanged (hash-consing already made a rebuilt lambda the same
     but peak commit is 446-490 MB. It jumps as the first parallel round starts (71 to 276 MB while live goes 51 to 87 MB).
     Ruled out: mimalloc's delayed purging (`MIMALLOC_PURGE_DELAY=0`: 444-486 MB), what `mi_collect(true)` at phase ends
     can return (439-494 MB), and the miner threads' own stacks (44-60 KB each). Found: the kernel's large `check_in` runs
-    on a 64 MB stacker segment (`CHECK_SEGMENT`, src/kernel.rs), and stacker's `CreateFiber(size)` commits the whole
+    on a 64 MB stacker segment (`CHECK_SEGMENT`, crates/tatic-kernel/src/lib.rs), and stacker's `CreateFiber(size)` commits the whole
     size. With 4 MB, peak commit falls to 312-395 MB. Those pages are commit charge only, never touched, so they cost no
     RAM (the kernel.rs comment said "costs nothing until touched"; corrected). Parked: PARKED.md, "Large `check_in` segments that commit only what they touch". The 100-200 MB
     still between live and commit is mimalloc's per-thread retention over 6 scoring threads plus speculative provers; not
@@ -5819,7 +5819,7 @@ are cut (see "Cycle cut" below).
   step once instead of m + 1 times. Building leaves was 32% of lemma time, `table_app` included; open what is left now.
   Done: "One builder memo, and each step once per leaf", below.
 - *Normal forms of closed terms across `def_eq` calls (kernel).* `ReductionCache` lives for one top-level `def_eq`/`whnf`/
-  `nf` call (`src/kernel.rs` near 1424), so every leaf renormalizes the same closed gate applications (`and` of two literal
+  `nf` call (`crates/tatic-kernel/src/lib.rs` near 1424), so every leaf renormalizes the same closed gate applications (`and` of two literal
   bits, say). A cache keyed by canonical pointer, per interning generation, for closed terms would collapse them. Reduction
   is context-free for closed terms, so it is sound, but it touches the trusted kernel. Gain unmeasured: first count distinct
   canonical closed `App` nodes normalized per lemma. Counted: at most about 1%, not worth it ("A closed-term normal-form
@@ -5828,7 +5828,7 @@ are cut (see "Cycle cut" below).
   `hty` and `inv_expr` (now hit the table memo).
 
 **Interning in the kernel's reduction (survey, 2026-10-13; read-only, a subagent's report checked at the cited lines).** The
-hash-cons table (`mod hc`, `src/kernel.rs` near 828) already uses a pointer hash (`PtrHasher`) and shallow keys (child
+hash-cons table (`mod hc`, `crates/tatic-kernel/src/lib.rs` near 828) already uses a pointer hash (`PtrHasher`) and shallow keys (child
 pointers); removing or narrowing it lost badly ("Hash-consing cost", above). Open options, most promising first:
 1. `args_id` (near 1136) re-interns every argument of every `instantiate_n` (`intern((*a).clone(), None)`, a clone and a
    probe) although `beta_spine`/`whnf_step` hold canonical `Rc`s; taking `&Rc<Expr>` and skipping canonical ones removes
@@ -5839,7 +5839,7 @@ pointers); removing or narrowing it lost badly ("Hash-consing cost", above). Ope
 3. Pre-reserve `nodes`, `inst`, `uses` when the table switches on: `reserve_rehash` was 5-9%. One line per map.
 4. The closed-term normal-form cache above (measured below: about 1%; dropped).
 5. A separate, non-interning normalizer for closed Bool terms: largest change, adds to the trusted base; last.
-Minor: `arg_sets` still used SipHash then (`Vec<usize>` keys); it is an `IdMap` now (`src/kernel/spaces.rs`).
+Minor: `arg_sets` still used SipHash then (`Vec<usize>` keys); it is an `IdMap` now (`crates/tatic-kernel/src/spaces.rs`).
 
 **One builder memo, and each step once per leaf (2026-10-13).** `constant` and `table_app` now share one helper, `gen_memo`
 (`encoding.rs`): a thread's values by key for the current interning generation, emptied when the generation changes, with the
@@ -6563,7 +6563,7 @@ also peeled past `s` to the gate constant at the bottom of the spine, so `s` was
 evaluated again once per path that reached it. `sub` chains grew about 0.7n-fold per level (n=16: 1.5, 9.9, 69 and
 407 ms at depth 1-4).
 
-The mechanism is in `src/kernel.rs`:
+The mechanism is in `crates/tatic-kernel/src/lib.rs`:
 - `closed_prefix_spine` runs first for every `App` in `whnf_step`. It finds the longest proper prefix `P` of the
   spine with no loose variable, with `d` arguments left over.
 - `hnf_rc(P, d)` is `P`'s head normal form to depth `d`: its whnf, then the body's whnf under each of up to `d`
@@ -6577,7 +6577,7 @@ The mechanism is in `src/kernel.rs`:
   boolean selects under its own `\C t f` and a table prefix drops the branches its arguments rule out ("Full head normal
   form", in "Where a sweep spends its time"). That can reduce more than the application would have.
 
-Check: `closed_function_values_are_reduced_once` (`src/kernel/tests.rs`). It builds
+Check: `closed_function_values_are_reduced_once` (`crates/tatic-kernel/src/tests.rs`). It builds
 `b(i+1) = \C x y. b(i) C (b(i) C y x) (b(i) C x y)` to depth 30, both outside a scope and inside one. With
 `closed_prefix_spine` disabled, depth 20 took 9.6 s for one `def_eq`, doubling per level. With it, the whole test
 reports 0.00 s.
@@ -6651,7 +6651,7 @@ The fix is `brief_nf(e)`, a printer that normalizes as it prints:
 - The text is the same as `brief(&nf(e))`. The wrec children-type message uses it too. The other `nf` callers
   are semantic (`infer_sup`'s occurs check, `typecheck`'s returned type, `normalize`) and stay as they were.
 
-Check: `brief_nf_normalizes_only_what_it_prints` (`src/kernel/tests.rs`). It compares the output with
+Check: `brief_nf_normalizes_only_what_it_prints` (`crates/tatic-kernel/src/tests.rs`). It compares the output with
 `brief(&nf(..))` on three small terms, and prints the Church numeral `16 4`, whose normal form has 4^16 nested
 applications. With `brief(&nf(e))` restored, the test went over 4 GB within 8 s.
 
@@ -8228,7 +8228,7 @@ target's width, is cheap, and a mined law transfers to compiled code through one
 proofs from the template laws costing well under a second. Not shown here: signed `lt_s` (the miner's `lt` is
 unsigned) and any op outside the loop's eight; the If template is the next paragraph. On deep syntax: a `W` type of
 instructions is costly in this kernel, which has no computing finite tag type; `NatPostulates` gets one only through
-postulated computation axioms (`child_ty_true_eq`, `bool_rec_true_eq`, `src/kernel/postulates.rs:472-485`) and a
+postulated computation axioms (`child_ty_true_eq`, `bool_rec_true_eq`, `crates/tatic-kernel/src/postulates.rs`) and a
 transport per constructor, which would grow the trusted base. Two ways around it: keep the semantics shallow and trust
 only the printer from the template-built instruction list to WAT text, or Church-encode instruction lists; the second
 is tested two paragraphs down and works.

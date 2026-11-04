@@ -11,9 +11,7 @@ default-run = "demo"
 blake3 = "1.8.3"
 tatic-kernel = { path = "crates/tatic-kernel" }
 hashbrown = "0.16.1"
-im = "15.1.0"
 mimalloc = "0.1.52"
-stacker = "0.1.25"
 wasmtime = "42.0.1"
 wat = "1.245.1"
 
