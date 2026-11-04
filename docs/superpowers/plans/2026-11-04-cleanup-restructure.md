@@ -51,7 +51,7 @@ Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
 - **SR4. Kernel as its own workspace crate** so "the kernel imports nothing from tatic" is a compile error. IFACE. Same as RB1,
   AR4. Replaces nothing: `independence.rs` and its 3 tests guard `decompile`, `spec_check` and `typing`, not the kernel, and
   stay (corrected 2026-11-04; the earlier text said it replaced them). ~443 use lines in 31 files, plus the `tatic-rng` crate.
-  **Own plan 2026-11-04** (spec `docs/superpowers/specs/2026-11-04-kernel-crate-design.md`, status draft; plan to follow).
+  **Own plan 2026-11-04** (spec `docs/superpowers/specs/2026-11-04-kernel-crate-design.md`, status approved 2026-11-04; plan `docs/superpowers/plans/2026-11-04-kernel-crate.md`).
   Follow-up chosen by the user 2026-11-04, after SR4: **SR8. Move `tatic` to `crates/tatic`** (virtual workspace root; moves `src`,
   `tests`, `benches`; repoints live cites and scripts; recheck `CARGO_MANIFEST_DIR` tests and `tools/runs`'s checkout lookup).
 - **SR5. One test-placement convention** (`foo/tests.rs` for modules with a large test block). Also TB7.
