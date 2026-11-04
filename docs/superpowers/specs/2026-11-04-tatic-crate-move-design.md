@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Move `tatic` to `crates/tatic` (SR8)
