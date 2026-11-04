@@ -48,7 +48,7 @@ struct Decompiler<'m, 's> {
 impl Decompiler<'_, '_> {
     /// `f` as a term, when its environment slot `k` holds the outer
     /// variable `env[k]`, a de Bruijn index in the scope that built the
-    /// closure. `Rec` is outermost, as `compile::peel` expects.
+    /// closure. `Rec` is outermost, as `shape::peel` expects.
     fn func(&mut self, f: &Func, env: &[u32]) -> Option<Hash> {
         let mut t = self.node(f, env, &f.body)?;
         for _ in 0..f.arity {

@@ -57,6 +57,7 @@
 pub mod compile;
 pub(crate) mod ir;
 pub(crate) mod lower_wat;
+pub(crate) mod shape;
 pub mod specialise;
 
 use hashbrown::HashMap;
@@ -407,10 +408,10 @@ impl Default for JitEngine {
 /// binds to `Int`s. A callee shape the scan can't classify counts as a
 /// call; no prover covers it anyway.
 fn calls_a_parameter(terms: &TermStore, h: Hash) -> bool {
-    let Some((arity, body, is_rec)) = crate::jit::compile::peel(terms, h) else {
+    let Some((arity, body, is_rec)) = crate::jit::shape::peel(terms, h) else {
         return false;
     };
-    match crate::jit::compile::infer_closure_arities(terms, body, arity, is_rec.then_some(arity as u32)) {
+    match crate::jit::shape::infer_closure_arities(terms, body, arity, is_rec.then_some(arity as u32)) {
         Some(found) => found.keys().any(|&i| (i as usize) < arity),
         None => true,
     }
@@ -526,7 +527,7 @@ mod tests {
         ] {
             let mut s = TermStore::new();
             let h = crate::lang::syntax::parse(&mut s, src).unwrap();
-            let arity = crate::jit::compile::peel(&s, h).unwrap().0;
+            let arity = crate::jit::shape::peel(&s, h).unwrap().0;
             assert!(!JitEngine::kernel_verify(&s, h, arity), "{src}");
         }
     }

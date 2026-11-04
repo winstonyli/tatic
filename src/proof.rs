@@ -150,7 +150,7 @@
 use hashbrown::HashMap;
 use std::rc::Rc;
 
-use crate::jit::compile::{self, Shape};
+use crate::jit::shape::{self, Shape};
 use crate::lang::eval;
 use crate::kernel::{self, Expr, Globals, Postulates};
 use crate::lang::term::{Hash, PrimOp, Term, TermStore};
@@ -294,7 +294,7 @@ pub(super) fn collect_literals(store: &TermStore, h: Hash, scope: &LitScope, out
             };
         }
     };
-    match compile::classify(store, h, arity, self_idx) {
+    match shape::classify(store, h, arity, self_idx) {
         Shape::SelfCall(args) => all(&args, out),
         Shape::VarCall { var, args, .. } => {
             param_types.is_some_and(|pt| pt.get(var as usize).copied().flatten() == Some(args.len())) && all(&args, out)
@@ -333,7 +333,7 @@ fn denote_in(
     if let Some(d) = memo.get(&h) {
         return Some(*d);
     }
-    let d = match compile::classify(store, h, params.len(), None) {
+    let d = match shape::classify(store, h, params.len(), None) {
         Shape::Var(i) => params.get(i as usize).cloned()?,
         Shape::Lit(n) => arith.lit_ref(n),
         Shape::Prim(op, a, b) => {
@@ -418,7 +418,7 @@ fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<Equi
 /// (`Rec`-wrapped) functions (needs induction -- see module docs),
 /// zero-arity terms, or terms containing `Abs`/`App`.
 pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
-    let (arity, body, is_rec) = compile::peel(store, h)?;
+    let (arity, body, is_rec) = shape::peel(store, h)?;
     if is_rec || arity == 0 {
         return None;
     }

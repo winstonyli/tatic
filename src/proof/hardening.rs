@@ -65,7 +65,7 @@ pub(super) enum DecisionTree {
 pub(super) fn classify_tree(store: &TermStore, h: Hash) -> Option<DecisionTree> {
     if let Term::If(c, t, e) = store.resolve(h) {
         let (c, t, e) = (*c, *t, *e);
-        if !matches!(store.resolve(c), Term::Prim(op, _, _) if compile::is_comparison(*op)) {
+        if !matches!(store.resolve(c), Term::Prim(op, _, _) if shape::is_comparison(*op)) {
             return None;
         }
         let then_branch = Box::new(classify_tree(store, t)?);
@@ -92,7 +92,7 @@ pub(super) struct Leaf {
 
 /// `arity`/`self_idx` bundled together -- the pair `find_self_calls` and
 /// `denote_closure` both need on every recursive call, purely to
-/// forward to `compile::match_self_call` at each node.
+/// forward to `shape::match_self_call` at each node.
 #[derive(Clone, Copy)]
 pub(super) struct SelfCall {
     pub(super) arity: usize,
@@ -150,7 +150,7 @@ pub(super) fn flatten_tree(store: &TermStore, tree: &DecisionTree, self_call: Se
 /// type of the expression it's found in.
 pub(super) fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, param_types: &[Option<usize>], out: &mut Vec<Vec<Hash>>) -> bool {
     let all = |hs: &[Hash], out: &mut Vec<Vec<Hash>>| hs.iter().all(|&a| find_self_calls(store, a, self_call, param_types, out));
-    match compile::classify(store, h, self_call.arity, Some(self_call.idx)) {
+    match shape::classify(store, h, self_call.arity, Some(self_call.idx)) {
         Shape::SelfCall(args) => {
             out.push(args);
             true
@@ -162,7 +162,7 @@ pub(super) fn find_self_calls(store: &TermStore, h: Hash, self_call: SelfCall, p
         // self-call occurring *inside* a nested closure's body would need
         // `self_call.idx` shifted by that closure's own arity to still
         // refer to the same absolute position, which
-        // `compile::match_self_call`'s unadjusted check can't see -- the
+        // `shape::match_self_call`'s unadjusted check can't see -- the
         // combinator's body is opaque here for the same reason it already
         // is to `collect_literals`.
         Shape::CombinatorCall { args, .. } => all(&args, out),
@@ -211,7 +211,7 @@ impl SelfCalls<'_> {
 ///
 /// A nested `If` takes both branches `Int` (via `ite_ref`) or both `Clo` of one arity (via `ite_clo_ref`); a mismatch
 /// is rejected. `params[i]`/`param_types[i]` describe `Var(i)`: `param_types[i] = Some(k)` for a closure-typed
-/// parameter always called with `k` arguments (`compile::infer_closure_arities`, reindexed by `Var`), `None` for an
+/// parameter always called with `k` arguments (`shape::infer_closure_arities`, reindexed by `Var`), `None` for an
 /// `Int`. `params` are postulates as `Const`s, which no later push shifts; `register`/`call_ref`/`pap_ref` may each push
 /// a postulate on first use. With a self-call in scope, a bare `Term::Rec` (a self-recursive combinator nested inside
 /// another's body) stays out of scope: proving one induction while assuming another is a different problem.
@@ -229,7 +229,7 @@ pub(super) fn denote_closure(
         Some(sc) => (sc.arity, Some(sc.idx), sc.arity, Some(sc.idx)),
         None => (params.len(), None, param_types.len(), None),
     };
-    match compile::classify(store, h, classify_arity, classify_idx) {
+    match shape::classify(store, h, classify_arity, classify_idx) {
         Shape::SelfCall(_) => match self_calls {
             SelfCalls::Placeholders(_, placeholders, next) => {
                 let v = placeholders.get(*next).copied();
@@ -263,8 +263,8 @@ pub(super) fn denote_closure(
             AppShape::LitLambdaPartial { root, args, callee_param_types } => {
                 let arity = callee_param_types.len();
                 let k = args.len();
-                let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
-                let root_captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
+                let (root_arity, root_body, root_is_rec) = shape::peel(store, root)?;
+                let root_captures = shape::free_vars(store, root_body, root_arity, root_is_rec);
                 let pap_fn = combinators.pap_ref(root, k, param_types)?;
                 let env_expr = if root_captures.is_empty() {
                     None
@@ -291,8 +291,8 @@ pub(super) fn denote_closure(
             AppShape::LitLambdaExact { root, args, callee_param_types } | AppShape::LitLambdaOver { root, args, callee_param_types } => {
                 let arity = callee_param_types.len();
                 let sat_args = &args[..arity];
-                let (c_arity, c_body, c_is_rec) = compile::peel(store, root)?;
-                let captures = compile::free_vars(store, c_body, c_arity, c_is_rec);
+                let (c_arity, c_body, c_is_rec) = shape::peel(store, root)?;
+                let captures = shape::free_vars(store, c_body, c_arity, c_is_rec);
                 let call_fn = combinators.call_ref(root, &captures, param_types)?;
                 let env_expr = if captures.is_empty() {
                     None
@@ -406,11 +406,11 @@ pub(super) fn denote_closure(
         // parameter, `f(n-1, \y. acc+y)`. Mirrors `denote_closure`'s own
         // value-leaf `Term::Abs | Term::Rec` case exactly.
         Shape::Combinator { is_rec } if !(is_rec && self_call.is_some()) => {
-            let (arity, body, is_rec) = compile::peel(store, h)?;
+            let (arity, body, is_rec) = shape::peel(store, h)?;
             if arity == 0 {
                 return None;
             }
-            let captures = compile::free_vars(store, body, arity, is_rec);
+            let captures = shape::free_vars(store, body, arity, is_rec);
             let sym = combinators.register(h, &captures, param_types)?;
             if captures.is_empty() {
                 return Some(Denoted::Clo(sym));
@@ -485,7 +485,7 @@ pub struct UniversalTailProof {
 /// docs). A leaf may itself contain a further nested `If`, purely
 /// arithmetic or choosing between two `Clo`-typed values.
 pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<UniversalTailProof> {
-    let (arity, body, is_rec) = compile::peel(store, h)?;
+    let (arity, body, is_rec) = shape::peel(store, h)?;
     if !is_rec || arity == 0 {
         return None;
     }
@@ -504,13 +504,13 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
     // same `ClosureCombinators` machinery `prove_closure_expr` itself uses.
     // Still out of scope: a captured free variable used as a closure here
     // (this function has no enclosing frame to resolve one against).
-    let found = compile::infer_closure_arities(store, body, arity, Some(self_idx))?;
+    let found = shape::infer_closure_arities(store, body, arity, Some(self_idx))?;
     // See `param_types_for`'s own docs: an inconsistently-called `Var` is
     // declined the same way an absent one already is.
     let param_types: Vec<Option<usize>> = (0..arity as u32)
         .map(|i| match found.get(&i) {
-            Some(compile::ArityUse::Consistent(k)) => Some(*k),
-            Some(compile::ArityUse::Inconsistent) | None => None,
+            Some(shape::ArityUse::Consistent(k)) => Some(*k),
+            Some(shape::ArityUse::Inconsistent) | None => None,
         })
         .collect();
 

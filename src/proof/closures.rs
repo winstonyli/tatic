@@ -8,7 +8,7 @@ use super::*;
 // (capturing or not), is built from `Var`/`Lit`/`Prim`/`If` and
 // fully-saturated applications of either a closure-typed parameter or a
 // literal lambda -- exactly what
-// `compile::unwind_app_spine`/`compile::infer_closure_arities` already
+// `shape::unwind_app_spine`/`shape::infer_closure_arities` already
 // classify, reused directly here rather than re-derived, so the two
 // readings can't silently diverge on "what counts as a closure call".
 //
@@ -97,7 +97,7 @@ use super::*;
 // is itself a capturing closure -- has no proof-side counterpart here,
 // not because it's deferred, but because it can't arise: `denote_closure`/
 // `denote_closure` never enter a registered combinator's own body
-// (a call is always postulated opaque), and `compile::peel` always folds
+// (a call is always postulated opaque), and `shape::peel` always folds
 // consecutive `Abs` layers into one combinator before that combinator is
 // ever registered, so there is no way for this fragment to encounter one
 // combinator's own literal-lambda body containing *another*, separately
@@ -134,11 +134,11 @@ use super::*;
 // regardless (a call is always postulated opaque, `combinator_value`/
 // `mk_clo_h`/`call_h` alike), so widening every `Term::Abs`-only call/value
 // site to also accept `Term::Rec` needed no new proof machinery -- just the
-// wider pattern, since `compile::peel`/`compile::free_vars`/
-// `compile::infer_closure_arities` were already generic over `is_rec`
+// wider pattern, since `shape::peel`/`shape::free_vars`/
+// `shape::infer_closure_arities` were already generic over `is_rec`
 // (`prove_tail_recursive_universal`'s own fragment already relied on that). `pap_ref` now
-// covers a self-recursive root too, the same way: `compile::peel`/
-// `compile::free_vars`/`param_types_for` were already generic over
+// covers a self-recursive root too, the same way: `shape::peel`/
+// `shape::free_vars`/`param_types_for` were already generic over
 // `is_rec`, and `compile.rs`'s `register_partial_app`/`lower_wat.rs`'s
 // `emit_pap_wrapper` never special-cased it either (a PAP wrapper only ever forwards a static
 // call to its root, indifferent to whether that root's own codegen happens
@@ -168,7 +168,7 @@ impl Denoted {
     }
 }
 
-/// `h`'s own parameter types, from `compile::infer_closure_arities`'s
+/// `h`'s own parameter types, from `shape::infer_closure_arities`'s
 /// classification on `h`'s *own* body/arity (already keyed by absolute
 /// `Var` index, the same convention `denote_closure` uses -- see its own
 /// docs) -- shared by `prove_closure_expr`'s top-level call and
@@ -183,18 +183,18 @@ impl Denoted {
 /// call), so a self-recursive combinator's *own* parameters classify the
 /// same way a non-recursive one's do.
 pub(super) fn param_types_for(store: &TermStore, h: Hash) -> Option<Vec<Option<usize>>> {
-    let (arity, body, is_rec) = compile::peel(store, h)?;
+    let (arity, body, is_rec) = shape::peel(store, h)?;
     let self_idx = is_rec.then_some(arity as u32);
-    let found = compile::infer_closure_arities(store, body, arity, self_idx)?;
+    let found = shape::infer_closure_arities(store, body, arity, self_idx)?;
     // An inconsistently-called `Var` is declined here exactly as an
     // absent one already is -- this proof methodology has no way to
     // classify a value whose arity isn't fixed statically (see
-    // `compile::ArityUse`'s own docs).
+    // `shape::ArityUse`'s own docs).
     Some(
         (0..arity as u32)
             .map(|i| match found.get(&i) {
-                Some(compile::ArityUse::Consistent(k)) => Some(*k),
-                Some(compile::ArityUse::Inconsistent) | None => None,
+                Some(shape::ArityUse::Consistent(k)) => Some(*k),
+                Some(shape::ArityUse::Inconsistent) | None => None,
             })
             .collect(),
     )
@@ -223,7 +223,7 @@ pub(super) enum AppShape {
     LitLambdaOver { root: Hash, args: Vec<Hash>, callee_param_types: Vec<Option<usize>> },
 }
 
-/// Refines an application-shaped [`Shape`] (from `compile::classify`, the
+/// Refines an application-shaped [`Shape`] (from `shape::classify`, the
 /// same classification `build_node` dispatches on) with what the
 /// closures fragment needs to know: whether a variable callee is a
 /// `Clo`-typed parameter called at its own arity, and a literal callee's
@@ -277,7 +277,7 @@ pub(super) fn app_shape(store: &TermStore, shape: Shape, param_types: &[Option<u
 /// *own* declared parameters' types (`param_types_for`), never a
 /// capture's.
 pub(super) fn combinator_return_type(store: &TermStore, h: Hash) -> Option<Option<usize>> {
-    let (arity, body, is_rec) = compile::peel(store, h)?;
+    let (arity, body, is_rec) = shape::peel(store, h)?;
     let self_idx = is_rec.then_some(arity as u32);
     let param_types = param_types_for(store, h)?;
     return_type_of(store, body, arity, self_idx, &param_types)
@@ -343,7 +343,7 @@ pub(super) fn pap_extra_arity(store: &TermStore, root: Hash) -> usize {
 /// everywhere else. The outer `Option` is "undetermined"; the inner one is
 /// the actual type, `None` for `Int`, `Some(k)` for `Clo_k`.
 pub(super) fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>, param_types: &[Option<usize>]) -> Option<Option<usize>> {
-    match compile::classify(store, h, arity, self_idx) {
+    match shape::classify(store, h, arity, self_idx) {
         Shape::SelfCall(_) => Some(None), // a self-call's own result is always Int
         // Calling a parameter, a capture, or (recursively) another
         // directly-called combinator's own result: always Int, since a
@@ -382,7 +382,7 @@ pub(super) fn return_type_of(store: &TermStore, h: Hash, arity: usize, self_idx:
         }
         // A fresh closure value, of its own peeled arity.
         Shape::Combinator { .. } => {
-            let (own_arity, _, _) = compile::peel(store, h)?;
+            let (own_arity, _, _) = shape::peel(store, h)?;
             Some(Some(own_arity))
         }
     }
@@ -645,7 +645,7 @@ impl<'a> ClosureCombinators<'a> {
     /// environment to `Clo`, applied to its own environment by
     /// `denote_closure` -- this only returns the bare, unapplied
     /// constructor) if it does. `captures` is `h`'s own relative capture
-    /// indices (`compile::free_vars`, computed once by the caller and
+    /// indices (`shape::free_vars`, computed once by the caller and
     /// passed in rather than re-derived here, since the caller needs it
     /// again anyway to build the actual environment via
     /// `build_env_expr`); `caller_param_types` is the *calling* scope's
@@ -658,7 +658,7 @@ impl<'a> ClosureCombinators<'a> {
     /// constant/function either way, since a call is never denoted by
     /// looking inside `h`'s own body regardless of whether it recurses.
     pub(super) fn register(&mut self, h: Hash, captures: &[u32], caller_param_types: &[Option<usize>]) -> Option<Expr> {
-        let (arity, _, _) = compile::peel(self.store, h)?;
+        let (arity, _, _) = shape::peel(self.store, h)?;
         if arity == 0 {
             return None;
         }
@@ -768,7 +768,7 @@ impl<'a> ClosureCombinators<'a> {
     ///
     /// `None` for a zero-`k` or over-`k` (`k >= arity`) root -- `h` may
     /// itself be self-recursive (`Term::Rec`, not just `Term::Abs`):
-    /// `compile::peel`/`compile::free_vars`/`param_types_for` are all
+    /// `shape::peel`/`shape::free_vars`/`param_types_for` are all
     /// already generic over that (a call is always postulated opaque
     /// regardless), and `compile.rs`'s `register_partial_app`/
     /// `lower_wat.rs`'s `emit_pap_wrapper` never special-cased it either -- a static
@@ -778,11 +778,11 @@ impl<'a> ClosureCombinators<'a> {
         if let Some(&pos) = self.cp.pap_pos.get(&(h, k)) {
             return Some(self.cp.arith.p.get(pos));
         }
-        let (arity, body, is_rec) = compile::peel(self.store, h)?;
+        let (arity, body, is_rec) = shape::peel(self.store, h)?;
         if k == 0 || k >= arity {
             return None;
         }
-        let captures = compile::free_vars(self.store, body, arity, is_rec);
+        let captures = shape::free_vars(self.store, body, arity, is_rec);
         let param_types = param_types_for(self.store, h)?;
         let sig = capture_sig(&captures, caller_param_types)?;
         // `env_ty` may lazily push its own postulate; every `clo_ty`
@@ -839,7 +839,7 @@ pub(super) fn capture_sig(captures: &[u32], caller_param_types: &[Option<usize>]
 }
 
 /// Builds `mk_env(v_1,...,v_n)` for a combinator whose relative capture
-/// indices are `captures` (`compile::free_vars`), reading each captured
+/// indices are `captures` (`shape::free_vars`), reading each captured
 /// value's *current* value out of the *calling* function's own
 /// `(params, param_types)` frame -- mirroring `lower_wat.rs`'s
 /// `push_closure_env`, but resolving each slot directly against `params`
@@ -885,18 +885,18 @@ pub(super) fn build_env_expr(combinators: &mut ClosureCombinators, captures: &[u
 /// `result_ty` on the returned proof is `Int`'s or that `Clo_k`'s own
 /// postulate accordingly, never hardcoded.
 pub fn prove_closure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
-    let (arity, body, is_rec) = compile::peel(store, h)?;
+    let (arity, body, is_rec) = shape::peel(store, h)?;
     if is_rec {
         return None;
     }
 
-    let found = compile::infer_closure_arities(store, body, arity, None)?;
+    let found = shape::infer_closure_arities(store, body, arity, None)?;
     // See `param_types_for`'s own docs: an inconsistently-called `Var` is
     // declined the same way an absent one already is.
     let param_types: Vec<Option<usize>> = (0..arity as u32)
         .map(|i| match found.get(&i) {
-            Some(compile::ArityUse::Consistent(k)) => Some(*k),
-            Some(compile::ArityUse::Inconsistent) | None => None,
+            Some(shape::ArityUse::Consistent(k)) => Some(*k),
+            Some(shape::ArityUse::Inconsistent) | None => None,
         })
         .collect();
 

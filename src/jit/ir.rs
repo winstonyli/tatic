@@ -16,7 +16,7 @@
 
 use hashbrown::HashMap;
 
-use crate::jit::compile::is_comparison;
+use crate::jit::shape::is_comparison;
 use crate::lang::term::PrimOp;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -61,7 +61,7 @@ pub(crate) struct Func {
 }
 
 /// A value read: a Wasm parameter local (`$p{li}`, which is *not* the de
-/// Bruijn index -- see `compile::local_index`), or an environment slot.
+/// Bruijn index -- see `shape::local_index`), or an environment slot.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum Read {
     Param(u32),
@@ -214,7 +214,7 @@ fn lifted(m: &Module, idx: usize) -> Result<&Func, String> {
 
 fn check_func(m: &Module, f: &Func) -> Result<(), String> {
     // A nullary recursive function's tail self-call lowers to a bare
-    // `br` back to the loop head: an infinite loop (`compile::peel` never
+    // `br` back to the loop head: an infinite loop (`shape::peel` never
     // builds one either).
     if f.is_rec && f.arity == 0 {
         return Err("a recursive function of arity 0".into());

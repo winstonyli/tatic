@@ -606,7 +606,7 @@ mod tests {
     fn every_corpus_term_specialises_to_something_the_checker_accepts_and_that_evaluates_the_same() {
         for (name, s, h) in crate::support::samples::corpus() {
             let sp = specialise_checked(&s, h);
-            let arity = crate::jit::compile::peel(&s, h).map_or(0, |(k, ..)| k);
+            let arity = crate::jit::shape::peel(&s, h).map_or(0, |(k, ..)| k);
             for x in [0i64, 1, 2, 5, -3] {
                 let args = vec![x; arity];
                 assert_eq!(crate::lang::eval::apply_term(&sp.store, sp.term, &args), crate::lang::eval::apply_term(&s, h, &args), "{name} args={args:?}");

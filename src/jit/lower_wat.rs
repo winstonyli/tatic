@@ -31,7 +31,7 @@
 //! lifted: it takes its captures as leading `i64` parameters `$e0 ..`
 //! instead, so calling it allocates nothing.
 //!
-//! `compile::free_vars` finds what a lambda literal captures, relative to
+//! `shape::free_vars` finds what a lambda literal captures, relative to
 //! its own parameter range, by walking its body (following *into* further
 //! nested lambdas too, since a closure nested inside another one still
 //! captures from the very same enclosing scope) -- this becomes the
@@ -52,7 +52,7 @@
 //! A closure value can then be *applied* two ways. `CallUnknown` calls one
 //! through a `Read` (a parameter *or* a captured free variable, the same
 //! either way) that's always called with the same number of arguments
-//! everywhere in its own function (`compile::infer_closure_arities` finds
+//! everywhere in its own function (`shape::infer_closure_arities` finds
 //! these, keyed by absolute `Var` index so it doesn't need to distinguish
 //! the two); its template is Wasm's `call_indirect` through the shared
 //! table, unpacking the environment pointer and table index back out of

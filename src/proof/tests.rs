@@ -1,4 +1,5 @@
 use super::*;
+use crate::jit::compile;
 use crate::lang::eval;
 use crate::kernel::Ctx;
 use crate::support::samples::{
@@ -690,8 +691,8 @@ fn a_partially_applied_self_recursive_combinator_used_as_a_value_gets_a_closure_
     // meaningful example on its own (fact's arity is already 1), so
     // use a 2-ary self-recursive combinator instead, applied to 3
     // (under-applied by one arg) and passed to `\g. g 1`.
-    // pap_ref no longer rejects a recursive root -- compile::peel/
-    // compile::free_vars/param_types_for were already generic over
+    // pap_ref no longer rejects a recursive root -- shape::peel/
+    // shape::free_vars/param_types_for were already generic over
     // is_rec (a call is always postulated opaque regardless), and
     // compile.rs's register_partial_app/lower_wat.rs's emit_pap_wrapper
     // never special-cased it either (a PAP wrapper only ever forwards a
@@ -1559,9 +1560,9 @@ fn a_capturing_clo_returning_root_declines_without_evaluating_its_own_argument()
     let pick_a = s.abs(pick_a_body);
 
     assert_eq!(combinator_return_type(&s, pick_a), Some(Some(2)), "pick_a should itself return a further arity-2 Clo");
-    let (pa_arity, pa_body, pa_is_rec) = compile::peel(&s, pick_a).unwrap();
+    let (pa_arity, pa_body, pa_is_rec) = shape::peel(&s, pick_a).unwrap();
     assert!(
-        !compile::free_vars(&s, pa_body, pa_arity, pa_is_rec).is_empty(),
+        !shape::free_vars(&s, pa_body, pa_arity, pa_is_rec).is_empty(),
         "pick_a should genuinely capture cap from outside its own scope"
     );
 

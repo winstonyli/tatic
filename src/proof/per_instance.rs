@@ -138,7 +138,7 @@ enum StepOutcome {
 /// branch; a fully-saturated self-call is reported as a `TailCall`;
 /// anything else is the reached base case.
 fn classify_step(store: &TermStore, h: Hash, arity: usize, self_idx: u32, frame: &[DynVal]) -> Option<StepOutcome> {
-    match compile::classify(store, h, arity, Some(self_idx)) {
+    match shape::classify(store, h, arity, Some(self_idx)) {
         Shape::If(c, t, e) => {
             let cv = eval_concrete_dyn(store, c, frame)?;
             classify_step(store, if cv != 0 { t } else { e }, arity, self_idx, frame)
@@ -158,7 +158,7 @@ pub(super) fn dyn_frame_param_types(store: &TermStore, frame: &[DynVal]) -> Opti
         .iter()
         .map(|v| match v {
             DynVal::Int(..) => Some(None),
-            DynVal::Clo(_, cc) => compile::peel(store, cc.root).map(|(a, _, _)| Some(a)),
+            DynVal::Clo(_, cc) => shape::peel(store, cc.root).map(|(a, _, _)| Some(a)),
         })
         .collect()
 }
@@ -344,7 +344,7 @@ pub(super) fn eval_dyn_direct_call(
     calling_frame: &[DynVal],
 ) -> Option<DynDenoted> {
     let store = combinators.store;
-    let (root_arity, root_body, root_is_rec) = compile::peel(store, root)?;
+    let (root_arity, root_body, root_is_rec) = shape::peel(store, root)?;
     if args.len() != root_arity {
         return None;
     }
@@ -362,7 +362,7 @@ pub(super) fn eval_dyn_direct_call(
     // function's own scoping restriction bail out for free, rather than
     // doing all that work only to discard it once `eval_dyn_inline_call`
     // makes the exact same check anyway.
-    let captures = compile::free_vars(store, root_body, root_arity, root_is_rec);
+    let captures = shape::free_vars(store, root_body, root_arity, root_is_rec);
     if return_ty.is_some() && !captures.is_empty() {
         return None; // scoped out -- see eval_dyn_inline_call's own docs
     }
@@ -398,7 +398,7 @@ pub(super) fn eval_dyn_direct_call(
         let e = match (root_param_types[pos], v) {
             // A closure of another arity can't be passed where a `Clo_k` is
             // expected (see `arg_denotation`).
-            (Some(k), DynDenoted::Clo(e, cc)) if compile::peel(store, cc.root).map(|(a, _, _)| a) == Some(k) => e,
+            (Some(k), DynDenoted::Clo(e, cc)) if shape::peel(store, cc.root).map(|(a, _, _)| a) == Some(k) => e,
             (None, DynDenoted::Int(e)) => e,
             // An `Int` parameter given a `Clo` was inlined above.
             _ => return None,
@@ -538,8 +538,8 @@ pub(super) fn eval_dyn( h: Hash, combinators: &mut ClosureCombinators, self_ctx:
 pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self_ctx: Option<(Hash, usize)>, budget: &mut DynBudget, frame: &[DynVal]) -> Option<DynDenoted> {
     let store = combinators.store;
     let shape = match self_ctx {
-        Some((_, self_arity)) => compile::classify(store, h, self_arity, Some(self_arity as u32)),
-        None => compile::classify(store, h, frame.len(), None),
+        Some((_, self_arity)) => shape::classify(store, h, self_arity, Some(self_arity as u32)),
+        None => shape::classify(store, h, frame.len(), None),
     };
     match shape {
         Shape::If(c, t, e) => {
@@ -579,7 +579,7 @@ pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self
             {
                 // A bare reference to the enclosing self-recursive value
                 // itself, not applied -- out of scope structurally, the
-                // same restriction `compile.rs`'s own `free_vars` places
+                // same restriction `shape.rs`'s own `free_vars` places
                 // on capturing a self-reference as a plain value from a
                 // nested closure.
                 return None;
@@ -600,7 +600,7 @@ pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self
             Some(DynDenoted::Int(applied))
         }
         Shape::Combinator { .. } => {
-            let (arity, body, is_rec) = compile::peel(store, h)?;
+            let (arity, body, is_rec) = shape::peel(store, h)?;
             if arity == 0 || is_rec {
                 // A bare self-recursive value isn't needed by this
                 // first slice's own target shapes -- decline cleanly
@@ -610,7 +610,7 @@ pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self
                 // which is the only consumer of a `ConcreteClo` at all).
                 return None;
             }
-            let captures = compile::free_vars(store, body, arity, is_rec);
+            let captures = shape::free_vars(store, body, arity, is_rec);
             let frame_types = dyn_frame_param_types(store, frame)?;
             let sym = combinators.register(h, &captures, &frame_types)?;
             let cc = Rc::new(ConcreteClo { root: h, frame: frame.to_vec() });
@@ -646,7 +646,7 @@ pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self
 /// `eval_dyn_tail_recursive` whether its body is tail- or non-tail-
 /// recursive, including a branching non-tail shape, via `self_ctx`).
 pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> Option<EquivalenceProof> {
-    let (arity, body, is_rec) = compile::peel(store, h)?;
+    let (arity, body, is_rec) = shape::peel(store, h)?;
     if arity != args.len() {
         return None;
     }
@@ -683,7 +683,7 @@ pub fn prove_closure_expr_instance(store: &TermStore, h: Hash, args: &[i64]) -> 
     let (result_ty, denotation) = match denoted {
         DynDenoted::Int(e) => (combinators.cp.arith.int_ty(), e),
         DynDenoted::Clo(e, cc) => {
-            let (k, _, _) = compile::peel(store, cc.root)?;
+            let (k, _, _) = shape::peel(store, cc.root)?;
             let ty = combinators.cp.clo_ty(k);
             (ty, e)
         }

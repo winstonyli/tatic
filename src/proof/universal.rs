@@ -71,7 +71,7 @@ use super::*;
 // Pi type, not an opaque postulate, so calling one needs no axiom at all)
 // within a leaf or a self-call argument (`param_types`, the same
 // `Var`-index-keyed classification `denote_closure`'s own fragment uses,
-// computed once via `compile::infer_closure_arities` on the whole body
+// computed once via `shape::infer_closure_arities` on the whole body
 // including self-call sites) -- e.g. "iterate a closure `n` times": `rec f
 // n g x = if n<=0 then x else f(n-1, g, g(x))`. This part needs only
 // `ClosurePostulates::clo_ty`, reused directly (`ClosurePostulates:

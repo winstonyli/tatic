@@ -23,6 +23,7 @@ Written in `ROADMAP.md#Goals`; status is in `ROADMAP.md#Milestones`, not here. C
 The JIT (`src/`):
 - `src/jit.rs`: the cache, the installation gate, wasmtime invocation. Start here to ask "why was this term not installed?"
 - `src/jit/compile.rs`: the fragment test, IR builder and `try_compile`. "What can the compiler accept?"
+- `src/jit/shape.rs`: term-shape analysis the builder and the prover share (`peel`, `classify`, `free_vars`, closure-arity inference); it emits nothing.
 - `src/jit/specialise.rs` and `src/verify/spec_check.rs`: the untrusted specialiser and its trusted replay checker.
 - `src/verify/typing.rs`: the type check that keeps closures out of the entry point.
 - `src/jit/ir.rs`, `src/verify/decompile.rs`, `src/jit/lower_wat.rs`: the IR, its validation, its WAT. "How is a closure represented?" (`src/jit/lower_wat.rs#Lowering`)
@@ -127,7 +128,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Church Bool**: the kernel type `Pi C. C -> C -> C`; true picks the first branch. `tests/church_bv/encoding.rs#bool0`
 - **Church bit-vector**: a continuation over n Bools, least significant bit first. `tests/church_bv/encoding.rs#bv_ty`
 - **Class table**: a learned map from the value signature of a term to its smallest representative, used as a rewriting step; a replacement is used only if it is provable. `tests/church_bv/classes.rs#Classes`
-- **Classify / Shape**: the one case analysis of a body node shared by the IR builder and the proof walkers. `src/jit/compile.rs#classify`
+- **Classify / Shape**: the one case analysis of a body node shared by the IR builder and the proof walkers. `src/jit/shape.rs#classify`
 - **Combinator**: a lambda or `Rec` lifted out as its own function (or a partial-application wrapper) in the IR. `src/jit/ir.rs#Combinator`
 - **Compiler (Plan to proof)**: turns a rewriter `Plan` into a checked kernel proof on demand. `tests/church_bv/rewrite.rs#Compiler`
 - **Const (postulate)**: a kernel constant typed by the `Globals` list; it never unfolds, so it acts as an axiom. `src/kernel.rs#const_type`
@@ -168,7 +169,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Mined rules**: rules chosen at run time by the miner, tried after the fixed rules. `tests/church_bv/rewrite.rs#run_order`
 - **Mine**: one run of the rule miner on a lawfile. `tests/church_bv/miner.rs#mine`
 - **Per-instance proof**: a proof that follows one concrete execution; allowed only at arity 0. `src/proof/per_instance.rs#prove_closure_expr_instance`
-- **Peel**: splits a term into parameter count, body and whether it is recursive. `src/jit/compile.rs#peel`
+- **Peel**: splits a term into parameter count, body and whether it is recursive. `src/jit/shape.rs#peel`
 - **Phase**: a residue class of the stream sequence. `tests/church_bv/search.rs#residue`
 - **Plan / LawKind**: the rewriter's proof sketch and the name of the prover of each leaf. `tests/church_bv/rewrite.rs#Plan`, `tests/church_bv/rewrite.rs#LawKind`
 - **Pool**: `POOL=p` hands each mine p x n extras and `EXTRAS_SELECT` keeps n. `tests/church_bv/driver.rs#POOL`

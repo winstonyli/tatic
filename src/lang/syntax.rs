@@ -945,7 +945,7 @@ mod tests {
         // along, as a plain value, to `twice`) -- so `param_types_for`
         // classifies it `None` (Int) for exactly the same reason it
         // classifies a genuinely inconsistent parameter that way (see
-        // `compile::ArityUse`'s own docs): "never assigned a single
+        // `shape::ArityUse`'s own docs): "never assigned a single
         // static arity", whether that's because it's never called at all
         // or because it's called at two disagreeing ones. `denote_closure`'s
         // own *universal* proof still declines this (the same `Int`
