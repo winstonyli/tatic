@@ -35,5 +35,10 @@ out=$(v lab "$t/pass" "$t/few" "$t/d4"); rc=$?
 ok "mismatched arm counts exit 2" "$([ $rc = 2 ] && ! echo "$out" | grep -qE 'PASS|FAIL$' && echo ok)"
 ok "--d-only, T 76: yes" "$(v --d-only lab "$t/pass" 76 | grep -qx 'lab: D -200; work ratio 1.040; D < -T: yes' && echo ok)"
 ok "--d-only, T 250: no" "$(v --d-only lab "$t/pass" 250 | grep -q 'D < -T: no' && echo ok)"
+out=$(v --d-only lab "$t/bad" 76); rc=$?
+ok "--d-only on a failed log exits 2" "$([ $rc = 2 ] && ! echo "$out" | grep -q 'D <' && echo ok)"
+{ echo "salt 2: M A 1 B 1"; cat "$t/d3"; } > "$t/d3salt"
+out=$(v lab "$t/pass" "$t/d3salt" "$t/d4"); rc=$?
+ok "logs over different salts exit 2" "$([ $rc = 2 ] && ! echo "$out" | grep -qE 'PASS|FAIL$' && echo ok)"
 [ $fail = 0 ] && echo "q2_verdict_check: ok"
 exit $fail
