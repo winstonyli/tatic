@@ -7647,7 +7647,7 @@ better than the per-law model and the `small` key? Offline only, nothing reaches
 - **Ablation** (capture sums, k = 40 / 80; full model 1476 / 2481): drop group 3 (marginal coverage) 1399 / 2429, drop group 1
   (percentiles) 1414 / 2451, drop group 2 (likeness to served) 1485 / 2481, drop the per-law block 1438 / 2457 (the three context
   groups alone beat the per-law model's 1329 / 2378). Groups 3 and 1 carry the signal; group 2 adds nothing.
-- **Limits**: labels exist only for the slice, so Q1 ranks within the slice (Q2 would rank the whole pool, where 957 laws per mine
+- **Limits**: labels exist only for the slice, so Q1 ranks within the slice (Q2, "Q2 primary run" below, ranks the whole pool, where 957 laws per mine
   never had a label); capture counts credited laws, not held-out M or CPU, and stage 1's offline AUC was also real while its gate
   failed (above), so this shows no curve shift.
 - **Q2 feature set gate** (run `2026-11-04-q2-t1`, `ctx_q1.sh ... no-g3`, 33 columns, no group 3; same dump, folds and bootstrap).

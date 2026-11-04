@@ -162,6 +162,10 @@ held-out M is below the `small` arm's by more than the larger of sigma and the m
 |redraw - draw 0| over `GEN_DRAW` 3 and 4, as sigma 76 was read) at both n AND the walk work is not larger by more than 5%, on both
 the primary and the replication salts; otherwise null (`scripts/q2_verdict.sh`).
 
+*Result (2026-11-04): null.* The primary fails at both n (D +99 at n = 160, -50 at n = 80 against T 76 and 163) and the replication
+fails at both n (D +12, +66); record and limits in `docs/tier-cycle.md`, "Q2 primary run". The replication's redraws and equal-work
+random arms were not run (D > 0 fails the rule at any T). The unmeasured shifts (fit n = 319 against serve n = 80/160) remain.
+
 ## Risks and checks
 
 - **Few contexts.** 42 mines are a small sample; a positive Q1 has to come from within-mine ranking, which is what the statistic

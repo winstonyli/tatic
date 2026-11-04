@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Context-aware scorer, stage 2 (Q2, the gate) Implementation Plan
