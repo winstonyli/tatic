@@ -19,12 +19,7 @@ mod machine;
 mod miner;
 mod search;
 mod task;
-mod uniform_bitwise;
-mod uniform_mul;
-mod uniform_shift;
-mod uniform_symmul;
-mod uniform_symmul_stream;
-mod uniform_width;
+mod uniform;
 mod work;
 #[allow(unused_imports)]
 use encoding::*;

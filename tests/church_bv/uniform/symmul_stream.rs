@@ -1,10 +1,10 @@
-// Spike (2026-11-01, task a1; builds on `uniform_mul.rs`, `uniform_shift.rs`): the stream form of `mul 1 y = y` with a SYMBOLIC
+// Spike (2026-11-01, task a1; builds on `mul.rs`, `shift.rs`): the stream form of `mul 1 y = y` with a SYMBOLIC
 // multiplier, UNIFORM IN THE POSITION, a standalone result: it is NOT bridged to `Bv_n` (the bridge of `mul 1 y = y` is the
-// stage-wise one of `uniform_symmul.rs`, which does not use this theorem; it shares only `hyps_c` and `hyps_x`).
+// stage-wise one of `symmul.rs`, which does not use this theorem; it shares only `hyps_c` and `hyps_x`).
 // For the multiplier bits `a_0..a_(n-1)` (variables with `GoodBool` witnesses `ga_m`, as the `GoodBv` step binds them) and the
 // one-hot multiplicand `e_0`, the theorem is
 //     Pi i:Nat_(K0+n). Good i -> Id(Bool0, acc_n i, look(a_0..a_(n-1)) (lower i))
-// where `look(t) p = t Bool0 (p (Bool^n -> Bool0) proj0 rot)` is the lookup of `uniform_width.rs` (tuple `t` read at the Nat_1
+// where `look(t) p = t Bool0 (p (Bool^n -> Bool0) proj0 rot)` is the lookup of `width.rs` (tuple `t` read at the Nat_1
 // position `p`, false past the end) and `lower` is the chain of `embed`s down to Nat_1. It is proved for EVERY good position,
 // with no per-position case tree. The older positionwise route (the proof a tree over the positions, at numerals) and the bridge of
 // this theorem to `Bv_n` are gone; their measurements are in `docs/tier-cycle.md` ("Laws uniform in the width").
@@ -16,7 +16,7 @@
 // without sharing) sees the exponential size.
 //
 // Pieces (all closed terms, shared by the later stages as handles; the per-stage terms are O(n) in distinct nodes, O(n^2) over all stages):
-//   * `acc_sym`: the stream accumulator of `uniform_mul.rs` with the multiplier bits as arguments of a closed term.
+//   * `acc_sym`: the stream accumulator of `mul.rs` with the multiplier bits as arguments of a closed term.
 //   * `Z0`:  look(0..0) p = false (an induction whose step is the identity: the shifted zero tuple is the zero tuple).
 //   * `D`:   a pointwise lemma for the lookup. For `f(u, w)` with `f(ff, ff) = ff` (hypothesis `hp`) and tuples `a, c, r` with
 //            `f(a_m, c_m) = r_m` for each m < n:  f(look a p, look c p) = look r p at every good p (or `= ff` when `f(a_m, c_m) = ff`).
@@ -27,15 +27,15 @@
 //   * `Psh`: the stream shift transports a lookup: if `x i = look(c)(lower i)` at good i then `shl x M = look(shr c)(lower M)` at
 //            good M, with `shr c = (ff, c_0..c_(n-2))` (needs `c_(n-1) = ff`). A joint induction on the shift's fold, the state
 //            equality `SH M = (embed M, look(shr c)(lower M))` together with `Good (embed M)` (as the carry lemmas of
-//            `uniform_mul.rs`), so the step may use the hypothesis at `embed M`.
+//            `mul.rs`), so the step may use the hypothesis at `embed M`.
 //   * stage `H_j`: `acc_j i = look(A_j)(lower i)` at good i, `A_j = (a_0..a_(j-1), ff..ff)`. The step is the carry lemma
-//            `carry_false` of `uniform_mul.rs` (its `to_false` from `Dc`), then the sum bit from `Dx`. Each stage's hypotheses of
+//            `carry_false` of `mul.rs` (its `to_false` from `Dc`), then the sum bit from `Dx`. Each stage's hypotheses of
 //            D are n constant-size proofs (case splits on the witnesses of a_m and a_j), so the stage is O(n).
 // The multiplicand is the stream `e_0 := look(1,0,..,0)`, convertible at every numeral to the old `i Bool0 tt (\_. ff)` (a lemma
 // `i Bool0 tt (\_. ff) = look(1,0,..)(i)` would need `Z0` inside an induction step that has no goodness of `m`).
-use super::uniform_mul::*;
-use super::uniform_width::T::*;
-use super::uniform_width::*;
+use super::mul::*;
+use super::width::T::*;
+use super::width::*;
 use tatic::kernel::{self, Expr};
 
 /// The level of the streams' index at stage 0. `x = e_0` reads `Bool0` out of `Nat_1`, so k0 = 1 is enough.
@@ -55,7 +55,7 @@ pub(crate) fn apn(f: T, args: &[T]) -> T {
 
 // ---------- the stream accumulator with the multiplier bits as arguments ----------
 /// `acc_sym(j) : Bool0^j -> Bits(K0) -> Bits(K0 + j)`, CLOSED: `\y_0..y_(j-1). \x. acc_j` (the shift's fill bit is `fill`): the
-/// stream accumulator of `uniform_mul.rs` with the multiplier bits as ARGUMENTS of a closed term, so it can be applied to the
+/// stream accumulator of `mul.rs` with the multiplier bits as ARGUMENTS of a closed term, so it can be applied to the
 /// variables `a_j` and still be shared (a meta-level tree over `a_j` is 3^j in size, the reason `acc_fn` is closed).
 fn acc_sym(j: usize, fill: bool) -> Expr {
     let mut body = lm("x", bits(K0), acc_body(j, fill));
@@ -469,7 +469,7 @@ fn header_states_what_the_size_claims_depend_on() {
         assert!(w[1].0 < w[0].0 * 2, "distinct nodes grew by 2x or more in one bit: {sizes:?}");
         assert!(w[1].1 > w[0].1 * 4, "unfolded size grew by less than 4x in one bit: {sizes:?}");
     }
-    let src = include_str!("uniform_symmul_stream.rs");
+    let src = include_str!("symmul_stream.rs");
     let header: String = src.lines().take_while(|l| l.starts_with("//")).collect::<Vec<_>>().join("\n");
     for phrase in ["distinct nodes", "NOT bridged", "docs/tier-cycle.md", "7.4, 9.2, 18.7 ms"] {
         assert!(header.contains(phrase), "the header must say: {phrase}");

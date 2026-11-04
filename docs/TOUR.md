@@ -39,6 +39,7 @@ The bit-vector library and target machine (`tests/church_bv/`; `main.rs` holds o
 - `encoding.rs`: Church Bool and vector terms and gate builders. `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
 - `classes.rs`, `class_key.txt`, `held_*.txt`: the class table, its key and the held-out laws.
 - `wasm.rs`: the formal target machine. `lemma_cache.rs`, `work.rs`, `task.rs`: caching, counters, shared memo (`tests/church_bv/task.rs#SharedMemo`).
+- `uniform/`: laws proved uniformly in the bit width over the unchanged kernel (`width.rs` is the shared vocabulary; `bitwise`, `mul`, `shift`, `symmul`, `symmul_stream` are the law families).
 
 The rewriter and provers (`tests/church_bv/`):
 - `rewrite.rs`: terms, plans, rule table, the rewriter and the `prove_eq` cascade. `job.rs`: per-task and per-thread state.

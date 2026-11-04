@@ -1,4 +1,4 @@
-// Spike (2026-11-01, task u2; builds on `uniform_width.rs`): the bitwise and `lt` laws through the stream route, bridged to the
+// Spike (2026-11-01, task u2; builds on `width.rs`): the bitwise and `lt` laws through the stream route, bridged to the
 // encoding's own `Bv_n` statements.
 //
 // Bitwise operators are pointwise, so their uniform laws need no fold and no induction: `Pi x.. gx.. i. Id(Bool0, L(x i..), R(x i..))`
@@ -8,13 +8,13 @@
 // `lt` is a borrow chain (a fold like the adder, `encoding::ripple_carry`'s borrow) and needs the `Good1` induction.
 // No per-width `Id` proof of any of these laws exists in `encoding.rs`; the statements are built from its definitions, and the
 // `direct` baseline here (the same chain with the per-bit case split at the variables) is built in this file, not the encoding's.
-use super::encoding;
-use super::uniform_width::T::*;
-use super::uniform_width::*;
+use crate::encoding;
+use super::width::T::*;
+use super::width::*;
 use std::time::Instant;
 use tatic::kernel::Expr;
 
-// (the name sets `XN`, `YN` and the stream readers `stream`, `wstream` are `uniform_width`'s)
+// (the name sets `XN`, `YN` and the stream readers `stream`, `wstream` are `width`'s)
 
 // ---------- bit-level gates ----------
 /// Exactly `encoding::not_` (one gate).

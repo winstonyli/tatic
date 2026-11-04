@@ -1,7 +1,7 @@
-// Spike (2026-11-01, task u3; builds on `uniform_width.rs`): the multiplier through the stream route, a second, nested induction.
+// Spike (2026-11-01, task u3; builds on `width.rs`): the multiplier through the stream route, a second, nested induction.
 //
 // Stage A, the definition. Shift-and-add: `acc_0 = 0`, `acc_(j+1) = acc_j + (y_j ? x << j : 0)`, with the stream adder of
-// `uniform_width.rs` and the stream shift `shl` below. The kernel has no cumulativity, and that fixes the shape:
+// `width.rs` and the stream shift `shl` below. The kernel has no cumulativity, and that fixes the shape:
 //   * the stream adder `sumbit(k, ..)` reads its operands at `Nat_k` and is indexed by `Nat_(k+1)` (its count), so
 //     `add : Bits(k) -> Bits(k) -> Bits(k+1)` raises the index level by one. No term lowers a stream's level: that would need
 //     `Nat_k -> Nat_(k+1)` (`embed` goes the other way, `Nat_(k+1) -> Nat_k`; `i C z s` for `i : Nat_k` needs `C : Sort k`).
@@ -14,9 +14,9 @@
 //     `shl` applied j times, `Bits(k0 + j)`, which is exactly the level `acc_j` and the adder at step j expect.
 //   * the partial product is `y_j & x_shifted`, the mask FIRST (`and(y_j, bit)`), so `y_j = false` makes it the zero stream by
 //     computation (`and ff b` reduces to `ff` for any `b`), with no goodness hypothesis on the shifted stream.
-use super::encoding;
-use super::uniform_width::T::*;
-use super::uniform_width::*;
+use crate::encoding;
+use super::width::T::*;
+use super::width::*;
 use std::time::Instant;
 use tatic::kernel::{self, Ctx, Expr};
 
@@ -71,7 +71,7 @@ pub(crate) fn acc_upto_fill(k0: u32, ys: &[T], x: T, j: usize, fill: bool) -> T 
 pub(crate) fn mul_stream(k0: u32, ys: &[T], x: T) -> T {
     acc_upto(k0, ys, x, ys.len())
 }
-/// `mul_stream` with the shift's fill bit chosen (the mutation tests of `uniform_shift.rs`).
+/// `mul_stream` with the shift's fill bit chosen (the mutation tests of `shift.rs`).
 pub(crate) fn mul_stream_fill(k0: u32, ys: &[T], x: T, fill: bool) -> T {
     ap(K(acc_fn(k0, ys, ys.len(), fill)), x)
 }
@@ -165,7 +165,7 @@ fn y_stmt(k: u32, zero_right: bool) -> T {
         arr(pi_("i", nat(k), arr(gk(k, v("i")), idt(bool0(), ap(v("su"), v("i")), ap(v("sw"), v("i"))))),
             idt(bool0(), sumbit(k, a, c, v("N")), ap(v("sw"), embed(k, v("N"))))))))))
 }
-/// The induction behind the carry lemmas Y (zero right) and Z (`uniform_shift.rs`, zero left): with `g : Good N` free, a
+/// The induction behind the carry lemmas Y (zero right) and Z (`shift.rs`, zero left): with `g : Good N` free, a
 /// proof of `Sigma (Good_k (embed N)) (st(maj, a, c, N) = (embed N, false))`, given `to_false(em, ge_m)`, a proof of
 /// `maj(a em, c em, false) = false` from the goodness `ge_m` of `em = embed m` (the zero operand makes the carry stay false).
 pub(crate) fn carry_false(k: u32, a: &T, c: &T, to_false: &dyn Fn(T, T) -> T) -> T {
@@ -228,9 +228,9 @@ pub(crate) fn y_proof(k: u32, zero_right: bool) -> T {
 fn the_good_embed_lemma_and_the_adder_lemmas_check_at_every_level() {
     for k in 1..=4u32 {
         let ge_ty = pi_("N", nat(k + 1), arr(ap(good1(k), v("N")), gk(k, embed(k, v("N")))));
-        super::uniform_width::run(&format!("good embed k={k}"), &ge_ty, &ge_proof(k)).unwrap();
+        super::width::run(&format!("good embed k={k}"), &ge_ty, &ge_proof(k)).unwrap();
         for zr in [true, false] {
-            super::uniform_width::run(&format!("Y k={k} zero_right={zr}"), &y_stmt(k, zr), &y_proof(k, zr)).unwrap();
+            super::width::run(&format!("Y k={k} zero_right={zr}"), &y_stmt(k, zr), &y_proof(k, zr)).unwrap();
         }
     }
 }
@@ -308,7 +308,7 @@ fn mul_zero_and_mul_one_hold_uniformly_in_the_position() {
     for law in [Law::Zero, Law::One] {
         for (k0, m) in [(1u32, 1usize), (1, 2), (1, 3), (2, 2), (2, 3)] {
             let ys = law_y(law, m);
-            super::uniform_width::run(&format!("{law:?} k0={k0} m={m}"), &mul_stmt(k0, m, law, &ys, None), &mul_proof(k0, m, law)).unwrap();
+            super::width::run(&format!("{law:?} k0={k0} m={m}"), &mul_stmt(k0, m, law, &ys, None), &mul_proof(k0, m, law)).unwrap();
         }
     }
 }
@@ -387,7 +387,7 @@ fn bridge_stmt(n: usize, ylit: u128, rhs: Rhs) -> Expr {
     ex(&pi_("x", bv.clone(), arr(ap(K(encoding::good_bv(n)), v("x")),
         idt(bv, ap2(K(mul_bv(n)), v("x"), K(encoding::lit(n, ylit))), r))))
 }
-/// The proof, from the uniform theorem of `law` at k0 = 2 (the lookup returns `W`, see `uniform_width::bridge_add_zero`).
+/// The proof, from the uniform theorem of `law` at k0 = 2 (the lookup returns `W`, see `width::bridge_add_zero`).
 pub(crate) fn bridge_proof(n: usize, law: Law) -> Expr {
     let (k0, kn) = (2u32, 2 + n as u32);
     let (xs, gxs) = (stream(XN, n), wstream(XN, n));

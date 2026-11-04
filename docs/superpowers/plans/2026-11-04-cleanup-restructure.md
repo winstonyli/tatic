@@ -59,6 +59,7 @@ Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
 - **TB1. `church_bv` from a test binary to a workspace crate** with a real worker/CLI binary (~26-31 files, ~100 doc/script lines).
   IFACE. Same as RB2, AR1. Changes exe names that the gate's arm-cache key hashes (one-time cache invalidation).
 - **TB2. Group `church_bv` into core / uniform / studies directories** (~10 files, ~25 doc cites). Additive; makes TB1 a plain move.
+  **Partly done 2026-11-04** (commit below): only the `uniform/` group (decision z1, D6): the six `uniform_*` files became `tests/church_bv/uniform/{width,bitwise,mul,shift,symmul,symmul_stream}.rs` with a `uniform.rs` parent (names lose the prefix; `super::encoding` became `crate::encoding`); 8 live path mentions in `docs/tier-cycle.md` (7) and `PARKED.md` (1) fixed, the historical names `uniform_symmul_uniform.rs` and `uniform_symmul_opaque.rs` left as written. Checks: `cargo check --all-targets` clean, `-- --list` 749 = 749 after mapping `uniform::x::` back to `uniform_x::`, cite checks pass. Not done: the core and studies groups (`TB1` decides the crate layout first).
 - **TB3. Split `rewrite.rs` (4475 lines) and `encoding.rs` by concern.** ~6,500 lines moved. Same as AR5. Collides with
   `origin/lazy-view` (2 ahead, edits `rewrite.rs` by ~196 lines).
 - **TB4. Fuse the four fuzz suites into one `tests/fuzz`** (~150 duplicated helper lines). Cheaper stepping stone: a shared

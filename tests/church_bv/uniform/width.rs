@@ -608,15 +608,15 @@ pub(crate) fn goodnum(k: u32, m: u32) -> T {
 /// `(proof, statement)` of `Pi x:Bv_n. GoodBv x -> Id(Bv_n, add x (lit 0), x)`, by the uniform theorem.
 pub(crate) fn bridge_add_zero(n: usize) -> (Expr, Expr) {
     let k = 2;
-    let (_, stmt) = super::encoding::add_zero_proof(n, 0);
+    let (_, stmt) = crate::encoding::add_zero_proof(n, 0);
     let (xs, gxs) = (stream(XN, n), wstream(XN, n));
     let sum_i = |i: usize| sumbit(k, xs.clone(), zs(k), numeral(k + 1, i));
     let e_i = |i: usize| ap(ap(ap(ap(proof_b(k, false), numeral(k + 1, i)), goodnum(k, i as u32)), xs.clone()), gxs.clone());
     let g = tuple_chain(n, &sum_i, &|i| v(AN(i)), &e_i);
     let step = lam_bits(XN, n, g);
-    let bv = K(super::encoding::bv_ty(n));
-    let motive = lm("x", bv.clone(), idt(bv.clone(), ap2(K(super::encoding::add(n)), v("x"), K(super::encoding::lit(n, 0))), v("x")));
-    let proof = lm("x", bv, lm("gb", ap(K(super::encoding::good_bv(n)), v("x")), ap2(v("gb"), motive, step)));
+    let bv = K(crate::encoding::bv_ty(n));
+    let motive = lm("x", bv.clone(), idt(bv.clone(), ap2(K(crate::encoding::add(n)), v("x"), K(crate::encoding::lit(n, 0))), v("x")));
+    let proof = lm("x", bv, lm("gb", ap(K(crate::encoding::good_bv(n)), v("x")), ap2(v("gb"), motive, step)));
     (ex(&proof), stmt)
 }
 
@@ -637,7 +637,7 @@ fn bridge_rejects_wrong_statements() {
     for n in [1usize, 2, 3] {
         let (pf, _) = bridge_add_zero(n);
         for lit in [1u128, 1 << (n - 1)] {
-            let (_, wrong) = super::encoding::add_zero_proof(n, lit);
+            let (_, wrong) = crate::encoding::add_zero_proof(n, lit);
             assert!(kernel::check(&Ctx::new(), &pf, &wrong).is_err(), "n={n}: add x {lit} = x accepted");
         }
     }
@@ -653,7 +653,7 @@ fn bridge_scaling() {
         let t1 = Instant::now();
         let r = kernel::check(&Ctx::new(), &pf, &stmt);
         println!("BRIDGE n={n}: built {:.1} ms, check {:.1} ms, {}", built.as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3, if r.is_ok() { "accepted".to_string() } else { format!("REJECTED {}", r.unwrap_err().chars().take(200).collect::<String>()) });
-        let (p2, s2) = super::encoding::add_zero_proof(n, 0);
+        let (p2, s2) = crate::encoding::add_zero_proof(n, 0);
         let t2 = Instant::now();
         let r2 = kernel::check(&Ctx::new(), &p2, &s2);
         println!("PERWIDTH n={n}: check {:.1} ms, {}", t2.elapsed().as_secs_f64() * 1e3, r2.is_ok());

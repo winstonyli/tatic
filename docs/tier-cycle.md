@@ -8002,7 +8002,7 @@ inlining" for this corpus: it does not, so a workload with depth has to be writt
 specialiser inlines only known closures, and a count of trees does not measure what a larger program would give.
 
 **Laws uniform in the width: two of them check on the unchanged kernel, and one reaches `Bv_n` (spike, 2026-11-01;
-`tests/church_bv/uniform_width.rs`).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md`
+`tests/church_bv/uniform/width.rs`).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md`
 §53: bits as streams, a bit-serial adder whose carry is a fold, and induction on the position. The kernel has no cumulativity,
 so one Church `Nat` cannot index the inputs and also count the fold (the state would mention its own type); the spike uses
 two, `Nat_k` for the streams' index and `Nat_(k+1)` for the count, with the state `Sigma(Nat_k, Bool0)` (position numeral,
@@ -8029,7 +8029,7 @@ for all n. (The 70 ms at n = 8, 3.4 s at 32 and 32.6 s at 64 quoted for per-widt
 a different construction; `add_zero_proof` is far cheaper, so those numbers are no baseline for this.) So "the kernel lacks an
 induction principle" in the parked goal-D entry is too strong for `add`.
 
-*The same route carries the bitwise and `lt` laws (`tests/church_bv/uniform_bitwise.rs`, 2026-11-01).* Four bitwise laws
+*The same route carries the bitwise and `lt` laws (`tests/church_bv/uniform/bitwise.rs`, 2026-11-01).* Four bitwise laws
 (`xor x x = 0`, `and` commutes, absorption, De Morgan; the last two nest operators) and `lt x x = 0`, `lt x 0 = 0` are proved
 uniformly in the position and bridged to the statements of `encoding::bitwise` and `encoding::lt_u`, accepted at n = 4, 8, 16,
 24 and 32 (default tests check n = 1 to 3), and wrong statements are rejected (well-typed and false, by the reviewer's mutation
@@ -8038,7 +8038,7 @@ second real induction (the borrow chain, circuit of `ripple_carry(sub=true)`). T
 laws, so the baseline is a per-bit case split written in the same file: it checks at 2.0 to 3.2 ms at n = 32 against 3.6 to
 4.4 ms for the uniform route, and builds in 8 to 25 ms against 39 to 77 ms (reviewer's run, shared machine). Again no speed win.
 
-*`mul` is only partly reachable (`tests/church_bv/uniform_mul.rs`, 2026-11-01).* A single fold over the multiplier's positions
+*`mul` is only partly reachable (`tests/church_bv/uniform/mul.rs`, 2026-11-01).* A single fold over the multiplier's positions
 is ill-typed: the stream adder raises the index level (`Bits(k) -> Bits(k+1)`) and nothing lowers it (kernel messages "lambda
 domain mismatch: (Pi Type2. ...) vs (Pi Type1. ...)", and "inferred Type3, expected Type1" for a `Nat_k -> Nat_(k+1)` map, both
 pinned by a test). So the shift-and-add loop is unrolled in the meta-language, one level per multiplier bit: the law is
@@ -8047,7 +8047,7 @@ literal. With that, `mul x 0 = 0` and `mul x 1 = x` are proved and bridged to a 
 `encoding::add` and `encoding::bitwise` (the encoding has no `mul`), accepted for n = 1 to 6 (checked n = 1 to 3 in the default
 tests). The reviewer's caveat was material: in both laws every shifted partial product is masked by a zero multiplier bit, so
 no proof observed the shift (flipping `shl_bv`'s fill bit left the bridge tests passing; only the literal-multiplication
-computation tests caught it). `mul x 2 = x + x` (`uniform_shift.rs`) closes that: it is proved uniformly in the output position
+computation tests caught it). `mul x 2 = x + x` (`uniform/shift.rs`) closes that: it is proved uniformly in the output position
 and bridged to `Pi x:Bv_n. GoodBv x -> Id(Bv_n, mul(n) x (lit 2), add x x)` for n = 2 to 4 (n = 5, 6 in the scaling test), and
 flipping the fill bit of `shl_bv` or of the stream shift is now REJECTED by the bridge check itself while the old `mul x 0` and
 `mul x 1` bridges still accept the mutant. The proof is not the hinted carry induction on `x + x`: `maj(a,a,c) = a` is stuck on a
@@ -8056,13 +8056,13 @@ with `GoodBool` of the carry kept in a `Sigma` component, which puts its motive 
 lemma and lemma Y for the trailing zero multiplier bits; lemma Y's `GoodBool` hypothesis had to become conditional on the position
 being good. Level rule met on the way: a case split on a `GoodBool` witness admits motives into `Sort1` only, so the split is on a
 `Bool0` equality lifted to the state with `rew`. `mul 1 y = y` with a SYMBOLIC multiplier was bridged three ways, to `Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit 1) y, y)`; the first two
-bridges are deleted and the third, stage-wise one is the only bridge now (`uniform_symmul.rs`, further down). The first, positionwise, bridge was tested for n = 1 to 4 in the default tests (6 and 7 in the ignored scaling test): the multiplier bits are the `GoodBv` step's variables, each partial
+bridges are deleted and the third, stage-wise one is the only bridge now (`uniform/symmul.rs`, further down). The first, positionwise, bridge was tested for n = 1 to 4 in the default tests (6 and 7 in the ignored scaling test): the multiplier bits are the `GoodBv` step's variables, each partial
 product `and(y_j, e_j)` stays stuck, and the proof splits on the witnesses of `y_p` and `y_j` for p < j only. It is positionwise at numerals
 (not uniform in the position; the hinted "disjoint add" lemma needs shl facts at a symbolic position and was not attempted) and needs
 k0 = 1, since the multiplicand is the closed one-hot stream. The fill-bit flip is rejected by this bridge for n >= 2 (at n = 1 there is no
 shift). Cost: check 52 against 15 ms at n = 6 and 369 against 45 ms at n = 7 versus the per-width baseline (2-8x slower), build 1.1 s and
 4.4 s against 0.06 and 0.2 s; the term grows about 4x in memory per bit and n = 8 hit the 8 GB cap (peak 9.2 GB), a cost of the
-positionwise construction (a binomial tree of clones), not a kernel finding. The uniform-in-position form (once `uniform_symmul_uniform.rs`; its stream theorem is now `uniform_symmul_stream.rs`, its bridge deleted) was built too: for every good position `i`, `acc_n i = look(a_0..a_(n-1)) (lower i)`,
+positionwise construction (a binomial tree of clones), not a kernel finding. The uniform-in-position form (once `uniform_symmul_uniform.rs`; its stream theorem is now `uniform/symmul_stream.rs`, its bridge deleted) was built too: for every good position `i`, `acc_n i = look(a_0..a_(n-1)) (lower i)`,
 with no per-position case tree, from a pointwise lookup lemma (D: one induction on the position, instances for the carry staying false and
 for the sum bit), a lemma that the stream shift transports a lookup (a joint induction with `Good (embed M)`, as in the carry lemmas), and
 a per-stage theorem on `carry_false`; the multiplicand is the stream `look(1,0,..,0)`, convertible at every numeral to the old one, so the
@@ -8072,7 +8072,7 @@ smaller than the positionwise bridge (build 85 against 1465 ms at n = 6; peak 38
 END-TO-END bridge check is no faster and not polynomial: 130, 736, 4238 ms at n = 6, 7, 8 (positionwise 117 and 369 at n = 6, 7; 33.6 s and
 5.4 GB at n = 9, about 6x per bit). The cost is the kernel converting the statement's fixed-width `mul(n)` on stuck symbolic bits against the
 stream product (at n = 8 bit 7 alone takes 2.2 s), not the proof; the term's distinct nodes are quadratic in n but its unfolded tree grows
-8 to 10x per bit. The stage-wise bridge (once `uniform_symmul_opaque.rs`; now `uniform_symmul.rs`, the only bridge) avoids that conversion and the check becomes polynomial: each accumulator stage is a
+8 to 10x per bit. The stage-wise bridge (once `uniform_symmul_opaque.rs`; now `uniform/symmul.rs`, the only bridge) avoids that conversion and the check becomes polynomial: each accumulator stage is a
 closed handle `ACC_j`, `S_j` states `Id(Bv_n, ACC_j a.., T_j)` with `T_j = (a_0..a_(j-1), ff..ff)`, and `S_(j+1)` rewrites with `S_j` and then
 applies a stage lemma `add T_j P_j = T_(j+1)` proved directly at the `Bv` level (one case split on the witnesses of `a_i`, `a_j` per position
 `i < j`, each carry shown false by a `rew` chain), so no step converts more than one add. Bridge check 10 to 14 ms at n = 8 against 3.9 to 4.4 s

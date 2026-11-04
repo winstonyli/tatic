@@ -1,25 +1,25 @@
-// Spike (2026-11-01, task y2; builds on `uniform_width.rs` and `uniform_mul.rs`): a stream-route law that really uses the shift.
+// Spike (2026-11-01, task y2; builds on `width.rs` and `mul.rs`): a stream-route law that really uses the shift.
 //
-// `uniform_mul.rs` proves `mul x 0 = 0` and `mul x 1 = x`; in both every shifted partial product is masked by a zero multiplier
+// `mul.rs` proves `mul x 0 = 0` and `mul x 1 = x`; in both every shifted partial product is masked by a zero multiplier
 // bit, so no proof ever observes `shl` / `shl_bv` (flipping `shl_bv`'s fill bit left every bridge test passing). Here the
 // multiplier is the literal 2: `mul x 2 = x + x`, uniformly in the output position, with the multiplier bits unrolled in the
-// meta-language as in `uniform_mul.rs` (m adders, the statement's level grows with m). The proof has four parts:
+// meta-language as in `mul.rs` (m adders, the statement's level grows with m). The proof has four parts:
 //   * `J` (joint induction): the shift's fold and the adder's fold `x + x` run in step. `AD M = SH M` as states, together with
 //     `GoodBool (snd (SH M))` (the adder step needs the carry known: `maj(a, a, c) = a` is by computation only once `c` is a
 //     known bit, because `or(.., and(c, ff))` is stuck on a symbolic `c`). `SH M`'s second component is `x` at the previous
 //     position, so its goodness needs no transport.
 //   * `S`: from `J`, `shl x M = (x + x) M` at good positions ("doubling is the shift").
 //   * `Z`: an adder whose left operand is pointwise the zero stream keeps its carry false, with the other operand arbitrary
-//     (the mirror of lemma Y of `uniform_mul.rs`, which has the zero operand on the right or literally `zs`). It gives
+//     (the mirror of lemma Y of `mul.rs`, which has the zero operand on the right or literally `zs`). It gives
 //     `acc_2 N = shl x (embed N)`: the first partial product is masked by `y_0 = 0`, the second is the shifted stream.
 //   * the multiplier bits 2, 3, .. are 0: the existing lemma Y keeps the known stream `shl x` (lowered), which needs
 //     `GoodBool` of its bits at good positions only (Y's hypothesis `gw` was made conditional on `Good_k i` for this).
 // The fill bit of the shift is a parameter (`fill = false` is the real shift) so the mutation tests can flip it in the stream
 // construction and in the fixed-width `shl_bv`.
-use super::encoding;
-use super::uniform_mul::*;
-use super::uniform_width::T::*;
-use super::uniform_width::*;
+use crate::encoding;
+use super::mul::*;
+use super::width::T::*;
+use super::width::*;
 use std::time::Instant;
 use tatic::kernel::{self, Expr};
 
@@ -381,7 +381,7 @@ fn bridge_rejects_wrong_statements() {
 }
 
 // ---------- the mutation gate, at the bridge ----------
-/// The reviewer's finding on `uniform_mul.rs`: with `shl_bv`'s fill bit flipped the old bridges (`mul x 0 = 0`, `mul x 1 = x`)
+/// The reviewer's finding on `mul.rs`: with `shl_bv`'s fill bit flipped the old bridges (`mul x 0 = 0`, `mul x 1 = x`)
 /// still check, because a zero multiplier bit masks every shifted partial product. This law observes the shift: the same flip
 /// is rejected by the bridge check itself (the kernel's conversion of the statement's `mul` against the proof's stream bits),
 /// not only by the computation test.
@@ -391,7 +391,7 @@ fn flipping_shl_bvs_fill_bit_is_caught_by_the_bridge_check() {
         // (1) the old laws do not see it
         for (name, ylit, rhs, law) in [("mul x 0 = 0", 0u128, ShRhs::Lit(0), Law::Zero), ("mul x 1 = x", 1, ShRhs::X, Law::One)] {
             let stmt = bridge_stmt(n, true, ylit, rhs);
-            let (r, _) = timed_check(&super::uniform_mul::bridge_proof(n, law), &stmt);
+            let (r, _) = timed_check(&super::mul::bridge_proof(n, law), &stmt);
             assert!(r.is_ok(), "n={n}: the old bridge {name} noticed the mutant: {}", r.unwrap_err().chars().take(300).collect::<String>());
             println!("[mutant n={n}] old bridge `{name}` with shl_bv fill=true: still ACCEPTED");
         }
@@ -410,7 +410,7 @@ fn flipping_shl_bvs_fill_bit_is_caught_by_the_bridge_check() {
 // ---------- the per-width baseline ----------
 // `mul x 2 = x + x` for one width, no uniform theorem: the `GoodBv` step opens x into variables a_0 .. a_(n-1), and output bit j
 // is a case split on a_0 .. a_j (2^(j+1) leaves, each closed by refl: the multiplier's bit j reads a_0 .. a_(j-1) and the
-// adder's a_0 .. a_j), as the One baseline of `uniform_mul.rs`.
+// adder's a_0 .. a_j), as the One baseline of `mul.rs`.
 fn direct_bit(n: usize, j: usize, idx: usize, bits: &[T]) -> T {
     let lhs = |bs: &[T]| proj_bit(n, j, ap2(K(mul_bv_fill(n, false)), tuple(bs), K(encoding::lit(n, 2))));
     let rhs = |bs: &[T]| proj_bit(n, j, ap2(K(encoding::add(n)), tuple(bs), tuple(bs)));

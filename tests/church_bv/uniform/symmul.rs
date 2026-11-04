@@ -1,11 +1,11 @@
-// Spike (2026-11-01; builds on `uniform_mul.rs`, `uniform_symmul_stream.rs`): `mul 1 y = y` with a SYMBOLIC multiplier, bridged
+// Spike (2026-11-01; builds on `mul.rs`, `symmul_stream.rs`): `mul 1 y = y` with a SYMBOLIC multiplier, bridged
 // STAGE BY STAGE at the `Bv_n` level, so that the kernel never has to convert the statement's whole fixed-width `mul(n)` against a
 // differently shaped term.
 //     Pi y:Bv_n. GoodBv y -> Id(Bv_n, mul(n) (lit 1) y, y)         (`bridge_stmt`; `mul(n) x y`: the multiplicand FIRST)
 //
 // This module holds the statement (`bridge_stmt`, `Rhs`, the negative variants), the stage-wise proof and a per-width baseline (the
 // reference for the scaling comparison). The stream theorem uniform in the position, a standalone result, is in
-// `uniform_symmul_stream.rs`; this bridge does not use it, only its case-split hypotheses (`hyps_c`, `hyps_x`).
+// `symmul_stream.rs`; this bridge does not use it, only its case-split hypotheses (`hyps_c`, `hyps_x`).
 //
 // `mul(n) x y` unrolls to `ACC_n` with `ACC_0 = lit 0` and `ACC_(j+1) = add ACC_j (and (rep y_j) (shl^j x))`. Here:
 //   * `ACC_j` is a CLOSED handle `\y_0..y_(j-1). ..` (`acc_table`), whose body applies the previous handle: conversion of a stage's
@@ -16,7 +16,7 @@
 //   * `L_j` is proved directly at the Bv level for the symbolic bits (no stream, no induction): `tuple_chain` over the n output bits,
 //     each `xor(xor(u_i, w_i), c_i) = T_(j+1)_i` with `u_i`, `w_i` the bits of the two operands and `c_i` the ripple carry
 //     (`encoding::ripple`'s circuit, as `maj`). The carry is shown `ff` by a chain `E_(i+1)` of rewrites, one case split (on the
-//     witnesses of `a_i` and `a_j`) per position `i < j`; the sum bits are then the case splits of `uniform_symmul_stream.rs`
+//     witnesses of `a_i` and `a_j`) per position `i < j`; the sum bits are then the case splits of `symmul_stream.rs`
 //     (`hyps_c`, `hyps_x`). A case split on a `GoodBool` witness admits `Sort1` motives only, so every split is on a `Bool0` equality
 //     and the `Bv_n` equality is assembled with `rew`.
 //   * the bridge is `gb motive (\a.. ga.. . S_n a.. ga..)`; the one conversion left is `mul(n) (lit 1) (tuple a)` against `ACC_n a..`
@@ -39,11 +39,11 @@
 // direct Bv-level add of two explicit tuples, ~1 ms to check at n = 4.
 // Not built: the second route of the task (the stage's add through the stream adder at numerals); the direct one is cheap, so
 // there is nothing to compare it against here.
-use super::encoding;
-use super::uniform_mul::{band, mul_bv_fill, proj_bit, rep, shl_bv};
-use super::uniform_symmul_stream::{apn, hyps_c, hyps_x, yv};
-use super::uniform_width::T::*;
-use super::uniform_width::*;
+use crate::encoding;
+use super::mul::{band, mul_bv_fill, proj_bit, rep, shl_bv};
+use super::symmul_stream::{apn, hyps_c, hyps_x, yv};
+use super::width::T::*;
+use super::width::*;
 use std::time::Instant;
 use tatic::kernel::{self, Expr};
 
@@ -378,7 +378,7 @@ fn header_size_claims_are_the_measured_ones() {
         assert!(w[1].0 < w[0].0 * 2, "distinct nodes grew by 2x or more in one bit: {sizes:?}");
         assert!(w[1].1 < w[0].1 * 4, "unfolded size grew by 4x or more in one bit: {sizes:?}");
     }
-    let src = include_str!("uniform_symmul.rs");
+    let src = include_str!("symmul.rs");
     let header: String = src.lines().take_while(|l| l.starts_with("//")).collect::<Vec<_>>().join("\n");
     for phrase in ["polynomial", "docs/tier-cycle.md", "BUILD is larger", "Not built"] {
         assert!(header.contains(phrase), "the header must say: {phrase}");
