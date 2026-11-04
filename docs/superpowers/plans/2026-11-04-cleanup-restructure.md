@@ -27,9 +27,13 @@ Checked by hand, 2026-11-04:
 
 ## Order and decisions
 
-Pending the user's pick. Suggested order (additive and independent first; shared prerequisites before what depends on them):
-RB7, SC5, SC4/RB8, DOC3, then the group decisions below. Decisions not yet taken: the target tree (D1), the crate
-question (D2), the `tier-cycle.md` split (D3), the fate of `scripts/experiments` (D4).
+Decisions, 2026-11-04 (the user):
+- **D1 crates: workspace crates after a grouping step.** First the additive grouping (SR1, SR2, TB2, TB3), then the kernel crate (SR4) and the `church_bv` crate (TB1) each as its own spec and plan (item state "Own plan"). Not started.
+- **D3 `tier-cycle.md`: split by H2** (DOC2), after the cite checker (DOC3, done). Not started.
+- **D4 `scripts/experiments`: leave ignored, fix stale doc pointers.** Done (`docs/TOUR.md`; the README line already says it is not in the repo).
+- **D2 / D5 (`kernel.rs` split, SR3 against the architecture survey)**: open; SR3 waits for SR4, which makes it moot if the crate lands.
+
+Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
 
 ## Items by area
 
@@ -79,13 +83,13 @@ question (D2), the `tier-cycle.md` split (D3), the fate of `scripts/experiments`
   `docs/runs/<date>/scripts`.
 - **RB3. Shared crate instead of `#[path]` source sharing** between `church_bv` and `tools/runs`.
 - **RB6. 100 tracked `.patch` spike files and the 1163-row `2026-10-12` tree:** one archive convention.
-- **RB7. Delete the four merged local branches** (`env-cache`, `rule-index`, `score-no-plans`, `screen-key`; (checked) 0 ahead).
+- **RB7. Delete the four merged local branches** (`env-cache`, `rule-index`, `score-no-plans`, `screen-key`; (checked) 0 ahead). **Done 2026-11-04:** `git branch -d` on all four (each was fully merged; recoverable from the reflog).
 
 ### Docs (DOC)
 - **DOC1. Split `RELATED_WORK.md` (6227 lines):** keep the survey, move the 70+ implementation findings out. ~25 files touched.
 - **DOC2. Split `docs/tier-cycle.md` (8558 lines) into `docs/tier-cycle/` by H2** (H3 for the two giants), with a checked index;
   ~130 files get a path-prefix sed. Needs DOC3 first. `PARKED.md` cites by section name, which survives a verbatim split.
-- **DOC3. One cite checker for every doc-to-doc cite form** (only `TOUR.md` has one today). Prerequisite for DOC1, DOC2, DOC6.
+- **DOC3. One cite checker for every doc-to-doc cite form** (only `TOUR.md` has one today). Prerequisite for DOC1, DOC2, DOC6. **Done 2026-11-04** (commit below): `scripts/cite_check.sh` = `cite_check.pl` (section cites into `docs/tier-cycle.md` and `RELATED_WORK.md`: 51 checked, 0 unresolved) + `tour_check.sh` (124 cites); fixture check `cite_check_check.sh`. Not done: path-only cites (about 320 of the 376 `tier-cycle.md` mentions name no section) and other target docs (`PARKED.md`, `TYPES.md`) are not checked.
 - **DOC4. Collapse the repeated "JIT meets the loop" / belief-layer story** to one home (3 docs, ~60 lines).
 - **DOC5. Cut `README.md` to the front door** (~900 lines to `docs/`). **DOC6.** Move `TYPES.md` and the split-out survey off the root
   (~25 one-token edits; same as RB4).

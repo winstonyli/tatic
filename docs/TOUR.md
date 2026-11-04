@@ -51,7 +51,7 @@ The miner, driver, loop and gate:
 - `miner.rs`: how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
 - `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`tests/church_bv/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`tests/church_bv/miner.rs#dump_pool`, `scripts/ctx_dump.sh`), and its fitted model (a weights file, `Model::to_text`) is what `EXTRAS_SELECT=ctx` scores the pool with at run time (`tests/church_bv/miner.rs#ctx_pool_ranks`, `CTX_WEIGHTS`).
 - `tools/runs/` (own crate): the recorded-run runner and gate. `tools/shr_probe.py`: a probe script.
-- `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/` and `experiments/` (older experiment scripts), `tour_check.sh`.
+- `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/`, `tour_check.sh` (TOUR cites) and `cite_check.sh` (section cites into `docs/tier-cycle.md` and `RELATED_WORK.md`, plus `tour_check.sh`). `experiments/` (older experiment scripts) is git-ignored and exists only on the author's machine.
 - `benches/`: criterion benchmarks of execution and proofs.
 
 Test and fuzz suites at `tests/` (each protects one layer): `church_encoding.rs` and `church_lemmas.rs` (the Church-encoded kernel library), `compile_fuzz.rs` (compiled code against the interpreter), `kernel_fuzz.rs` and `kernel_soundness_fuzz.rs` (the kernel never accepts a false claim), `syntax_fuzz.rs` (the parser), `golden_wat.rs` with `golden/` (pinned WAT output), `rule_match_census.rs` (rule-matching counts).
