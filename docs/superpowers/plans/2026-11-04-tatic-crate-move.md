@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Move `tatic` to `crates/tatic` Implementation Plan
