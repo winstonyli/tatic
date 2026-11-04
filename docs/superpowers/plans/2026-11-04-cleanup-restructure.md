@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Restructuring cleanup (survey 2026-11-04)
