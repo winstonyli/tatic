@@ -23,7 +23,7 @@
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md, docs/tier-cycle.md "Count and slicing"): every mine
 //! with rule rounds also mines its own `EXTRAS_N` laws, the next the filter keeps from the stream sequence grown as deep
 //! as the held-out bands (`scope_extras`, fresh slices); off with ABLATE=gen; GEN_DRAW=d draws them from the sequence at
-//! salt + 1000 d instead. POOL=p with EXTRAS_SELECT=first|small hands each mine p x n laws and the miner keeps n: the first n, or the n stragglers with the fewest rewrite steps (then the smallest normal form; a shortfall is filled with the pool's other laws in order); `first` with POOL>1 only serves as a control
+//! salt + 1000 d instead. POOL=p with EXTRAS_SELECT=first|small|ctx hands each mine p x n laws and the miner keeps n: the first n, or the n stragglers with the fewest rewrite steps (then the smallest normal form; a shortfall is filled with the pool's other laws in order), or (`ctx`, with CTX_WEIGHTS=<weights file>, `RULEMINER_CTX_WEIGHTS`) the stragglers the context model scores highest; `first` with POOL>1 only serves as a control
 //! under that mine's base rules (`RULEMINER_EXTRAS_*`, `miner::kept_indices`). POOL>1 needs a selector. POOL_DUMP=1 (with
 //! `first`) also writes each mine's classified pool to LOOP_OUT/dump_<name>_pool.tsv and the served stragglers' normal forms to
 //! dump_<name>_served.txt (`RULEMINER_POOL_DUMP`, `miner::dump_pool`, `ctx_scorer::pool_tsv`); the mine is unchanged.
@@ -205,7 +205,7 @@ fn extra_slices(len: usize, loops: usize, mines: usize, n: usize) -> Result<Vec<
     Ok((0..k).map(|j| j * n..(j + 1) * n).collect())
 }
 
-/// The driver variables `POOL` and `EXTRAS_SELECT` (`first` or `small`): the miner cuts each mine's pool of `POOL x n`
+/// The driver variables `POOL` and `EXTRAS_SELECT` (`first`, `small` or `ctx`): the miner cuts each mine's pool of `POOL x n`
 /// extras down to `n` (`miner::kept_indices`). Unset is today's draw (pool 1, the mine's n extras as they come); a pool of
 /// more than one needs a selector, and a pool of 0 is an error.
 fn extras_select(select: Option<&str>, pool: usize) -> Result<Option<crate::miner::Keep>, String> {
@@ -214,8 +214,18 @@ fn extras_select(select: Option<&str>, pool: usize) -> Result<Option<crate::mine
     }
     match select {
         Some(s) => crate::miner::Keep::parse(s).map(Some),
-        None if pool > 1 => Err(format!("POOL {pool} needs EXTRAS_SELECT=first|small")),
+        None if pool > 1 => Err(format!("POOL {pool} needs EXTRAS_SELECT=first|small|ctx")),
         None => Ok(None),
+    }
+}
+
+/// The driver variable `CTX_WEIGHTS` (the context model's weights file, `RULEMINER_CTX_WEIGHTS`): required by, and only
+/// meaningful with, `EXTRAS_SELECT=ctx`.
+fn ctx_weights(select: Option<crate::miner::Keep>, weights: Option<&str>) -> Result<Option<String>, String> {
+    match (select == Some(crate::miner::Keep::Ctx), weights) {
+        (true, None) => Err("EXTRAS_SELECT=ctx needs CTX_WEIGHTS=<weights file>".to_string()),
+        (false, Some(_)) => Err("CTX_WEIGHTS is only read with EXTRAS_SELECT=ctx".to_string()),
+        (_, w) => Ok(w.map(String::from)),
     }
 }
 
@@ -307,6 +317,23 @@ fn extras_select_parses_and_needs_a_selector_for_a_pool() {
     assert!(extras_select(Some("bogus"), 1).unwrap_err().contains("EXTRAS_SELECT"));
     assert!(extras_select(None, 4).unwrap_err().contains("EXTRAS_SELECT"));
     assert!(extras_select(None, 0).unwrap_err().contains("POOL"));
+}
+
+#[test]
+fn extras_select_accepts_ctx() {
+    assert_eq!(extras_select(Some("ctx"), 4), Ok(Some(crate::miner::Keep::Ctx)));
+}
+
+/// `CTX_WEIGHTS` goes with `EXTRAS_SELECT=ctx` and with nothing else: each without the other names the variable.
+#[test]
+fn ctx_weights_needs_ctx_and_ctx_needs_weights() {
+    use crate::miner::Keep;
+    assert_eq!(ctx_weights(Some(Keep::Ctx), Some("w.txt")), Ok(Some("w.txt".to_string())));
+    assert_eq!(ctx_weights(Some(Keep::Small), None), Ok(None));
+    assert_eq!(ctx_weights(None, None), Ok(None));
+    assert!(ctx_weights(Some(Keep::Ctx), None).unwrap_err().contains("CTX_WEIGHTS"));
+    assert!(ctx_weights(Some(Keep::Small), Some("w.txt")).unwrap_err().contains("CTX_WEIGHTS"));
+    assert!(ctx_weights(None, Some("w.txt")).unwrap_err().contains("CTX_WEIGHTS"));
 }
 
 /// The miner names a straggler `a.show() = b.show()` (`read_named_laws`) and credits it by that name; the extras file is
@@ -747,6 +774,7 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     let (n, mines) = (setup.or("EXTRAS_N", EXTRAS_N), c.mines.len());
     let pool = setup.or("POOL", 1usize);
     let select = extras_select(setup.var("EXTRAS_SELECT"), pool)?;
+    ctx_weights(select, setup.var("CTX_WEIGHTS"))?;
     // built once per process and salt (its `STREAMS` lines give the time)
     let deep = stream_sequence(salt, held_levels(HELD_BANDS.into_iter().max().unwrap()));
     let keep = filter(&served, &held);
@@ -809,6 +837,7 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
                 env.push(("RULEMINER_EXTRAS_FROM".into(), served.to_string()));
                 env.push(("RULEMINER_EXTRAS_KEEP".into(), keep.to_string()));
                 env.push(("RULEMINER_EXTRAS_BY".into(), by.to_string()));
+                env.extend(setup.var("CTX_WEIGHTS").map(|w| ("RULEMINER_CTX_WEIGHTS".to_string(), w.to_string())));
                 // after `lawfile` was read: the dump is a switch of the miner (`MinerConfig::pool_dump`), which reads only `first` pools
                 if setup.flag("POOL_DUMP", false) {
                     assert_eq!(by, "first", "POOL_DUMP dumps the pool of a `first` mine, not of EXTRAS_SELECT={by}");

@@ -49,7 +49,7 @@ The belief layer (`tests/church_bv/`):
 
 The miner, driver, loop and gate:
 - `miner.rs`: how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
-- `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`tests/church_bv/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`tests/church_bv/miner.rs#dump_pool`, `scripts/ctx_dump.sh`) and nothing at run time reads it.
+- `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`tests/church_bv/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`tests/church_bv/miner.rs#dump_pool`, `scripts/ctx_dump.sh`), and its fitted model (a weights file, `Model::to_text`) is what `EXTRAS_SELECT=ctx` scores the pool with at run time (`tests/church_bv/miner.rs#ctx_pool_ranks`, `CTX_WEIGHTS`).
 - `tools/runs/` (own crate): the recorded-run runner and gate. `tools/shr_probe.py`: a probe script.
 - `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/` and `experiments/` (older experiment scripts), `tour_check.sh`.
 - `benches/`: criterion benchmarks of execution and proofs.
@@ -180,7 +180,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Screen**: a random-input test that refutes a claimed law before proving it. `tests/church_bv/rewrite.rs#SCREEN_INPUTS`
 - **Specialisation trace**: the list of beta-v steps replayed by the independent checker. `src/spec_check.rs#Step`
 - **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `tests/church_bv/miner.rs#laws_of`
-- **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified. `tests/church_bv/miner.rs#kept_indices`
+- **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified; `ctx` keeps the same stragglers but orders them by a fitted context model's score instead of by cost (the weights file named by `CTX_WEIGHTS`, columns without the marginal-coverage group). `tests/church_bv/miner.rs#kept_indices`
 - **Stream / salt**: operator-set law streams, interleaved round-robin; the salt reshuffles. `tests/church_bv/search.rs#stream_sequence`
 - **Sweep**: three cold loops for one salt and build. `tests/church_bv/driver.rs#sweep`
 - **TermStore**: the hash-consing store of terms. `src/term.rs#TermStore`
