@@ -152,7 +152,7 @@ use std::rc::Rc;
 
 use crate::jit::shape::{self, Shape};
 use crate::lang::eval;
-use crate::kernel::{self, Expr, Globals, Postulates};
+use tatic_kernel::{self as kernel, Expr, Globals, Postulates};
 use crate::lang::term::{Hash, PrimOp, Term, TermStore};
 
 /// Postulated `Int` and its operators, plus on-demand postulated constants

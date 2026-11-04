@@ -21,7 +21,7 @@ use super::mul::*;
 use super::width::T::*;
 use super::width::*;
 use std::time::Instant;
-use tatic::kernel::{self, Expr};
+use tatic_kernel::{self as kernel, Expr};
 
 fn ap4(f: T, a: T, c: T, d: T, e: T) -> T {
     ap(ap3(f, a, c, d), e)

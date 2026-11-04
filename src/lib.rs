@@ -1,5 +1,4 @@
 pub mod jit;
-pub mod kernel;
 pub mod lang;
 pub mod proof;
 pub mod support;

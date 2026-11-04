@@ -18,7 +18,7 @@ use crate::encoding;
 use super::width::T::*;
 use super::width::*;
 use std::time::Instant;
-use tatic::kernel::{self, Ctx, Expr};
+use tatic_kernel::{self as kernel, Ctx, Expr};
 
 // ---------- stage A: the stream multiplier ----------
 /// One step of the shift's fold: (position, x at the previous position) -> (position + 1, x at this position).

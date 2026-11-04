@@ -66,7 +66,7 @@ fn corpus_report() {
     let path = std::env::var("CORPUS").expect("CORPUS=docs/corpora/<source>/cases.txt");
     let cases = read_cases(&std::fs::read_to_string(&path).unwrap()).unwrap_or_else(|e| panic!("{path}: {e}"));
     let mined = std::env::var("CORPUS_RULES").map(|p| parse_rules(&std::fs::read_to_string(p).unwrap())).unwrap_or_default();
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let m = measure(&cases, mined.clone());
         for r in &m {
             println!("CORPUS {}: {} ops | table {} | rules {}", r.name, r.before, r.table, r.rules);
@@ -94,7 +94,7 @@ mod tests {
 
     #[test]
     fn the_table_shrinks_a_swap_xor_leftover() {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let cases = read_cases("swap\txor(xor(x, y), y)\nplain\tadd(x, y)\n").unwrap();
             let m = measure(&cases, vec![]);
             assert_eq!(m[0], Row { name: "swap".into(), before: 2, table: 0, table_changed: true, rules: 0 });
@@ -104,7 +104,7 @@ mod tests {
 
     #[test]
     fn the_hand_written_corpus_reproduces_the_probe_counts() {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let cases = read_cases(include_str!("../../docs/corpora/hd-own/cases.txt")).unwrap();
             let m = measure(&cases, vec![]);
             let (before, table, rules) = m.iter().fold((0, 0, 0), |a, r| (a.0 + r.before, a.1 + r.table, a.2 + r.rules));
@@ -116,7 +116,7 @@ mod tests {
 
     #[test]
     fn the_souper_corpus_reproduces_its_source_counts() {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let cases = read_cases(include_str!("../../docs/corpora/souper/cases.txt")).unwrap();
             let m = measure(&cases, vec![]);
             let (before, table, rules) = m.iter().fold((0, 0, 0), |a, r| (a.0 + r.before, a.1 + r.table, a.2 + r.rules));
@@ -127,7 +127,7 @@ mod tests {
 
     #[test]
     fn an_lt_word_under_a_bitwise_operator_is_measured() {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let cases = read_cases("ule	xor(lt(and(x, y), xor(x, y)), sub(0, -1))
 mask	and(x, lt(y, z))
 ").unwrap();

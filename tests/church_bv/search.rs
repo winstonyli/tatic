@@ -201,7 +201,7 @@ pub fn rule_miner() {
 /// operators, and a false shift law fails to check.
 #[test]
 pub fn bitwise_law_proves_shift_laws_and_rejects_false_ones() {
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let shl = |a: Term| op(6, a, Term::ZERO);
         let (x, y) = (Term::v(0), Term::v(1));
@@ -219,7 +219,7 @@ pub fn bitwise_law_proves_shift_laws_and_rejects_false_ones() {
 #[test]
 pub fn notsub_rule_is_provable() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         for n in [3, 4] {
             let r = prove_rule(job, n, 1, &op(3, Term::v(0), Term::ONES), &op(4, Term::ONES, Term::v(0)));
@@ -233,7 +233,7 @@ pub fn notsub_rule_is_provable() {
 #[test]
 pub fn rewrite_law_proves_lt_laws() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (x, y) = (Term::v(0), Term::v(1));
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let n = 4;
@@ -252,7 +252,7 @@ pub fn rewrite_law_proves_lt_laws() {
 #[test]
 pub fn lt_rules_with_constant_right_sides_are_provable() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let lt = |a: Term, b: Term| Term::op(LT, a, b);
         let n = 4;
         for k in [1usize, 2] {
@@ -268,7 +268,7 @@ pub fn lt_rules_with_constant_right_sides_are_provable() {
 #[test]
 pub fn lt_root_rules_close_constant_false_laws() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (x, y) = (Term::v(0), Term::v(1));
         let lt = |a: Term, b: Term| Term::op(LT, a, b);
         let add = |a: Term, b: Term| Term::op(ADD, a, b);
@@ -284,7 +284,7 @@ pub fn lt_root_rules_close_constant_false_laws() {
 #[test]
 pub fn shr_mask_proves_root_shift_laws_over_arithmetic_and_rejects_false_ones() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = Term::v;
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let shr = |a: Term| op(7, a, Term::ZERO);
@@ -317,7 +317,7 @@ pub fn shr_mask_proves_root_shift_laws_over_arithmetic_and_rejects_false_ones() 
 #[test]
 pub fn encoding_search_rediscovers_library_lemmas_from_statements() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = Term::v;
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let laws = [
@@ -416,7 +416,7 @@ pub fn const_bits(n: usize, c: u128) -> Vec<Expr> {
 #[test]
 pub fn mul_circuit_laws_by_case_analysis_and_false_ones_rejected() {
     for n in [2usize, 3, 4] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let m = |x: &[Expr], y: &[Expr]| mul_bits(n, x, y);
             let t0 = Instant::now();
             let laws: Vec<(&str, Box<BitsDyn>, Box<BitsDyn>)> = vec![
@@ -440,7 +440,7 @@ pub fn mul_circuit_laws_by_case_analysis_and_false_ones_rejected() {
 #[test]
 pub fn mul_circuit_three_vector_laws() {
     for n in [2usize, 3] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let (mc, ac) = (bits_circuit(n, &move |x, y| mul_bits(n, x, y)), bits_circuit(n, &|x, y| add_rows(x, y)));
             let t0 = Instant::now();
             let dist = circuit_law_k(
@@ -481,7 +481,7 @@ pub fn rule_admissible(job: &mut Job, l: &Term, r: &Term) -> bool {
 #[test]
 pub fn promoted_rules_are_ordered_and_provable() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         for (l, r) in promoted_rules() {
             assert_eq!(parse_term(&l.show()).show(), l.show());
             assert!(rule_admissible(job, l, r), "{} -> {} is not decreasing in the rule order or not provable at widths 3 and 4", l.show(), r.show());
@@ -495,7 +495,7 @@ pub fn promoted_rules_are_ordered_and_provable() {
 #[test]
 pub fn rule_admission_refuses_wrong_rules() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let rs = promoted_rules();
         let (mut refused, mut tried) = (0, 0);
         for (l, _) in rs {
@@ -577,7 +577,7 @@ pub fn stream_laws_are_deterministic_and_open() {
     let c = crate::classes::Classes::get();
     let job = &mut Job::new(Setup::process());
     let mut r8 = width8();
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let memo = &mut crate::classes::NormalForms::default();
         for (x, y) in &a {
             assert!(within(x, &ops) && within(y, &ops), "{} = {}", x.show(), y.show());
@@ -723,7 +723,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
     let job = &mut Job::new(Setup::process());
     let mut r8 = width8();
     let (mut out, mut refuted) = (vec![], 0usize);
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let memo = &mut crate::classes::NormalForms::default();
         for (a, b) in shuffled(laws, salt) {
             if c.normalize(job, 4, 3, &a, memo) == c.normalize(job, 4, 3, &b, memo) {
@@ -974,7 +974,7 @@ pub fn permutative_rules_are_admitted_and_oriented_by_instance() {
 #[ignore]
 pub fn normal_forms() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let rules: Vec<(Term, Term)> = parse_rules(&std::fs::read_to_string(job.setup().var("NF_RULES").unwrap_or_default()).unwrap_or_default());
         let rules = job.rules().with_mined(job.setup(), rules).tracing(job.setup().flag("NF_TRACE", false));
         job.with_rules(rules, |job| {
@@ -1000,7 +1000,7 @@ pub fn normal_forms() {
 #[test]
 pub fn shrnot_rule_is_provable_and_closes_the_shr_not_laws() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         for n in [4usize, 8] {
             let (l, r) = shrnot_rule();
             let (p, s) = prove_rule(job, n, 1, &l, &r).expect("shrnot");
@@ -1050,7 +1050,7 @@ pub fn rule_set_kernel_check() {
 pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
     let job = &mut Job::new(setup.clone());
     let _save = lemma_cache::Save(setup.clone());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (rules, _, kv, laws) = check_laws(job);
         // CHECK_FAST=1: count only (machine fallbacks are counted without building their proofs, nothing is kernel-checked, no NFSAME pass);
         // the CHECKED line and so M are unchanged, for exploration (the miner's RULEMINER_FAST, applied to serving)
@@ -1118,7 +1118,7 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
 pub fn proof_cost_split() {
     let job = &mut Job::new(Setup::process());
     use std::time::{Duration, Instant};
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (installed, rules, kv, laws) = check_laws(job);
         job.with_rules(installed, |job| {
             #[derive(Default)]
@@ -1133,7 +1133,7 @@ pub fn proof_cost_split() {
                 let t = Instant::now();
                 job.lemmas.ck(name, &p, &s);
                 let check = t.elapsed();
-                let (nodes, occ) = tatic::kernel::term_sizes(&p);
+                let (nodes, occ) = tatic_kernel::term_sizes(&p);
                 let a = &mut acc[if spent.fallbacks != 0 { 2 } else { (spent.join.met > 0) as usize }];
                 (a.n, a.build, a.check, a.nodes, a.occ) = (a.n + 1, a.build + build, a.check + check, a.nodes + nodes, a.occ + occ);
             }
@@ -1146,7 +1146,7 @@ pub fn proof_cost_split() {
                 let t = Instant::now();
                 job.lemmas.ck(&l.show(), &p, &ty);
                 let check = t.elapsed();
-                let (nodes, occ) = tatic::kernel::term_sizes(&p);
+                let (nodes, occ) = tatic_kernel::term_sizes(&p);
                 (ra.n, ra.build, ra.check, ra.nodes, ra.occ) = (ra.n + 1, ra.build + build, ra.check + check, ra.nodes + nodes, ra.occ + occ);
             }
             for (what, a) in [("rules", &acc[0]), ("joined", &acc[1]), ("machine", &acc[2]), ("rule-proofs", &ra)] {
@@ -1162,7 +1162,7 @@ pub fn proof_cost_split() {
 #[test]
 pub fn closed_terms_fold_to_constants() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         for (a, b) in [("sub(-1, add(-1, -1))", "sub(0, -1)"), ("sub(add(0, 0), -1)", "sub(0, -1)"), ("xor(-1, -1)", "0"), ("add(-1, add(-1, sub(0, -1)))", "-1")] {
             let (t1, t2) = (parse_term(a), parse_term(b));
             let (proof, spent) = job.spent(|job| rewrite_law(job, 4, 1, &t1, &t2));
@@ -1227,7 +1227,7 @@ pub fn proposal_credit(job: &mut Job, rules: &[(Term, Term)], kv: usize, held: &
 #[ignore]
 pub fn proposal_credit_report() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (installed, rules, kv, laws) = check_laws(job);
         job.with_rules(installed.counting(true), |job| {
             let held: Vec<(Term, Term)> = laws.into_iter().map(|(_, a, b)| (a, b)).collect();
@@ -1258,7 +1258,7 @@ pub fn proposal_credit_report() {
 #[test]
 pub fn proposal_credit_goes_to_rule_users() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let counting = job.rules().counting(true);
         job.with_rules(counting, |job| {
             let law = |s: &str| s.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap();

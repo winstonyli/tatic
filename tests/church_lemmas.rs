@@ -1,6 +1,6 @@
 // First universal lemmas over Church Bools, on the unchanged kernel: a symbolic bit `a` with a
 // `GoodBool` witness (its own induction principle) gives `x + 0 = x`'s per-bit facts.
-use tatic::kernel::*;
+use tatic_kernel::*;
 
 fn bool0() -> Expr {
     pi(sort(0), arrow(var(0), arrow(var(0), var(0))))

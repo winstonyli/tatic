@@ -846,7 +846,7 @@ pub fn countdown_law(w: Wasm, dec: Expr) -> (Expr, Expr) {
             // `M cd` is `N (G A) timeout B`: take `B`
             let m = m_cd(c, x);
             let body = match whnf(&m).node() {
-                tatic::kernel::Node::App(_, b) => c.mark(b),
+                tatic_kernel::Node::App(_, b) => c.mark(b),
                 other => panic!("countdown's meaning is not a fuel application: {other:?}"),
             };
             let a = c.mark(w.sty(c, &[K::W], s_ty));
@@ -928,7 +928,7 @@ fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn
 
 #[test]
 pub fn wasm_programs_as_kernel_data() {
-    tatic::kernel::scoped(|| run_wasm_checks(Wasm { n: 4 }, true))
+    tatic_kernel::scoped(|| run_wasm_checks(Wasm { n: 4 }, true))
 }
 
 /// The countdown invariant at n=24 stays fast. Without `conv`'s pair memo it walked a shared case tree once per path
@@ -936,7 +936,7 @@ pub fn wasm_programs_as_kernel_data() {
 #[test]
 pub fn countdown_invariant_is_not_exponential() {
     let n = 24;
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (p, s) = countdown_law(Wasm { n }, sub(n));
         let t0 = Instant::now();
         ck("countdown invariant n=24", &p, &s);
@@ -955,7 +955,7 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
     // a control's statement must be a type, so its rejection is the proof's
     let rejected = |name: &str, (p, s): (Expr, Expr)| {
         let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
-        assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic::kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
+        assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
         assert!(holds(&p, &s).is_err(), "{name} must be rejected at n={n}");
     };
     timed("if_inv", if_inv(Ctl::Ok));
@@ -991,6 +991,6 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
 #[ignore]
 pub fn wasm_scaling() {
     for n in [4usize, 16, 32, 64] {
-        tatic::kernel::scoped(|| run_wasm_checks(Wasm { n }, n == 64))
+        tatic_kernel::scoped(|| run_wasm_checks(Wasm { n }, n == 64))
     }
 }

@@ -9,6 +9,7 @@ default-run = "demo"
 
 [dependencies]
 blake3 = "1.8.3"
+tatic-kernel = { path = "crates/tatic-kernel" }
 hashbrown = "0.16.1"
 im = "15.1.0"
 mimalloc = "0.1.52"
@@ -44,6 +45,6 @@ harness = false
 
 # `tatic-kernel` and `tatic-rng` are members; `tools/runs` is its own standalone crate (own lockfile and target).
 [workspace]
-members = ["crates/tatic-rng"]
-default-members = [".", "crates/tatic-rng"]
+members = ["crates/tatic-kernel", "crates/tatic-rng"]
+default-members = [".", "crates/tatic-kernel", "crates/tatic-rng"]
 exclude = ["tools/runs"]

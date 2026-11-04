@@ -45,7 +45,7 @@ use super::symmul_stream::{apn, hyps_c, hyps_x, yv};
 use super::width::T::*;
 use super::width::*;
 use std::time::Instant;
-use tatic::kernel::{self, Expr};
+use tatic_kernel::{self as kernel, Expr};
 
 // ---------- the statement ----------
 #[derive(Clone, Copy, Debug)]

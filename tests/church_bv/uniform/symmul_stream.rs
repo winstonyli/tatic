@@ -36,7 +36,7 @@
 use super::mul::*;
 use super::width::T::*;
 use super::width::*;
-use tatic::kernel::{self, Expr};
+use tatic_kernel::{self as kernel, Expr};
 
 /// The level of the streams' index at stage 0. `x = e_0` reads `Bool0` out of `Nat_1`, so k0 = 1 is enough.
 const K0: u32 = 1;

@@ -21,7 +21,7 @@
 // by dropping the LE hypothesis; see `prefix_corollary` below).  Pointwise is the induction-friendly form: the
 // induction is on the position N itself, no extra `below` relation inside the step.
 use std::time::Instant;
-use tatic::kernel::{self, Ctx, Expr};
+use tatic_kernel::{self as kernel, Ctx, Expr};
 
 #[derive(Clone)]
 pub(crate) enum T {

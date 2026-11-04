@@ -7,7 +7,7 @@ use std::str::FromStr;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering::Relaxed};
 use std::sync::{Arc, Mutex, OnceLock, RwLock};
 
-use tatic::kernel::{Expr, PExpr, Postulates, Scope};
+use tatic_kernel::{Expr, PExpr, Postulates, Scope};
 
 use crate::rewrite::{JoinCost, JoinStoreUse, RewriteState, Rule, RuleKey, Rules, TableRule, Term};
 

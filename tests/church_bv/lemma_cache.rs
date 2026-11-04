@@ -12,7 +12,7 @@ use std::sync::{Mutex, OnceLock};
 
 const MAGIC: &[u8; 4] = b"TLC1";
 
-/// A cache file's entries: key -> the statement in `tatic::kernel::bin` form.
+/// A cache file's entries: key -> the statement in `tatic_kernel::bin` form.
 pub struct Cache {
     entries: HashMap<String, Vec<u8>>,
     /// keys in file order, so a save keeps it
@@ -132,7 +132,7 @@ pub fn recheck(setup: &Setup) -> bool {
 /// The statement an earlier process checked for `key`, if the cache has one.
 pub fn lookup(setup: &Setup, key: &str) -> Option<Expr> {
     let b = process(setup)?.cache.get(key)?;
-    match tatic::kernel::bin::read(b) {
+    match tatic_kernel::bin::read(b) {
         Ok(s) => {
             setup.lemmas.hits.fetch_add(1, Relaxed);
             Some(s)
@@ -151,7 +151,7 @@ pub fn record(setup: &Setup, key: &str, stmt: &Expr) {
     }
     let c = &setup.lemmas;
     c.built.fetch_add(1, Relaxed);
-    match (stmt.loose() == 0 && stmt.free() == 0).then(|| tatic::kernel::bin::write(stmt)) {
+    match (stmt.loose() == 0 && stmt.free() == 0).then(|| tatic_kernel::bin::write(stmt)) {
         Some(Ok(b)) => c.recorded.lock().unwrap_or_else(|e| e.into_inner()).push((key.to_string(), b)),
         _ => {
             c.skipped.fetch_add(1, Relaxed);
@@ -190,7 +190,7 @@ fn lemma_cache_round_trips_and_rejects_other_builds() {
     let path = dir.join("lemmas.bin");
     let _ = std::fs::remove_file(&path);
     let stmt = |k: usize| lemma_n_ty(k, &|v| id(bool0(), xor(v[0], v[k - 1]), xor(v[k - 1], v[0])));
-    let enc = |k: usize| tatic::kernel::bin::write(&stmt(k)).unwrap();
+    let enc = |k: usize| tatic_kernel::bin::write(&stmt(k)).unwrap();
     let fresh = Cache::load(&path, 7);
     assert!(fresh.why_empty.is_some() && fresh.len() == 0);
     assert_eq!(fresh.save(&path, 7, &[("a".into(), enc(2)), ("b".into(), enc(3)), ("a".into(), enc(3))]).unwrap().0, 2, "first of a key wins");
@@ -199,7 +199,7 @@ fn lemma_cache_round_trips_and_rejects_other_builds() {
     assert!(second.why_empty.is_none() && second.len() == 2);
     second.save(&path, 7, &[("b".into(), enc(4)), ("c".into(), enc(4))]).unwrap();
     let third = Cache::load(&path, 7);
-    let got = |k: &str| tatic::kernel::bin::read(third.get(k).unwrap()).unwrap();
+    let got = |k: &str| tatic_kernel::bin::read(third.get(k).unwrap()).unwrap();
     assert!(got("a") == stmt(2) && got("b") == stmt(3) && got("c") == stmt(4));
     // another build's file, a foreign file and a truncated one are not used
     assert!(Cache::load(&path, 8).why_empty.unwrap().contains("another build"));

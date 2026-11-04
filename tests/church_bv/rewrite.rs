@@ -920,7 +920,7 @@ pub fn bitwise_law_proves_true_laws_and_rejects_false_ones() {
 // results are then equal, or both add-free, `bitwise_law` closes the gap.
 
 thread_local! {
-    pub static CLOSED: std::cell::RefCell<hashbrown::HashMap<String, (tatic::kernel::PExpr, tatic::kernel::PExpr)>> = Default::default();
+    pub static CLOSED: std::cell::RefCell<hashbrown::HashMap<String, (tatic_kernel::PExpr, tatic_kernel::PExpr)>> = Default::default();
 }
 /// A closed library term built once per key (the proofs and witnesses the rewriter reuses at every step).
 pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
@@ -928,7 +928,7 @@ pub fn memo(key: String, build: impl FnOnce() -> (Expr, Expr)) -> (Expr, Expr) {
         return v;
     }
     let (p, s) = build();
-    CLOSED.with(|c| c.borrow_mut().insert(key, (tatic::kernel::persist(p), tatic::kernel::persist(s))));
+    CLOSED.with(|c| c.borrow_mut().insert(key, (tatic_kernel::persist(p), tatic_kernel::persist(s))));
     (p, s)
 }
 
@@ -956,8 +956,8 @@ pub fn shared_lemma(job: &mut Job, key: String, build: impl FnOnce(&mut Job) -> 
     let (ps, scopes) = job.lemmas.params.get_or_insert_with(|| (Postulates::new(), Vec::new()));
     let sc = ps.open();
     let r = ps.bind(s);
-    scopes.push((sc, p.map(tatic::kernel::persist)));
-    job.lemmas.bound.insert(key, (tatic::kernel::persist(r), tatic::kernel::persist(s)));
+    scopes.push((sc, p.map(tatic_kernel::persist)));
+    job.lemmas.bound.insert(key, (tatic_kernel::persist(r), tatic_kernel::persist(s)));
     (r, s)
 }
 /// `body` with the job's lemma parameters discharged, innermost first: `(\r_0. .. ((\r_m. body) P_m) ..) P_0`, a closed
@@ -3401,7 +3401,7 @@ pub fn law_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, plan: 
 #[test]
 fn plans_compile_to_checked_proofs() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (v, z, ones) = (Term::v, Term::ZERO, Term::ONES);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let shr = |a: Term| op(SHR1, a, Term::ZERO);
@@ -3434,7 +3434,7 @@ fn plans_compile_to_checked_proofs() {
 #[test]
 fn join_eq_closes_an_equal_pair_by_rule_and_comm_steps() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let rules = job.rules().with_mined(job.setup(), vec![(parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"))]);
         job.with_rules(rules, |job| {
         let (n, k) = (4, 3);
@@ -3522,7 +3522,7 @@ fn a_join_step_is_known_before_it_is_made() {
 #[test]
 pub fn laws_over_three_vectors_check_and_false_ones_fail() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         for n in [1usize, 3] {
@@ -3569,7 +3569,7 @@ pub fn rewrite_law_proves_add_conjectures_from_the_library_lemmas() {
 #[test]
 pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let (p, s) = rewrite_law(job, 2, 3, &op(0, op(0, v(2), v(0)), v(1)), &op(0, v(1), op(0, v(0), v(2)))).expect("comm+assoc");
@@ -3595,7 +3595,7 @@ pub fn a_law_over_lemma_parameters_discharges_to_a_closed_proof() {
 #[test]
 pub fn a_second_discharge_in_a_job_applies_only_the_lemmas_bound_after_the_first() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let lemma = |n: usize| (good_lit(n, 0), app(good_bv(n), lit(n, 0)));
         let (ra, sa) = shared_lemma(job, "A".into(), |_| lemma(2));
         ck("A", &discharge(job, ra), &sa);
@@ -3713,7 +3713,7 @@ pub fn carry_chain_builder_finds_the_constant_carry() {
 #[test]
 fn proving_leaves_the_callers_rewrite_state() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         (job.rw.budget, job.rw.trace, job.rw.fallbacks) = (777, Some(vec![]), 5);
         let blocked = job.blocked.len();
         let (l, r) = (parse_term("shr1(xor(x, -1), 0)"), parse_term("xor(shr1(x, 0), shr1(-1, 0))"));
@@ -3734,7 +3734,7 @@ fn proving_leaves_the_callers_rewrite_state() {
 #[test]
 fn rewrite_cycles_are_cut() {
     let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let rules = "sub(sub(x, y), z) -> sub(x, add(y, z))\nadd(x, sub(y, z)) -> sub(x, sub(z, y))\nsub(x, sub(y, z)) -> sub(z, sub(y, x))\n";
         let (t1, t2) = (parse_term("sub(sub(z, x), sub(y, z))"), parse_term("sub(add(z, z), add(x, y))"));
         let (out, spent) = job.measured(LAW_STEPS, |job| job.with_mined(parse_rules(rules), |job| rewrite_law(job, 4, 3, &t1, &t2)));
@@ -3755,7 +3755,7 @@ fn rewrite_cycles_are_cut() {
 #[test]
 fn growing_rewrite_chains_are_cut() {
     let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let rules = "lt(x, sub(y, z)) -> lt(x, add(sub(x, y), z))\nlt(x, add(y, z)) -> lt(x, sub(sub(x, y), z))\n";
         let (t1, t2) = (parse_term("lt(z, add(add(x, x), y))"), parse_term("lt(z, add(y, add(x, x)))"));
         let (out, spent) = job.measured(LAW_STEPS, |job| job.with_mined(parse_rules(rules), |job| rewrite_law(job, 4, 3, &t1, &t2)));
@@ -3970,7 +3970,7 @@ fn join_cost_counts_searches_but_not_memo_hits() {
 #[test]
 fn join_store_serves_a_stored_path_under_its_laws_only() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
         let (n, k) = (4, 3);
         let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
@@ -4005,7 +4005,7 @@ fn join_store_serves_a_stored_path_under_its_laws_only() {
 #[test]
 fn a_cached_failed_join_yields_to_a_stored_path() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (n, k) = (4, 3);
         let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
         let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
@@ -4028,7 +4028,7 @@ fn a_cached_failed_join_yields_to_a_stored_path() {
 #[test]
 fn join_store_workers_read_the_frozen_copy() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let k = 3;
         job.with_mined(vec![(parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"))], |job| {
             let (a, b) = (parse_term("add(add(z, y), sub(x, -1))"), parse_term("add(sub(add(x, y), -1), z)"));
@@ -4048,7 +4048,7 @@ fn join_store_workers_read_the_frozen_copy() {
             let setup = job.setup().clone();
             let worker = std::thread::spawn(move || {
                 let job = &mut Job::new(setup);
-                tatic::kernel::scoped(|| {
+                tatic_kernel::scoped(|| {
                     job.with_mined(rules, |job| {
                         job.join_store = Some(JoinStoreUse::Read(frozen));
                         (join(job, &a, &b), join(job, &c, &d))
@@ -4067,7 +4067,7 @@ fn join_store_workers_read_the_frozen_copy() {
 #[test]
 fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (n, k) = (4, 3);
         let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
         let other = (parse_term("sub(x, sub(x, y))"), parse_term("y"));
@@ -4109,7 +4109,7 @@ fn join_store_serves_paths_backwards_through_several_steps_and_moved_laws() {
 #[test]
 fn join_store_is_fed_only_where_it_is_read() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let k = 3;
         let rule = (parse_term("add(sub(add(x, y), -1), z)"), parse_term("add(sub(x, -1), add(y, z))"));
         job.with_mined(vec![rule], |job| {

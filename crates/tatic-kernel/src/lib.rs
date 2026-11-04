@@ -457,7 +457,7 @@ fn stack_ok() -> bool {
 /// in this module, and `Debug` for `Expr` -- so their depth is bounded by
 /// heap, not native stack.
 #[inline(always)]
-pub(crate) fn grow<R>(f: impl FnOnce() -> R) -> R {
+pub fn grow<R>(f: impl FnOnce() -> R) -> R {
     if stack_ok() { f() } else { grow_slow(f) }
 }
 

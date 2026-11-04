@@ -1,7 +1,7 @@
 use super::*;
 use crate::jit::compile;
 use crate::lang::eval;
-use crate::kernel::Ctx;
+use tatic_kernel::Ctx;
 use crate::support::samples::{
     a_capturing_closure_call, a_pap_capturing, a_pap_non_capturing, capturing_closure_loop, factorial, fib, gcd,
     gcd_with_two_base_cases, inc, inconsistent_arity_loop_carried_parameter_loop, iterate,

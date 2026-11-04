@@ -409,7 +409,7 @@ pub fn add_tree_law(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term) -> 
         return hit;
     }
     let law = tree_encoding(job, n, k, t1, t2).map(|found| tree_proof(job, n, k, t1, t2, &found));
-    job.lemmas.tree_laws.insert(key, law.map(|(p, s)| (tatic::kernel::persist(p), tatic::kernel::persist(s))));
+    job.lemmas.tree_laws.insert(key, law.map(|(p, s)| (tatic_kernel::persist(p), tatic_kernel::persist(s))));
     law
 }
 
@@ -622,7 +622,7 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
 #[test]
 pub fn state_encoding_search_proves_three_leaf_sum_laws() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |a: Term, b: Term| Term::op(ADD, a, b);
         for n in [1usize, 2, 4] {
@@ -647,7 +647,7 @@ pub fn state_encoding_search_proves_three_leaf_sum_laws() {
 #[test]
 pub fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leaves() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let add = |a: Term, b: Term| op(0, a, b);
@@ -675,7 +675,7 @@ pub fn state_encoding_search_handles_bitwise_leaves_three_vectors_and_four_leave
 #[test]
 pub fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leaves() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let add = |a: Term, b: Term| op(0, a, b);
@@ -703,7 +703,7 @@ pub fn symmetric_encoding_handles_unequal_carry_counts_bare_leaves_and_five_leav
 #[test]
 pub fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         // computes: a - b mod 2^n on all pairs at n = 3
         let n = 3;
         for a in 0..8u128 {
@@ -742,7 +742,7 @@ pub fn sub_computes_is_good_and_its_laws_are_found_by_the_encoding_search() {
 /// steps, so the plain decisions match what the proofs then state.
 #[test]
 pub fn plain_steps_match_the_kernel_gates() {
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (v, op) = (|i: usize| Term::v(i), |o: usize, a: Term, b: Term| Term::op(o, a, b));
         let gops = GoodOps::new();
         for term in [op(ADD, op(XOR, v(0), Term::ONES), v(1)), op(SUB, v(0), op(AND, v(0), v(1))), op(5, op(ADD, v(0), v(1)), op(OR, v(1), v(0))), op(ADD, op(ADD, v(0), v(1)), op(SUB, v(1), v(0)))] {
@@ -818,7 +818,7 @@ pub fn pool_conjecture_heads_are_the_least_whatever_the_pool_order() {
 #[test]
 pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let n = 4usize;
         // `lt_u` computes `a < b`
         let ops = ops_for(n);
@@ -965,7 +965,7 @@ pub fn shift_k(k: usize, left: bool, a: Term) -> Term {
 
 #[test]
 pub fn shift_ops_compute_and_shift_laws_check_and_false_ones_fail() {
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let sh = shift_k;
         let bw = |o: usize, a: Term, b: Term| Term::op(o, a, b);
@@ -1005,7 +1005,7 @@ pub fn shift_ops_compute_and_shift_laws_check_and_false_ones_fail() {
 #[test]
 pub fn large_sums_with_shared_subterms_stay_provable() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let add = |a: Term, b: Term| Term::op(ADD, a, b);
         let s = add(add(v(0), v(1)), v(2)); // two carries
@@ -1025,7 +1025,7 @@ pub fn large_sums_with_shared_subterms_stay_provable() {
 #[test]
 pub fn shifts_inside_sums_are_machines_and_their_laws_check() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let shl = |a: Term| op(6, a, Term::ZERO);
@@ -1060,7 +1060,7 @@ pub fn mul_const(c: u32, t: &Term) -> Term {
 #[test]
 pub fn multiplication_by_constants_as_shift_and_add_machines() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let v = |i: usize| Term::v(i);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
         let shl = |a: Term| op(6, a, Term::ZERO);

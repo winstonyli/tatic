@@ -1,7 +1,7 @@
 // A fixed-width bit-vector as a Church-encoded n-ary tuple of Church Bools, with an
 // unrolled ripple-carry `add`, on the unchanged kernel (public API only).
 use std::time::Instant;
-use tatic::kernel::*;
+use tatic_kernel::*;
 use std::sync::Arc;
 use job::{Job, Setup};
 

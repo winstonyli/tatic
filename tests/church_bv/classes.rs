@@ -705,7 +705,7 @@ fn held_files_are_the_bands() {
 #[test]
 fn steps_compile_to_checked_proofs() {
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let c = Classes::get();
         for (s, want) in [("sub(add(x, y), y)", "x"), ("and(x, or(x, y))", "x"), ("add(shr1(x, 0), 0)", "shr1(x, 0)"), ("shr1(x, y)", "shr1(x, 0)")] {
             let t = parse_term(s);
@@ -724,7 +724,7 @@ fn steps_compile_to_checked_proofs() {
 fn counting_and_compiling_agree() {
     let (a, b) = (parse_term("add(sub(add(x, y), y), and(z, or(z, x)))"), parse_term("add(and(x, or(x, y)), z)"));
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let c = Classes::get();
         let rules = job.rules().counting(true);
         for s in ["sub(add(x, y), y)", "and(x, or(x, y))", "shr1(x, y)"] {
@@ -748,7 +748,7 @@ fn counting_and_compiling_agree() {
 fn normal_forms_are_memoized_per_operator_node() {
     let ts = ["add(sub(add(x, y), y), and(z, or(z, x)))", "add(and(x, or(x, y)), z)", "sub(add(x, y), y)"].map(parse_term);
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let c = Classes::get();
         let mut memo = NormalForms::default();
         for t in &ts {
@@ -810,7 +810,7 @@ fn held_out_replacements_prove() {
         println!("LAWS band {band}: {}", laws.len());
     }
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let t0 = std::time::Instant::now();
         let mut pairs: Vec<_> = pairs.into_iter().collect();
         pairs.sort();
@@ -848,7 +848,7 @@ fn held_out_replacements_prove() {
 fn rewrite_plan_closes_a_residue_law_by_the_table() {
     let (a, b) = (parse_term("add(and(z, xor(x, -1)), y)"), parse_term("add(xor(x, and(xor(x, -1), z)), sub(y, x))"));
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let plan = rewrite_plan(job, 4, 3, &a, &b).expect("closed by the table");
         assert_eq!(job.rw.fallbacks, 0);
         assert!(!job.table_steps.is_empty());
@@ -867,7 +867,7 @@ fn rewrite_plan_closes_a_residue_law_by_the_table() {
 fn steps_of_a_pair_left_open_are_not_counted() {
     let (a, b) = (parse_term("sub(add(x, y), y)"), parse_term("y"));
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         assert!(Classes::get().step(job, 4, 3, &a).is_some());
         job.table_steps.clear();
         assert!(job.steps_if_closed(|job| rewrite_plan(job, 4, 3, &a, &b)).is_none());
@@ -895,7 +895,7 @@ fn lookup_includes_the_term_itself() {
 fn rewrite_takes_the_table_before_any_rule() {
     let t = parse_term("sub(add(x, y), y)");
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         job.rw.trace = Some(vec![]);
         let (r, _) = rewrite(job, &t, 4, 3);
         assert_eq!(r.show(), "x");
@@ -903,7 +903,7 @@ fn rewrite_takes_the_table_before_any_rule() {
         assert!(!job.table_steps.is_empty());
     });
     let job = &mut Job::new(Setup::with_env(vec![("ABLATE".into(), "classes".into())]));
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         job.rw.trace = Some(vec![]);
         rewrite(job, &t, 4, 3);
         assert!(!job.rw.trace.as_ref().unwrap().is_empty(), "no rule was tried");
@@ -917,7 +917,7 @@ fn rewrite_takes_the_table_before_any_rule() {
 fn rewrite_leaves_a_fourth_variable_to_the_rules() {
     let t = parse_term("sub(add(x, u), u)");
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         job.rw.trace = Some(vec![]);
         let (r, _) = rewrite(job, &t, 4, 4);
         assert_eq!(r.show(), "x");
@@ -933,7 +933,7 @@ fn rewrite_leaves_a_fourth_variable_to_the_rules() {
 fn rewrite_replaces_a_node_past_the_table_only_with_a_proof() {
     let t = parse_term("add(add(add(x, y), z), add(add(x, z), y))");
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (r, plan) = rewrite(job, &t, 4, 3);
         assert!(r.size() <= SIZE, "{}", r.show());
         assert!(job.table_steps.iter().any(|(u, _)| u.size() > SIZE), "no counted step from a node past the table's size");

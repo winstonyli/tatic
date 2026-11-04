@@ -115,7 +115,7 @@ pub fn run(setup: &Arc<Setup>) {
 /// as `rule_show` lines, and how many winners failed their proofs and rolled the rounds back.
 fn mine(setup: &Arc<Setup>, extra: &[(Term, Term)]) -> (Vec<String>, usize) {
     let job = &mut Job::new(setup.clone());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         // the join store this mine feeds from its main job (`JoinStore`); the scoring workers read a copy of it
         job.join_store = Some(JoinStoreUse::Feed(JoinStore::default()));
         let clock = Clock(std::cell::Cell::new(Instant::now()));
@@ -664,7 +664,7 @@ impl Prover {
 
     /// Proves one rule in an intern scope of its own.
     fn prove(&self, job: &mut Job, rule: &(Term, Term)) -> bool {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let rules = self.install(job.setup());
             job.with_rules(rules, |job| self.holds(job, rule))
         })
@@ -674,7 +674,7 @@ impl Prover {
     /// proves on this thread).
     fn filter(&self, job: &mut Job, cands: &[(Term, Term)], threads: usize) -> Vec<usize> {
         let prove = |job: &mut Job, idx: &[usize]| -> Vec<usize> {
-            tatic::kernel::scoped(|| {
+            tatic_kernel::scoped(|| {
                 let rules = self.install(job.setup());
                 job.with_rules(rules, |job| idx.iter().copied().filter(|&i| self.holds(job, &cands[i])).collect())
             })
@@ -1032,7 +1032,7 @@ impl<'a> Rounds<'a> {
                     let job = &mut Job::new(setup);
                     job.join_store = frozen.map(JoinStoreUse::Read);
                     let ((), spent) = job.spent(|job| {
-                        tatic::kernel::scoped(|| loop {
+                        tatic_kernel::scoped(|| loop {
                             let Ok(item) = queue.lock().unwrap().recv() else { break };
                             relay(|| score_job(job, item), |r| done_tx.send((item, r)).unwrap());
                         })
@@ -1247,7 +1247,7 @@ fn classify_orders_outcomes_like_the_input() {
     laws.extend(ROLLBACK_LAWS.lines().map(named));
     let job = &mut Job::new(Setup::process());
     // one letter per outcome (the kernel scope lets nothing but plain values out)
-    let out: String = tatic::kernel::scoped(|| {
+    let out: String = tatic_kernel::scoped(|| {
         classify(job, &laws, UNBOUNDED, false, false)
             .iter()
             .map(|o| match o {
@@ -1297,7 +1297,7 @@ fn served_and_pool() -> (usize, String, String, String) {
     };
     let served: Vec<_> = ROLLBACK_LAWS.lines().map(named).collect();
     let job = &mut Job::new(Setup::process());
-    let strag: String = tatic::kernel::scoped(|| {
+    let strag: String = tatic_kernel::scoped(|| {
         let out = classify(job, &served, UNBOUNDED, true, false);
         out.iter().zip(&served).find(|(o, _)| matches!(o, Outcome::Straggler(..))).expect("a straggler among the served laws").1 .0.clone()
     });
@@ -1328,7 +1328,7 @@ fn straggler_names_with(text: &str, extras: Option<ExtrasKeep>, prefix: Option<S
     let clock = Clock(std::cell::Cell::new(Instant::now()));
     let mut cfg = MinerConfig::new(&setup);
     (cfg.extras, cfg.pool_dump) = (extras, prefix);
-    tatic::kernel::scoped(|| laws_for(job, laws, &cfg, &[], UNBOUNDED, &clock, false).stragglers.iter().map(|s| s.0.clone()).collect())
+    tatic_kernel::scoped(|| laws_for(job, laws, &cfg, &[], UNBOUNDED, &clock, false).stragglers.iter().map(|s| s.0.clone()).collect())
 }
 
 /// The pool dump of a `first` mine writes one line per pool law with its facts and the served stragglers' normal forms, and
@@ -1406,7 +1406,7 @@ fn rollback_pool() -> (usize, Vec<String>, Vec<bool>, Vec<Vec<f32>>) {
         .collect();
     let from = 2;
     let job = &mut Job::new(Setup::with_env(vec![("RULEMINER_FAST".to_string(), "1".to_string())]));
-    let rows = tatic::kernel::scoped(|| {
+    let rows = tatic_kernel::scoped(|| {
         let outcomes = classify(job, &named, UNBOUNDED, true, false);
         let (pool, served) = pool_laws(&named, &outcomes, from);
         (pool.iter().map(|p| p.straggler).collect::<Vec<_>>(), crate::ctx_scorer::runtime_rows(&pool, &served))
@@ -1486,7 +1486,7 @@ fn ctx_pool_facts_equal_the_dump_rows() {
         })
         .collect();
     let job = &mut Job::new(Setup::with_env(vec![("RULEMINER_FAST".to_string(), "1".to_string())]));
-    let (dumped, live) = tatic::kernel::scoped(|| {
+    let (dumped, live) = tatic_kernel::scoped(|| {
         let dumped = crate::ctx_scorer::read_pool(&tsv);
         let dumped_served: Vec<(Term, Term)> = forms.lines().map(|l| l.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap()).collect();
         let outcomes = classify(job, &named, UNBOUNDED, true, false);
@@ -1544,7 +1544,7 @@ fn quiet_cover(setup: &Arc<Setup>) -> QuietCover {
         .collect();
     let job = &mut Job::new(setup.clone());
     let clock = Clock(std::cell::Cell::new(Instant::now()));
-    let (chosen, by_classify, none, with) = tatic::kernel::scoped(|| {
+    let (chosen, by_classify, none, with) = tatic_kernel::scoped(|| {
         let cfg = MinerConfig::new(setup);
         let l = laws_of(job, laws.clone(), 0, true, UNBOUNDED, &clock, false);
         let chosen = cover(job, &l, &cfg, &[], &clock, &[], true).0;

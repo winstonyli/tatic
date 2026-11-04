@@ -359,7 +359,7 @@ fn belief_dump() {
     let s1 = input_set(S1_SEED, 256, &s2);
     let cols = |s: &[[u8; 3]]| -> std::sync::Arc<[Box<[u8]>]> { (0..3).map(|v| s.iter().map(|t| t[v]).collect::<Box<[u8]>>()).collect() };
     let job = &mut Job::new(Setup::process());
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         for name in keys.split_whitespace() {
             let ki = KEYS.iter().position(|k| *k == name).unwrap_or_else(|| panic!("unknown key {name}"));
             let key = make_key(name);
@@ -693,7 +693,7 @@ fn belief_shr1_spike() {
     let mut w6 = ValueMemo::exhaustive(6, 3);
     // (claims, with shr1, true at width 6, proved by prove_rule, proved with shr1, seconds in prove_rule)
     let (mut n, mut with_shr1, mut true6, mut proved, mut proved_shr1, mut secs) = (0, 0, 0, 0, 0, 0.0);
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         for r in pick {
             let (u, v) = (parse_term(&r.u), parse_term(&r.r));
             let has = r.u.contains("shr1") || r.r.contains("shr1");

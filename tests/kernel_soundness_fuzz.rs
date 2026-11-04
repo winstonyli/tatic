@@ -34,7 +34,7 @@
 //! Deterministic (the same splitmix64 PRNG the other fuzz files use),
 //! seed-scanned, bounded generation depth.
 
-use tatic::kernel::{self, Expr, Node, Postulates};
+use tatic_kernel::{self as kernel, Expr, Node, Postulates};
 
 struct Rng {
     mix: tatic_rng::SplitMix64,

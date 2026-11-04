@@ -1453,9 +1453,21 @@ dependencies = [
  "im",
  "mimalloc",
  "stacker",
+ "tatic-kernel",
  "tatic-rng",
  "wasmtime",
  "wat",
+]
+
+[[package]]
+name = "tatic-kernel"
+version = "0.6.0"
+dependencies = [
+ "hashbrown 0.16.1",
+ "im",
+ "mimalloc",
+ "stacker",
+ "tatic-rng",
 ]
 
 [[package]]

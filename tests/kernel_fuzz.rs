@@ -23,7 +23,7 @@
 //! genuine kernel bug, not just the generator building an implausibly
 //! deep tree.
 
-use tatic::kernel::{self, Expr};
+use tatic_kernel::{self as kernel, Expr};
 
 struct Rng {
     mix: tatic_rng::SplitMix64,

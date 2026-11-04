@@ -12,7 +12,7 @@ use crate::encoding;
 use super::width::T::*;
 use super::width::*;
 use std::time::Instant;
-use tatic::kernel::Expr;
+use tatic_kernel::Expr;
 
 // (the name sets `XN`, `YN` and the stream readers `stream`, `wstream` are `width`'s)
 

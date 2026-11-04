@@ -2,7 +2,7 @@
 // kernel API only: no kernel change. Shows beta-computation is definitional and that
 // the dependent recursor's computation rule holds by `def_eq`. See
 // docs/superpowers/specs/2026-09-30-bitvector-interface-design.md, section 12.
-use tatic::kernel::*;
+use tatic_kernel::*;
 
 fn tc(name: &str, e: &Expr) {
     if let Err(m) = typecheck(e) {

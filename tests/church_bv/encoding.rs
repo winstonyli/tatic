@@ -23,7 +23,7 @@ pub type GenMemo<K, V> = std::cell::RefCell<(u32, std::collections::HashMap<K, V
 /// `build()` once per key, interning generation and thread. A term built in one generation is not canonical in the
 /// next, so the memo empties when the generation changes; rebuilding re-interns every node, which is what it saves.
 pub fn gen_memo<K: std::hash::Hash + Eq, V: Clone>(memo: &'static std::thread::LocalKey<GenMemo<K, V>>, key: K, build: impl FnOnce(&K) -> V) -> V {
-    let g = tatic::kernel::intern_generation();
+    let g = tatic_kernel::intern_generation();
     let hit = memo.with(|c| {
         let mut c = c.borrow_mut();
         if c.0 != g {
@@ -247,17 +247,17 @@ pub fn run(n: usize) {
 /// checks the key, not that the memo is hit; the speed is in docs/tier-cycle.md, "Truth tables built once".)
 #[test]
 fn table_bodies_are_shared_per_truth_table() {
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let head = |e: &Expr| match e.node() {
-            tatic::kernel::Node::App(h, _) => h,
+            tatic_kernel::Node::App(h, _) => h,
             _ => panic!("table_app is an application"),
         };
         let (a, b) = (table_app(&[t(), f()], &|v| v[0] != v[1]), table_app(&[f(), f()], &|v| v.iter().filter(|x| **x).count() == 1));
-        assert!(tatic::kernel::node_key(&head(&head(&a))) == tatic::kernel::node_key(&head(&head(&b))));
+        assert!(tatic_kernel::node_key(&head(&head(&a))) == tatic_kernel::node_key(&head(&head(&b))));
         let c = table_app(&[t(), f()], &|v| v[0] && !v[1]);
-        assert!(tatic::kernel::node_key(&head(&head(&a))) != tatic::kernel::node_key(&head(&head(&c))));
+        assert!(tatic_kernel::node_key(&head(&head(&a))) != tatic_kernel::node_key(&head(&head(&c))));
         for (e, want) in [(&a, true), (&b, false), (&c, true)] {
-            assert_eq!(tatic::kernel::normalize(e), bit(want));
+            assert_eq!(tatic_kernel::normalize(e), bit(want));
         }
     })
 }
@@ -267,20 +267,20 @@ fn table_bodies_are_shared_per_truth_table() {
 #[test]
 fn constants_are_built_once_per_generation() {
     let kids = |e: &Expr| match e.node() {
-        tatic::kernel::Node::Lam(a, b) => (a, b),
+        tatic_kernel::Node::Lam(a, b) => (a, b),
         _ => panic!("and_ is a lambda"),
     };
     let fresh = || bool2(app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0)));
-    let first = tatic::kernel::scoped(|| {
+    let first = tatic_kernel::scoped(|| {
         let (a, b, c) = (kids(&and_()), kids(&and_()), kids(&fresh()));
-        assert!(tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&b.1) && tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&c.1));
+        assert!(tatic_kernel::node_key(&a.1) == tatic_kernel::node_key(&b.1) && tatic_kernel::node_key(&a.1) == tatic_kernel::node_key(&c.1));
         and_()
     });
     let first = kids(&first);
-    tatic::kernel::scoped(|| {
+    tatic_kernel::scoped(|| {
         let (a, c) = (kids(&and_()), kids(&fresh()));
-        assert!(tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&first.1), "rebuilt onto the persisted copy");
-        assert!(tatic::kernel::node_key(&a.1) == tatic::kernel::node_key(&c.1) && a.1 == first.1);
+        assert!(tatic_kernel::node_key(&a.1) == tatic_kernel::node_key(&first.1), "rebuilt onto the persisted copy");
+        assert!(tatic_kernel::node_key(&a.1) == tatic_kernel::node_key(&c.1) && a.1 == first.1);
     })
 }
 
@@ -543,7 +543,7 @@ pub fn add_zero_is_the_identity_on_a_symbolic_good_vector() {
 /// share fails here, not months later in a timing.
 #[test]
 pub fn add_zero_proof_size_scales_gently() {
-    let size = |n: usize| tatic::kernel::term_sizes(&add_zero_proof(n, 0).0).0;
+    let size = |n: usize| tatic_kernel::term_sizes(&add_zero_proof(n, 0).0).0;
     let (s16, s32, s64) = (size(16), size(32), size(64));
     assert!(s32 as f64 / s16 as f64 <= 4.5, "n=16 -> 32: {s16} -> {s32} nodes");
     assert!(s64 as f64 / s32 as f64 <= 4.5, "n=32 -> 64: {s32} -> {s64} nodes");
@@ -564,9 +564,9 @@ fn scaling_scoped(label: &str, env: &str, default: &str, build: impl Fn(usize) -
             let built = t0.elapsed();
             let t1 = Instant::now();
             job.lemmas.ck(&format!("n={n}"), &proof, &stmt);
-            println!("{label} n={n}: build {built:?}, check {:?}, proof dag={}", t1.elapsed(), tatic::kernel::term_sizes(&proof).0);
+            println!("{label} n={n}: build {built:?}, check {:?}, proof dag={}", t1.elapsed(), tatic_kernel::term_sizes(&proof).0);
         };
-        if job.setup().flag("NO_SCOPE", false) { body() } else { tatic::kernel::scoped(body) }
+        if job.setup().flag("NO_SCOPE", false) { body() } else { tatic_kernel::scoped(body) }
     }
 }
 
@@ -721,7 +721,7 @@ pub fn profile_add_zero() {
             let (proof, stmt) = add_zero_proof(n, 0);
             ck(&format!("profile n={n}"), &proof, &stmt)
         };
-        if scoped { tatic::kernel::scoped(check) } else { check() }
+        if scoped { tatic_kernel::scoped(check) } else { check() }
     };
     if stack_mb == 0 { run() } else { std::thread::Builder::new().stack_size(stack_mb << 20).spawn(run).unwrap().join().unwrap() }
 }
@@ -733,9 +733,9 @@ pub fn profile_add_zero() {
 #[ignore]
 pub fn a_large_check_does_not_churn_stack_segments() {
     let (proof, stmt) = add_zero_proof(256, 0);
-    let before = tatic::kernel::segment_switches();
+    let before = tatic_kernel::segment_switches();
     ck("n=256", &proof, &stmt);
-    let switches = tatic::kernel::segment_switches() - before;
+    let switches = tatic_kernel::segment_switches() - before;
     println!("segment switches in the n=256 check: {switches}");
     assert!(switches < 100, "{switches} stack segment switches in one check");
 }
@@ -820,7 +820,7 @@ pub fn eq_bv_computes_on_literals() {
 #[test]
 pub fn wrapping_div_min_by_minus_one_is_min() {
     for n in [1usize, 2, 4, 8, 32, 64] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let (min, all) = (1u128 << (n - 1), if n == 128 { u128::MAX } else { (1u128 << n) - 1 });
             let (p, s) = wrap_div_min_proof(n, min, all);
             let t0 = Instant::now();
@@ -934,7 +934,7 @@ pub fn sdiv_some(n: usize, a: Expr, b: Expr) -> Expr {
 #[test]
 pub fn sdiv_flag_matches_the_spec_on_literals() {
     for n in [4usize, 8, 32, 64] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let all = if n == 64 { u64::MAX as u128 } else { (1u128 << n) - 1 };
             let min = 1u128 << (n - 1);
             let samples = [0u128, 1, 2, min - 1, min, min + 1, all - 1, all];
@@ -1100,7 +1100,7 @@ pub fn eq_with_a_literal_implies_equality_on_good_vectors() {
         ck(name, &p, &ty);
     }
     for n in [1usize, 2, 4, 8, 32] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let mask = low_bits(n);
             for l in [0u128, 1, 0b1010 & mask, mask, 1u128 << (n - 1)] {
                 let (p, s) = eq_lit_sound(n, l, l);
@@ -1206,7 +1206,7 @@ pub fn wrap_div_keeps_r(n: usize, claimed: bool) -> (Expr, Expr) {
 #[test]
 pub fn sdiv_is_none_on_the_guard_and_wrapper_keeps_r_otherwise() {
     for n in [1usize, 2, 4, 8, 32] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let (_, all) = min_all(n);
             let (p, s) = sdiv_none_if_zero(n, 0);
             ck(&format!("D1 b=0, n={n}"), &p, &s);
@@ -1429,7 +1429,7 @@ pub fn add_preserves_goodness() {
     let (p, ty) = good2(&|a, b| and(a, b), &|a, b| a || b);
     assert!(holds(&p, &ty).is_err(), "and with the or table must be rejected");
     for n in [1usize, 2, 4, 8, 32] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let (p, ty) = good_add(n);
             let t0 = Instant::now();
             ck(&format!("good_add n={n}"), &p, &ty);
@@ -1443,7 +1443,7 @@ pub fn add_preserves_goodness() {
 #[ignore]
 pub fn bv_lemma_scaling_h3_d2_good_add() {
     for n in [32usize, 64, 128] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let l = (1u128 << (n - 1)) | 1;
             let l = if n >= 128 { l } else { l & ((1u128 << n) - 1) };
             let t0 = Instant::now();
@@ -1538,7 +1538,7 @@ pub fn or_disjoint_proof(n: usize, k: usize, stated_sum_with_a_twice: bool) -> (
 #[test]
 pub fn or_of_disjoint_vectors_adds_in_to_n() {
     for n in [2usize, 4, 8] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             for k in 1..n {
                 let (p, s) = or_disjoint_proof(n, k, false);
                 ck(&format!("H4 n={n} k={k}"), &p, &s);
@@ -1555,7 +1555,7 @@ pub fn or_of_disjoint_vectors_adds_in_to_n() {
 #[ignore]
 pub fn or_disjoint_scaling() {
     for n in [6usize, 8, 10, 12, 14] {
-        tatic::kernel::scoped(|| {
+        tatic_kernel::scoped(|| {
             let t0 = Instant::now();
             let (p, s) = or_disjoint_proof(n, n / 2, false);
             let built = t0.elapsed();
