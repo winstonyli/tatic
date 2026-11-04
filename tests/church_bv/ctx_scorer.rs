@@ -85,6 +85,11 @@ impl Model {
         self.keep.iter().enumerate().map(|(j, &i)| self.w[j] * (x[i] as f64 - self.mean[j]) / self.scale[j]).sum()
     }
 
+    /// The number of columns of the feature vectors it scores.
+    pub fn width(&self) -> usize {
+        self.width
+    }
+
     /// The columns of the training rows the model dropped for having no spread.
     pub fn dropped(&self) -> Vec<usize> {
         (0..self.width).filter(|i| !self.keep.contains(i)).collect()
@@ -433,6 +438,66 @@ pub fn rows(pool: &[PoolLaw], served: &[(Term, Term)]) -> Vec<Vec<f32>> {
     (0..pool.len()).map(|i| per_law_features(&pool[i].law).iter().chain(&g1[i]).chain(&g2[i]).chain(&g3[i]).copied().collect()).collect()
 }
 
+/// The layout string of the weights file Q2 reads (`Model::to_text`): the 33 runtime columns, no marginal-coverage group.
+pub const LAYOUT: &str = "ctx33-v1";
+
+/// The columns of `rows` the miner can compute at run time: everything but group 3, which needs a served-only cover (decision c1).
+pub fn runtime_cols() -> Vec<usize> {
+    (0..WIDTH - 2).collect()
+}
+
+/// The `runtime_cols` of every pool law, in pool order, computed without group 3.
+pub fn runtime_rows(pool: &[PoolLaw], served: &[(Term, Term)]) -> Vec<Vec<f32>> {
+    let (g1, g2) = (group1(pool), group2(pool, served));
+    (0..pool.len()).map(|i| per_law_features(&pool[i].law).iter().chain(&g1[i]).chain(&g2[i]).copied().collect()).collect()
+}
+
+/// The position of each straggler in the descending-score order of the stragglers (equal scores in stream order); `None` for
+/// the other laws. Indexed from 0 over the slice it is given.
+pub fn ctx_ranks(scores: &[f64], straggler: &[bool]) -> Vec<Option<i64>> {
+    let mut out = vec![None; scores.len()];
+    for (pos, i) in score_order(scores, straggler, &vec![true; scores.len()]).into_iter().filter(|&i| straggler[i]).enumerate() {
+        out[i] = Some(pos as i64);
+    }
+    out
+}
+
+/// The model fit on the live labelled stragglers of the mines whose salt is in `salts`, over `runtime_rows`.
+pub fn fit_model(mines: &[Mine], salts: &[usize]) -> Model {
+    let mut train = vec![];
+    for m in mines.iter().filter(|m| salts.contains(&m.salt)) {
+        let rt = runtime_rows(&m.pool, &m.served);
+        train.extend((0..m.y.len()).filter(|&i| m.live[i] && m.pool[i].straggler).map(|i| (rt[i].clone(), m.y[i])));
+    }
+    assert!(!train.is_empty(), "no labelled stragglers in salts {salts:?} to fit on");
+    fit(&train)
+}
+
+/// `4-10` is 4 through 10; otherwise a comma list.
+pub fn parse_salts(s: &str) -> Vec<usize> {
+    let num = |x: &str| x.trim().parse::<usize>().unwrap_or_else(|e| panic!("salt {x:?}: {e}"));
+    match s.split_once('-') {
+        Some((a, b)) => (num(a)..=num(b)).collect(),
+        None => s.split(',').map(num).collect(),
+    }
+}
+
+/// How many distinct law texts of the eval folders' `laws_extra_*.txt` (the whole pool, every arm and draw) also occur in the
+/// first `train_slice` lines of the train folders' `laws_extra_*.txt` (the laws a model fit there saw), and how many distinct
+/// eval texts there are. Exact text: a renamed twin is not counted.
+pub fn overlap(train: &[&std::path::Path], train_slice: usize, eval: &[&std::path::Path]) -> (usize, usize) {
+    let extras = |dirs: &[&std::path::Path]| -> Vec<Vec<String>> {
+        let mut files = vec![];
+        dirs.iter().for_each(|d| walk(d, &mut files));
+        files.retain(|f| f.file_name().is_some_and(|s| s.to_string_lossy().starts_with("laws_extra_") && s.to_string_lossy().ends_with(".txt")));
+        files.sort();
+        files.iter().map(|f| std::fs::read_to_string(f).unwrap_or_else(|e| panic!("{}: {e}", f.display())).lines().filter(|l| !l.is_empty()).map(String::from).collect()).collect()
+    };
+    let seen: std::collections::HashSet<String> = extras(train).into_iter().flat_map(|v| v.into_iter().take(train_slice)).collect();
+    let evals: std::collections::HashSet<String> = extras(eval).into_iter().flatten().collect();
+    (evals.iter().filter(|t| seen.contains(*t)).count(), evals.len())
+}
+
 /// SplitMix64: a seeded generator for the shuffles and the bootstrap (no dependency, the same stream on every machine).
 struct Rng(u64);
 
@@ -579,7 +644,7 @@ fn variants() -> Vec<(&'static str, Vec<usize>)> {
         ("per-law", (0..PER_LAW).collect()),
         ("drop group 1", without(PER_LAW, PER_LAW + 3)),
         ("drop group 2", without(PER_LAW + 3, PER_LAW + 7)),
-        ("drop group 3", without(PER_LAW + 7, WIDTH)),
+        (NO_G3, runtime_cols()),
         ("drop per-law", (0..1).chain(PER_LAW..WIDTH).collect()),
     ]
 }
@@ -691,6 +756,47 @@ fn q1_report() {
     assert_eq!(mines.len(), 42, "the dump has 42 mines");
     println!("LOADED {} mines, {dropped} later duplicate laws dropped from the {} labelled", mines.len(), mines.len() * 319);
     print!("{}", q1(&mines, &[40, 80], &setup.var("Q1_CONTEXT").unwrap_or_else(|| "context".into())));
+}
+
+/// `Q1_DIRS=<arm folder>;.. FIT_SALTS=4-10 FIT_OUT=<new file> <exe> ctx_scorer::ctx_fit --exact --ignored --nocapture`: fits the
+/// Q2 model (`fit_model`) on the dump's labelled stragglers of those salts and writes it (`LAYOUT`). Weights files are write-once:
+/// the arm cache hashes the exe and its env file, not the files they name, so an existing `FIT_OUT` is refused.
+#[test]
+#[ignore]
+fn ctx_fit() {
+    let setup = &job::Setup::process();
+    let dirs = setup.var("Q1_DIRS").expect("Q1_DIRS");
+    let dirs: Vec<&std::path::Path> = dirs.split(';').map(std::path::Path::new).collect();
+    let salts = parse_salts(&setup.var("FIT_SALTS").expect("FIT_SALTS"));
+    let out = std::path::PathBuf::from(setup.var("FIT_OUT").expect("FIT_OUT"));
+    assert!(!out.exists(), "{} exists: weights files are write-once, pick a new name", out.display());
+    let (mines, dropped) = load_mines(&dirs, 319).unwrap_or_else(|e| panic!("{e}"));
+    let model = fit_model(&mines, &salts);
+    let (mut rows_n, mut scored) = (0, vec![]);
+    for m in mines.iter().filter(|m| salts.contains(&m.salt)) {
+        let rt = runtime_rows(&m.pool, &m.served);
+        for i in (0..m.y.len()).filter(|&i| m.live[i] && m.pool[i].straggler) {
+            rows_n += 1;
+            scored.push((model.score(&rt[i]), m.y[i]));
+        }
+    }
+    println!("FIT salts {salts:?}: {rows_n} rows from {} mines ({dropped} later duplicates dropped), train AUC {:.4}, dropped columns {:?}", mines.iter().filter(|m| salts.contains(&m.salt)).count(), auc(&scored), model.dropped());
+    std::fs::write(&out, model.to_text(LAYOUT)).unwrap_or_else(|e| panic!("{}: {e}", out.display()));
+    println!("WROTE {}", out.display());
+}
+
+/// `TRAIN_DIRS=<arm folder>;.. EVAL_DIRS=<arm folder>;.. [TRAIN_SLICE=319] <exe> ctx_scorer::overlap_report --exact --ignored
+/// --nocapture`: how many eval law texts a model fit on the train folders' labelled slices has seen (`overlap`).
+#[test]
+#[ignore]
+fn overlap_report() {
+    let setup = &job::Setup::process();
+    let list = |name: &str| setup.var(name).unwrap_or_else(|| panic!("{name}")).split(';').map(std::path::PathBuf::from).collect::<Vec<_>>();
+    let (train, eval) = (list("TRAIN_DIRS"), list("EVAL_DIRS"));
+    let slice = setup.var("TRAIN_SLICE").map_or(319, |s| s.parse().expect("TRAIN_SLICE"));
+    let (t, e): (Vec<&std::path::Path>, Vec<&std::path::Path>) = (train.iter().map(|p| p.as_path()).collect(), eval.iter().map(|p| p.as_path()).collect());
+    let (shared, total) = overlap(&t, slice, &e);
+    println!("OVERLAP {shared} of {total} distinct eval law texts are in the first {slice} laws of the train folders ({:.3}%)", 100.0 * shared as f64 / total.max(1) as f64);
 }
 
 #[cfg(test)]
@@ -1041,6 +1147,88 @@ mod tests {
     #[should_panic(expected = "bogus")]
     fn q1_refuses_an_unknown_variant() {
         q1(&fixture_mines(), &[3], "bogus");
+    }
+
+    #[test]
+    fn runtime_rows_equal_rows_projected_on_runtime_cols() {
+        for (salt, seed) in [(4, 3), (5, 8)] {
+            let m = synthetic(salt, seed);
+            let (full, rt) = (rows(&m.pool, &m.served), runtime_rows(&m.pool, &m.served));
+            assert_eq!(rt.len(), full.len());
+            for i in 0..full.len() {
+                assert_eq!(rt[i], project(&full[i], &runtime_cols()), "pool law {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn runtime_cols_has_33_columns_and_no_group3() {
+        let cols = runtime_cols();
+        assert_eq!(cols.len(), WIDTH - 2);
+        assert!(cols.contains(&0) && cols.iter().all(|&c| c < WIDTH - 2));
+        assert_eq!(variants().iter().find(|(n, _)| *n == NO_G3).unwrap().1, cols);
+    }
+
+    #[test]
+    fn ctx_ranks_orders_stragglers_by_score_and_leaves_the_rest_none() {
+        let r = ctx_ranks(&[0.1, 5.0, 3.0, 9.0], &[true, true, false, true]);
+        assert_eq!(r, vec![Some(2), Some(1), None, Some(0)]);
+    }
+
+    #[test]
+    fn ctx_ranks_of_equal_scores_is_stream_order() {
+        let r = ctx_ranks(&[1.0, 1.0, 1.0, 1.0], &[true, false, true, true]);
+        assert_eq!(r, vec![Some(0), None, Some(1), Some(2)]);
+    }
+
+    #[test]
+    fn ctx_ranks_survives_nan() {
+        let r = ctx_ranks(&[f64::NAN, 1.0, f64::NAN, 2.0], &[true; 4]);
+        let mut got: Vec<i64> = r.iter().map(|x| x.unwrap()).collect();
+        got.sort_unstable();
+        assert_eq!(got, vec![0, 1, 2, 3], "distinct ranks");
+    }
+
+    fn salted_mines() -> Vec<Mine> {
+        (4..=6).flat_map(|s| (0..2).map(move |m| synthetic(s, s * 2 + m))).collect()
+    }
+
+    #[test]
+    fn fit_model_uses_only_the_named_salts_and_width_is_the_runtime_width() {
+        let mines = salted_mines();
+        let mut train = vec![];
+        for m in mines.iter().filter(|m| m.salt == 5) {
+            let rt = runtime_rows(&m.pool, &m.served);
+            train.extend((0..m.y.len()).filter(|&i| m.live[i] && m.pool[i].straggler).map(|i| (rt[i].clone(), m.y[i])));
+        }
+        let model = fit_model(&mines, &[5]);
+        assert_eq!(model, fit(&train));
+        assert_eq!(model.width(), WIDTH - 2);
+        assert_ne!(model, fit_model(&mines, &[4, 6]));
+    }
+
+    #[test]
+    #[should_panic(expected = "salts")]
+    fn fit_model_refuses_salts_with_no_rows() {
+        fit_model(&salted_mines(), &[99]);
+    }
+
+    #[test]
+    fn parse_salts_reads_ranges_and_lists() {
+        assert_eq!(parse_salts("4-10"), (4..=10).collect::<Vec<_>>());
+        assert_eq!(parse_salts("7"), vec![7]);
+        assert_eq!(parse_salts("1,3"), vec![1, 3]);
+    }
+
+    #[test]
+    fn overlap_counts_shared_law_texts_in_the_train_slice_only() {
+        let root = scratch("overlap");
+        write_mine(&root, 4, "0", &FIVE, &FIVE);
+        write_mine(&root, 1, "0", &["or(x, y) = or(y, x)", "mul(x, y) = mul(y, x)"], &["or(x, y) = or(y, x)", "mul(x, y) = mul(y, x)"]);
+        // train slice 2: FIVE[0], FIVE[1] count; FIVE[2] ("or") is past the slice, so the shared "or" law is not counted
+        assert_eq!(overlap(&[&root.join("s4_A")], 2, &[&root.join("s1_A")]), (0, 2));
+        // slice 3 reaches FIVE[2]: one of the two eval texts is in the train slice
+        assert_eq!(overlap(&[&root.join("s4_A")], 3, &[&root.join("s1_A")]), (1, 2));
     }
 
     const GOLDEN_Q1: &str = r#"Q1 14 mines, 7 salts, slice 15 laws; live stragglers 140, credited 69
