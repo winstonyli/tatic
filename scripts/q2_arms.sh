@@ -7,6 +7,7 @@
 #   r<m>_d<d>        EXTRAS_N=<m>, the random arm of an equal-work comparison, for each m given
 # GEN_DRAW=<d> is added when d > 0. The weights file is write-once (the arm cache hashes the .env, not the file it names), so a
 # refit gets a new name and new arms. The weights path is the directory in 8.3 form plus the file name, forward slashes: a path with a space would split (the file name stays whole so records and hashes read it).
+# CTX_WEIGHTS_SHA256 (ignored by the exe) puts the weights file's content into the .env the gate hashes, so an edited file misses the cache.
 # WEIGHTS_DIR overrides docs/runs/2026-11-01/ctx-weights (the check script's fixture).
 exe=$1; out=$2; shift 2
 [ -f "$exe" ] && [ -n "$out" ] || { echo "usage: q2_arms.sh <test exe> <out dir> [m...]"; exit 2; }
@@ -25,11 +26,12 @@ for n in 80 160; do
   for w in 4-10 7-10; do
     f="$dir/ctx33-v1-s$w.txt"
     [ -f "$f" ] || { echo "q2_arms: weights file $f missing"; exit 1; }
+    sha=$(sha256sum "$f" | cut -d" " -f1)
     path="$(cygpath -m "$(cygpath -d "$dir")")/ctx33-v1-s$w.txt"
     case "$path" in *" "*) echo "q2_arms: weights path has a space: $path"; exit 1 ;; esac
     for d in 0 3 4; do
       name="c${n}_$w"; [ $d -gt 0 ] && name="${name}_d$d"
-      arm "$name" "EXTRAS_N=$n" "POOL=4" "EXTRAS_SELECT=ctx" "CTX_WEIGHTS=$path" $(draw $d)
+      arm "$name" "EXTRAS_N=$n" "POOL=4" "EXTRAS_SELECT=ctx" "CTX_WEIGHTS=$path" "CTX_WEIGHTS_SHA256=$sha" $(draw $d)
     done
   done
 done

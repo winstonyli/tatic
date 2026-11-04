@@ -14,6 +14,8 @@ ok "c160_7-10_d4 has GEN_DRAW=4 and weights s7-10" "$(e c160_7-10_d4 | grep -qx 
 ok "r208_d3 is EXTRAS_N=208 and GEN_DRAW=3" "$(e r208_d3 | grep -qx 'EXTRAS_N=208' && e r208_d3 | grep -qx 'GEN_DRAW=3' && ! e r208_d3 | grep -q POOL && echo ok)"
 ok "s80_d0 has no GEN_DRAW" "$(! e s80_d0 | grep -q GEN_DRAW && e s80_d0 | grep -qx 'EXTRAS_SELECT=small' && e s80_d0 | grep -qx 'POOL=4' && echo ok)"
 ok "ctx draw 0 has no GEN_DRAW" "$(! e c80_7-10 | grep -q GEN_DRAW && echo ok)"
+ok "ctx arm records the weights file sha256" "$(e c80_4-10 | grep -qx "CTX_WEIGHTS_SHA256=$(sha256sum "$t/w/ctx33-v1-s4-10.txt" | cut -d" " -f1)" && echo ok)"
+ok "small arm has no weights sha" "$(! e s80_d0 | grep -q SHA256 && echo ok)"
 ok "every arm has its exe" "$([ -f "$t/o/c160_4-10_d3.exe" ] && [ -f "$t/o/r208_d4.exe" ] && echo ok)"
 ok "arm count: 6 s + 12 c + 3 r" "$([ "$(ls "$t/o"/*.exe | wc -l)" = 21 ] && echo ok)"
 rm "$t/w/ctx33-v1-s7-10.txt"
