@@ -104,7 +104,7 @@ repository (see the previous section).
 ## Quick start
 
 ```sh
-cargo run --release             # runs the demo in src/main.rs
+cargo run --release             # runs the demo in src/bin/demo.rs
 cargo run --release --bin repl  # an interactive REPL (src/bin/repl.rs)
 cargo test                      # unit tests across all modules
 cargo bench                     # criterion benchmarks (benches/) -- see below
@@ -120,7 +120,7 @@ JIT, and prints timing plus which ones got a kernel-checked equivalence
 proof. (Two capturing-closure terms appear side by side, compiled via
 *different* dispatch paths: one reached by over-applying a literal
 lambda's saturated-call result, the other by calling a closure-typed
-*parameter* — see `lower_wat.rs`'s module docs and `main.rs`'s comments on
+*parameter* — see `lower_wat.rs`'s module docs and `src/bin/demo.rs`'s comments on
 each.)
 
 ## Validation
@@ -193,6 +193,8 @@ Defender's real-time protection, the CPU load and the large-page privilege.
     v               |
  proof.rs <----> kernel.rs (Pi/Sort/Id/W/Sigma type theory)
 ```
+
+Files are under `src/lang/`, `src/jit/`, `src/verify/`, `src/support/` and `src/testing/` (layers in `docs/TOUR.md`); `jit.rs`, `proof.rs` and `kernel.rs` sit at the top.
 
 | Module | Role |
 |---|---|

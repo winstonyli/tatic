@@ -30,9 +30,9 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use hashbrown::HashMap;
 
-use crate::ir;
-use crate::lower_wat::cmp_instr;
-use crate::term::{Hash, PrimOp, Term, TermStore};
+use crate::jit::ir;
+use crate::jit::lower_wat::cmp_instr;
+use crate::lang::term::{Hash, PrimOp, Term, TermStore};
 
 pub struct CompiledFragment {
     pub arity: usize,
@@ -440,11 +440,11 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     // exact arity, so it gets no universal proof (`RELATED_WORK.md` §40).
     // Sample verification alone would miss one reached only off-sample.
     // A mismatch here is a builder bug like an ill-formed module.
-    if crate::decompile::decompile(&m, &mut TermStore::new()) != Some(h) {
+    if crate::verify::decompile::decompile(&m, &mut TermStore::new()) != Some(h) {
         builder_bug(BuilderBug::Untranslated, || format!("the IR for {h:?} failed translation validation: it does not decompile back to the source term"));
         return None;
     }
-    Some(crate::lower_wat::lower(&m))
+    Some(crate::jit::lower_wat::lower(&m))
 }
 
 /// What `compile_specialised` compiled.
@@ -468,12 +468,12 @@ pub struct Compiled {
 /// `h' ≡ h` by a checked βv trace. That equivalence is not kernel-checked
 /// (RELATED_WORK.md §37).
 pub fn compile_specialised(store: &TermStore, h: Hash) -> Option<Compiled> {
-    compile_candidate(store, h, crate::specialise::specialise(store, h))
+    compile_candidate(store, h, crate::jit::specialise::specialise(store, h))
 }
 
-fn compile_candidate(store: &TermStore, h: Hash, sp: crate::specialise::Specialised) -> Option<Compiled> {
+fn compile_candidate(store: &TermStore, h: Hash, sp: crate::jit::specialise::Specialised) -> Option<Compiled> {
     if !sp.trace.is_empty() {
-        match crate::spec_check::check(store, h, &sp.trace, sp.term) {
+        match crate::verify::spec_check::check(store, h, &sp.trace, sp.term) {
             // `sp.store` is the specialiser's, but it can't lie about
             // `sp.term`: a store's hashes are the content hashes of what it
             // holds, and the checker accepted that hash.

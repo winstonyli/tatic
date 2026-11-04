@@ -15,8 +15,8 @@
 
 use hashbrown::HashMap;
 
-use crate::ir::{Combinator, Func, Module, Node, Read};
-use crate::term::{Hash, TermStore};
+use crate::jit::ir::{Combinator, Func, Module, Node, Read};
+use crate::lang::term::{Hash, TermStore};
 
 /// The term `m` implements, built into `s`. `None` if `m` refers to
 /// something that does not exist: a combinator index out of range, a read
@@ -160,8 +160,8 @@ impl Decompiler<'_, '_> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::fixtures::{factorial, twice, twice_inc};
-    use crate::term::PrimOp;
+    use crate::jit::ir::fixtures::{factorial, twice, twice_inc};
+    use crate::lang::term::PrimOp;
 
     fn roundtrips(m: &Module, h: Hash) -> bool {
         decompile(m, &mut TermStore::new()) == Some(h)
@@ -178,8 +178,8 @@ mod tests {
     fn every_built_corpus_module_decompiles_to_its_source_hash() {
         // No false alarms on the real corpus: a correct compilation must
         // always pass the gate.
-        for (name, s, h) in crate::samples::corpus() {
-            let m = crate::compile::build(&s, h).unwrap_or_else(|| panic!("{name} builds"));
+        for (name, s, h) in crate::support::samples::corpus() {
+            let m = crate::jit::compile::build(&s, h).unwrap_or_else(|| panic!("{name} builds"));
             assert!(roundtrips(&m, h), "{name} does not decompile to its source hash");
         }
     }
@@ -216,7 +216,7 @@ mod tests {
                 env_len: 1,
                 body: Node::Arith(PrimOp::Sub, Box::new(Node::Read(Read::Env(0))), Box::new(Node::Read(Read::Param(0)))),
             })],
-            dispatch: crate::ir::Dispatch::Fast,
+            dispatch: crate::jit::ir::Dispatch::Fast,
         };
         assert!(roundtrips(&m, h));
     }
@@ -262,27 +262,27 @@ mod tests {
                     }),
                 },
             })],
-            dispatch: crate::ir::Dispatch::Fast,
+            dispatch: crate::jit::ir::Dispatch::Fast,
         };
         assert!(roundtrips(&m, h));
         // The fixture is real: it is exactly what `compile::build` produces
         // for this source term, not just a module the decompiler happens to
         // accept.
-        assert_eq!(crate::compile::build(&s, h), Some(m));
+        assert_eq!(crate::jit::compile::build(&s, h), Some(m));
     }
 
     #[test]
     fn the_decompiler_imports_nothing_from_the_compiler() {
         // The whole point of the check is that a bug in `compile.rs`'s or
         // `lower_wat.rs`'s helpers cannot be mirrored here. Only the code
-        // above `mod tests` is scanned, so `crate::compile::build` --
+        // above `mod tests` is scanned, so `crate::jit::compile::build` --
         // allowed here, in tests only, as the thing under test -- doesn't
         // trip it. `decompile` itself contains "compile" as a substring but
         // is a single token, so it's fine.
-        crate::independence::assert_independent("decompile.rs", include_str!("decompile.rs"), &["compile", "lower_wat"], &["ir", "term"]);
+        crate::testing::independence::assert_independent("decompile.rs", include_str!("decompile.rs"), &["compile", "lower_wat"], &["jit::ir", "lang::term"]);
     }
 
-    use crate::ir::check;
+    use crate::jit::ir::check;
     use hashbrown::HashSet;
 
     const KINDS: [&str; 12] = [
@@ -494,8 +494,8 @@ mod tests {
         // the gate would accept a module that means something else.
         let mut applied = 0usize;
         let mut kinds_seen = HashSet::new();
-        for (name, s, h) in crate::samples::corpus() {
-            let m = crate::compile::build(&s, h).unwrap();
+        for (name, s, h) in crate::support::samples::corpus() {
+            let m = crate::jit::compile::build(&s, h).unwrap();
             for fi in 0..m.funcs().count() {
                 let nodes = preorder_len(&m.funcs().nth(fi).unwrap().body);
                 for k in 0..nodes {
@@ -540,8 +540,8 @@ mod tests {
         // correct. The decompiler must therefore not reject the flip, or
         // the gate would reject correct code.
         let mut flipped = 0;
-        for (name, s, h) in crate::samples::corpus() {
-            let mut m = crate::compile::build(&s, h).unwrap();
+        for (name, s, h) in crate::support::samples::corpus() {
+            let mut m = crate::jit::compile::build(&s, h).unwrap();
             fn untail(n: &mut Node, count: &mut usize) {
                 if let Node::SelfCall { tail, .. } = n
                     && *tail

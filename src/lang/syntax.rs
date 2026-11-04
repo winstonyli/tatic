@@ -63,7 +63,7 @@
 //! pushed onto the scope stack in declaration order, so the last one
 //! declared is the last one pushed, and therefore resolves to `Var(0)`.
 
-use crate::term::{Hash, PrimOp, Term, TermStore};
+use crate::lang::term::{Hash, PrimOp, Term, TermStore};
 
 #[derive(Debug, Clone, PartialEq)]
 enum Token {
@@ -718,7 +718,7 @@ pub fn print(store: &TermStore, h: Hash) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::eval;
+    use crate::lang::eval;
 
     #[test]
     fn printing_a_free_variable_does_not_panic() {

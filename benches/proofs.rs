@@ -8,8 +8,8 @@
 use criterion::{criterion_group, criterion_main, black_box, Criterion};
 
 use tatic::proof::{prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_universal};
-use tatic::samples;
-use tatic::term::TermStore;
+use tatic::support::samples;
+use tatic::lang::term::TermStore;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

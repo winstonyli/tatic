@@ -192,9 +192,9 @@
 
 use hashbrown::{HashMap, HashSet};
 
-use crate::compile::CompiledFragment;
-use crate::ir::{Combinator, Dispatch, Func, Module, Node, Read};
-use crate::term::PrimOp;
+use crate::jit::compile::CompiledFragment;
+use crate::jit::ir::{Combinator, Dispatch, Func, Module, Node, Read};
+use crate::lang::term::PrimOp;
 
 /// Lowers a well-formed module (`ir::check`) to WAT. It cannot fail: every
 /// rejection happens in `compile::build` or `ir::check`, never here.
@@ -1058,16 +1058,16 @@ mod tests {
         assert_eq!(result, 5 + 2 * 100 - 3 * 10 + 7);
     }
 
-    use crate::compile::try_compile;
-    use crate::ir::fixtures::{factorial, twice, twice_inc};
+    use crate::jit::compile::try_compile;
+    use crate::jit::ir::fixtures::{factorial, twice, twice_inc};
 
     /// The hand-built fixture IR lowers to the same WAT as the builder's IR
     /// for the term (`try_compile` is `lower(build(..))`). This overlaps
     /// `compile::tests::build_produces_the_hand_built_ir_for_each_fixture`;
     /// the independent pin on the lowering is `tests/golden_wat.rs`.
-    fn assert_lowers_like_the_builder(fixture: (crate::term::TermStore, crate::term::Hash, crate::ir::Module)) {
+    fn assert_lowers_like_the_builder(fixture: (crate::lang::term::TermStore, crate::lang::term::Hash, crate::jit::ir::Module)) {
         let (s, h, m) = fixture;
-        crate::ir::check(&m).unwrap();
+        crate::jit::ir::check(&m).unwrap();
         let built = try_compile(&s, h).expect("the builder accepts every fixture");
         let lowered = lower(&m);
         assert_eq!(lowered.wat, built.wat);
@@ -1080,15 +1080,15 @@ mod tests {
         // `capturing_closure_loop`'s `\y. acc + y` is only ever called
         // directly, so `acc` travels as a Wasm parameter and nothing in the
         // module allocates.
-        let (_, s, h) = crate::samples::corpus().into_iter().find(|(name, ..)| *name == "capturing_closure_loop").unwrap();
-        let frag = crate::compile::try_compile(&s, h).unwrap();
+        let (_, s, h) = crate::support::samples::corpus().into_iter().find(|(name, ..)| *name == "capturing_closure_loop").unwrap();
+        let frag = crate::jit::compile::try_compile(&s, h).unwrap();
         assert!(!frag.needs_hp_reset, "{}", frag.wat);
         assert!(!frag.wat.contains("$alloc"), "{}", frag.wat);
         assert!(frag.wat.contains("(func $c0 (param $e0 i64) (param $p0 i64)"), "{}", frag.wat);
         let (mut store, instance) = instantiate(&frag.wat);
         let f = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
         for (n, acc) in [(0, 0), (1, 0), (5, 3), (100, -7)] {
-            assert_eq!(f.call(&mut store, (n, acc)).unwrap(), crate::eval::apply_term(&s, h, &[n, acc]).unwrap(), "n={n} acc={acc}");
+            assert_eq!(f.call(&mut store, (n, acc)).unwrap(), crate::lang::eval::apply_term(&s, h, &[n, acc]).unwrap(), "n={n} acc={acc}");
         }
     }
 

@@ -1,9 +1,9 @@
 use super::*;
-use crate::eval::apply_term;
-use crate::samples::{
+use crate::lang::eval::apply_term;
+use crate::support::samples::{
     a_pap_capturing, a_pap_non_capturing, capturing_closure_loop, factorial, gcd, source, twice, twice_inc_5,
 };
-use crate::test_corpus::{
+use crate::testing::test_corpus::{
     calls_a_capturing_closure_picked_by_if, inconsistent_arity_capturing_instance, inconsistent_arity_parameter,
     inconsistent_arity_runtime_chosen_instance, inconsistent_arity_saturating_instance,
     inconsistent_arity_under_applying_instance, let_bound_factorial_10,
@@ -659,14 +659,14 @@ fn a_let_bound_self_recursive_function_compiles_and_matches_interpreter() {
 
 #[test]
 fn build_produces_the_hand_built_ir_for_each_fixture() {
-    use crate::ir::fixtures::{factorial, twice, twice_inc};
+    use crate::jit::ir::fixtures::{factorial, twice, twice_inc};
     for (s, h, want) in [factorial(), twice(), twice_inc()] {
         assert_eq!(build(&s, h).expect("every fixture builds"), want);
     }
 }
 
 fn corpus(name: &str) -> (TermStore, Hash) {
-    let (_, s, h) = crate::samples::corpus().into_iter().find(|(n, ..)| *n == name).unwrap();
+    let (_, s, h) = crate::support::samples::corpus().into_iter().find(|(n, ..)| *n == name).unwrap();
     (s, h)
 }
 
@@ -681,7 +681,7 @@ fn compile_specialised_compiles_the_checked_specialisation() {
     let (mut store, instance) = instantiate(&c.frag.wat);
     let f = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
     for (n, acc) in [(0, 0), (1, 0), (5, 3), (100, -7)] {
-        assert_eq!(f.call(&mut store, (n, acc)).unwrap(), crate::eval::apply_term(&s, h, &[n, acc]).unwrap(), "n={n} acc={acc}");
+        assert_eq!(f.call(&mut store, (n, acc)).unwrap(), crate::lang::eval::apply_term(&s, h, &[n, acc]).unwrap(), "n={n} acc={acc}");
     }
 }
 
@@ -699,9 +699,9 @@ fn a_checked_specialisation_that_does_not_compile_falls_back_to_h() {
     // Its two βv steps leave `(if 0 < 10 then \c. .. else \c. ..) 100`,
     // an application headed by an `If`, which `build` doesn't cover.
     let (s, h) = corpus("over_application_if_between_closures");
-    let sp = crate::specialise::specialise(&s, h);
+    let sp = crate::jit::specialise::specialise(&s, h);
     assert!(!sp.trace.is_empty());
-    assert_eq!(crate::spec_check::check(&s, h, &sp.trace, sp.term), Ok(()));
+    assert_eq!(crate::verify::spec_check::check(&s, h, &sp.trace, sp.term), Ok(()));
     assert!(try_compile(&sp.store, sp.term).is_none(), "h' now compiles; this test needs another term");
     let c = compile_specialised(&s, h).expect("h compiles");
     assert!(c.specialised.is_none());
@@ -710,9 +710,9 @@ fn a_checked_specialisation_that_does_not_compile_falls_back_to_h() {
 
 /// A specialisation whose trace is real but whose claim is not what the
 /// trace reaches, so the checker rejects it.
-fn a_rejected_candidate() -> (TermStore, Hash, crate::specialise::Specialised) {
+fn a_rejected_candidate() -> (TermStore, Hash, crate::jit::specialise::Specialised) {
     let (s, h) = corpus("partial_application_loop");
-    let mut sp = crate::specialise::specialise(&s, h);
+    let mut sp = crate::jit::specialise::specialise(&s, h);
     assert!(!sp.trace.is_empty());
     sp.term = source(&mut sp.store, "0"); // a real term in the store, but not what the trace reaches
     (s, h, sp)
@@ -743,13 +743,13 @@ fn a_term_is_compiled_only_up_to_a_tree_size() {
     // Everything downstream walks the tree, and the emitted code is as
     // big as it, so sharing can't shrink the cost (RELATED_WORK.md §47).
     let mut s = TermStore::new();
-    let at_the_cap = crate::test_corpus::doubling(&mut s, 13);
+    let at_the_cap = crate::testing::test_corpus::doubling(&mut s, 13);
     assert_eq!(tree_size(&s, at_the_cap), MAX_TREE_NODES);
     assert!(try_compile(&s, at_the_cap).is_some());
-    let over = crate::test_corpus::doubling(&mut s, 14);
+    let over = crate::testing::test_corpus::doubling(&mut s, 14);
     assert!(try_compile(&s, over).is_none());
     // Counted without overflow, far past the cap.
-    let huge = crate::test_corpus::doubling(&mut s, 200);
+    let huge = crate::testing::test_corpus::doubling(&mut s, 200);
     assert_eq!(tree_size(&s, huge), MAX_TREE_NODES + 1);
 }
 
@@ -758,7 +758,7 @@ fn an_oversized_source_compiles_without_consulting_the_checker() {
     // Before the specialiser's early size test, this got a one-step
     // trace the checker rejects, a debug panic here.
     let mut s = TermStore::new();
-    let h = crate::test_corpus::oversized_source_with_a_shrinking_step(&mut s);
+    let h = crate::testing::test_corpus::oversized_source_with_a_shrinking_step(&mut s);
     if let Some(c) = compile_specialised(&s, h) {
         assert!(c.specialised.is_none());
     }

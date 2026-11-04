@@ -3,8 +3,8 @@
 //! over. One copy, so a bench, a test and the demo that name the same term
 //! build the same hash. Terms only unit tests use are in `test_corpus`.
 
-use crate::syntax;
-use crate::term::{Hash, TermStore};
+use crate::lang::syntax;
+use crate::lang::term::{Hash, TermStore};
 
 /// Parses `src`, a closed term, into `s`. Panics naming `src` if it doesn't parse: a sample or a test's term that
 /// doesn't parse is a bug in that term.

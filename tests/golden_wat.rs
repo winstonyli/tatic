@@ -1,6 +1,6 @@
 //! Golden WAT snapshots, one per `samples::corpus()` term, plus a few `rejects_*`
 //! terms the fragment must reject. A change to the lowering
-//! (`src/lower_wat.rs`) or the builder that changes emitted WAT fails here.
+//! (`src/jit/lower_wat.rs`) or the builder that changes emitted WAT fails here.
 //! If the change is intended, regenerate with
 //! `UPDATE_GOLDEN=1 cargo test --test golden_wat` and review the diff. A
 //! term the fragment rejects is recorded as `REJECTED`, so a new
@@ -11,9 +11,9 @@
 use std::fs;
 use std::path::Path;
 
-use tatic::compile::try_compile;
-use tatic::samples;
-use tatic::term::{Hash, TermStore};
+use tatic::jit::compile::try_compile;
+use tatic::support::samples;
+use tatic::lang::term::{Hash, TermStore};
 
 /// Terms the fragment must reject, each in its own store. Nothing else
 /// pins "identical rejections" now that the legacy emitter is gone.
@@ -32,7 +32,7 @@ fn rejects() -> Vec<(&'static str, TermStore, Hash)> {
     .into_iter()
     .map(|(name, src)| {
         let mut s = TermStore::new();
-        let h = tatic::syntax::parse(&mut s, src).unwrap();
+        let h = tatic::lang::syntax::parse(&mut s, src).unwrap();
         (name, s, h)
     })
     .collect()
@@ -82,7 +82,7 @@ fn specialised_benchmark_terms_lower_to_their_golden_wat() {
     for (name, build) in terms {
         let mut s = TermStore::new();
         let h = build(&mut s);
-        let c = tatic::compile::compile_specialised(&s, h).unwrap_or_else(|| panic!("{name} should compile"));
+        let c = tatic::jit::compile::compile_specialised(&s, h).unwrap_or_else(|| panic!("{name} should compile"));
         assert!(c.specialised.is_some(), "{name} should be specialised");
         check_golden(&dir, &format!("{name}_specialised"), &c.frag.wat, update, &mut changed);
     }

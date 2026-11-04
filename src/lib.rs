@@ -1,32 +1,19 @@
-pub mod compile;
-pub(crate) mod decompile;
-pub mod eval;
-pub(crate) mod ir;
 pub mod jit;
 pub mod kernel;
-pub(crate) mod lower_wat;
+pub mod lang;
 pub mod proof;
-pub mod rng;
-pub mod samples;
-pub mod spec_check;
-pub mod specialise;
-pub mod syntax;
-pub mod term;
-pub mod typing;
+pub mod support;
+pub mod verify;
 
-// The allocator `main.rs` ships with, so timing probes in the lib's tests
+// The allocator `src/bin/demo.rs` ships with, so timing probes in the lib's tests
 // measure what runs (RELATED_WORK §66). This
 // covers only the lib's own unit tests: an integration test (`tests/*.rs`) or
 // bench is its own binary and needs its own `#[global_allocator]` to time
 // anything, else it runs on the system heap (about 2x slower on the lemma in
-// `tests/church_bv.rs`). Declared in `src/main.rs`, `benches/*.rs`
+// `tests/church_bv.rs`). Declared in `src/bin/demo.rs`, `benches/*.rs`
 // and `tests/church_bv/main.rs`; add it to any new timing test.
 #[cfg(test)]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[cfg(test)]
-pub(crate) mod test_corpus;
-#[cfg(test)]
-mod ir_fuzz;
-#[cfg(test)]
-mod independence;
+mod testing;

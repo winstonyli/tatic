@@ -21,7 +21,7 @@ Checked by hand, 2026-11-04:
 - Branches versus `main` (ahead/behind): `env-cache` 0/757, `rule-index` 0/759, `score-no-plans` 0/754, `screen-key` 0/752 (all
   merged); `ring-spikes` 1/677, `score-pool` 1/700, `origin/lazy-view` 2/601. "No path collision" is weak evidence for branches
   this far behind.
-- `compile.rs` calls `specialise::specialise` and `specialise.rs` calls `compile::peel`: the `compile <-> specialise` cycle is real.
+- `compile.rs` calls `specialise::specialise` but `specialise.rs` reaches `compile::peel` only in test code: the survey's `compile <-> specialise` cycle is NOT real in non-test code (corrected 2026-11-04); `compile <-> ir` and `compile <-> lower_wat` are.
 - `~/.claude/runs/run.ps1` names `docs/runs.md` (global file: moving that path is a proposal to the user, not an item here).
 - 74 lines of `PARKED.md` cite `tier-cycle`, by section name.
 
@@ -31,6 +31,7 @@ Decisions, 2026-11-04 (the user):
 - **D1 crates: workspace crates after a grouping step.** First the additive grouping (SR1, SR2, TB2, TB3), then the kernel crate (SR4) and the `church_bv` crate (TB1) each as its own spec and plan (item state "Own plan"). Not started.
 - **D3 `tier-cycle.md`: split by H2** (DOC2), after the cite checker (DOC3, done). Not started.
 - **D4 `scripts/experiments`: leave ignored, fix stale doc pointers.** Done (`docs/TOUR.md`; the README line already says it is not in the repo).
+- **D6 grouping step, 2026-11-04 (the user, "as rec"):** x1 layer directories for `src/` (SR1), y1 extract `shape.rs` (SR2), z1 `uniform/` only for `church_bv` (TB2). TB3 (`rewrite.rs`/`encoding.rs` split) is not decided (split boundaries, `origin/lazy-view` collision) and is not part of this step. Target tree: `lang/{term,eval,syntax}`, `jit/{compile,ir,lower_wat,specialise,shape}`, `verify/{decompile,spec_check,typing}`, `support/{samples,rng}`, `testing/{test_corpus,ir_fuzz,independence}`, `kernel` and `proof` in place, `main.rs` to `bin/demo.rs`.
 - **D2 / D5 (`kernel.rs` split, SR3 against the architecture survey)**: open; SR3 waits for SR4, which makes it moot if the crate lands.
 
 Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
@@ -40,17 +41,17 @@ Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
 ### Source layout (SR)
 - **SR1. Group the 21 flat `src/` modules by layer** (lang / jit / verify / support / testing), keeping `foo.rs + foo/` throughout. IFACE
   (public paths of 9 modules, ~35 `use tatic::` lines, 3 independence allow-lists, ~20 TOUR cites). ~16 files moved, no logic.
+  **Done 2026-11-04** (commit below): 17 files renamed at 100% similarity, 4 new parent files (`lang.rs`, `verify.rs`, `support.rs`, `testing.rs`), path edits in 31 files; no re-exports. The 3 independence allow-lists now take module-path prefixes (`lang::term`, matched on whole segments; new cases in `testing/independence.rs`). Checks: `cargo check --all-targets` clean (2 pre-existing `church_bv` warnings), `cargo test -- --list` 749 = 749 names equal after stripping the layer prefix, lib 361 passed + 1 ignored as before, `bash scripts/cite_check.sh` 51 + 124 cites resolve, demo runs under `cargo run`. Old paths remain only in frozen specs/plans and in `RELATED_WORK.md` finding text (left as written). Not done: the 21 flat modules became 5 layers + `kernel`/`proof`; `kernel` stays one file (SR3/SR4).
 - **SR2. Extract term-shape analysis from `compile.rs` into `shape.rs`** (~300 lines: `peel`, `classify`, `Shape`, `free_vars`,
-  `infer_closure_arities`, ...). Removes the `compile <-> specialise` cycle and the prover's dependency on the code generator
-  (`proof/*` calls `compile::` ~45 times). ~55 call sites. Also AR8 (shared children walk for `Shape`).
+  `infer_closure_arities`, ...). Removes the prover's dependency on the code generator (`proof/*` calls `compile::` ~45 times). (Re-verified 2026-11-04: the `compile <-> specialise` cycle the survey named is test-only (`specialise.rs` reaches `compile::peel` below `cfg(test)`); the non-test cycles are `compile <-> ir` and `compile <-> lower_wat`, which this item does not touch unless they use the moved helpers.) ~55 call sites. Also AR8 (shared children walk for `Shape`).
 - **SR3. Split `kernel.rs` (2198 lines) into role files under `kernel/`** (expr, stack, subst, hc, reduce, check), root re-exports.
   No external path changes. **Conflict:** the architecture survey rejected this ("fewer, larger files are a feature in the trusted
   core"); decision D5.
 - **SR4. Kernel as its own workspace crate** so independence is a compile error. IFACE. Same as RB1, AR4. Replaces
   `independence.rs` and its 3 text-scanning tests; ~12 files moved, 150+ import edits.
 - **SR5. One test-placement convention** (`foo/tests.rs` for modules with a large test block). Also TB7.
-- **SR6. Gather `cfg(test)` support under `testing/`**; take the allocator hack out of `lib.rs`.
-- **SR7. Demo as `src/bin/demo.rs`** like the REPL (1 file, 3 doc lines, 1 manifest line).
+- **SR6. Gather `cfg(test)` support under `testing/`**; take the allocator hack out of `lib.rs`. **Partly done by SR1 2026-11-04:** `testing/` gathers `test_corpus`, `ir_fuzz`, `independence`. Not done: the `#[global_allocator]` stays in `lib.rs`.
+- **SR7. Demo as `src/bin/demo.rs`** like the REPL (1 file, 3 doc lines, 1 manifest line). **Done by SR1 2026-11-04:** `Cargo.toml` `default-run = "demo"`; bin renamed `tatic` -> `demo` (`cargo run` unchanged).
 - **AR9. Fix `proof/` names:** `hardening.rs` holds the universal prover, `universal.rs` two helpers (~400 lines moved).
 
 ### church_bv and tests (TB, AR)

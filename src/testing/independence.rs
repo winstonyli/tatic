@@ -13,12 +13,12 @@
 ///   the same for `super` and `tatic`): `x::eval` would then need no
 ///   `crate::`. Any `crate`, `self`, `super` or `tatic` token followed by
 ///   `as` counts, even across a line break.
-/// - has a `crate::`, `super::` or `tatic::` path whose first segment is
-///   not in `allowed`. All three are scanned because a module directly
-///   under the crate root reaches the same siblings through `super::` as
-///   through `crate::`, and through `tatic::` too in test builds, where
-///   `lib.rs` has `extern crate self as tatic`. `crate::{..}` has an empty
-///   first segment and is rejected too.
+/// - has a `crate::`, `super::` or `tatic::` path that does not start with
+///   one of `allowed` (module paths such as `lang::term`, matched on whole
+///   segments). All three are scanned because `super::` and, in test
+///   builds, `tatic::` (`lib.rs` has `extern crate self as tatic`) can
+///   reach the same modules as `crate::`. `crate::{..}` has an empty path
+///   and is rejected too.
 pub(crate) fn assert_independent(file: &str, src: &str, forbidden: &[&str], allowed: &[&str]) {
     let lines: Vec<&str> = src.lines().collect();
     let tests_start = lines
@@ -45,10 +45,12 @@ pub(crate) fn assert_independent(file: &str, src: &str, forbidden: &[&str], allo
             let mut rest = compact.as_str();
             while let Some(i) = rest.find(prefix) {
                 let after = &rest[i + prefix.len()..];
-                let end = after.find(|c: char| !c.is_alphanumeric() && c != '_').unwrap_or(after.len());
-                let head = &after[..end];
-                assert!(allowed.contains(&head), "{file} must not use {prefix}{head} (only {allowed:?} are allowed)");
-                rest = &after[end..];
+                let ident = |c: char| c.is_alphanumeric() || c == '_';
+                let Some(ok) = allowed.iter().find(|a| after.strip_prefix(**a).is_some_and(|r| !r.starts_with(ident))) else {
+                    let end = after.find(|c: char| !ident(c) && c != ':').unwrap_or(after.len());
+                    panic!("{file} must not use {prefix}{} (only {allowed:?} are allowed)", &after[..end]);
+                };
+                rest = &after[ok.len()..];
             }
         }
     }
@@ -59,15 +61,18 @@ mod tests {
     use super::assert_independent;
 
     fn rejected(src: &str) -> bool {
-        std::panic::catch_unwind(|| assert_independent("x.rs", src, &["compile"], &["term"])).is_err()
+        std::panic::catch_unwind(|| assert_independent("x.rs", src, &["compile"], &["lang::term"])).is_err()
     }
 
     #[test]
     fn allowed_paths_pass_and_others_fail() {
-        assert!(!rejected("use crate::term::Hash;\n"));
-        assert!(rejected("use crate::eval;\n"));
+        assert!(!rejected("use crate::lang::term::Hash;\n"));
+        assert!(!rejected("use crate::lang::term;\n"));
+        assert!(rejected("use crate::lang::termx::Hash;\n"));
+        assert!(rejected("use crate::lang::syntax;\n"));
+        assert!(rejected("use crate::lang::eval;\n"));
         assert!(rejected("use super::eval;\n"));
-        assert!(rejected("use tatic::eval;\n"));
+        assert!(rejected("use tatic::lang::eval;\n"));
         assert!(rejected("use crate :: compile :: peel;\n"));
     }
 

@@ -30,8 +30,8 @@
 //! Trusted, so it shares no code with the compiler (checked by the
 //! `independent_of_the_compiler` test).
 
-use crate::eval;
-use crate::term::{Hash, Term, TermStore};
+use crate::lang::eval;
+use crate::lang::term::{Hash, Term, TermStore};
 use hashbrown::{HashMap, HashSet};
 
 #[derive(Clone, Copy)]
@@ -264,15 +264,15 @@ fn well_typed_in(s: &TermStore, h: Hash, arity: usize, mut tys: Types) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::PrimOp;
+    use crate::lang::term::PrimOp;
 
     #[test]
     fn independent_of_the_compiler() {
-        crate::independence::assert_independent(
+        crate::testing::independence::assert_independent(
             "typing.rs",
             include_str!("typing.rs"),
             &["compile", "lower_wat", "specialise", "spec_check", "proof", "jit"],
-            &["eval", "term"],
+            &["lang::eval", "lang::term"],
         );
     }
 
@@ -409,7 +409,7 @@ mod tests {
     /// normalisation, and a `Rec` either can't name itself or is a loop
     /// whose counter, clamped to 20, goes down by one per self-call.
     struct Gen {
-        rng: crate::rng::SplitMix64,
+        rng: crate::support::rng::SplitMix64,
         /// Earlier subterms, by the scope they were built in.
         pool: HashMap<Vec<bool>, Vec<Hash>>,
     }
@@ -554,7 +554,7 @@ mod tests {
         const ARGS: [i64; 5] = [0, 1, -2, 7, 25];
         let (mut typed, mut ran, mut div) = (0, 0, 0);
         for seed in 0..SEEDS {
-            let mut g = Gen { rng: crate::rng::SplitMix64::new(seed), pool: HashMap::new() };
+            let mut g = Gen { rng: crate::support::rng::SplitMix64::new(seed), pool: HashMap::new() };
             let mut s = TermStore::new();
             let arity = g.below(3) as usize;
             let h = g.program(&mut s, arity);
@@ -590,7 +590,7 @@ mod tests {
         const SEEDS: u64 = 4000;
         let mut shared = 0;
         for seed in 0..SEEDS {
-            let mut g = Gen { rng: crate::rng::SplitMix64::new(seed), pool: HashMap::new() };
+            let mut g = Gen { rng: crate::support::rng::SplitMix64::new(seed), pool: HashMap::new() };
             let mut s = TermStore::new();
             let arity = g.below(3) as usize;
             let h = g.program(&mut s, arity);

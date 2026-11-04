@@ -20,7 +20,7 @@
 
 use std::rc::Rc;
 
-use crate::term::{Hash, PrimOp, Term, TermStore};
+use crate::lang::term::{Hash, PrimOp, Term, TermStore};
 
 #[derive(Clone)]
 pub enum Value {
@@ -176,7 +176,7 @@ pub fn apply_term(store: &TermStore, h: Hash, args: &[i64]) -> Result<i64, EvalE
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::samples::{capturing_closure_loop, factorial, source, twice_inc_5};
+    use crate::support::samples::{capturing_closure_loop, factorial, source, twice_inc_5};
 
     #[test]
     fn factorial_interprets_correctly() {

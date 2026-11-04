@@ -150,10 +150,10 @@
 use hashbrown::HashMap;
 use std::rc::Rc;
 
-use crate::compile::{self, Shape};
-use crate::eval;
+use crate::jit::compile::{self, Shape};
+use crate::lang::eval;
 use crate::kernel::{self, Expr, Globals, Postulates};
-use crate::term::{Hash, PrimOp, Term, TermStore};
+use crate::lang::term::{Hash, PrimOp, Term, TermStore};
 
 /// Postulated `Int` and its operators, plus on-demand postulated constants
 /// for whichever literal values a given term actually uses.

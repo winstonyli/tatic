@@ -5,14 +5,14 @@
 //! doubled DAG whose text is exponentially long. Then the shapes that unit
 //! tests in several files share, as source.
 
-use crate::samples::source;
-use crate::term::{Hash, TermStore};
+use crate::support::samples::source;
+use crate::lang::term::{Hash, TermStore};
 
 /// `\n. if n == 777 then (\x. 0) v5 else 1`, with `v5` unbound: `eval`
 /// fails with `UnboundVariable` at `n = 777`. Contracting the redex would
 /// hide that, which is why the checker requires a closed source.
 pub(crate) fn open_redex_probe(s: &mut TermStore) -> Hash {
-    use crate::term::PrimOp;
+    use crate::lang::term::PrimOp;
     let (n, zero, one, magic, v5) = (s.var(0), s.lit(0), s.lit(1), s.lit(777), s.var(5));
     let cond = s.prim(PrimOp::Eq, n, magic);
     let k0 = s.abs(zero);
@@ -33,9 +33,9 @@ pub(crate) fn oversized_source_with_a_shrinking_step(s: &mut TermStore) -> Hash 
         }
         let mid = lo + (hi - lo) / 2;
         let (a, b) = (sum(s, lo, mid), sum(s, mid, hi));
-        s.prim(crate::term::PrimOp::Add, a, b)
+        s.prim(crate::lang::term::PrimOp::Add, a, b)
     }
-    let big = sum(s, 0, crate::spec_check::MAX_NODES as i64);
+    let big = sum(s, 0, crate::verify::spec_check::MAX_NODES as i64);
     let big = s.abs(big);
     let n = s.var(1);
     let k = s.abs(n);
@@ -48,7 +48,7 @@ pub(crate) fn oversized_source_with_a_shrinking_step(s: &mut TermStore) -> Hash 
 pub(crate) fn doubling(s: &mut TermStore, d: u32) -> Hash {
     let mut t = s.var(0);
     for _ in 0..d {
-        t = s.prim(crate::term::PrimOp::Add, t, t);
+        t = s.prim(crate::lang::term::PrimOp::Add, t, t);
     }
     s.abs(t)
 }

@@ -2,7 +2,7 @@
 // benchmark corpus? Static census over hash-consed nodes: x+0, x*1, and x*2^k (k >= 1).
 // Counts pattern matches only; no lemma is proven here.
 use std::collections::HashSet;
-use tatic::term::{Hash, PrimOp, Term, TermStore};
+use tatic::lang::term::{Hash, PrimOp, Term, TermStore};
 
 fn census(s: &TermStore, root: Hash) -> (usize, usize, usize, usize, usize) {
     let mut seen = HashSet::new();
@@ -46,7 +46,7 @@ fn census(s: &TermStore, root: Hash) -> (usize, usize, usize, usize, usize) {
 #[test]
 fn census_of_rule_patterns_over_the_corpus() {
     let mut tot = (0, 0, 0, 0, 0);
-    for (name, s, root) in tatic::samples::corpus() {
+    for (name, s, root) in tatic::support::samples::corpus() {
         let c = census(&s, root);
         println!("CENSUS {name}: nodes={} prims={} x+0={} x*1={} x*2^k={}", c.0, c.1, c.2, c.3, c.4);
         tot = (tot.0 + c.0, tot.1 + c.1, tot.2 + c.2, tot.3 + c.3, tot.4 + c.4);
@@ -63,7 +63,7 @@ fn census_of_rule_patterns_over_the_corpus() {
 #[test]
 fn the_redundant_arithmetic_benchmark_compiles() {
     let mut s = TermStore::new();
-    let h = tatic::samples::redundant_arithmetic_recursion(&mut s);
-    assert!(tatic::compile::try_compile(&s, h).is_some());
-    assert_eq!(tatic::eval::apply_term(&s, h, &[10]).unwrap(), 440);
+    let h = tatic::support::samples::redundant_arithmetic_recursion(&mut s);
+    assert!(tatic::jit::compile::try_compile(&s, h).is_some());
+    assert_eq!(tatic::lang::eval::apply_term(&s, h, &[10]).unwrap(), 440);
 }

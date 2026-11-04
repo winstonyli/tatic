@@ -16,8 +16,8 @@
 
 use hashbrown::HashMap;
 
-use crate::compile::is_comparison;
-use crate::term::PrimOp;
+use crate::jit::compile::is_comparison;
+use crate::lang::term::PrimOp;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Module {
@@ -343,7 +343,7 @@ impl Module {
 #[cfg(test)]
 pub(crate) mod fixtures {
     use super::*;
-    use crate::term::{Hash, TermStore};
+    use crate::lang::term::{Hash, TermStore};
 
     fn b(n: Node) -> Box<Node> {
         Box::new(n)
@@ -352,7 +352,7 @@ pub(crate) mod fixtures {
     /// `rec f n = if n <= 1 then 1 else n * f(n - 1)`
     pub(crate) fn factorial() -> (TermStore, Hash, Module) {
         let mut s = TermStore::new();
-        let h = crate::samples::factorial(&mut s);
+        let h = crate::support::samples::factorial(&mut s);
         let p0 = || Node::Read(Read::Param(0));
         let m = Module {
             entry: Func {
@@ -380,7 +380,7 @@ pub(crate) mod fixtures {
     /// `\f x. f (f x)`: `f` is `Var(1)` (local `$p0`), `x` is `Var(0)` (`$p1`).
     pub(crate) fn twice() -> (TermStore, Hash, Module) {
         let mut s = TermStore::new();
-        let h = crate::samples::twice(&mut s);
+        let h = crate::support::samples::twice(&mut s);
         let f = || b(Node::Read(Read::Param(0)));
         let m = Module {
             entry: Func {
@@ -399,7 +399,7 @@ pub(crate) mod fixtures {
     /// directly; `inc` becomes `$c1`, passed as a closure value.
     pub(crate) fn twice_inc() -> (TermStore, Hash, Module) {
         let mut s = TermStore::new();
-        let h = crate::samples::twice_inc_5(&mut s);
+        let h = crate::support::samples::twice_inc_5(&mut s);
         let (_, _, twice_ir) = twice();
         let m = Module {
             entry: Func {

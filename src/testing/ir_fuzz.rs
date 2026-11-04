@@ -10,11 +10,11 @@
 
 use std::sync::OnceLock;
 
-use crate::decompile::decompile;
-use crate::eval::{apply_term, EvalError};
-use crate::ir::{check, Combinator, Dispatch, Func, Module, Node, Read};
-use crate::lower_wat::lower;
-use crate::term::{PrimOp, TermStore};
+use crate::verify::decompile::decompile;
+use crate::lang::eval::{apply_term, EvalError};
+use crate::jit::ir::{check, Combinator, Dispatch, Func, Module, Node, Read};
+use crate::jit::lower_wat::lower;
+use crate::lang::term::{PrimOp, TermStore};
 
 const EDGES: [i64; 8] = [i64::MIN, i64::MIN + 1, -7, -1, 0, 1, 7, i64::MAX];
 
@@ -283,7 +283,7 @@ fn closure_templates_agree_under_both_dispatch_modes() {
 // ---- Random well-typed IR ---------------------------------------------
 
 /// The crate's SplitMix64 stream, drawn in `usize` and percent.
-struct Rng(crate::rng::SplitMix64);
+struct Rng(crate::support::rng::SplitMix64);
 impl Rng {
     fn next(&mut self) -> u64 {
         self.0.next_u64()
@@ -461,7 +461,7 @@ fn fuzz(seeds: u64) {
         // A fresh `Rng` per seed, not one carried across the loop: a
         // failure's message names only `seed`, so reproducing it must not
         // require replaying every earlier iteration's draws first.
-        let mut rng = Rng(crate::rng::SplitMix64::new(0x7A71C_u64.wrapping_add(seed.wrapping_mul(0x9E3779B97F4A7C15))));
+        let mut rng = Rng(crate::support::rng::SplitMix64::new(0x7A71C_u64.wrapping_add(seed.wrapping_mul(0x9E3779B97F4A7C15))));
         let m = random_module(&mut rng);
         check(&m).unwrap_or_else(|e| panic!("seed {seed}: the generator produced an ill-formed module: {e}"));
         for _ in 0..3 {

@@ -54,12 +54,17 @@
 //! sense the literature means, which would cover every input. See
 //! `proof.rs`'s own module docs.)
 
+pub mod compile;
+pub(crate) mod ir;
+pub(crate) mod lower_wat;
+pub mod specialise;
+
 use hashbrown::HashMap;
 use wasmtime::{Engine, Instance, Module, Store, Val};
 
-use crate::eval::{self, EvalError};
+use crate::lang::eval::{self, EvalError};
 use crate::proof;
-use crate::term::{Hash, TermStore};
+use crate::lang::term::{Hash, TermStore};
 
 // The largest is 12, not 20: `verify` interprets every sample, and `fib(20)`
 // alone was 4.6 of a 15.5 ms cold-call total (RELATED_WORK.md §71).
@@ -196,7 +201,7 @@ impl JitEngine {
     /// Compiles, checks and installs `h` for calls of `nargs` arguments, or the entry that caches why not (`None`: this
     /// call's argument count is not `h`'s arity, which says nothing about `h`).
     fn try_install(&mut self, terms: &TermStore, h: Hash, nargs: usize) -> Result<(), Option<CacheEntry>> {
-        let Some(crate::compile::Compiled { frag, specialised }) = crate::compile::compile_specialised(terms, h) else {
+        let Some(crate::jit::compile::Compiled { frag, specialised }) = crate::jit::compile::compile_specialised(terms, h) else {
             return Err(Some(CacheEntry::NotCompilable));
         };
 
@@ -217,7 +222,7 @@ impl JitEngine {
         // types). So only a simply typed term is installed; see `typing.rs`
         // and `RELATED_WORK.md` §38. The check is on `h`: a specialisation
         // `h'` is βv-equivalent to it, and βv preserves types.
-        if !crate::typing::well_typed(terms, h, frag.arity) {
+        if !crate::verify::typing::well_typed(terms, h, frag.arity) {
             return Err(Some(CacheEntry::IllTyped));
         }
 
@@ -402,10 +407,10 @@ impl Default for JitEngine {
 /// binds to `Int`s. A callee shape the scan can't classify counts as a
 /// call; no prover covers it anyway.
 fn calls_a_parameter(terms: &TermStore, h: Hash) -> bool {
-    let Some((arity, body, is_rec)) = crate::compile::peel(terms, h) else {
+    let Some((arity, body, is_rec)) = crate::jit::compile::peel(terms, h) else {
         return false;
     };
-    match crate::compile::infer_closure_arities(terms, body, arity, is_rec.then_some(arity as u32)) {
+    match crate::jit::compile::infer_closure_arities(terms, body, arity, is_rec.then_some(arity as u32)) {
         Some(found) => found.keys().any(|&i| (i as usize) < arity),
         None => true,
     }
@@ -471,17 +476,17 @@ mod tests {
         assert!(samples.iter().any(|&a| a >= 10), "no input that iterates 10+ times");
     }
     use super::*;
-    use crate::samples::{
+    use crate::support::samples::{
         a_pap_capturing, a_pap_non_capturing, capturing_closure_loop, closure_typed_loop_carried_parameter_loop,
         factorial, fib, gcd, inc, inconsistent_arity_loop_carried_parameter_loop, iterate, source, twice_inc_5,
     };
-    use crate::test_corpus::{
+    use crate::testing::test_corpus::{
         a_pap_of_a_capturing_self_recursive_combinator, a_pap_of_a_self_recursive_combinator,
         inconsistent_arity_capturing_instance, inconsistent_arity_iterate, inconsistent_arity_runtime_chosen_instance,
         inconsistent_arity_saturating_instance, inconsistent_arity_under_applying_instance,
         iterate_creating_a_closure_over_g, let_bound_factorial_10, over_application_if_between_closures_of_params,
     };
-    use crate::term::TermStore;
+    use crate::lang::term::TermStore;
 
     #[test]
     fn a_closure_of_the_wrong_arity_off_the_samples_is_not_installed() {
@@ -496,8 +501,8 @@ mod tests {
         // don't see arity, so typing.rs accepts it. What keeps it out is the
         // universal-proof gate: the kernel types a closure by its exact
         // arity (`Clo_k`), so no proof can exist (RELATED_WORK.md §40).
-        assert!(crate::typing::well_typed(&s, h, 1));
-        let c = crate::compile::compile_specialised(&s, h).unwrap();
+        assert!(crate::verify::typing::well_typed(&s, h, 1));
+        let c = crate::jit::compile::compile_specialised(&s, h).unwrap();
         assert!(c.specialised.is_none());
         let mut raw = JitEngine::new();
         let (_module, f, hp) = raw.instantiate(&c.frag.wat).unwrap();
@@ -520,8 +525,8 @@ mod tests {
             r"rec go g n x = if n <= 0 then x else go g (n - 1) (g x)",
         ] {
             let mut s = TermStore::new();
-            let h = crate::syntax::parse(&mut s, src).unwrap();
-            let arity = crate::compile::peel(&s, h).unwrap().0;
+            let h = crate::lang::syntax::parse(&mut s, src).unwrap();
+            let arity = crate::jit::compile::peel(&s, h).unwrap().0;
             assert!(!JitEngine::kernel_verify(&s, h, arity), "{src}");
         }
     }
@@ -565,7 +570,7 @@ mod tests {
         // the JIT returned Ok(0) where `eval` fails. Whatever the JIT does
         // with this term, it must agree with `eval`.
         let mut s = TermStore::new();
-        let h = crate::test_corpus::open_redex_probe(&mut s);
+        let h = crate::testing::test_corpus::open_redex_probe(&mut s);
         let mut jit = JitEngine::new();
         for n in [0, 1, 776, 777, 778, -777] {
             assert_eq!(jit.apply(&s, h, &[n]), eval::apply_term(&s, h, &[n]), "n={n}");
@@ -580,8 +585,8 @@ mod tests {
         // plain arithmetic. So installing it at all depends on proving
         // `h'`, not `h`.
         let mut s = TermStore::new();
-        let h = crate::syntax::parse(&mut s, r"\n. (\g. g) (\x. x + 1) n").unwrap();
-        let sp = crate::specialise::specialise(&s, h);
+        let h = crate::lang::syntax::parse(&mut s, r"\n. (\g. g) (\x. x + 1) n").unwrap();
+        let sp = crate::jit::specialise::specialise(&s, h);
         let mut jit = JitEngine::new();
         assert!(!JitEngine::kernel_verify(&s, h, 1));
         assert!(JitEngine::kernel_verify(&sp.store, sp.term, 1));
@@ -678,7 +683,7 @@ mod tests {
     fn a_term_too_big_as_a_tree_is_interpreted() {
         // Past `compile.rs`'s `MAX_TREE_NODES` as a tree.
         let mut s = TermStore::new();
-        let h = crate::test_corpus::doubling(&mut s, 16);
+        let h = crate::testing::test_corpus::doubling(&mut s, 16);
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, h, &[3]).unwrap(), 3 << 16);
         assert_eq!((jit.stats.compiled, jit.stats.interpreted), (0, 1));
@@ -727,7 +732,7 @@ mod tests {
     fn kernel_proof_recorded_for_straight_line_and_tail_recursive_terms() {
         // Straight-line, no Rec.
         let mut s = TermStore::new();
-        let straight_line = crate::samples::straight_line(&mut s);
+        let straight_line = crate::support::samples::straight_line(&mut s);
 
         let mut jit = JitEngine::new();
         assert_eq!(jit.apply(&s, straight_line, &[3, 5]).unwrap(), 6);
@@ -953,7 +958,7 @@ mod tests {
         let it = inconsistent_arity_iterate(&mut s);
         let top = inconsistent_arity_loop_carried_parameter_loop(&mut s, 10);
 
-        let frag = crate::compile::try_compile(&s, it).expect("should compile via curried dispatch, per compile.rs alone");
+        let frag = crate::jit::compile::try_compile(&s, it).expect("should compile via curried dispatch, per compile.rs alone");
         assert!(frag.wat.contains("call_indirect (type $ty1)"), "the hot, consistent g(x) call should also go through the curried fallback:\n{}", frag.wat);
 
         let mut jit = JitEngine::new();
@@ -1166,7 +1171,7 @@ mod tests {
 
     #[test]
     fn a_known_partial_application_is_installed_specialised_with_a_universal_proof() {
-        let (_, s, h) = crate::samples::corpus().into_iter().find(|(n, ..)| *n == "partial_application_loop").unwrap();
+        let (_, s, h) = crate::support::samples::corpus().into_iter().find(|(n, ..)| *n == "partial_application_loop").unwrap();
         let mut jit = JitEngine::new();
         for args in [[0, 0], [1, 0], [5, 3], [100, -7]] {
             assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "args={args:?}");

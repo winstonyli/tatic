@@ -5,10 +5,10 @@
 
 use criterion::{criterion_group, criterion_main, black_box, BatchSize, Criterion};
 
-use tatic::eval;
+use tatic::lang::eval;
 use tatic::jit::JitEngine;
-use tatic::samples;
-use tatic::term::{Hash, TermStore};
+use tatic::support::samples;
+use tatic::lang::term::{Hash, TermStore};
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

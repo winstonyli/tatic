@@ -40,14 +40,15 @@
 //! samples never reach it, so it tests the two static gates themselves
 //! (RELATED_WORK.md §41).
 
-use tatic::compile;
-use tatic::eval;
+use tatic::jit::compile;
+use tatic::lang::eval;
 use tatic::jit::JitEngine;
 use tatic::proof;
-use tatic::term::{Hash, PrimOp, Term, TermStore};
-use tatic::{spec_check, specialise};
+use tatic::lang::term::{Hash, PrimOp, Term, TermStore};
+use tatic::jit::specialise;
+use tatic::verify::spec_check;
 
-use tatic::rng::SplitMix64 as Rng;
+use tatic::support::rng::SplitMix64 as Rng;
 
 const MAX_LIT: i64 = 50;
 
@@ -1082,7 +1083,7 @@ fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
             assert_eq!(c.frag.arity, arity, "seed={seed}");
         }
         let module = c.as_ref().map(|c| load_fragment(&engine, &c.frag));
-        let typed = tatic::typing::well_typed(&s, h, arity);
+        let typed = tatic::verify::typing::well_typed(&s, h, arity);
         if c.is_some() && !typed {
             declined += 1;
         }
@@ -1107,7 +1108,7 @@ fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
                         Err(eval::EvalError::TypeError | eval::EvalError::NotAFunction | eval::EvalError::UnboundVariable)
                     ),
                     "seed={seed} trial={trial} args={args:?}: well_typed accepted a term that goes wrong: {interpreted:?} h={}",
-                    tatic::syntax::print(&s, h)
+                    tatic::lang::syntax::print(&s, h)
                 );
             }
             // The compiled output, with nothing between it and the caller.
@@ -1126,7 +1127,7 @@ fn specialisation_is_checked_and_preserves_meaning_on_random_terms() {
                     interpreted.as_ref().ok().copied(),
                     "seed={seed} trial={trial} args={args:?} specialised={} interpreted={interpreted:?} h={}",
                     c.specialised.is_some(),
-                    tatic::syntax::print(&s, h)
+                    tatic::lang::syntax::print(&s, h)
                 );
             }
         }

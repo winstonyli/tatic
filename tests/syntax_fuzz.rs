@@ -24,10 +24,10 @@
 //! Deterministic (the same tiny splitmix64 PRNG `compile_fuzz.rs`/
 //! `kernel_fuzz.rs` use), seed-scanned, bounded generation depth.
 
-use tatic::syntax::{parse, print};
-use tatic::term::{Hash, PrimOp, TermStore};
+use tatic::lang::syntax::{parse, print};
+use tatic::lang::term::{Hash, PrimOp, TermStore};
 
-use tatic::rng::SplitMix64 as Rng;
+use tatic::support::rng::SplitMix64 as Rng;
 
 const MAX_LIT: i64 = 50;
 const MAX_DEPTH: u32 = 6;

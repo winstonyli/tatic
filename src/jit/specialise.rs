@@ -6,8 +6,8 @@
 //! fast. The policy is in the spec's "Specialiser policy"
 //! (`docs/superpowers/specs/2026-09-24-closure-specialisation-design.md`).
 
-use crate::spec_check::{MAX_NODES, MAX_STEPS, Step};
-use crate::term::{Hash, Term, TermStore};
+use crate::verify::spec_check::{MAX_NODES, MAX_STEPS, Step};
+use crate::lang::term::{Hash, Term, TermStore};
 use hashbrown::{HashMap, HashSet};
 
 pub struct Specialised {
@@ -414,11 +414,11 @@ pub(crate) fn replay(store: &TermStore, h: Hash, trace: &[Step]) -> Option<(Term
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spec_check::check;
-    use crate::term::PrimOp;
+    use crate::verify::spec_check::check;
+    use crate::lang::term::PrimOp;
 
     fn corpus(name: &str) -> (TermStore, Hash) {
-        let (_, s, h) = crate::samples::corpus().into_iter().find(|(n, ..)| *n == name).unwrap();
+        let (_, s, h) = crate::support::samples::corpus().into_iter().find(|(n, ..)| *n == name).unwrap();
         (s, h)
     }
 
@@ -497,7 +497,7 @@ mod tests {
         let sp = specialise_checked(&s, h);
         assert_eq!(sp.trace.len(), 1, "{:?}", sp.trace);
         for args in [[0, 0], [1, 0], [5, 3], [100, -7]] {
-            assert_eq!(crate::eval::apply_term(&sp.store, sp.term, &args), crate::eval::apply_term(&s, h, &args), "args={args:?}");
+            assert_eq!(crate::lang::eval::apply_term(&sp.store, sp.term, &args), crate::lang::eval::apply_term(&s, h, &args), "args={args:?}");
         }
     }
 
@@ -584,7 +584,7 @@ mod tests {
     #[test]
     fn an_oversized_source_gets_the_empty_trace() {
         let mut s = TermStore::new();
-        let h = crate::test_corpus::oversized_source_with_a_shrinking_step(&mut s);
+        let h = crate::testing::test_corpus::oversized_source_with_a_shrinking_step(&mut s);
         assert_eq!(check(&s, h, &[], h).unwrap_err().reason, "source term larger than MAX_NODES");
         let sp = specialise(&s, h);
         assert!(sp.trace.is_empty(), "{:?}", sp.trace);
@@ -596,7 +596,7 @@ mod tests {
         // \n. if n == 777 then (\x. 0) v5 else 1: v5 is unbound, so the
         // redex is not βv and `eval` fails at n = 777.
         let mut s = TermStore::new();
-        let h = crate::test_corpus::open_redex_probe(&mut s);
+        let h = crate::testing::test_corpus::open_redex_probe(&mut s);
         let sp = specialise(&s, h);
         assert!(sp.trace.is_empty(), "{:?}", sp.trace);
         assert_eq!(sp.term, h);
@@ -604,12 +604,12 @@ mod tests {
 
     #[test]
     fn every_corpus_term_specialises_to_something_the_checker_accepts_and_that_evaluates_the_same() {
-        for (name, s, h) in crate::samples::corpus() {
+        for (name, s, h) in crate::support::samples::corpus() {
             let sp = specialise_checked(&s, h);
-            let arity = crate::compile::peel(&s, h).map_or(0, |(k, ..)| k);
+            let arity = crate::jit::compile::peel(&s, h).map_or(0, |(k, ..)| k);
             for x in [0i64, 1, 2, 5, -3] {
                 let args = vec![x; arity];
-                assert_eq!(crate::eval::apply_term(&sp.store, sp.term, &args), crate::eval::apply_term(&s, h, &args), "{name} args={args:?}");
+                assert_eq!(crate::lang::eval::apply_term(&sp.store, sp.term, &args), crate::lang::eval::apply_term(&s, h, &args), "{name} args={args:?}");
             }
         }
     }

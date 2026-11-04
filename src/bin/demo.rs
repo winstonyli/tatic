@@ -1,10 +1,10 @@
 use std::time::Instant;
 
-use tatic::eval;
+use tatic::lang::eval;
 use tatic::jit::JitEngine;
-use tatic::samples;
-use tatic::syntax;
-use tatic::term::TermStore;
+use tatic::support::samples;
+use tatic::lang::syntax;
+use tatic::lang::term::TermStore;
 
 /// A genuinely *capturing* closure, over-applied: the inner lambdas
 /// reference `x`, bound by the *enclosing* function, not their own

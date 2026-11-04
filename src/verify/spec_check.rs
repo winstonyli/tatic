@@ -15,11 +15,11 @@
 //! (see `check`).
 //!
 //! This file is independent of the specialiser by construction. It uses
-//! only `crate::term` and `std` (a test enforces this) and has its own
+//! only `crate::lang::term` and `std` (a test enforces this) and has its own
 //! substitution, so a bug in `specialise.rs`'s substitution cannot be
 //! mirrored here.
 
-use crate::term::{Hash, Term, TermStore};
+use crate::lang::term::{Hash, Term, TermStore};
 use hashbrown::{HashMap, HashSet};
 
 /// The longest trace `check` accepts. The specialiser stops here too.
@@ -252,7 +252,7 @@ fn replace_all(s: &mut TermStore, t: Hash, target: Hash, with: Hash, memo: &mut 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::term::PrimOp;
+    use crate::lang::term::PrimOp;
 
     fn one_step(s: &TermStore, h: Hash, redex: Hash, claimed: Hash) -> Result<(), CheckError> {
         check(s, h, &[Step::BetaV { redex }], claimed)
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn the_checker_imports_nothing_but_term() {
-        crate::independence::assert_independent("spec_check.rs", include_str!("spec_check.rs"), &["specialise", "compile", "lower_wat"], &["term"]);
+        crate::testing::independence::assert_independent("spec_check.rs", include_str!("spec_check.rs"), &["specialise", "compile", "lower_wat"], &["lang::term"]);
     }
 
     /// Every distinct subterm of `t`.
@@ -484,8 +484,8 @@ mod tests {
         // unmutated trace against the claim, which is true by
         // construction and so could never fail).
         let mut tolerated = [0usize; 5];
-        for (name, s, h) in crate::samples::corpus() {
-            let sp = crate::specialise::specialise(&s, h);
+        for (name, s, h) in crate::support::samples::corpus() {
+            let sp = crate::jit::specialise::specialise(&s, h);
             if sp.trace.is_empty() {
                 continue;
             }
@@ -506,7 +506,7 @@ mod tests {
                 if m != *t && check(&s, h, &m, sp.term).is_ok() {
                     tolerated[1] += 1;
                     assert_eq!(
-                        crate::specialise::replay(&s, h, &m).map(|(_, r)| r),
+                        crate::jit::specialise::replay(&s, h, &m).map(|(_, r)| r),
                         Some(sp.term),
                         "{name}: swap {i} was accepted by check, but an independent replay of the swapped trace does not confirm it reaches the claim"
                     );
@@ -528,7 +528,7 @@ mod tests {
                     if check(&s, h, &m, sp.term).is_ok() {
                         tolerated[2] += 1;
                         assert_eq!(
-                            crate::specialise::replay(&s, h, &m).map(|(_, r)| r),
+                            crate::jit::specialise::replay(&s, h, &m).map(|(_, r)| r),
                             Some(sp.term),
                             "{name}: retargeting step {i} was accepted by check, but an independent replay of the retargeted trace does not confirm it reaches the claim"
                         );

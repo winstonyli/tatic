@@ -17,10 +17,10 @@
 
 use std::io::{self, BufRead, Write};
 
-use tatic::eval::EvalError;
+use tatic::lang::eval::EvalError;
 use tatic::jit::JitEngine;
-use tatic::syntax;
-use tatic::term::TermStore;
+use tatic::lang::syntax;
+use tatic::lang::term::TermStore;
 
 fn print_help() {
     println!("tatic REPL");
