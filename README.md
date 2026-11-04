@@ -191,10 +191,10 @@ Defender's real-time protection, the CPU load and the large-page privilege.
     |               ^
     |               | additional evidence
     v               |
- proof.rs <----> kernel.rs (Pi/Sort/Id/W/Sigma type theory)
+ proof.rs <----> tatic-kernel (Pi/Sort/Id/W/Sigma type theory)
 ```
 
-Files are under `src/lang/`, `src/jit/`, `src/verify/`, `src/support/` and `src/testing/` (layers in `docs/TOUR.md`); `jit.rs`, `proof.rs` and `kernel.rs` sit at the top.
+Files are under `src/lang/`, `src/jit/`, `src/verify/`, `src/support/` and `src/testing/` (layers in `docs/TOUR.md`); `jit.rs` and `proof.rs` sit at the top; the kernel is the crate `crates/tatic-kernel`.
 
 | Module | Role |
 |---|---|
@@ -210,8 +210,8 @@ Files are under `src/lang/`, `src/jit/`, `src/verify/`, `src/support/` and `src/
 | `lower_wat.rs` | Lowers the IR to WAT; one template per node, plus closure representation, allocator and curried stages. Its module docs describe the closure representation (a packed `i64` of table index and environment pointer), partial application, over-application and the curried fallback for inconsistent arities. |
 | `jit.rs` | The cache. On first use of a term, tries to compile it, then verifies the compiled code against the interpreter on a battery of sample inputs before trusting it; only then is the compiled form installed for future calls under that hash. A verification failure permanently blacklists that hash to the interpreter rather than risking a silently wrong optimization. For a fragment with capturing closures, `invoke` also resets the bump allocator's pointer before *every* call (not just the first) — caught by benchmarking the closure-conversion path, not by any unit test: since this cache reuses *one* compiled instance across many separate calls, every capturing closure any call created was leaking its environment forever, growing that instance's linear memory unboundedly over its whole cached lifetime. The reset can't happen inside the compiled function itself (at `$f`'s own entry, say) — a non-tail self-recursive call is an ordinary `call $f`, re-entering the whole function from the top, which would reset mid-computation and corrupt a closure created earlier in the same call that's still needed after the recursive call returns. From the host, once per top-level call, there's no such hazard: nothing outside one call ever reads a closure value `$f` itself returned. |
 | `typing.rs` (trusted, independent) | Simple (monomorphic) type inference over `Term`, with a closed-constant-condition rule for dead branches. `jit.rs` installs a compiled term only if it has type `Int -> ... -> Int`: compiled code stores `Int`s and closures as the same untagged `i64`, so ill-typed code returns garbage where `eval` fails, and the sample battery only notices when a sample reaches that code -- see §38 of `RELATED_WORK.md`. Linear in shared subterms whose type is ground, and its type-safety claim is fuzzed (§45). |
-| `kernel.rs` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) + `Sigma`/`Pair`/`SigRec` (dependent sums) — five primitives. The first four are provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work); `Sigma` is a separate addition for a different reason — `W`'s own children function maps back into `W` itself, so it can't stand in for an arbitrary, independently-chosen payload type the way a general dependent sum needs, and (as with `W` over Church-encoding) the usual `Pi`-alone encoding was rejected because it doesn't reduce by `refl`. Has a real bidirectional typechecker and normalizer. Every recursive traversal (and `Expr`'s `Drop`) runs through a `stacker`-backed `grow`, so term depth is bounded by heap, not native stack -- see §31 of `RELATED_WORK.md`. |
-| `proof.rs` | Connects `kernel.rs` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `kernel.rs`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. Every walker here dispatches on `compile::classify`, the same case analysis `build_node` uses, so the proofs and the compiler cannot disagree about which case a term falls into -- see §33 of `RELATED_WORK.md`. |
+| `crates/tatic-kernel` | A free-standing, minimal predicative dependent type theory: `Pi` + a stratified universe hierarchy (`Type₀:Type₁:...`) + `Id`/`Refl`/`J` (equality) + `W`/`Sup`/`WRec` (general inductive types) + `Sigma`/`Pair`/`SigRec` (dependent sums) — five primitives. The first four are provably the minimum needed for *definitional* computation of user-defined recursive functions in a predicative system (see doc comments for why weaker combinations don't work); `Sigma` is a separate addition for a different reason — `W`'s own children function maps back into `W` itself, so it can't stand in for an arbitrary, independently-chosen payload type the way a general dependent sum needs, and (as with `W` over Church-encoding) the usual `Pi`-alone encoding was rejected because it doesn't reduce by `refl`. Has a real bidirectional typechecker and normalizer. Every recursive traversal (and `Expr`'s `Drop`) runs through a `stacker`-backed `grow`, so term depth is bounded by heap, not native stack -- see §31 of `RELATED_WORK.md`. |
+| `proof.rs` | Connects `tatic-kernel` to the JIT. For terms in scope, builds an actual `Id`-typed proof — checked by `tatic-kernel`'s typechecker, not just asserted — that the compiled and interpreted readings of a term agree, and records it as additional evidence in `jit.rs`'s cache. Every walker here dispatches on `compile::classify`, the same case analysis `build_node` uses, so the proofs and the compiler cannot disagree about which case a term falls into -- see §33 of `RELATED_WORK.md`. |
 | `decompile.rs` | Translation validation: rebuilds the term an IR module implements, from the IR alone; `try_compile` requires the rebuilt term's content hash to match the source's before accepting the module -- see §35 of `RELATED_WORK.md`. |
 | `ir_fuzz.rs` (test-only) | Differential tests of the lowering templates against `decompile.rs` + `eval.rs`: each template, and random well-typed IR, run through both `lower_wat`+wasmtime and `decompile`+`eval`, and must agree -- see §35 of `RELATED_WORK.md`. |
 
@@ -791,7 +791,7 @@ an unsound step (treating a `Prim` expression as a value) passes the
 certificate check but is still caught, by the `eval` comparison
 disagreeing on a `Div` term.
 
-**Robustness**: `tests/kernel_fuzz.rs` fuzzes a different layer entirely: `kernel.rs`'s
+**Robustness**: `crates/tatic-kernel/tests/kernel_fuzz.rs` fuzzes a different layer entirely: `kernel.rs`'s
 own type-checker, directly, with no well-typedness discipline on the
 generated terms at all (unlike `compile_fuzz.rs`, whose terms are built
 to be meaningful to both the interpreter and the compiler). Random `Expr`
@@ -814,7 +814,7 @@ at 100,000 seeds (release) and 30,000 (debug, where the now-fixed overflow
 check would have fired) with zero further failures before settling back
 on the file's own 5,000-seed default.
 
-**Soundness**: `tests/kernel_soundness_fuzz.rs` fuzzes a different property
+**Soundness**: `crates/tatic-kernel/tests/kernel_soundness_fuzz.rs` fuzzes a different property
 than `kernel_fuzz.rs`'s own crash-safety — the one every "kernel-checked
 equivalence proof" this project produces actually rests on: given two
 postulated constants of the same type with *nothing* in the context

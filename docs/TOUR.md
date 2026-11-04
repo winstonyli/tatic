@@ -30,8 +30,8 @@ The JIT (`src/`):
 - `src/lang/term.rs`, `src/lang/eval.rs`, `src/lang/syntax.rs`: terms, the interpreter that defines correct behavior (`src/lang/eval.rs#eval`), and the parser.
 - `src/support/samples.rs`, `crates/tatic-rng/src/lib.rs`, `src/testing/test_corpus.rs`, `src/testing/ir_fuzz.rs`: the sample inputs, a seeded generator, shared test terms and a fuzzer for the IR. `src/bin/repl.rs`: an interactive REPL. `src/bin/demo.rs#main`: the demo.
 
-The kernel and proofs (`src/`):
-- `src/kernel.rs`: the trusted checker. `src/kernel/postulates.rs`: the proof-term builder. `src/kernel/spaces.rs`, `src/kernel/bin.rs`: storage and serialization. `src/testing/independence.rs`: the test that keeps trusted files from importing untrusted ones.
+The kernel and proofs. The kernel (`tatic-kernel`) and the seeded generator (`tatic-rng`) are workspace crates under `crates/`; `src/` is the `tatic` package that depends on the kernel, so the kernel importing anything from `tatic` is a compile error:
+- `crates/tatic-kernel/src/lib.rs`: the trusted checker. `crates/tatic-kernel/src/postulates.rs`: the proof-term builder. `crates/tatic-kernel/src/spaces.rs`, `crates/tatic-kernel/src/bin.rs`: storage and serialization. `src/testing/independence.rs`: the test that keeps trusted files from importing untrusted ones.
 - `src/proof.rs`: what is and is not established, plus the pure prover `src/proof.rs#prove_pure_expr`. "What does the theorem actually say?" (it is about `denote`: `src/proof.rs#denote`, not about the emitted WAT)
 - `src/proof/closures.rs`, `src/proof/per_instance.rs`, `src/proof/universal.rs`, `src/proof/hardening.rs`: the closure, per-instance and universal provers, and the debug self-check `src/proof/hardening.rs#debug_assert_has_type`.
 
@@ -58,7 +58,7 @@ The miner, driver, loop and gate:
 - `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/`, `tour_check.sh` (TOUR cites) and `cite_check.sh` (section cites into `docs/tier-cycle.md` and `RELATED_WORK.md`, plus `tour_check.sh`). `experiments/` (older experiment scripts) is git-ignored and exists only on the author's machine.
 - `benches/`: criterion benchmarks of execution and proofs.
 
-Test and fuzz suites at `tests/` (each protects one layer): `church_encoding.rs` and `church_lemmas.rs` (the Church-encoded kernel library), `compile_fuzz.rs` (compiled code against the interpreter), `kernel_fuzz.rs` and `kernel_soundness_fuzz.rs` (the kernel never accepts a false claim), `syntax_fuzz.rs` (the parser), `golden_wat.rs` with `golden/` (pinned WAT output), `rule_match_census.rs` (rule-matching counts).
+Test and fuzz suites (each protects one layer). In `crates/tatic-kernel/tests/`: `church_encoding.rs` and `church_lemmas.rs` (the Church-encoded kernel library), `kernel_fuzz.rs` and `kernel_soundness_fuzz.rs` (the kernel never accepts a false claim). In `tests/`: `compile_fuzz.rs` (compiled code against the interpreter), `syntax_fuzz.rs` (the parser), `golden_wat.rs` with `golden/` (pinned WAT output), `rule_match_census.rs` (rule-matching counts).
 
 Project state: `ROADMAP.md`, `PARKED.md`, `docs/tier-cycle.md`, `docs/learned-vs-fixed.md`, `RELATED_WORK.md` (a record of the surveyed landscape, not a design proposal).
 
@@ -104,7 +104,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 1. `kernel_verify` (flow (a) step 9) calls a prover with the interned term and gets an `EquivalenceProof` or `None`: `src/proof.rs#EquivalenceProof`.
 2. The statement is about `denote`, the term's meaning as a kernel expression over the postulated arithmetic (`src/proof.rs#denote`), not about the emitted WAT; the proof is a kernel-checked `refl` between that meaning and the compiled form's.
 3. Pure arithmetic terms: `src/proof.rs#prove_pure_expr`. Terms with closures: `src/proof/closures.rs#prove_closure_expr`. Self-recursion that tail-calls: `src/proof/hardening.rs#prove_tail_recursive_universal` over the postulated inductive family (Ev). Arity 0 only: `src/proof/per_instance.rs#prove_closure_expr_instance`.
-4. Proof terms are built with the untrusted `Postulates` builder and typed by the trusted checker `src/kernel.rs#check_in`, so a prover bug should make a proof fail to check rather than pass a false one.
+4. Proof terms are built with the untrusted `Postulates` builder and typed by the trusted checker `crates/tatic-kernel/src/lib.rs#check_in`, so a prover bug should make a proof fail to check rather than pass a false one.
 
 ### (d) Serving one law (the rewriter and the prover cascade)
 
@@ -132,7 +132,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Classify / Shape**: the one case analysis of a body node shared by the IR builder and the proof walkers. `src/jit/shape.rs#classify`
 - **Combinator**: a lambda or `Rec` lifted out as its own function (or a partial-application wrapper) in the IR. `src/jit/ir.rs#Combinator`
 - **Compiler (Plan to proof)**: turns a rewriter `Plan` into a checked kernel proof on demand. `tests/church_bv/rewrite.rs#Compiler`
-- **Const (postulate)**: a kernel constant typed by the `Globals` list; it never unfolds, so it acts as an axiom. `src/kernel.rs#const_type`
+- **Const (postulate)**: a kernel constant typed by the `Globals` list; it never unfolds, so it acts as an axiom. `crates/tatic-kernel/src/lib.rs#const_type`
 - **Content hash**: BLAKE3 of a node's tag and payload; equal structure gives equal hash in any store. `src/lang/term.rs#content_hash`
 - **Cycle cut**: the rewriter returns a term unchanged when a term on its path embeds in it, ending growing chains early. `tests/church_bv/rewrite.rs#cut_at`
 - **Decompile (translation validation)**: rebuilds the source term from the IR alone so a builder bug cannot cancel itself. `src/verify/decompile.rs#decompile`
@@ -142,16 +142,16 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Every-input fallback**: a rule no other route proves is proved by case-splitting over all input bits when width x variables is at most 12; a rule past the cap stays unproved. `tests/church_bv/rewrite.rs#EVERY_INPUT_BITS`
 - **Extras**: additional laws mined alongside a loop's batch; each mine takes its own slice. `tests/church_bv/driver.rs#EXTRAS_N`
 - **Ev / ev_rec**: the postulated inductive family and recursor behind the universal tail-recursion theorem. `src/proof/hardening.rs#prove_tail_recursive_universal`
-- **Expr**: a Copy handle to an interned kernel term. `src/kernel.rs#Expr`
+- **Expr**: a Copy handle to an interned kernel term. `crates/tatic-kernel/src/lib.rs#Expr`
 - **Fallback (machine)**: a whole-term carry-machine proof used when rewriting and join fail; counted toward M. `tests/church_bv/rewrite.rs#machine_fallback`
 - **Floor**: the laws that still need the machine after rewriting and the join. `docs/tier-cycle.md#The floor and the bounded join`
-- **Free**: a builder-scope parameter the kernel refuses to type, so an escaped one cannot act as an axiom. `src/kernel.rs#free_escaped`
+- **Free**: a builder-scope parameter the kernel refuses to type, so an escaped one cannot act as an axiom. `crates/tatic-kernel/src/lib.rs#free_escaped`
 - **Free share**: the share of a band's laws proved with no whole-term machine proof. `docs/tier-cycle.md#Metrics`
 - **Frontier**: the held-out free share per size band (11, 13, 15, 17): how far up in law size the rules still avoid the machine. The v0.6 success measure is moving it, not M on a fixed stream. `docs/tier-cycle.md#The frontier and v0.5`, `ROADMAP.md#Milestones`
 - **Gate (A/B)**: two builds, per salt, compared on M, held-out M, CPU and work counts; entry point `scripts/streams_ab.sh#arm`. `tools/runs/src/gate.rs#gate` is the cheaper variant: four sweeps, no held-out check. Not the installation gate.
 - **GEN_DRAW**: integer that re-draws the extras from a different sample. `tests/church_bv/driver.rs#scope_extras`
 - **Redraw spread (sigma)**: the difference between two arms that differ only in `GEN_DRAW`; the gate is deterministic, so this A/A spread is the noise floor a win must beat. A doc measure, not computed in code. `docs/tier-cycle.md#The streams and the gate`
-- **Globals / Ctx**: the trusted list of constant types and the local binder types. `src/kernel.rs#Globals`
+- **Globals / Ctx**: the trusted list of constant types and the local binder types. `crates/tatic-kernel/src/lib.rs#Globals`
 - **Good witness (GoodBool, GoodBv)**: hypotheses that let a proof split a symbolic bit. `tests/church_bv/encoding.rs#binders`
 - **Guard laws**: machine-free laws scored along with stragglers so a regressing candidate is visible. `tests/church_bv/miner.rs#Laws`
 - **Held-out bands**: committed law files of sizes 11, 13, 15, 17 that no loop serves. `tests/church_bv/classes.rs#HELD_BANDS`
@@ -160,7 +160,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Independence**: a test that restricts which modules a trusted file may use. `src/testing/independence.rs#assert_independent`
 - **Installation gate**: arity, type check, instantiate, samples, then kernel theorem (a term that calls its own parameter is refused first); only then `Compiled`. `src/jit.rs#try_install`
 - **Job / Setup**: one thread's rewriting state over the per-task shared configuration. `tests/church_bv/job.rs#Job`, `tests/church_bv/job.rs#Setup`
-- **Kernel**: the trusted checker; the only place typing and definitional equality are decided. `src/kernel.rs#check_in`
+- **Kernel**: the trusted checker; the only place typing and definitional equality are decided. `crates/tatic-kernel/src/lib.rs#check_in`
 - **Law**: an equation between two bit-vector terms; `tests/church_bv/rewrite.rs#Term` is the interned expression tree.
 - **Lemma cache**: on-disk cache of already-checked lemma statements shared by processes of one build. `tests/church_bv/lemma_cache.rs#Cache`
 - **Lawfile**: text file of `lhs = rhs` lines handed to a worker task. `tests/church_bv/driver.rs#write_laws`
@@ -174,7 +174,7 @@ The whole gate order is written down in `src/jit.rs#try_install`.
 - **Phase**: a residue class of the stream sequence. `tests/church_bv/search.rs#residue`
 - **Plan / LawKind**: the rewriter's proof sketch and the name of the prover of each leaf. `tests/church_bv/rewrite.rs#Plan`, `tests/church_bv/rewrite.rs#LawKind`
 - **Pool**: `POOL=p` hands each mine p x n extras and `EXTRAS_SELECT` keeps n. `tests/church_bv/driver.rs#POOL`
-- **Postulates**: the untrusted builder that grows `Globals`; each pushed type is checked to be a type, its inhabitation is assumed. `src/kernel/postulates.rs#Postulates`
+- **Postulates**: the untrusted builder that grows `Globals`; each pushed type is checked to be a type, its inhabitation is assumed. `crates/tatic-kernel/src/postulates.rs#Postulates`
 - **PROMOTED**: mined rules frozen in code: learned once, then fixed. `tests/church_bv/rewrite.rs#PROMOTED`
 - **prove_eq**: the cascade that closes a rewritten pair: refl, truth table, per-position check, mask reduction, join, machine. `tests/church_bv/rewrite.rs#prove_eq`
 - **prove_rule**: proves a rule itself before it is used; the every-input fallback is its last resort. `tests/church_bv/rewrite.rs#prove_rule`
