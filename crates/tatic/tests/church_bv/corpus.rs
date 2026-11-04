@@ -59,8 +59,8 @@ pub fn measure(cases: &[Case], mined: Vec<(Term, Term)>) -> Vec<Row> {
         .collect()
 }
 
-/// A path from the environment, relative to the repo root (`cargo test` runs from the package directory, two levels
-/// down); an absolute path is unchanged.
+/// A path from the environment, relative to the repo root (two levels above the package directory, whatever the working
+/// directory; `cargo test` runs from the package directory); an absolute path is unchanged.
 fn from_repo_root(p: String) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(p)
 }
