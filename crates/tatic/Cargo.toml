@@ -1,23 +1,23 @@
 [package]
 name = "tatic"
-version = "0.6.0"
-edition = "2024"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 # `cargo run` alone (no `--bin`) runs the scripted demo (src/bin/demo.rs) --
 # `cargo run --bin repl` for the interactive REPL (src/bin/repl.rs).
 default-run = "demo"
 
 [dependencies]
 blake3 = "1.8.3"
-tatic-kernel = { path = "../tatic-kernel" }
-hashbrown = "0.16.1"
-mimalloc = "0.1.52"
+tatic-kernel.workspace = true
+hashbrown.workspace = true
+mimalloc.workspace = true
 wasmtime = "42.0.1"
 wat = "1.245.1"
 
 [dev-dependencies]
 criterion = "0.5"
-tatic-rng = { path = "../tatic-rng" }
+tatic-rng.workspace = true
 
 [[bench]]
 name = "execution"

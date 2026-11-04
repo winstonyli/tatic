@@ -1,5 +1,5 @@
 [package]
 name = "tatic-rng"
-version = "0.6.0"
-edition = "2024"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true

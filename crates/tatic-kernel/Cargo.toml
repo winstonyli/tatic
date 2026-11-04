@@ -1,14 +1,14 @@
 [package]
 name = "tatic-kernel"
-version = "0.6.0"
-edition = "2024"
-license = "Apache-2.0"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
 
 [dependencies]
-hashbrown = "0.16.1"
+hashbrown.workspace = true
 im = "15.1.0"
 stacker = "0.1.25"
 
 [dev-dependencies]
-tatic-rng = { path = "../tatic-rng" }
-mimalloc = "0.1.52"
+tatic-rng.workspace = true
+mimalloc.workspace = true
