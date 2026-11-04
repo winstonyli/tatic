@@ -1,6 +1,6 @@
 //! Machine state for timings (LONG_RUNS.md): the machine's CPU load from `GetSystemTimes`, whether this process holds the
 //! "Lock pages in memory" privilege, and Defender's real-time protection.
-//! church_bv compiles this same file (`tests/church_bv/machine.rs`, `#[path]`), so it must depend on nothing but std:
+//! church_bv compiles this same file (`crates/tatic/tests/church_bv/machine.rs`, `#[path]`), so it must depend on nothing but std:
 //! its Win32 calls are declared here, as `driver.rs`'s `stdio` declares its own.
 #![allow(dead_code)] // each of the two crates uses part of it
 

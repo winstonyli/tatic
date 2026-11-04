@@ -59,13 +59,19 @@ pub fn measure(cases: &[Case], mined: Vec<(Term, Term)>) -> Vec<Row> {
         .collect()
 }
 
+/// A path from the environment, relative to the repo root (`cargo test` runs from the package directory, two levels
+/// down); an absolute path is unchanged.
+fn from_repo_root(p: String) -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(p)
+}
+
 /// Prints the per-case and total counts of a corpus file (env `CORPUS`; optional mined rules in `CORPUS_RULES`).
 #[test]
 #[ignore]
 fn corpus_report() {
-    let path = std::env::var("CORPUS").expect("CORPUS=docs/corpora/<source>/cases.txt");
-    let cases = read_cases(&std::fs::read_to_string(&path).unwrap()).unwrap_or_else(|e| panic!("{path}: {e}"));
-    let mined = std::env::var("CORPUS_RULES").map(|p| parse_rules(&std::fs::read_to_string(p).unwrap())).unwrap_or_default();
+    let path = from_repo_root(std::env::var("CORPUS").expect("CORPUS=docs/corpora/<source>/cases.txt"));
+    let cases = read_cases(&std::fs::read_to_string(&path).unwrap()).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
+    let mined = std::env::var("CORPUS_RULES").map(|p| parse_rules(&std::fs::read_to_string(from_repo_root(p)).unwrap())).unwrap_or_default();
     tatic_kernel::scoped(|| {
         let m = measure(&cases, mined.clone());
         for r in &m {
@@ -105,7 +111,7 @@ mod tests {
     #[test]
     fn the_hand_written_corpus_reproduces_the_probe_counts() {
         tatic_kernel::scoped(|| {
-            let cases = read_cases(include_str!("../../docs/corpora/hd-own/cases.txt")).unwrap();
+            let cases = read_cases(include_str!("../../../../docs/corpora/hd-own/cases.txt")).unwrap();
             let m = measure(&cases, vec![]);
             let (before, table, rules) = m.iter().fold((0, 0, 0), |a, r| (a.0 + r.before, a.1 + r.table, a.2 + r.rules));
             let changed = m.iter().filter(|r| r.table_changed).count();
@@ -117,7 +123,7 @@ mod tests {
     #[test]
     fn the_souper_corpus_reproduces_its_source_counts() {
         tatic_kernel::scoped(|| {
-            let cases = read_cases(include_str!("../../docs/corpora/souper/cases.txt")).unwrap();
+            let cases = read_cases(include_str!("../../../../docs/corpora/souper/cases.txt")).unwrap();
             let m = measure(&cases, vec![]);
             let (before, table, rules) = m.iter().fold((0, 0, 0), |a, r| (a.0 + r.before, a.1 + r.table, a.2 + r.rules));
             let changed = m.iter().filter(|r| r.table_changed).count();

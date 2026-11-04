@@ -1,24 +1,3 @@
-[package]
-name = "tatic"
-version = "0.6.0"
-edition = "2024"
-license = "Apache-2.0"
-# `cargo run` alone (no `--bin`) runs the scripted demo (src/bin/demo.rs) --
-# `cargo run --bin repl` for the interactive REPL (src/bin/repl.rs).
-default-run = "demo"
-
-[dependencies]
-blake3 = "1.8.3"
-tatic-kernel = { path = "crates/tatic-kernel" }
-hashbrown = "0.16.1"
-mimalloc = "0.1.52"
-wasmtime = "42.0.1"
-wat = "1.245.1"
-
-[dev-dependencies]
-criterion = "0.5"
-tatic-rng = { path = "crates/tatic-rng" }
-
 # Release with fat LTO, for sweeps, timing and other long runs (`cargo test --profile sweep ...`): about 9% less
 # sweep CPU than `release` with identical outputs, but an incremental rebuild of the church_bv test binary takes
 # minutes instead of about 27 s, so everyday `--release` builds stay without it. docs/tier-cycle.md, "Build flags".
@@ -33,16 +12,10 @@ codegen-units = 1
 [profile.test]
 opt-level = 1
 
-[[bench]]
-name = "execution"
-harness = false
-
-[[bench]]
-name = "proofs"
-harness = false
-
-# `tatic-kernel` and `tatic-rng` are members; `tools/runs` is its own standalone crate (own lockfile and target).
+# `tatic`, `tatic-kernel` and `tatic-rng` are the members; `tools/runs` is its own standalone crate (own lockfile and target).
+# The profiles live here because Cargo ignores them in a member manifest. A virtual root has no edition, so the resolver is
+# set explicitly (the root package's edition 2024 used to imply it).
 [workspace]
-members = ["crates/tatic-kernel", "crates/tatic-rng"]
-default-members = [".", "crates/tatic-kernel", "crates/tatic-rng"]
+resolver = "3"
+members = ["crates/tatic", "crates/tatic-kernel", "crates/tatic-rng"]
 exclude = ["tools/runs"]

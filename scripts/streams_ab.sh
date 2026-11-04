@@ -2,7 +2,7 @@
 # streams_ab.sh <exe A> <exe B> <salts...>: the gate on the streams (spec §9). Per salt, SWEEP=cold:streams (extras
 # on, 2 lanes, 6 scoring workers) with A and B, `JOBS` arms at a time (default 1; `ARM_CACHE` reuses arms), each a `runs run` (job
 # CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
-# loop's final rules (every tests/church_bv/held_<band>.txt, HELD_BANDS; CHECK_FAST: the laws that still need a
+# loop's final rules (every crates/tatic/tests/church_bv/held_<band>.txt, HELD_BANDS; CHECK_FAST: the laws that still need a
 # whole-term machine proof), and under no mined rules (the table alone, checked once per exe), per band to the arm's held_bands.txt; an arm's bands are checked at once. Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm, over its salts that passed, the totals, the
 # lookup memo's peak (CLASS_MEMO), the largest peakproc, and per band the loops' and the table's free share and M per
 # 1000 laws (`bands`; the held-out M of the totals and salt lines is the loops' over every band); per salt and per arm the work counts (the summed WORK lines,
@@ -19,8 +19,8 @@ runs="$root/tools/runs/target/release/runs.exe"
 # (<rules file> <law file>, Windows paths); `changed` skips their names
 sweep_env() { printf '%s\n' MACHINE_STATE=0 SWEEP=cold:streams "SALT=$1" "SWEEP_OUT=$2"; }
 held_env() { printf '%s\n' MACHINE_STATE=0 CHECK_FAST=1 "CHECK_RULES=$1" "CHECK_LAWFILE=$2"; }
-# the held-out files in band order (tests/church_bv/held_<band>.txt; the bands are HELD_BANDS in classes.rs)
-bands() { local b; for b in $(ls "$root/tests/church_bv" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$root/tests/church_bv/held_$b.txt"; done; }
+# the held-out files in band order (crates/tatic/tests/church_bv/held_<band>.txt; the bands are HELD_BANDS in classes.rs)
+bands() { local b; for b in $(ls "$root/crates/tatic/tests/church_bv" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$root/crates/tatic/tests/church_bv/held_$b.txt"; done; }
 held() { # <exe> <rules file> <arm dir> <label>: held-out M over every band, the bands checked at once; per band `<label> <band> <laws> <free> <M>` to <arm dir>/held_bands.txt, the check's ABLATED and ENV lines to <arm dir>/held_lines.txt
   local m=0 hf band out line p f n e t="$3/held_out.$4"
   rm -rf "$t"; mkdir -p "$t"

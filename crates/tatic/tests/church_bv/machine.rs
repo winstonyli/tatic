@@ -235,7 +235,7 @@ pub fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
 
 /// The machine-state reader shared with `tools/runs` (std only, so the file compiles here as it is).
 #[cfg(windows)]
-#[path = "../../tools/runs/src/state.rs"]
+#[path = "../../../../tools/runs/src/state.rs"]
 pub mod state;
 
 /// Defender's real-time protection and the machine's CPU load over 2 s (`RTP=False CPU=18%`), read natively
