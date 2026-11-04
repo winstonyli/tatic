@@ -52,6 +52,8 @@ Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
   AR4. Replaces nothing: `independence.rs` and its 3 tests guard `decompile`, `spec_check` and `typing`, not the kernel, and
   stay (corrected 2026-11-04; the earlier text said it replaced them). ~443 use lines in 31 files, plus the `tatic-rng` crate.
   **Own plan 2026-11-04** (spec `docs/superpowers/specs/2026-11-04-kernel-crate-design.md`, status draft; plan to follow).
+  Follow-up chosen by the user 2026-11-04, after SR4: **SR8. Move `tatic` to `crates/tatic`** (virtual workspace root; moves `src`,
+  `tests`, `benches`; repoints live cites and scripts; recheck `CARGO_MANIFEST_DIR` tests and `tools/runs`'s checkout lookup).
 - **SR5. One test-placement convention** (`foo/tests.rs` for modules with a large test block). Also TB7.
 - **SR6. Gather `cfg(test)` support under `testing/`**; take the allocator hack out of `lib.rs`. **Partly done by SR1 2026-11-04:** `testing/` gathers `test_corpus`, `ir_fuzz`, `independence`. Not done: the `#[global_allocator]` stays in `lib.rs`.
 - **SR7. Demo as `src/bin/demo.rs`** like the REPL (1 file, 3 doc lines, 1 manifest line). **Done by SR1 2026-11-04:** `Cargo.toml` `default-run = "demo"`; bin renamed `tatic` -> `demo` (`cargo run` unchanged).

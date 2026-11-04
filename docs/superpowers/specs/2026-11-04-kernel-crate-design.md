@@ -55,12 +55,12 @@ adds this spec.
 
 ```
 Cargo.toml                 [package] tatic + [workspace]
-crates/kernel/Cargo.toml   tatic-kernel
-crates/kernel/src/lib.rs   was src/kernel.rs
-crates/kernel/src/{bin,postulates,spaces,tests}.rs   was src/kernel/*.rs   (mod paths unchanged)
-crates/kernel/tests/{kernel_fuzz,kernel_soundness_fuzz,church_encoding,church_lemmas}.rs   moved from tests/
-crates/rng/Cargo.toml      tatic-rng
-crates/rng/src/lib.rs      was src/support/rng.rs
+crates/tatic-kernel/Cargo.toml   tatic-kernel
+crates/tatic-kernel/src/lib.rs   was src/kernel.rs
+crates/tatic-kernel/src/{bin,postulates,spaces,tests}.rs   was src/kernel/*.rs   (mod paths unchanged)
+crates/tatic-kernel/tests/{kernel_fuzz,kernel_soundness_fuzz,church_encoding,church_lemmas}.rs   moved from tests/
+crates/tatic-rng/Cargo.toml      tatic-rng
+crates/tatic-rng/src/lib.rs      was src/support/rng.rs
 tools/runs                 untouched, excluded from the workspace
 ```
 
@@ -68,14 +68,14 @@ tools/runs                 untouched, excluded from the workspace
 
 ## Design
 
-### Workspace manifest (my call: layout `crates/`)
+### Workspace manifest
 
 The root `Cargo.toml` keeps `[package] tatic` and adds
 
 ```toml
 [workspace]
-members = ["crates/kernel", "crates/rng"]
-default-members = [".", "crates/kernel", "crates/rng"]
+members = ["crates/tatic-kernel", "crates/tatic-rng"]
+default-members = [".", "crates/tatic-kernel", "crates/tatic-rng"]
 exclude = ["tools/runs"]
 ```
 
@@ -94,7 +94,7 @@ exclude = ["tools/runs"]
 
 ### `tatic-rng`
 
-`crates/rng/src/lib.rs` is `src/support/rng.rs` verbatim (`mix64`, `SplitMix64`, the reference-stream test). `tatic` takes it as
+`crates/tatic-rng/src/lib.rs` is `src/support/rng.rs` verbatim (`mix64`, `SplitMix64`, the reference-stream test). `tatic` takes it as
 a `[dev-dependencies]` entry (checked: every user is a `cfg(test)` module or an integration test; `typing.rs` uses it below
 line 264, its test module), and `tatic-kernel` takes it as a dev-dependency too. `src/support/rng.rs` and its `pub mod rng`
 are deleted (`support.rs` keeps `samples`, and its doc line drops "and the PRNG"); `use tatic::support::rng::…`
@@ -104,7 +104,7 @@ the file and pins it).
 
 ### `tatic-kernel`
 
-- `crates/kernel/Cargo.toml`: dependencies `hashbrown = "0.16.1"`, `im = "15.1.0"`, `stacker = "0.1.25"` (same versions as the
+- `crates/tatic-kernel/Cargo.toml`: dependencies `hashbrown = "0.16.1"`, `im = "15.1.0"`, `stacker = "0.1.25"` (same versions as the
   root); dev-dependencies `tatic-rng` (path) and `mimalloc = "0.1.52"`.
 - Visibility: the kernel has only one `pub(crate)` item its consumers need: `grow` (`src/proof/per_instance.rs`), which becomes
   `pub`. The plan checks, by compiling, that nothing else crosses (`Scope`, `Escape`, `Binder` etc. must already be `pub` since
@@ -122,10 +122,10 @@ Move into the kernel crate, because they use only `tatic::kernel` and `SplitMix6
 | from | to |
 |---|---|
 | `src/kernel/tests.rs`, `bin.rs`/`spaces.rs` inline tests | with their files (unit tests of `tatic-kernel`) |
-| `tests/kernel_fuzz.rs` | `crates/kernel/tests/kernel_fuzz.rs` |
-| `tests/kernel_soundness_fuzz.rs` | `crates/kernel/tests/kernel_soundness_fuzz.rs` |
-| `tests/church_encoding.rs` | `crates/kernel/tests/church_encoding.rs` |
-| `tests/church_lemmas.rs` | `crates/kernel/tests/church_lemmas.rs` |
+| `tests/kernel_fuzz.rs` | `crates/tatic-kernel/tests/kernel_fuzz.rs` |
+| `tests/kernel_soundness_fuzz.rs` | `crates/tatic-kernel/tests/kernel_soundness_fuzz.rs` |
+| `tests/church_encoding.rs` | `crates/tatic-kernel/tests/church_encoding.rs` |
+| `tests/church_lemmas.rs` | `crates/tatic-kernel/tests/church_lemmas.rs` |
 
 Stay in `tatic`: everything that touches `lang`/`jit`/`proof`/`church_bv`, and every test reading `CARGO_MANIFEST_DIR`
 (`church_bv/classes.rs`, `job.rs`, `golden_wat.rs`: their paths are relative to the root package and do not change). Moved
@@ -138,7 +138,7 @@ the plan lists them by grep.
 
 `src/lib.rs` installs mimalloc as `#[global_allocator]` under `cfg(test)`, and `src/kernel/tests.rs` has an allocator-sensitive
 wall-clock ratio test. The kernel crate's test build must therefore install mimalloc too:
-`#[cfg(test)] #[global_allocator] static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;` in `crates/kernel/src/lib.rs`, and the
+`#[cfg(test)] #[global_allocator] static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;` in `crates/tatic-kernel/src/lib.rs`, and the
 moved integration tests (separate binaries) do likewise if they time anything; the plan checks each moved test for timing
 assumptions (`kernel_fuzz`/`kernel_soundness_fuzz` declared none). Without it that ratio test would silently measure the system
 allocator. The same allocator line in `tatic`'s `lib.rs` stays (SR6 is not this item).
@@ -151,7 +151,7 @@ plan greps each: a dependency used only by the kernel would move out of the root
 
 ### Documentation and checks
 
-- `docs/TOUR.md`: kernel entries cite `crates/kernel/src/…` (the cites are `path#symbol`); a short "crates" sentence, since
+- `docs/TOUR.md`: kernel entries cite `crates/tatic-kernel/src/…` (the cites are `path#symbol`); a short "crates" sentence, since
   the tour is the map. `bash scripts/tour_check.sh` and `bash scripts/cite_check.sh` must pass; `cite_check.sh` and
   `tour_check.sh` are read for hard-coded `src/kernel` paths and fixed if so.
 - `README.md` module table and commands; `CLAUDE.md` (`kernel` mentions, if any); `PARKED.md`/`docs/tier-cycle.md` paths to
@@ -170,9 +170,9 @@ Per the restructuring skill, with its cadence:
 4. `bash scripts/cite_check.sh`, `bash scripts/tour_check.sh`.
 5. `git diff --cached -M --stat`: kernel files and `rng.rs` show as renames; grep of `src/kernel`, `crate::kernel`,
    `tatic::kernel`, `support::rng` returns only frozen history.
-6. The compile-time claim: add `use tatic_rng::mix64;` to a throwaway copy of `crates/kernel/src/lib.rs` non-test code and
+6. The compile-time claim: add `use tatic_rng::mix64;` to a throwaway copy of `crates/tatic-kernel/src/lib.rs` non-test code and
    confirm it fails to build (the boundary is real); revert.
-7. The build-cost expectation is measured once, not assumed: `touch crates/kernel/src/kernel_file` rebuild of `cargo test -p
+7. The build-cost expectation is measured once, not assumed: `touch crates/tatic-kernel/src/kernel_file` rebuild of `cargo test -p
    tatic-kernel --no-run` against the pre-move `cargo test --lib kernel --no-run` equivalent, wall time and the crates rebuilt,
    recorded in the plan outcome (a data point, not a gate).
 8. A/A on the exe-keyed arm cache (`scripts/streams_ab.sh` hashes exe contents, not paths): the church_bv test exe is built from
@@ -220,5 +220,11 @@ moved, docs), as long as each commit builds and passes the checks that apply to 
 
 ## Decisions marked as mine
 
-Layout `crates/`; the member names; per-member version fields instead of `[workspace.package]`; exactly which tests move;
-mimalloc in the kernel crate's tests; `grow` as the only widened item; the cross-crate inlining check.
+Per-member version fields instead of `[workspace.package]`; exactly which tests move; mimalloc in the kernel crate's tests;
+`grow` as the only widened item; the cross-crate inlining check.
+
+## Decided by the user (2026-11-04)
+
+- Inlining gate: a count gap beyond the A/A spread stops the work and goes to the user; no `#[inline]` unasked.
+- `tatic` stays the root package; new members live in `crates/tatic-kernel` and `crates/tatic-rng` (directory = package name).
+- Moving `tatic` itself to `crates/tatic` (a virtual workspace root) is a separate item to follow this one, not part of it.
