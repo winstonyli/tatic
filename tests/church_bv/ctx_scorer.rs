@@ -567,6 +567,9 @@ pub fn load_mines(dirs: &[&std::path::Path], n: usize) -> Result<(Vec<Mine>, usi
     Ok((mines, dropped))
 }
 
+/// The `variants()` entry for the model without the marginal-coverage group: the 33 columns Q2 runs (decision c1).
+pub const NO_G3: &str = "drop group 3";
+
 /// The model variants of the ablation, as the columns each reads: the context model, the per-law model, then the context model
 /// without group 1, 2, 3 and without the per-law block (the bias stays).
 fn variants() -> Vec<(&'static str, Vec<usize>)> {
@@ -589,13 +592,15 @@ fn project(x: &[f32], cols: &[usize]) -> Vec<f32> {
 /// that salt's mines (stragglers by score, the rest in stream order), and compare the capture at each k of `ks` with the
 /// per-law model, the `small` key and a random ranker. d = context - per-law and e = context - small per mine, bootstrapped
 /// over the mines; the last line is the verdict of the gate at every k.
-pub fn q1(mines: &[Mine], ks: &[usize]) -> String {
+pub fn q1(mines: &[Mine], ks: &[usize], context: &str) -> String {
     use std::fmt::Write;
     let mut salts: Vec<usize> = mines.iter().map(|m| m.salt).collect();
     salts.sort_unstable();
     salts.dedup();
     let feats: Vec<Vec<Vec<f32>>> = mines.iter().map(|m| rows(&m.pool, &m.served)[..m.y.len()].to_vec()).collect();
-    let vs = variants();
+    let mut vs = variants();
+    let at = vs.iter().position(|(name, _)| *name == context).unwrap_or_else(|| panic!("no model variant named {context:?}"));
+    vs.swap(0, at);
     let mut orders: Vec<Vec<Vec<usize>>> = vec![vec![vec![]; mines.len()]; vs.len()];
     let mut fold_auc: Vec<Vec<f64>> = vec![vec![]; 2];
     for (held, _) in loo_split(&salts) {
@@ -632,6 +637,7 @@ pub fn q1(mines: &[Mine], ks: &[usize]) -> String {
     let positives: Vec<usize> = live_strag.iter().map(|v| v.iter().filter(|&&b| b).count()).collect();
     let mut t = String::new();
     let mean = |v: &[f64]| v.iter().sum::<f64>() / v.len().max(1) as f64;
+    writeln!(t, "context model: {} ({} columns)", vs[0].0, vs[0].1.len()).unwrap();
     writeln!(t, "Q1 {} mines, {} salts, slice {} laws; live stragglers {}, credited {}", mines.len(), salts.len(), mines.first().map_or(0, |m| m.y.len()), live_strag.iter().map(Vec::len).sum::<usize>(), positives.iter().sum::<usize>()).unwrap();
     for &s in &salts {
         let (ms, ps) = (mines.iter().filter(|m| m.salt == s).count(), mines.iter().enumerate().filter(|(_, m)| m.salt == s).map(|(i, _)| positives[i]).sum::<usize>());
@@ -684,7 +690,7 @@ fn q1_report() {
     let (mines, dropped) = load_mines(&dirs, 319).unwrap_or_else(|e| panic!("{e}"));
     assert_eq!(mines.len(), 42, "the dump has 42 mines");
     println!("LOADED {} mines, {dropped} later duplicate laws dropped from the {} labelled", mines.len(), mines.len() * 319);
-    print!("{}", q1(&mines, &[40, 80]));
+    print!("{}", q1(&mines, &[40, 80], &setup.var("Q1_CONTEXT").unwrap_or_else(|| "context".into())));
 }
 
 #[cfg(test)]
@@ -1003,10 +1009,67 @@ mod tests {
         Mine { salt, pool, served: vec![p("add(x, y)", "add(y, x)")], y, live: vec![true; 15] }
     }
 
+    fn fixture_mines() -> Vec<Mine> {
+        (4..=10).flat_map(|s| (0..2).map(move |m| synthetic(s, s * 2 + m))).collect()
+    }
+
+    #[test]
+    fn q1_header_names_the_context_variant() {
+        let mines = fixture_mines();
+        let full = q1(&mines, &[3], "context");
+        assert!(full.starts_with("context model: context (35 columns)\n"), "{full}");
+        let no_g3 = q1(&mines, &[3], NO_G3);
+        assert!(no_g3.starts_with("context model: drop group 3 (33 columns)\n"), "{no_g3}");
+    }
+
+    #[test]
+    fn q1_context_report_apart_from_the_header_equals_the_old_report() {
+        let full = q1(&fixture_mines(), &[3, 6], "context");
+        let rest = full.split_once('\n').unwrap().1;
+        assert_eq!(rest, GOLDEN_Q1);
+    }
+
+    #[test]
+    fn q1_swapped_context_keeps_every_variant_in_the_ablation() {
+        let t = q1(&fixture_mines(), &[3], NO_G3);
+        for name in ["context ", "per-law ", "drop group 1 ", "drop group 2 ", "drop group 3 ", "drop per-law "] {
+            assert!(t.contains(&format!("{name}")), "{name}: {t}");
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "bogus")]
+    fn q1_refuses_an_unknown_variant() {
+        q1(&fixture_mines(), &[3], "bogus");
+    }
+
+    const GOLDEN_Q1: &str = r#"Q1 14 mines, 7 salts, slice 15 laws; live stragglers 140, credited 69
+salt 4: 2 mines, 20 live stragglers, 9 credited
+salt 5: 2 mines, 20 live stragglers, 9 credited
+salt 6: 2 mines, 20 live stragglers, 10 credited
+salt 7: 2 mines, 20 live stragglers, 11 credited
+salt 8: 2 mines, 20 live stragglers, 11 credited
+salt 9: 2 mines, 20 live stragglers, 10 credited
+salt 10: 2 mines, 20 live stragglers, 9 credited
+held-out AUC (mean over salts): context 0.9209, per-law 0.7605
+k=3: ceiling 42; capture sums: context 42, per-law 36, small 15, random 14.0, random stragglers-first 20.7
+k=3: d (context - per-law) mean 0.429, 95% [0.143, 0.786]; salts above 0: 3/7
+k=3: e (context - small) mean 1.929, 95% [1.500, 2.357]; salts above 0: 7/7
+k=3: per-salt d [0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 3.0], e [5.0, 6.0, 6.0, 3.0, 2.0, 2.0, 3.0]; salts with both above 0: 3/7; gate not met
+k=3: ablation capture sums: context 42, per-law 36, drop group 1 42, drop group 2 38, drop group 3 38, drop per-law 39
+k=6: ceiling 69; capture sums: context 58, per-law 47, small 40, random 27.8, random stragglers-first 41.4
+k=6: d (context - per-law) mean 0.786, 95% [0.429, 1.143]; salts above 0: 5/7
+k=6: e (context - small) mean 1.286, 95% [1.071, 1.571]; salts above 0: 7/7
+k=6: per-salt d [1.0, 0.0, 0.0, 2.0, 2.0, 2.0, 4.0], e [2.0, 3.0, 2.0, 3.0, 2.0, 2.0, 4.0]; salts with both above 0: 5/7; gate met
+k=6: ablation capture sums: context 58, per-law 47, drop group 1 58, drop group 2 56, drop group 3 55, drop per-law 62
+gate met at k in [6]; no room at k in []
+verdict FAIL
+"#;
+
     #[test]
     fn q1_is_deterministic_and_reports_both_ks_and_a_verdict() {
         let mines: Vec<Mine> = (4..=10).flat_map(|s| (0..2).map(move |m| synthetic(s, s * 2 + m))).collect();
-        let (a, b) = (q1(&mines, &[3, 6]), q1(&mines, &[3, 6]));
+        let (a, b) = (q1(&mines, &[3, 6], "context"), q1(&mines, &[3, 6], "context"));
         assert_eq!(a, b);
         assert!(a.contains("k=3") && a.contains("k=6") && a.contains("verdict"), "{}", a);
         assert!(a.contains("drop group 1") && a.contains("drop per-law"), "{}", a);

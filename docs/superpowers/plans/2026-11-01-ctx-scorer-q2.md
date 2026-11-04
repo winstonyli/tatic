@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Context-aware scorer, stage 2 (Q2, the gate) Implementation Plan

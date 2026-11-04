@@ -7650,6 +7650,12 @@ better than the per-law model and the `small` key? Offline only, nothing reaches
 - **Limits**: labels exist only for the slice, so Q1 ranks within the slice (Q2 would rank the whole pool, where 957 laws per mine
   never had a label); capture counts credited laws, not held-out M or CPU, and stage 1's offline AUC was also real while its gate
   failed (above), so this shows no curve shift.
+- **Q2 feature set gate** (run `2026-11-04-q2-t1`, `ctx_q1.sh ... no-g3`, 33 columns, no group 3; same dump, folds and bootstrap).
+  Verdict **PASS**, gate met at k in {40, 80}. Held-out AUC context 0.6967 (per-law 0.6397). Capture sums, k = 40 / 80: 33-column
+  1399 / 2429, per-law 1329 / 2378, `small` 1281 / 2316, random of stragglers only 1130 / 2245. d (33-column - per-law), mean per
+  mine: 1.67 [1.07, 2.29] / 1.21 [0.38, 2.14], 7 of 7 salts both k. e (33-column - `small`): 2.81 [2.00, 3.60] / 2.69 [1.67, 3.71],
+  7 of 7 salts at k = 40, 6 of 7 at k = 80 (salt 7 has e = 0 at k = 80). The model keeps about half of the full model's lead over
+  per-law, and the choice of 33 columns (decision c1) was made after the ablation above was seen.
 
 ### Selecting the extras by straggler verdict: better per n, not per CPU (2026-10-31; v0.6, second try)
 
