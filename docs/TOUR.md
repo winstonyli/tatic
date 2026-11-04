@@ -28,7 +28,7 @@ The JIT (`src/`):
 - `src/verify/typing.rs`: the type check that keeps closures out of the entry point.
 - `src/jit/ir.rs`, `src/verify/decompile.rs`, `src/jit/lower_wat.rs`: the IR, its validation, its WAT. "How is a closure represented?" (`src/jit/lower_wat.rs#Lowering`)
 - `src/lang/term.rs`, `src/lang/eval.rs`, `src/lang/syntax.rs`: terms, the interpreter that defines correct behavior (`src/lang/eval.rs#eval`), and the parser.
-- `src/support/samples.rs`, `src/support/rng.rs`, `src/testing/test_corpus.rs`, `src/testing/ir_fuzz.rs`: the sample inputs, a seeded generator, shared test terms and a fuzzer for the IR. `src/bin/repl.rs`: an interactive REPL. `src/bin/demo.rs#main`: the demo.
+- `src/support/samples.rs`, `crates/tatic-rng/src/lib.rs`, `src/testing/test_corpus.rs`, `src/testing/ir_fuzz.rs`: the sample inputs, a seeded generator, shared test terms and a fuzzer for the IR. `src/bin/repl.rs`: an interactive REPL. `src/bin/demo.rs#main`: the demo.
 
 The kernel and proofs (`src/`):
 - `src/kernel.rs`: the trusted checker. `src/kernel/postulates.rs`: the proof-term builder. `src/kernel/spaces.rs`, `src/kernel/bin.rs`: storage and serialization. `src/testing/independence.rs`: the test that keeps trusted files from importing untrusted ones.

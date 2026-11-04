@@ -48,7 +48,7 @@ use tatic::lang::term::{Hash, PrimOp, Term, TermStore};
 use tatic::jit::specialise;
 use tatic::verify::spec_check;
 
-use tatic::support::rng::SplitMix64 as Rng;
+use tatic_rng::SplitMix64 as Rng;
 
 const MAX_LIT: i64 = 50;
 

@@ -18,6 +18,7 @@ wat = "1.245.1"
 
 [dev-dependencies]
 criterion = "0.5"
+tatic-rng = { path = "crates/tatic-rng" }
 
 # Release with fat LTO, for sweeps, timing and other long runs (`cargo test --profile sweep ...`): about 9% less
 # sweep CPU than `release` with identical outputs, but an incremental rebuild of the church_bv test binary takes
@@ -40,3 +41,9 @@ harness = false
 [[bench]]
 name = "proofs"
 harness = false
+
+# `tatic-kernel` and `tatic-rng` are members; `tools/runs` is its own standalone crate (own lockfile and target).
+[workspace]
+members = ["crates/tatic-rng"]
+default-members = [".", "crates/tatic-rng"]
+exclude = ["tools/runs"]

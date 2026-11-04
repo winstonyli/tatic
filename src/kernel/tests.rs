@@ -110,7 +110,7 @@ fn subst(e: &Expr, j: u32, s: &Expr) -> Expr {
 
 /// A splitmix64 stream, for the randomised tests below.
 fn splitmix(seed: u64) -> impl FnMut() -> usize {
-    let mut rng = crate::support::rng::SplitMix64::new(seed);
+    let mut rng = tatic_rng::SplitMix64::new(seed);
     move || rng.next_u64() as usize
 }
 
@@ -482,7 +482,7 @@ fn beta_leaves_const_and_free_alone() {
 
 /// A random `Expr` of every variant, ill-typed as often as not, with
 /// indices small enough that `Var(0)` is often free and often not.
-fn random_expr(seed: &mut crate::support::rng::SplitMix64, fuel: u32) -> Expr {
+fn random_expr(seed: &mut tatic_rng::SplitMix64, fuel: u32) -> Expr {
     let mut next = || seed.next_u64();
     let pick = next();
     let k = (next() % 4) as u32;
@@ -512,7 +512,7 @@ fn random_expr(seed: &mut crate::support::rng::SplitMix64, fuel: u32) -> Expr {
 /// the variable and when it doesn't.
 #[test]
 fn subst_top_is_substituting_then_shifting() {
-    let (mut seed, mut used, mut unused) = (crate::support::rng::SplitMix64::new(1), 0, 0);
+    let (mut seed, mut used, mut unused) = (tatic_rng::SplitMix64::new(1), 0, 0);
     for _ in 0..20_000 {
         let body = random_expr(&mut seed, 5);
         let s = random_expr(&mut seed, 3);
@@ -697,7 +697,7 @@ fn def_eq_normalises_only_where_the_sides_differ() {
 
 /// Wraps some of `e`'s subterms in a redex that reduces back to them,
 /// `(\_. x) Sort(0)` with `x` shifted under the new binder.
-fn with_redexes(e: &Expr, seed: &mut crate::support::rng::SplitMix64) -> Expr {
+fn with_redexes(e: &Expr, seed: &mut tatic_rng::SplitMix64) -> Expr {
     let wrap = seed.next_u64().is_multiple_of(4);
     let rebuilt = match e.node() {
         n @ (Node::Pi(..) | Node::Lam(..) | Node::App(..) | Node::Id(..) | Node::Sigma(..) | Node::Pair(..)) => {
@@ -713,7 +713,7 @@ fn with_redexes(e: &Expr, seed: &mut crate::support::rng::SplitMix64) -> Expr {
 /// inserted.
 #[test]
 fn def_eq_agrees_with_comparing_normal_forms() {
-    let (mut seed, mut equal, mut unequal) = (crate::support::rng::SplitMix64::new(7), 0, 0);
+    let (mut seed, mut equal, mut unequal) = (tatic_rng::SplitMix64::new(7), 0, 0);
     for i in 0..20_000 {
         let a = random_expr(&mut seed, 4);
         let b = if i % 2 == 0 { a } else { random_expr(&mut seed, 4) };

@@ -37,13 +37,13 @@
 use tatic::kernel::{self, Expr, Node, Postulates};
 
 struct Rng {
-    mix: tatic::support::rng::SplitMix64,
+    mix: tatic_rng::SplitMix64,
     consts: bool,
 }
 
 impl Rng {
     fn new(seed: u64) -> Self {
-        Rng { mix: tatic::support::rng::SplitMix64::new(seed), consts: false }
+        Rng { mix: tatic_rng::SplitMix64::new(seed), consts: false }
     }
 
     fn below(&mut self, n: u32) -> u32 {

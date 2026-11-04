@@ -1,4 +1,3 @@
-//! Shared inputs: the sample programs and the PRNG.
+//! Shared inputs: the sample programs.
 
-pub mod rng;
 pub mod samples;

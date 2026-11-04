@@ -705,7 +705,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
             for p in 0..leaf_count(*t) {
                 for g in &grow {
                     i += 1;
-                    if (tatic::support::rng::mix64(i ^ tatic::support::rng::mix64(salt as u64 + 13 * l as u64)) % total.max(1) as u64) < budget as u64 {
+                    if (tatic_rng::mix64(i ^ tatic_rng::mix64(salt as u64 + 13 * l as u64)) % total.max(1) as u64) < budget as u64 {
                         let w = replaced(*t, &mut Some(p), *g);
                         if !level.contains_key(&w) {
                             level.insert(w, l);

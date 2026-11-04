@@ -1453,9 +1453,14 @@ dependencies = [
  "im",
  "mimalloc",
  "stacker",
+ "tatic-rng",
  "wasmtime",
  "wat",
 ]
+
+[[package]]
+name = "tatic-rng"
+version = "0.6.0"
 
 [[package]]
 name = "tempfile"
