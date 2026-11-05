@@ -1027,7 +1027,7 @@ inflation (about a quarter, line 476-478), and "self-play adds at most ~2%" (lin
 policy itself clearly helps over unranked search (p <= 0.003, 2-4% of the union per seed); only the *self-play data*
 is within noise. The notes' pre-fix oracle table (line 1377, +12) is superseded by the redone one.
 
-**Right-shift demand probe** (`tools/shr_probe.py`, python, not Rust): all terms over x, y with add, sub, and, or, xor,
+**Right-shift demand probe** (`docs/runs/2026-10-01/scripts/shr_probe.py`, python, not Rust): all terms over x, y with add, sub, and, or, xor,
 shl1, shr1 up to 6 nodes (6746 terms), grouped by value at widths 3-6 (exhaustive to 4, sampled at 5-6). 1316 classes have
 more than one term (candidate laws); 879 involve `shr1`; **190 involve `shr1` applied to an operand containing add/sub**,
 the case the machine model cannot take (e.g. `shr1 (shl1 x) = shr1 (add x x)`, `shl1 (shr1 x) = add (shr1 x) (shr1 x)`);
@@ -1147,7 +1147,7 @@ helped, because the needed laws were depth-2 shapes it never contained; and rule
 earlier run shared the CPU with two other jobs, so the time gain is partly contention). 16 instances in total.
 In-sample caveat: the rules were mined on constants <= 7; the 246-law run is the held-out check.
 
-**Right-shift classification** (`tools/shr_probe.py`, sizes <= 6). Of the 190 classes with `shr1` over arithmetic, 50
+**Right-shift classification** (`docs/runs/2026-10-01/scripts/shr_probe.py`, sizes <= 6). Of the 190 classes with `shr1` over arithmetic, 50
 have a member with no add/sub at all (so `STerm`'s per-position prover reaches that side), and in 33 of those the only
 arithmetic is `add p p`, which the `double` rule already turns into `shl1 p`. The other 140 contain `shr1` over real sums
 or differences (and many are `or x x`-style duplicates, not deduplicated, so this overstates), which needs the section 26
