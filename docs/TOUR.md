@@ -2,7 +2,7 @@
 
 tatic is a research repo with two layers. The bottom layer (`crates/tatic/src/`) is a small JIT: a tiny higher-order term language is compiled to WebAssembly (WAT is its text form, run under wasmtime), and the compiled form is installed only after a small dependent-type kernel has checked a proof that it means the same as the reference interpreter. Terms use De Bruijn indices (a variable is a number counting binders outward, so there are no names). The upper layer is the `church-bv` crate (`crates/church-bv/src/`, its tests run with `cargo test -p church-bv --lib`, entry `crates/church-bv/src/lib.rs#mod driver`). It uses the kernel as a prover for bit-vector laws: it mines rewrite rules from the laws it proves, keeps a learned table of equal-valued terms, and measures whether the rules help. The self-improvement loop and the kernel side of goal 3 live there; no GPU or model code exists yet, and nothing in `church_bv` calls the JIT. "Church-encoded" means data written as functions (a Bool is a function that picks one of two branches), so the kernel can reason about it with no built-in types.
 
-Keep this current: any change that renames, moves, adds or removes a module, a stage of a flow or a glossary term updates this file in the same commit (rule in `CLAUDE.md#tatic`; `scripts/tour_check.sh` checks every cite).
+Keep this current: any change that renames, moves, adds or removes a module, a stage of a flow or a glossary term updates this file in the same commit (rule in `CLAUDE.md#tatic`; `scripts/check/tour_check.sh` checks every cite).
 
 Terms used below are defined in the Glossary at the end.
 
@@ -53,10 +53,10 @@ The belief layer (`crates/church-bv/src/`):
 - `belief.rs`: a calibrated estimate of whether a claimed equality is refuted or unprovable, from its shape and the cheap evidence it has passed; it is meant to order and budget work (nothing reads a belief yet) and never accepts a claim. Pure statistics (`crates/church-bv/src/belief.rs#auc`, grouped folds `crates/church-bv/src/belief.rs#fold_of`) sit under the estimators, the claim dump and the report.
 
 The miner, driver, loop and gate:
-- `miner.rs` (with `miner/`): how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
-- `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`crates/church-bv/src/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`crates/church-bv/src/miner/laws.rs#dump_pool`, `scripts/ctx_dump.sh`), and its fitted model (a weights file, `Model::to_text`) is what `EXTRAS_SELECT=ctx` scores the pool with at run time (`crates/church-bv/src/miner/laws.rs#ctx_pool_ranks`, `CTX_WEIGHTS`).
+- `miner.rs` (with `miner/`): how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/gate/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
+- `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`crates/church-bv/src/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`crates/church-bv/src/miner/laws.rs#dump_pool`, `scripts/study/ctx_dump.sh`), and its fitted model (a weights file, `Model::to_text`) is what `EXTRAS_SELECT=ctx` scores the pool with at run time (`crates/church-bv/src/miner/laws.rs#ctx_pool_ranks`, `CTX_WEIGHTS`).
 - `tools/runs/` (own crate): the recorded-run runner and gate. `tools/shr_probe.py`: a probe script.
-- `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh`, `gate.sh` (the untimed gate with the arm cache) and `curve.sh` (an arm summed over salts, using `arm_row.sh`) (A/B and test wrappers), `rules/`, `tour_check.sh` (TOUR cites) and `cite_check.sh` (section cites into `docs/tier-cycle/` and `RELATED_WORK.md`, plus `tour_check.sh`). `experiments/` (older experiment scripts) is git-ignored and exists only on the author's machine.
+- `scripts/` is grouped by role (`check/layout_check.sh` fails on a file left directly in it). `gate/`: `streams_ab.sh` (the A/B gate), `gate.sh` (untimed, with the arm cache), `ablations.sh`, `bench_ab.sh`, `curve.sh` (an arm summed over salts, using `arm_row.sh`), `tree_mem.ps1` and `test_gate.sh`. `check/`: the repo guards `tour_check.sh` (TOUR cites), `cite_check.sh` (section cites into `docs/tier-cycle/` and `RELATED_WORK.md`, plus `tour_check.sh`), `size_check.sh`, `test_placement_check.sh`, `tier_cycle_check.sh`, `layout_check.sh`, each with its `*_check_check.sh` test. `study/`: the Q2 and context-scorer scripts (`q2_*.sh`, `ctx_*.sh`) and `rules/`. `experiments/` (older experiment scripts) is git-ignored and exists only on the author's machine.
 - `crates/tatic/benches/`: criterion benchmarks of execution and proofs.
 
 Test and fuzz suites (each protects one layer). In `crates/tatic-kernel/tests/`: `church_encoding.rs` and `church_lemmas.rs` (the Church-encoded kernel library), `kernel_fuzz.rs` and `kernel_soundness_fuzz.rs` (the kernel never accepts a false claim). In `crates/tatic/tests/`: `compile_fuzz.rs` (compiled code against the interpreter), `syntax_fuzz.rs` (the parser), `golden_wat.rs` with `golden/` (pinned WAT output).
@@ -68,7 +68,7 @@ Project state: `ROADMAP.md`, `PARKED.md`, `docs/tier-cycle/`, `docs/learned-vs-f
 No commands are restated here; each has one home.
 - Build, test, demo, REPL, benches, the sweep build profile: `README.md#cargo test`.
 - One loop or one sweep, and every environment switch (`LOOP_MODE`, `RULEMINER_FAST`, `POOL`, `GEN_DRAW`, `ABLATE`): the module doc of `crates/church-bv/src/driver.rs#LOOP_MODE`.
-- The A/B gate: the header of `scripts/streams_ab.sh#arm`. Recorded runs (raw output, `docs/runs.md` rows, CPU leases): `CLAUDE.md#tatic`.
+- The A/B gate: the header of `scripts/gate/streams_ab.sh#arm`. Recorded runs (raw output, `docs/runs.md` rows, CPU leases): `CLAUDE.md#tatic`.
 
 ## The picture
 
@@ -98,7 +98,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 7. The mine task maps to the miner: `crates/church-bv/src/driver.rs#task_fn`. It finds the stragglers under the base rules: `crates/church-bv/src/miner/laws.rs#laws_of`.
 8. It generates candidate rules from the stragglers' normal forms: `crates/church-bv/src/miner/candidates.rs#candidates`, and scores them in greedy rounds: `crates/church-bv/src/miner/rounds.rs#play`. In a sweep (`RULEMINER_FAST`) only each round's winner is proved, in the background (`crates/church-bv/src/miner/rounds.rs#Prover`); `settle` rolls back rounds built on a winner whose proof fails. Without that switch every candidate is proved first.
 9. Each committed rule is recorded as chosen: `crates/church-bv/src/miner/rounds.rs#settle`; the driver appends it to the loop's rules file and the next batch is served under it.
-10. The A/B gate runs a sweep for an A and a B build per salt, then scores each loop's final rules on the held-out bands and compares M, held-out M, CPU and work counts: `scripts/streams_ab.sh#arm`. The held-out laws come from `crates/church-bv/src/classes.rs#held_laws`.
+10. The A/B gate runs a sweep for an A and a B build per salt, then scores each loop's final rules on the held-out bands and compares M, held-out M, CPU and work counts: `scripts/gate/streams_ab.sh#arm`. The held-out laws come from `crates/church-bv/src/classes.rs#held_laws`.
 
 ### (c) From term to theorem (the JIT's proofs)
 
@@ -149,7 +149,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Free**: a builder-scope parameter the kernel refuses to type, so an escaped one cannot act as an axiom. `crates/tatic-kernel/src/check.rs#free_escaped`
 - **Free share**: the share of a band's laws proved with no whole-term machine proof. `docs/tier-cycle/#Metrics`
 - **Frontier**: the held-out free share per size band (11, 13, 15, 17): how far up in law size the rules still avoid the machine. The v0.6 success measure is moving it, not M on a fixed stream. `docs/tier-cycle/#The frontier and v0.5`, `ROADMAP.md#Milestones`
-- **Gate (A/B)**: two builds, per salt, compared on M, held-out M, CPU and work counts; entry point `scripts/streams_ab.sh#arm`. `tools/runs/src/gate.rs#gate` is the cheaper variant: four sweeps, no held-out check. Not the installation gate.
+- **Gate (A/B)**: two builds, per salt, compared on M, held-out M, CPU and work counts; entry point `scripts/gate/streams_ab.sh#arm`. `tools/runs/src/gate.rs#gate` is the cheaper variant: four sweeps, no held-out check. Not the installation gate.
 - **GEN_DRAW**: integer that re-draws the extras from a different sample. `crates/church-bv/src/driver.rs#scope_extras`
 - **Redraw spread (sigma)**: the difference between two arms that differ only in `GEN_DRAW`; the gate is deterministic, so this A/A spread is the noise floor a win must beat. A doc measure, not computed in code. `docs/tier-cycle/#The streams and the gate`
 - **Globals / Ctx**: the trusted list of constant types and the local binder types. `crates/tatic-kernel/src/check.rs#Globals`

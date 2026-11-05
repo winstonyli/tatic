@@ -5255,7 +5255,7 @@ This builds stage 1 of §64: cached loose ranges, without constants.
   are one line each. But its reason, at `infer_sigma`, is only that
   smaller hot frames cost nothing, and that still holds.
 
-**Measured.** `scripts/bench_ab.sh 43b5e15 --bench proofs`, 3 rounds,
+**Measured.** `scripts/gate/bench_ab.sh 43b5e15 --bench proofs`, 3 rounds,
 CPU 4 to 9% around every run. Each round runs base, candidate, then base
 again; *noise* is that rerun against base. Round 1's noise was -7 to -63%,
 so it's unreliable. Round 2's noise was within ±8% except `relational_x1`
@@ -5352,7 +5352,7 @@ the builder using them, then removing what no longer pays.
 Both measured 2026-09-25, 18:04 to 19:21, with Defender's real-time
 protection off (it had been on through §65's runs; the log shows it
 turned off at 17:20 and has no record of when it turned on) and, from
-re-baseline round 2 on, total CPU sampled every 10 s. Each is 3 rounds of `scripts/bench_ab.sh
+re-baseline round 2 on, total CPU sampled every 10 s. Each is 3 rounds of `scripts/gate/bench_ab.sh
 --bench proofs`, best of the rounds per bench, then 3 interleaved rounds
 of `fib16_instance_proof_cost`. The machine wasn't idle throughout: a
 game and other sessions' jobs held the CPU at 14 to 90% through

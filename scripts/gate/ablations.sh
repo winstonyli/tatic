@@ -1,16 +1,16 @@
 #!/bin/bash
 # The class-table ablations (docs/superpowers/plans/2026-10-23-class-table-ablations.md). Run from the repo root.
-#   scripts/ablations.sh <A exe> ablate <switch>...   per switch: B = A + B.exe.env ABLATE=<switch>; salts 1-10 of
-#                                          scripts/streams_ab.sh in one run; pays at an M or held-out rise on any salt, the gate
+#   scripts/gate/ablations.sh <A exe> ablate <switch>...   per switch: B = A + B.exe.env ABLATE=<switch>; salts 1-10 of
+#                                          scripts/gate/streams_ab.sh in one run; pays at an M or held-out rise on any salt, the gate
 #                                          stopped at the first; else by the work counts: costs goes on, mixed and free exit
-#   scripts/ablations.sh <deleted exe> check <ablated-from exe> <switch>   salts 1-2, deleted against ablated: identical or differs
+#   scripts/gate/ablations.sh <deleted exe> check <ablated-from exe> <switch>   salts 1-2, deleted against ablated: identical or differs
 # Every run is untimed through run.ps1, pinned to CFF at below-normal priority, 4 arms at a time: no verdict reads job
 # CPU. Arms are kept in $runs_root/arm-cache (streams_ab.sh's ARM_CACHE): A runs once per build, and a rerun after a
 # stopped driver reuses every arm that finished.
-# Tests: scripts/test_gate.sh. POLL_S (default 30): seconds between looks at a running gate's log.
+# Tests: scripts/gate/test_gate.sh. POLL_S (default 30): seconds between looks at a running gate's log.
 set -u
 [ -z "${ABLATE:-}" ] || { echo "driver: ABLATE=$ABLATE is set in the environment; it would reach both arms"; exit 2; }
-[ -f scripts/streams_ab.sh ] || { echo "driver: run from the repo root"; exit 2; }
+[ -f scripts/gate/streams_ab.sh ] || { echo "driver: run from the repo root"; exit 2; }
 runs_root="$(cygpath "$LOCALAPPDATA")/claude-runs/tatic"
 wrap="$(cygpath -w "$USERPROFILE/.claude/runs/run.ps1")"
 [ -n "${RUN_DIR:-}" ] || { echo "driver: launch through run.ps1 (no RUN_DIR)"; exit 2; }
@@ -30,7 +30,7 @@ gate() { # <name> <A exe> <B exe> <salts...>: the "salt N:" and streams_ab lines
   folders() { ls -d "$runs_root"/*-"$name" "$runs_root"/*-"$name"-[0-9]* 2>/dev/null; }
   before=$(folders)
   ARM_CACHE=$(cygpath -w "$runs_root/arm-cache") JOBS=4 powershell -NoProfile -File "$wrap" -Kind gate -Name "$name" -Affinity CFF \
-    -Command "bash scripts/streams_ab.sh $a $b $*" < /dev/null > /dev/null 2>&1 &
+    -Command "bash scripts/gate/streams_ab.sh $a $b $*" < /dev/null > /dev/null 2>&1 &
   pid=$!
   while kill -0 $pid 2>/dev/null; do
     ping -n $((${POLL_S:-30} + 1)) 127.0.0.1 > /dev/null

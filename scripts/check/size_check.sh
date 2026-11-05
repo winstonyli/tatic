@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# size_check.sh [root]: no tracked .rs file is over LIMIT lines unless scripts/size_allowlist.txt lists it (`path max_lines`).
+# size_check.sh [root]: no tracked .rs file is over LIMIT lines unless scripts/check/size_allowlist.txt lists it (`path max_lines`).
 # The list only shrinks: a listed file over its max fails, and so does one that is now at or under LIMIT or under its max
 # (lower the max or delete the line, in the commit that shrank it). Exit 1 listing the offenders.
-cd "${1:-$(dirname "$0")/..}" || exit 2
+cd "${1:-$(dirname "$0")/../..}" || exit 2
 LIMIT=1000
-list=scripts/size_allowlist.txt
+list=scripts/check/size_allowlist.txt
 bad=0
 declare -A max
 while read -r p m; do [ -n "$p" ] && max[$p]=$m; done < <(grep -v "^#" "$list" | sed 's/\r$//')

@@ -1,24 +1,24 @@
 #!/bin/bash
-# scripts/test_gate.sh: checks of scripts/streams_ab.sh (the gate) and scripts/ablations.sh (its driver), in a sandbox
+# scripts/gate/test_gate.sh: checks of scripts/gate/streams_ab.sh (the gate) and scripts/gate/ablations.sh (its driver), in a sandbox
 # under $TEMP; nothing real runs. The gate's arms come from a made-up arm cache, or fail on a fake exe; the driver's
 # gates are a fake streams_ab.sh behind a fake run.ps1. Run from the repo root: PASS or FAIL per case, exit 1 on any
 # FAIL. About 6.5 min on a quiet machine, pinned to CFF (2026-10-30; 15-25 min with other jobs running, 2026-10-25).
 set -u
-[ -f scripts/streams_ab.sh ] || { echo "test_gate: run from the repo root"; exit 2; }
+[ -f scripts/gate/streams_ab.sh ] || { echo "test_gate: run from the repo root"; exit 2; }
 repo=$(pwd); T=$(mktemp -d "$TEMP/test_gate.XXXXXX"); fails=0
 ok() { # <case> <got> <want>
   if [ "$2" = "$3" ]; then echo "PASS $1"; else echo "FAIL $1"; echo "  got:  $2"; echo "  want: $3"; fails=$((fails + 1)); fi
 }
 
 # --- the gate: a root with its scripts and a fake runs.exe (any arm that runs fails), two exes and a cache of arms
-mkdir -p "$T/root/scripts" "$T/root/tools/runs/target/release" "$T/root/crates/church-bv/data"
-cp scripts/streams_ab.sh scripts/tree_mem.ps1 "$T/root/scripts/"; echo fake > "$T/root/tools/runs/target/release/runs.exe"
+mkdir -p "$T/root/scripts/gate" "$T/root/tools/runs/target/release" "$T/root/crates/church-bv/data"
+cp scripts/gate/streams_ab.sh scripts/gate/tree_mem.ps1 "$T/root/scripts/gate/"; echo fake > "$T/root/tools/runs/target/release/runs.exe"
 for b in 11 13 15 17; do echo $b > "$T/root/crates/church-bv/data/held_$b.txt"; done
 echo fake > "$T/A.exe"; echo fake > "$T/B.exe"; echo ABLATE=x > "$T/B.exe.env"
 # the key streams_ab.sh gives an exe: its bytes, its .exe.env, the script, runs.exe and the held-out laws (in band
 # order, as streams_ab.sh's `bands` lists them)
 hfiles() { local b; for b in $(ls "$T/root/crates/church-bv/data" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$T/root/crates/church-bv/data/held_$b.txt"; done; }
-key() { { cat "$1" "$1.env" "$T/root/scripts/streams_ab.sh" "$T/root/tools/runs/target/release/runs.exe"; hfiles | while read -r f; do cat "$f"; done; } 2>/dev/null | sha256sum | cut -c1-16; }
+key() { { cat "$1" "$1.env" "$T/root/scripts/gate/streams_ab.sh" "$T/root/tools/runs/target/release/runs.exe"; hfiles | while read -r f; do cat "$f"; done; } 2>/dev/null | sha256sum | cut -c1-16; }
 mkarm() { # <dir> <M> <held> <jobcpu> <from>: a finished arm
   local l; mkdir -p "$1"
   for l in 1 2 3; do mkdir -p "$1/cold_streams_streams_${l}_none"; echo "rule $l" > "$1/cold_streams_streams_${l}_none/rules.txt"; done
@@ -31,7 +31,7 @@ mkarm "$T/cache/$(key "$T/A.exe")/s1" 100 500 10 "arm A"; mkarm "$T/cache/$(key 
 printf 'ENV GATE_T_X=1\r\nENV GATE_T_U unset\nENV SALT=7\n' > "$T/cache/$(key "$T/B.exe")/s1/task.log"; export GATE_T_X=1
 gate() { # <run> <B as passed> <salts...>: the gate's output, with the environment the caller sets
   mkdir -p "$T/$1"
-  (cd "$T/root" && RUN_DIR=$(cygpath -w "$T/$1") bash scripts/streams_ab.sh "$(cygpath -w "$T/A.exe")" "$2" "${@:3}" < /dev/null 2>/dev/null)
+  (cd "$T/root" && RUN_DIR=$(cygpath -w "$T/$1") bash scripts/gate/streams_ab.sh "$(cygpath -w "$T/A.exe")" "$2" "${@:3}" < /dev/null 2>/dev/null)
 }
 B=$(cygpath -w "$T/B.exe"); w="interp=7 walk=1 match=1 op=1"
 out=$(ARM_CACHE=$(cygpath -w "$T/cache") gate hit "$B" 1)
@@ -111,7 +111,7 @@ else echo "SKIP a short name is keyed by its long name (no 8.3 names under $TEMP
 n=0; for i in 1 2 3 4 5 6 7 8; do [ "$(JOBS=2 ARM_CACHE=$(cygpath -w "$T/cache") gate together-$i "$B" 1 | grep -c '^salt 1:')" = 1 ] && n=$((n + 1)); done
 ok "two arms at once: one salt line" "$n of 8" "8 of 8"
 # two arms storing one entry at once: the entry is whole, nothing nested in it, no temporary copy left
-source <(sed -n '/^cache_put() {/,/^}/p' scripts/streams_ab.sh)
+source <(sed -n '/^cache_put() {/,/^}/p' scripts/gate/streams_ab.sh)
 mkarm "$T/put/o1" 1 1 1 x; mkarm "$T/put/o2" 1 1 1 x; n=0
 for i in 1 2 3 4 5 6 7 8 9 10; do
   rm -rf "$T/put/cache"; ( cache_put "$T/put/o1" "$T/put/cache/k/s1" & cache_put "$T/put/o2" "$T/put/cache/k/s1" & wait )
@@ -125,24 +125,24 @@ cache_put "$T/put/o2" "$T/put/cache/k/s1"; unset -f rm
 ok "a store after another writer's keeps its entry" "$(cat "$T/put/cache/k/s1/from") $(find "$T/put/cache" -name 's1*' | wc -l)" "$T/put/o1 1"
 # every name the gate sets, in the sweep's and the held-out check's environments, is skipped by `changed`: the names
 # come from the same functions that set them, so a new one can't miss the list
-source <(sed -n '/^sweep_env() {/,/^}/p;/^held_env() {/,/^}/p;/^changed() {/,/^}/p' scripts/streams_ab.sh)
+source <(sed -n '/^sweep_env() {/,/^}/p;/^held_env() {/,/^}/p;/^changed() {/,/^}/p' scripts/gate/streams_ab.sh)
 mkdir -p "$T/set"; { sweep_env 1 o; held_env r l; } | sed 's/=.*/=other/; s/^/ENV /' > "$T/set/task.log"
 ok "the names the gate sets are skipped" "$(wc -l < "$T/set/task.log") [$(changed "$T/none.env" "$T/set")]" "7 []"
 # an arm's switches: each named in its .exe.env must have an ABLATED line somewhere in the arm (a task log, the
 # held-out check's lines); spaces and CRLF in the .exe.env are read as job.rs's merge_env reads them
-source <(sed -n '/^untaken() {/,/^}/p' scripts/streams_ab.sh)
+source <(sed -n '/^untaken() {/,/^}/p' scripts/gate/streams_ab.sh)
 mkdir -p "$T/abl/arm/task"; echo "ABLATED comm" > "$T/abl/arm/task/1.log"; echo "ABLATED eq_pos" > "$T/abl/arm/held_lines.txt"
 printf ' ABLATE = comm,eq_pos\r\n' > "$T/abl/x.env"; ok "every switch took effect" "$(untaken "$T/abl/x.env" "$T/abl/arm")" ""
 echo "ABLATE=comm,eq_pos,typo,eq" > "$T/abl/x.env"; ok "a switch with no ABLATED line" "$(untaken "$T/abl/x.env" "$T/abl/arm" | paste -sd' ')" "typo eq"
 ok "no .exe.env: nothing to check" "$(untaken "$T/abl/none.env" "$T/abl/arm")" ""
 # the last line: an arm whose `failed` is anything but 0 failed, an empty one (an arm stopped mid-write) included; an
 # empty one once ended the count early, so the line read "0 of 4 arms failed" and the gate exited 0
-source <(sed -n '/^passed() {/p; /^tally() {/,/^}/p' scripts/streams_ab.sh)
+source <(sed -n '/^passed() {/p; /^tally() {/,/^}/p' scripts/gate/streams_ab.sh)
 for a in s1_A s1_B s2_A s2_B; do mkarm "$T/tally/$a" 1 1 1 x; done; : > "$T/tally/s1_A/failed"
 out=$(RUN_DIR=$T/tally tally 1 2); ok "an empty failed file is a failed arm" "$out, exit $?" "streams_ab: rules same in 6 of 6 loops; 1 of 4 arms failed, exit 1"
 echo 0 > "$T/tally/s1_A/failed"; out=$(RUN_DIR=$T/tally tally 1 2); ok "no arm failed" "$out, exit $?" "streams_ab: rules same in 6 of 6 loops; 0 of 4 arms failed, exit 0"
 
-# --- the driver: a fake run.ps1 runs its command with scripts/streams_ab.sh swapped for a fake gate, which prints the
+# --- the driver: a fake run.ps1 runs its command with scripts/gate/streams_ab.sh swapped for a fake gate, which prints the
 # salt lines of a VARIANT
 mkdir -p "$T/home/.claude/runs" "$T/fake"
 cat > "$T/home/.claude/runs/run.ps1" <<'EOF'
@@ -151,7 +151,7 @@ $base = "$env:LOCALAPPDATA\claude-runs\tatic\2026-01-01-$Name"; $d = $base; $i =
 while (Test-Path $d) { $d = "$base-$i"; $i++ }
 New-Item -ItemType Directory -Force $d | Out-Null
 $env:RUN_DIR = $d
-$cmd = $Command.Replace('scripts/streams_ab.sh', "$env:FIXTURE\streams_ab.sh")
+$cmd = $Command.Replace('scripts/gate/streams_ab.sh', "$env:FIXTURE\streams_ab.sh")
 cmd /c "$cmd > `"$d\out.log`" 2>&1"
 exit $LASTEXITCODE
 EOF
@@ -191,7 +191,7 @@ EOF
 driver() { # <variant> <mode args...>: the driver's VERDICT and DRIVER lines, joined by " | "
   local out="$T/drv-$1"; rm -rf "$out" "$T/lad"; mkdir -p "$out" "$T/lad"
   (cd "$repo" && VARIANT=$1 POLL_S=1 USERPROFILE=$(cygpath -w "$T/home") LOCALAPPDATA=$(cygpath -w "$T/lad") FIXTURE=$(cygpath -w "$T/fake") \
-    RUN_DIR=$(cygpath -w "$out") bash scripts/ablations.sh "$T/A.exe" "${@:2}" < /dev/null 2>&1) | grep -E '^(VERDICT|DRIVER)' | paste -sd'|' | sed 's/|/ | /g'
+    RUN_DIR=$(cygpath -w "$out") bash scripts/gate/ablations.sh "$T/A.exe" "${@:2}" < /dev/null 2>&1) | grep -E '^(VERDICT|DRIVER)' | paste -sd'|' | sed 's/|/ | /g'
 }
 free="M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +0.00% walk +0.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10"
 ok "driver: free" "$(driver free ablate x)" "VERDICT x free: $free"

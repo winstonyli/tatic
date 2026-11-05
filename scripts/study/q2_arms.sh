@@ -11,7 +11,7 @@
 # WEIGHTS_DIR overrides docs/runs/2026-11-01/ctx-weights (the check script's fixture).
 exe=$1; out=$2; shift 2
 [ -f "$exe" ] && [ -n "$out" ] || { echo "usage: q2_arms.sh <church-bv exe> <out dir> [m...]"; exit 2; }
-dir=${WEIGHTS_DIR:-"$(cd "$(dirname "$0")/.." && pwd)/docs/runs/2026-11-01/ctx-weights"}
+dir=${WEIGHTS_DIR:-"$(cd "$(dirname "$0")/../.." && pwd)/docs/runs/2026-11-01/ctx-weights"}
 mkdir -p "$out"
 arm() { # <name> <env lines...>
   local name=$1; shift

@@ -729,7 +729,7 @@ pub fn q1(mines: &[Mine], ks: &[usize], context: &str) -> String {
 }
 
 /// `Q1_DIRS=<arm folder>;<arm folder>.. church-bv q1-report`: the offline answer to Q1 on a
-/// pool dump (`scripts/ctx_dump.sh`): prints the report; a FAIL is a result, not an error.
+/// pool dump (`scripts/study/ctx_dump.sh`): prints the report; a FAIL is a result, not an error.
 #[test]
 #[ignore]
 fn q1_report() {

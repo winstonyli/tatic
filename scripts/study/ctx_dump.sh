@@ -5,7 +5,7 @@
 # (docs/superpowers/plans/2026-11-01-context-aware-scorer.md, Task 5). Exits 1 if an arm exits non-zero, a mine lacks its
 # dump, or a mine that reports stragglers has no label line.
 exe=$1; shift
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "ctx_dump: $runs not built (cargo build --release in tools/runs)"; exit 1; }
 [ -n "${RUN_DIR:-}" ] || { echo "ctx_dump: RUN_DIR unset (launch through run.ps1)"; exit 1; }

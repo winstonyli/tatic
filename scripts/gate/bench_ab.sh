@@ -4,9 +4,9 @@
 # benches by up to ±100% (RELATED_WORK.md §49, §51), so a change is real
 # only where candidate-vs-base clearly exceeds base-again-vs-base.
 #
-#   scripts/bench_ab.sh [REV] [cargo bench args] [-- criterion args]
-#   scripts/bench_ab.sh HEAD --bench proofs
-#   scripts/bench_ab.sh main~3 --bench execution -- fib
+#   scripts/gate/bench_ab.sh [REV] [cargo bench args] [-- criterion args]
+#   scripts/gate/bench_ab.sh HEAD --bench proofs
+#   scripts/gate/bench_ab.sh main~3 --bench execution -- fib
 #
 # REV (default HEAD) is checked out in a worktree under target/bench-ab,
 # with its own target dir, so the working tree is never touched and

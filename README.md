@@ -80,7 +80,7 @@ still need a whole-term machine proof. The measured results are in
   force, seconds and the join's counts). The module comment documents all
   options (`B`, `K`, `OFFSET`, `SPHASE`, `WARM_RULES=<file>`, ...).
   `church-bv sweep` runs three cold
-  loops on phases 1-3 into `SWEEP_OUT=<dir>`; `scripts/streams_ab.sh` is the gate
+  loops on phases 1-3 into `SWEEP_OUT=<dir>`; `scripts/gate/streams_ab.sh` is the gate
   built on it (A/B per salt, plus held-out M under each loop's rules).
 - The miner (`search::rule_miner` in `crates/church-bv/src/search.rs`) takes its
   settings from `RULEMINER_*` environment variables; the driver passes its laws
@@ -163,13 +163,13 @@ A note on what "clean" means here: `cargo bench` prints criterion's
 checkout is nothing. Treat a regression line as a prompt to look, not as
 a failure.
 
-To compare two versions, `scripts/bench_ab.sh [REV] [cargo bench args]
+To compare two versions, `scripts/gate/bench_ab.sh [REV] [cargo bench args]
 [-- criterion args]` (default `HEAD`) benchmarks `REV` in a worktree
 under `target/bench-ab`, then the working tree, then `REV` again, and
 prints each bench's change next to the change the re-run of `REV` shows.
 Re-running unchanged code on this laptop moves benches by up to
 ±100%, so only a change well beyond that noise column means anything.
-For example, `scripts/bench_ab.sh HEAD --bench proofs`.
+For example, `scripts/gate/bench_ab.sh HEAD --bench proofs`.
 
 Gates and timings of the church_bv sweeps go through `tools/runs` (its
 `main.rs` header and `runs` with no arguments list the commands).

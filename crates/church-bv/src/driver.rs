@@ -39,7 +39,7 @@
 //! beside it (the task's `key<TAB>value` records from `Setup::result`, which the driver reads). The last line printed is
 //! `mode=.. mines=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
-//! **A sweep** (the gate's unit, `scripts/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] church-bv sweep`
+//! **A sweep** (the gate's unit, `scripts/gate/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] church-bv sweep`
 //! (`MACHINE_STATE=0` skips its two machine-state lines too). It uses `RULEMINER_FAST=1` and
 //! `RULEMINER_SHUFFLE=$SALT`. Its one stage, `cold` (or `cold:streams`): three loops on phases 1-3 from no rules, in
 //! `cold_streams_streams_<phase>_none/`, one row each in `cold_streams.tsv` (`:` becomes `_`): family, stride-phase,

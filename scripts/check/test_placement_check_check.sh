@@ -2,14 +2,14 @@
 # test_placement_check_check.sh: test_placement_check.sh passes a tidy tree and fails on a long inline test block (throwaway git repo).
 here="$(cd "$(dirname "$0")" && pwd)"
 t=$(mktemp -d) && trap 'rm -rf "$t"' EXIT
-mkdir -p "$t/scripts" && cp "$here/test_placement_check.sh" "$t/scripts/"
+mkdir -p "$t/scripts/check" && cp "$here/test_placement_check.sh" "$t/scripts/check/"
 cd "$t" && git init -q . && git config user.email a@b && git config user.name t
 blk() { printf 'fn f() {}\n#[cfg(test)]\nmod %s {\n' "$1"; seq 1 "$2" | sed 's/^/    \/\/ /'; printf '}\n'; }
 blk tests 100 > small.rs; blk tests 297 > edge.rs
 git add -A && git commit -qm x
 fail=0
 want() { # <case> <rc> <grep text>
-  out=$(bash scripts/test_placement_check.sh .); rc=$?
+  out=$(bash scripts/check/test_placement_check.sh .); rc=$?
   { [ $rc = "$2" ] && echo "$out" | grep -q "$3"; } || { echo "FAIL: $1 (rc=$rc)"; echo "$out"; fail=1; }
 }
 want "short blocks pass" 0 'ok'

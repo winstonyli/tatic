@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # test_placement_check.sh [root]: no tracked .rs file holds an inline top-level `mod tests { ... }` (or `mod *_tests`) block of
 # LIMIT lines or more; that block goes to `foo/tests.rs` (`foo/tests/` once it splits). Exit 1 listing the offenders.
-cd "${1:-$(dirname "$0")/..}" || exit 2
+cd "${1:-$(dirname "$0")/../..}" || exit 2
 LIMIT=300
 out=$(git ls-files '*.rs' | tr -d '\r' | xargs awk -v lim=$LIMIT '
   FNR == 1 { open = 0 }

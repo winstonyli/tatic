@@ -1,7 +1,7 @@
 #!/bin/bash
 # The findings log docs/tier-cycle/ and its index README.md agree: every file is linked once, in sorted order,
 # every link resolves, no file is empty. Exit 1 naming the offenders.
-cd "$(dirname "$0")/.." || exit 2
+cd "$(dirname "$0")/../.." || exit 2
 dir=docs/tier-cycle
 fail=0
 [ -f "$dir/README.md" ] || { echo "missing $dir/README.md (the index)"; exit 1; }

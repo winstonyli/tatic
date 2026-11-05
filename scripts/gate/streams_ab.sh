@@ -12,7 +12,7 @@
 # (HEAD) is copied, not rerun; JOBS=4 gave 1.85x the throughput of one at a time with the counts unchanged (docs/tier-cycle/,
 # "Under load too"). Timed gates keep JOBS=1 and no cache.
 a=$1; b=$2; shift 2
-root="$(cd "$(dirname "$0")/.." && pwd)"
+root="$(cd "$(dirname "$0")/../.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "streams_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
 # the environments the gate sets, one NAME=value per line: the sweep's (<salt> <out dir>) and the held-out check's
@@ -140,8 +140,8 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   mapfile -t e < <(sweep_env $s "$(cygpath -w "$o")")
   ( "$runs" run "$(cygpath -w "$o")" -- "${e[@]}" "$exe" sweep < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
   while [ ! -f "$o/exit" ]; do
-    mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
-    [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" -Kill < /dev/null > /dev/null; }
+    mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/gate/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
+    [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; powershell -NoProfile -File "$(cygpath -w "$root/scripts/gate/tree_mem.ps1")" -Match "$(cygpath -w "$o")" -Kill < /dev/null > /dev/null; }
     ping -n 6 127.0.0.1 > /dev/null
   done
   echo "salt $s $arm: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
