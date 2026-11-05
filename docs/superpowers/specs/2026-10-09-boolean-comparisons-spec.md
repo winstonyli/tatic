@@ -42,7 +42,7 @@ In a throwaway worktree: hard-code one law, `lt(add(-1,x),y) = and(lt(0,x), xor(
 Do not build now. Expected gain is at most about 17% of M in the head start, for 2+ days and a risk to the machine prover. Run the spike only if the goal is the kernel extending its own vocabulary; then it is the first step of that path, and the miner would also have to propose width-switching Terms itself.
 
 ## Spike result (2026-10-09): PASSED
-Throwaway worktree (HEAD 2a4fbef), patch kept at `2026-10-09-boolean-comparisons-spike.patch` (~120 changed lines, 2 files, never merged).
+Throwaway worktree (HEAD 2a4fbef), patch kept at `docs/superpowers/spikes/2026-10-09-boolean-comparisons-spike.patch` (~120 changed lines, 2 files, never merged).
 - `Term::is_bool` + width-aware `eval`/`interp` (outer constants at width 1, outer and/or/xor via `ops_for(1)`): rewrite.rs.
 - Machine: `fin: Option<Fin>` (Atom(lt node) | K | Bin(op)), `finish<G: Gates>`, `fin_num`; `last()` = `fin.is_some()`; the four final-carry sites in `moore_encoding`/`add_tree_law` (class seed, `dec`, dlemma, `end`) call them; `fin` added to the lemma-cache key. No other site needed (the Round-2 unknown is resolved: the product machine of two lt nodes goes through `moore_encoding` and `add_tree_law` unchanged).
 - `lt(add(-1,x),y) = and(lt(0,x), xor(lt(y,x),-1))`: plausible at widths 1-6, proved and kernel-checked at n=4 in 54 ms; the false variant `and(lt(0,x), lt(y,x))` is screened and not proved. All 10 existing machine tests still pass.
