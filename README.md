@@ -69,7 +69,7 @@ still need a whole-term machine proof. The measured results are in
 
 - The laws come from the streams: `search::stream_sequence(salt)`, the operator-set
   streams round-robin, built once per process and salt; a phase is a residue class
-  mod `STREAM_STRIDE`. Held-out laws are in `crates/church-bv/src/held_*.txt`. The
+  mod `STREAM_STRIDE`. Held-out laws are in `crates/church-bv/data/held_*.txt`. The
   design is in the spec
   [`2026-10-22-class-table-normal-form-design.md`](docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md),
   §9.

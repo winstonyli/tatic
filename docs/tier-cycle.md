@@ -1543,7 +1543,7 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
 `docs/runs/2026-10-23/scripts/`, the last on d5ea1aa plus `patches/class_commit.patch`; held-out laws in
 `docs/runs/2026-10-23/fixtures/held`).* Plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`, Tasks 1-4:
 `crates/church-bv/src/classes.rs` builds the table once per process from a key baked into the test binary
-(`crates/church-bv/src/class_key.txt`), with parse-first representatives and a verdict (bitwise, or a carry encoding over
+(`crates/church-bv/data/class_key.txt`), with parse-first representatives and a verdict (bitwise, or a carry encoding over
 `shr1` atoms) for each replacement it makes.
 - **The key: 432 inputs in 26 rounds** (283 at width 8, 133 at width 4, 16 at width 3), against the probe's 387 in 16
   rounds. The refuter now also tries every width-3 input, which the probe never did ("A key refined by
@@ -6179,7 +6179,7 @@ Two unifying mechanisms follow (the first is built in the next section; the seco
 - **Canonical handles end to end.** Builders and their callers keep terms as interned nodes rather than `Expr`
   values, so a term already built is passed on, not rebuilt. It would remove most of the builders' 7.1 M re-finds,
   `canonical_inputs`' interning on entry and `args_id`'s interning of non-canonical arguments, but it changes the
-  builder interface across `crates/tatic/tests/church_bv`.
+  builder interface across `crates/church-bv`.
 
 **Per-node facts in the node header (2026-10-13).** Each node keeps its last `hc::uses(x, d, m)` answer in a `Cell<u32>`
 that fills the header's former padding (`Node<Expr>` stays `Expr` + 16 bytes): the query (d and m below 2^15) and the
@@ -6214,7 +6214,7 @@ So about 4 M of the 8.6 M hits (45-50%) are inputs the caller already held as a 
 which handles would not remove. The builders were about 7% of busy samples for 7.1 M finds (above), and a held input's
 find lands on a node just read, so canonical handles would save at most about 3.5%, less in practice. Most of the held
 inputs come through a few places: `apps` (callers pass `Vec<Expr>`), the `and`/`or`/`xor` wrappers, `arrow`, and
-`infer_rc`. Parked: at most about 3.5% for a builder-interface change across `crates/tatic/tests/church_bv`.
+`infer_rc`. Parked: at most about 3.5% for a builder-interface change across `crates/church-bv`.
 
 **Two shift memos (probe, reverted, no patch kept, 2026-10-13).** Of the 2.8 M rebuilt terms, 0.98 M are
 `shift_memo_child` results. `postulates`' `cong1`, `trans_proof` and `cong_n` shift through a `ShiftMemo` that lives
@@ -7869,7 +7869,7 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
 evaluating faster rather than less, the case Rocq's `vm_compute` and `native_compute` serve. The repo's JIT
 (`crates/tatic/src/jit.rs`, `compile.rs`, `lower_wat.rs`) is not that tool:
 - It compiles `term.rs` programs typed `Int -> ... -> Int` to wasm, not kernel `Expr` (with `J`, `WRec`, `SigRec`).
-  Nothing in `kernel.rs` or `crates/tatic/tests/church_bv` calls it; the kernel checks the JIT's proofs, not the reverse.
+  Nothing in `kernel.rs` or `crates/church-bv` calls it; the kernel checks the JIT's proofs, not the reverse.
 - It is not end-to-end sound by its own account: its kernel theorem is stated over `proof.rs`'s `denote`, a model of
   the compiler, not over the WAT that runs (`crates/tatic/src/jit.rs` header). Using it, or anything like it, for conversion would put
   the compiler, wasmtime and the postulated `Int` in the trusted base.
@@ -7926,7 +7926,7 @@ opens with "if a high-level transformation is found to be equivalent to a low-le
 target machine, use that for future invocations", and the loop compiles proved laws into rewrite rules. Today they
 share nothing:
 
-| | JIT (`crates/tatic/src/`) | Loop (`crates/tatic/tests/church_bv`) |
+| | JIT (`crates/tatic/src/`) | Loop (`crates/church-bv`) |
 |---|---|---|
 | Terms | `term.rs`: `Int` is i64, wrapping (`eval.rs:137-150`); `Add Sub Mul Div Mod Lt Le Eq` (`term.rs:15-23`), `Lt` signed; no bitwise ops or shifts | `rewrite.rs` `Term`: width-n words; `add sub xor and or shl1 shr1 lt`, `lt` unsigned (`rewrite.rs:58`) |
 | What is proved | a term equals its compiled form, over `proof.rs`'s `denote` (a model of the compiler) with `Int` postulated | a law, by the kernel, at one width (`prove_rule(n, ..)`); width-generic proofs are not built |
