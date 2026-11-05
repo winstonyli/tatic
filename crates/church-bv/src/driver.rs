@@ -1000,7 +1000,19 @@ static REENTRY: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
 /// Declares how this exe is started as a worker (`Worker::spawn`'s arguments), once per process: the `church-bv` binary says
 /// `["worker"]`; the test exe never declares and gets the libtest form.
 pub fn declare_reentry(args: &[&str]) {
-    REENTRY.set(args.iter().map(|a| a.to_string()).collect()).expect("the worker's re-entry arguments are declared once");
+    declare_in(&REENTRY, args);
+}
+
+fn declare_in(cell: &std::sync::OnceLock<Vec<String>>, args: &[&str]) {
+    cell.set(args.iter().map(|a| a.to_string()).collect()).expect("the worker's re-entry arguments are declared once");
+}
+
+#[test]
+#[should_panic(expected = "declared once")]
+fn a_second_reentry_declaration_panics() {
+    let cell = std::sync::OnceLock::new();
+    declare_in(&cell, &["worker"]);
+    declare_in(&cell, &["worker"]);
 }
 
 fn reentry() -> Vec<String> {

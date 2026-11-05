@@ -92,7 +92,7 @@ mod tests {
     fn a_failed_arm_stops_the_gate() {
         let d = scratch("fail");
         let exe = std::env::current_exe().unwrap();
-        // where.exe rejects the sweep's arguments and exits nonzero
+        // where.exe finds no file named `sweep` and exits nonzero
         assert!(!gate(&d, "g", Path::new(r"C:\Windows\System32\where.exe"), &exe).unwrap());
         let log = std::fs::read_to_string(d.join("g_gate.txt")).unwrap();
         assert!(log.lines().last().unwrap().starts_with("g FAILED old 1 exit="), "{log}");
