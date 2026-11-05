@@ -36,7 +36,7 @@ The kernel and proofs. The kernel (`tatic-kernel`), the seeded generator (`tatic
 - `crates/tatic/src/proof/closures.rs`, `crates/tatic/src/proof/per_instance.rs`, `crates/tatic/src/proof/universal.rs`, `crates/tatic/src/proof/hardening.rs`: the closure, per-instance and universal provers, and the debug self-check `crates/tatic/src/proof/hardening.rs#debug_assert_has_type`.
 
 The bit-vector library and target machine (`crates/church-bv/src/`; `lib.rs` holds only the `mod` lines and the test allocator; `main.rs` is the `church-bv` binary):
-- `encoding.rs`: Church Bool and vector terms and gate builders. `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
+- `encoding/` (parent `encoding.rs` re-exports the pieces): `gates` (Church Bool and vector terms, gate builders), `good` (the "good" witnesses), `division` (equality, wrapping division), `proofs` (add identity, commutativity, associativity), `tables` (truth-table and BDD builders), `tests`. `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
 - `classes.rs`, `class_key.txt`, `held_*.txt`: the class table, its key and the held-out laws.
 - `wasm.rs`: the formal target machine. `lemma_cache.rs`, `work.rs`, `task.rs`: caching, counters, shared memo (`crates/church-bv/src/task.rs#SharedMemo`).
 - `uniform/`: laws proved uniformly in the bit width over the unchanged kernel (`width.rs` is the shared vocabulary; `bitwise`, `mul`, `shift`, `symmul`, `symmul_stream` are the law families).
@@ -127,8 +127,8 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **CacheEntry**: the per-hash JIT outcome; every variant but `Compiled` is served by the interpreter. `crates/tatic/src/jit.rs#CacheEntry`
 - **Carry cap**: the most carries per side the machine proof takes on. `crates/church-bv/src/machine.rs#carry_cap`
 - **Carry vector**: a machine's state between bit positions, one bit per carrying node. `crates/church-bv/src/machine.rs#carries`
-- **Church Bool**: the kernel type `Pi C. C -> C -> C`; true picks the first branch. `crates/church-bv/src/encoding.rs#bool0`
-- **Church bit-vector**: a continuation over n Bools, least significant bit first. `crates/church-bv/src/encoding.rs#bv_ty`
+- **Church Bool**: the kernel type `Pi C. C -> C -> C`; true picks the first branch. `crates/church-bv/src/encoding/gates.rs#bool0`
+- **Church bit-vector**: a continuation over n Bools, least significant bit first. `crates/church-bv/src/encoding/gates.rs#bv_ty`
 - **Class table**: a learned map from the value signature of a term to its smallest representative, used as a rewriting step; a replacement is used only if it is provable. `crates/church-bv/src/classes.rs#Classes`
 - **Classify / Shape**: the one case analysis of a body node shared by the IR builder and the proof walkers. `crates/tatic/src/jit/shape.rs#classify`
 - **Combinator**: a lambda or `Rec` lifted out as its own function (or a partial-application wrapper) in the IR. `crates/tatic/src/jit/ir.rs#Combinator`
@@ -153,7 +153,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **GEN_DRAW**: integer that re-draws the extras from a different sample. `crates/church-bv/src/driver.rs#scope_extras`
 - **Redraw spread (sigma)**: the difference between two arms that differ only in `GEN_DRAW`; the gate is deterministic, so this A/A spread is the noise floor a win must beat. A doc measure, not computed in code. `docs/tier-cycle.md#The streams and the gate`
 - **Globals / Ctx**: the trusted list of constant types and the local binder types. `crates/tatic-kernel/src/lib.rs#Globals`
-- **Good witness (GoodBool, GoodBv)**: hypotheses that let a proof split a symbolic bit. `crates/church-bv/src/encoding.rs#binders`
+- **Good witness (GoodBool, GoodBv)**: hypotheses that let a proof split a symbolic bit. `crates/church-bv/src/encoding/gates.rs#binders`
 - **Guard laws**: machine-free laws scored along with stragglers so a regressing candidate is visible. `crates/church-bv/src/miner.rs#Laws`
 - **Held-out bands**: committed law files of sizes 11, 13, 15, 17 that no loop serves. `crates/church-bv/src/classes.rs#HELD_BANDS`
 - **Held-out M**: M of a loop's final rules on the held-out bands. `docs/tier-cycle.md#Metrics`
