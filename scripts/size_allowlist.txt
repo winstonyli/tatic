@@ -1,0 +1,14 @@
+# path max_lines: tracked .rs files allowed over the size_check.sh limit; the list only shrinks (see the script).
+crates/tatic-kernel/src/tests.rs 2607
+crates/tatic-kernel/src/lib.rs 2203
+crates/tatic/src/proof/tests.rs 1716
+crates/church-bv/src/miner.rs 1706
+crates/church-bv/src/rewrite/tests.rs 1305
+crates/church-bv/src/search.rs 1292
+crates/church-bv/src/ctx_scorer.rs 1260
+crates/tatic/src/jit.rs 1183
+crates/tatic/src/lang/syntax.rs 1159
+crates/tatic/tests/compile_fuzz.rs 1140
+crates/tatic/src/jit/lower_wat.rs 1109
+crates/church-bv/src/machine.rs 1089
+crates/church-bv/src/driver.rs 1009

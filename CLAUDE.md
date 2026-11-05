@@ -13,6 +13,7 @@ the history (`git tag -n99`).
   adds or removes a module, a stage of the data flow or a glossary term updates the tour in the same commit, and
   `bash scripts/tour_check.sh` must pass before committing it. The tour holds concepts and flow only: no measurements,
   dates or results (those live in `docs/tier-cycle/`).
+- `bash scripts/size_check.sh` fails on a tracked `.rs` file over 1000 lines that `scripts/size_allowlist.txt` does not list, or on a listed one that grew, shrank without its max lowered, or fell under the limit (the list only shrinks; `scripts/size_check_check.sh` tests it). Run it before committing a change that adds to a large file.
 - Long runs launch through `~/.claude/runs/run.ps1` (raw output in `%LOCALAPPDATA%\claude-runs\tatic`, one row each in
   `docs/runs.md`); `runs dir` and `kk.sh` then write into that run's folder. Curated rows behind the doc's sections are
   in `docs/runs/<date>/`. Pin a recorded run with `run.ps1 -Affinity CFF`, not `start /wait /affinity` in `-Command`;

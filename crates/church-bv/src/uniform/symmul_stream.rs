@@ -436,7 +436,7 @@ fn the_stream_theorem_holds_at_every_good_position() {
 #[test]
 #[ignore]
 fn symmul_uniform_stage_scaling() {
-    let ns: Vec<usize> = std::env::var("SYMMUL_NS").ok()
+    let ns: Vec<usize> = crate::job::Setup::process().var("SYMMUL_NS")
         .map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect())
         .unwrap_or_else(|| vec![4]);
     for n in ns {

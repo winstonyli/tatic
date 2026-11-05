@@ -61,7 +61,7 @@ pub fn measure(cases: &[Case], mined: Vec<(Term, Term)>) -> Vec<Row> {
 
 /// A path from the environment, relative to the repo root (two levels above the package directory, whatever the working
 /// directory; `cargo test` runs from the package directory); an absolute path is unchanged.
-fn from_repo_root(p: String) -> std::path::PathBuf {
+fn from_repo_root(p: &str) -> std::path::PathBuf {
     std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(p)
 }
 
@@ -69,9 +69,10 @@ fn from_repo_root(p: String) -> std::path::PathBuf {
 #[test]
 #[ignore]
 fn corpus_report() {
-    let path = from_repo_root(std::env::var("CORPUS").expect("CORPUS=docs/corpora/<source>/cases.txt"));
+    let setup = Setup::process();
+    let path = from_repo_root(setup.var("CORPUS").expect("CORPUS=docs/corpora/<source>/cases.txt"));
     let cases = read_cases(&std::fs::read_to_string(&path).unwrap()).unwrap_or_else(|e| panic!("{}: {e}", path.display()));
-    let mined = std::env::var("CORPUS_RULES").map(|p| parse_rules(&std::fs::read_to_string(from_repo_root(p)).unwrap())).unwrap_or_default();
+    let mined = setup.var("CORPUS_RULES").map(|p| parse_rules(&std::fs::read_to_string(from_repo_root(p)).unwrap())).unwrap_or_default();
     tatic_kernel::scoped(|| {
         let m = measure(&cases, mined.clone());
         for r in &m {

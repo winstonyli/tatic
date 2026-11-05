@@ -1,6 +1,9 @@
 //! A task's configuration (`Setup`) and one rewriting thread's state (`Job`), passed explicitly
 //! (docs/superpowers/plans/2026-10-21-rewrite-context.md). A `driver::worker` task builds one `Setup`; the one-test process
 //! uses `Setup::process()`. Each thread that rewrites owns one `Job` over its task's `Setup`.
+//!
+//! Every other `std::env` read in the crate is a test's own run switch (`TATIC_WORKER`, the `*_PROBE` names) or the oracle
+//! that `Setup` is compared with, which must see the raw environment; `UPDATE_GOLDEN` is in the `tatic` crate's tests.
 
 use std::fmt::Display;
 use std::str::FromStr;

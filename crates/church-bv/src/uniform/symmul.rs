@@ -330,7 +330,7 @@ fn the_mutated_handles_fail_at_the_stage_that_shifts() {
 }
 
 fn ns_from_env(default: &[usize]) -> Vec<usize> {
-    std::env::var("SYMMUL_NS").ok().map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect()).unwrap_or_else(|| default.to_vec())
+    crate::job::Setup::process().var("SYMMUL_NS").map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect()).unwrap_or_else(|| default.to_vec())
 }
 
 /// Run by exact name; `SYMMUL_NS=4,6,8` picks the widths. Prints the build time, every stage's check time (each against its own
@@ -359,7 +359,7 @@ fn symmul_scaling() {
         let conv = t1.elapsed().as_secs_f64() * 1e3;
         println!("SYMMUL n={n}: built {built:.1} ms; stage checks: {}; bridge check {ms:.2} ms ({}); final conversion {conv:.2} ms ({}); distinct/unfolded {:?}",
             per_stage.join(", "), if r.is_ok() { "accepted" } else { "REJECTED" }, if same { "equal" } else { "NOT EQUAL" }, kernel::term_sizes(&pf));
-        if std::env::var("SYMMUL_BASE").is_ok() {
+        if crate::job::Setup::process().var("SYMMUL_BASE").is_some() {
             let t3 = Instant::now();
             let base = baseline_proof(n);
             let base_built = t3.elapsed().as_secs_f64() * 1e3;

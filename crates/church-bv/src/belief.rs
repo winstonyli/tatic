@@ -351,9 +351,10 @@ fn kind_of(u: &Term, r: &Term) -> u8 {
 fn belief_dump() {
     use std::io::Write;
     use crate::classes::verdict;
-    let out = std::env::var("RUN_DIR").expect("RUN_DIR: the run wrapper's folder");
-    let cap: usize = std::env::var("BELIEF_CAP").map_or(10000, |v| v.parse().unwrap());
-    let keys = std::env::var("BELIEF_KEYS").unwrap_or("bool8 plus4 plus64 exh".into());
+    let setup = Setup::process();
+    let out = setup.var("RUN_DIR").expect("RUN_DIR: the run wrapper's folder");
+    let cap: usize = setup.or("BELIEF_CAP", 10000);
+    let keys = setup.var("BELIEF_KEYS").unwrap_or("bool8 plus4 plus64 exh").to_string();
     let mut file = std::io::BufWriter::new(std::fs::File::create(format!("{out}/claims.tsv")).unwrap());
     let s2 = input_set(S2_SEED, 4096, &[]);
     let s1 = input_set(S1_SEED, 256, &s2);
@@ -452,7 +453,7 @@ pub fn belief_counts(c: &Counts, r: &Row, lvl: usize, with_key: bool) -> (f64, u
 #[test]
 #[ignore]
 fn belief_report() {
-    let rows = read_rows(&std::env::var("BELIEF_TSV").expect("BELIEF_TSV: the claim dump"));
+    let rows = read_rows(Setup::process().var("BELIEF_TSV").expect("BELIEF_TSV: the claim dump"));
     println!("BELIEF stage 1: key kind claims proved refuted unproved | screen-pass refuted unproved | screen-pass refuted by S2/S1/d");
     for key in 0..KEYS.len() as u8 {
         for kind in 0..KINDS.len() as u8 {
@@ -686,9 +687,10 @@ mod review_fix_tests {
 #[ignore]
 fn belief_shr1_spike() {
     use crate::rewrite::{parse_term, prove_rule};
-    let rows = read_rows(&std::env::var("BELIEF_TSV").expect("BELIEF_TSV: the claim dump"));
-    let step: usize = std::env::var("BELIEF_STEP").map_or(1, |v| v.parse().unwrap());
-    let pick: Vec<&Row> = rows.iter().filter(|r| r.label == Label::Unproved && in_subset(r, 0)).step_by(step).skip(std::env::var("BELIEF_SKIP").map_or(0, |v| v.parse().unwrap())).collect();
+    let rows = read_rows(Setup::process().var("BELIEF_TSV").expect("BELIEF_TSV: the claim dump"));
+    let setup = Setup::process();
+    let step: usize = setup.or("BELIEF_STEP", 1);
+    let pick: Vec<&Row> = rows.iter().filter(|r| r.label == Label::Unproved && in_subset(r, 0)).step_by(step).skip(setup.or("BELIEF_SKIP", 0)).collect();
     let mut job = Job::new(Setup::process());
     let mut w6 = ValueMemo::exhaustive(6, 3);
     // (claims, with shr1, true at width 6, proved by prove_rule, proved with shr1, seconds in prove_rule)
