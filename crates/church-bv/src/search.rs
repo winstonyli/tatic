@@ -187,7 +187,7 @@ pub fn guard_plan_samples_and_weights() {
     assert_eq!(guard_plan(0, 5).0, 1); // no clean laws: nothing to sample (the caller skips the guard)
 }
 
-/// Rule miner (search note section 36; parts in `miner.rs`, switches in `MinerConfig`): rewrite rules for the laws of
+/// Rule miner (search note section 36; parts in `miner.rs` and `miner/`, switches in `MinerConfig`): rewrite rules for the laws of
 /// `RULEMINER_LAWFILE` that still need a whole-term machine proof under the rules in force (the "stragglers"); a
 /// candidate is tried on the stragglers whose normalized terms contain an instance of its left side and scores by the
 /// machine proofs it removes.
