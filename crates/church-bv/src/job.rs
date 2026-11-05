@@ -676,18 +676,18 @@ fn hidden_finds_thread_locals_process_wide_statics_and_job_swaps() {
 #[test]
 fn hidden_state_is_classified() {
     const THREAD_LOCAL: [(&str, &str, &str); 6] = [
-        ("rewrite.rs", "OP_CACHE", "op results by operator and operand values"),
-        ("rewrite.rs", "CLOSED", "memo's closed library terms by key"),
-        ("rewrite.rs", "COUNTING", "the one Counting plan, shared"),
+        ("rewrite/term.rs", "OP_CACHE", "op results by operator and operand values"),
+        ("rewrite/plan.rs", "CLOSED", "memo's closed library terms by key"),
+        ("rewrite/plan.rs", "COUNTING", "the one Counting plan, shared"),
         ("encoding.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
         ("encoding.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
         ("work.rs", "SLOT", "this thread's work counts: no task reads them, the worker prints them after it"),
     ];
     const PROCESS_WIDE: [(&str, &str, &str); 9] = [
         ("work.rs", "SLOTS", "every thread's work counts, read only by take"),
-        ("rewrite.rs", "TABLE", "the term table: interning is pure"),
+        ("rewrite/term.rs", "TABLE", "the term table: interning is pure"),
         ("classes.rs", "CLASSES", "the class table: built once from the baked-in key, pure"),
-        ("rewrite.rs", "CACHE", "promoted_rules parses a constant table"),
+        ("rewrite/rules.rs", "CACHE", "promoted_rules parses a constant table"),
         ("lemma_cache.rs", "ID", "the running exe's identity"),
         ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),
         ("job.rs", "PROCESS_SETUP", "the one-test process's Setup; tasks build their own"),
@@ -696,12 +696,13 @@ fn hidden_state_is_classified() {
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let (mut bad, mut seen) = (vec![], vec![]);
-    for entry in std::fs::read_dir(&dir).unwrap() {
+    let pieces = std::fs::read_dir(dir.join("rewrite")).unwrap();
+    for entry in std::fs::read_dir(&dir).unwrap().chain(pieces) {
         let path = entry.unwrap().path();
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
-        let file = path.file_name().unwrap().to_str().unwrap().to_string();
+        let file = path.strip_prefix(&dir).unwrap().to_str().unwrap().replace('\\', "/");
         let listed = |list: &[(&str, &str, &str)], name: &str| list.iter().any(|p| p.0 == file && p.1 == name);
         for (line, h) in hidden(&std::fs::read_to_string(&path).unwrap()) {
             let ok = match h {

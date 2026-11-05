@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Split `rewrite.rs` by concern (TB3, `rewrite` half)
