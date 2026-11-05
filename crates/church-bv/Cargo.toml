@@ -1,0 +1,11 @@
+[package]
+name = "church-bv"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hashbrown.workspace = true
+mimalloc.workspace = true
+tatic-kernel.workspace = true
+tatic-rng.workspace = true

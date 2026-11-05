@@ -14,7 +14,7 @@ pub const OPS: [usize; 8] = [ADD, AND, OR, XOR, SUB, SHL1, SHR1, LT];
 /// The largest term size the table enumerates (decision 4).
 pub const SIZE: usize = 9;
 /// The key, learned by `regenerate_key` and baked in, so the table depends only on the source.
-pub const KEY_FILE: &str = include_str!("class_key.txt");
+pub const KEY_FILE: &str = include_str!("../data/class_key.txt");
 const REGENERATE: &str = "<exe> classes::regenerate_key --exact --ignored --nocapture, then rebuild";
 
 /// The table's key: per width, its inputs (x, y, z).
@@ -560,7 +560,7 @@ fn regenerate_key() {
             st.millis
         );
         if refuted == 0 {
-            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/church_bv/class_key.txt");
+            let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("data/class_key.txt");
             std::fs::write(&path, key.text()).unwrap();
             println!("WROTE {} ({} inputs: {})", path.display(), key.len(), key.sets.iter().map(|(w, i)| format!("{} at width {w}", i.len())).collect::<Vec<_>>().join(", "));
             return;
@@ -607,9 +607,9 @@ pub fn held_text(band: usize, laws: &[(Term, Term)]) -> String {
     s
 }
 
-/// `tests/church_bv/held_<band>.txt`.
+/// `data/held_<band>.txt`.
 pub fn held_path(band: usize) -> std::path::PathBuf {
-    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("tests/church_bv/held_{band}.txt"))
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(format!("data/held_{band}.txt"))
 }
 
 /// A held-out file's laws; an error when its header is not this build's (another key, size or band).

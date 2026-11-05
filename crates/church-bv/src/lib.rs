@@ -1,5 +1,9 @@
 // A fixed-width bit-vector as a Church-encoded n-ary tuple of Church Bools, with an
 // unrolled ripple-carry `add`, on the unchanged kernel (public API only).
+
+// Until the bin exists (step 2) only the tests use this code, so a non-test build sees it as unused; step 2 deletes this line.
+#![cfg_attr(not(test), allow(dead_code, unused_imports))]
+
 use std::time::Instant;
 use tatic_kernel::*;
 use std::sync::Arc;
@@ -36,7 +40,7 @@ type BitTriple = (Vec<Expr>, Vec<Expr>, Vec<Expr>);
 type BitsDyn = dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
 type Bits4<'a> = &'a dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> BitPair;
 
-// The allocator `main.rs` ships with: the lib's own `#[global_allocator]` is
-// `#[cfg(test)]`, so without this these timings ran on the system heap.
+// The unit-test exe's allocator, so its timings run on what ships; a binary on this lib (step 2) carries its own.
+#[cfg(test)]
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;

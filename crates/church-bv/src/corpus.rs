@@ -111,7 +111,7 @@ mod tests {
     #[test]
     fn the_hand_written_corpus_reproduces_the_probe_counts() {
         tatic_kernel::scoped(|| {
-            let cases = read_cases(include_str!("../../../../docs/corpora/hd-own/cases.txt")).unwrap();
+            let cases = read_cases(include_str!("../../../docs/corpora/hd-own/cases.txt")).unwrap();
             let m = measure(&cases, vec![]);
             let (before, table, rules) = m.iter().fold((0, 0, 0), |a, r| (a.0 + r.before, a.1 + r.table, a.2 + r.rules));
             let changed = m.iter().filter(|r| r.table_changed).count();
@@ -123,7 +123,7 @@ mod tests {
     #[test]
     fn the_souper_corpus_reproduces_its_source_counts() {
         tatic_kernel::scoped(|| {
-            let cases = read_cases(include_str!("../../../../docs/corpora/souper/cases.txt")).unwrap();
+            let cases = read_cases(include_str!("../../../docs/corpora/souper/cases.txt")).unwrap();
             let m = measure(&cases, vec![]);
             let (before, table, rules) = m.iter().fold((0, 0, 0), |a, r| (a.0 + r.before, a.1 + r.table, a.2 + r.rules));
             let changed = m.iter().filter(|r| r.table_changed).count();

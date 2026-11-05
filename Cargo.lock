@@ -166,6 +166,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
+name = "church-bv"
+version = "0.6.0"
+dependencies = [
+ "hashbrown 0.16.1",
+ "mimalloc",
+ "tatic-kernel",
+ "tatic-rng",
+]
+
+[[package]]
 name = "ciborium"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -84,7 +84,7 @@ pub fn sweep_arms(old: &str, new: &str) -> Vec<Arm> {
 /// exe the arms come from `arm_envs` (`NAME:VAR=val,...`; `NAME:` for none); with two exes they are `old` and `new`.
 pub fn pcs_arms(root: &Path, exes: &[String], arm_envs: &[String]) -> Result<Vec<Arm>, String> {
     let base = vec![
-        ("CHECK_LAWFILE".to_string(), root.join(r"crates\tatic\tests\church_bv\held_11.txt").display().to_string()),
+        ("CHECK_LAWFILE".to_string(), root.join(r"crates\church-bv\data\held_11.txt").display().to_string()),
     ];
     let args: Vec<String> = ["search::proof_cost_split", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec();
     let arm = |name: &str, exe: &str, extra: Vec<(String, String)>| Arm { name: name.into(), env: [base.clone(), extra].concat(), exe: exe.into(), args: args.clone() };
@@ -439,7 +439,7 @@ mod tests {
         let one = pcs_arms(s, &["bf.exe".into()], &["old:".into(), "new:NO_PREFETCH=1,X=2".into()]).unwrap();
         assert_eq!(one.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["old", "new"]);
         assert_eq!(one[1].env.last().unwrap(), &("X".to_string(), "2".to_string()));
-        assert!(one[0].env.contains(&("CHECK_LAWFILE".to_string(), r"C:\s\crates\tatic\tests\church_bv\held_11.txt".to_string())));
+        assert!(one[0].env.contains(&("CHECK_LAWFILE".to_string(), r"C:\s\crates\church-bv\data\held_11.txt".to_string())));
         let two = pcs_arms(s, &["a.exe".into(), "b.exe".into()], &[]).unwrap();
         assert_eq!((two[0].exe.as_str(), two[1].exe.as_str()), ("a.exe", "b.exe"));
         assert!(pcs_arms(s, &["bf.exe".into()], &[]).is_err());

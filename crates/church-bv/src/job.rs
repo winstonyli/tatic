@@ -693,7 +693,7 @@ fn hidden_state_is_classified() {
         ("job.rs", "PROCESS_SETUP", "the one-test process's Setup; tasks build their own"),
         ("job.rs", "NEXT_JOB", "job ids, unique per process on purpose"),
     ];
-    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/church_bv");
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let (mut bad, mut seen) = (vec![], vec![]);
     for entry in std::fs::read_dir(&dir).unwrap() {
         let path = entry.unwrap().path();
