@@ -65,7 +65,7 @@ static ONES_NODE: Interned = Interned::leaf(Node::Ones, 0, ONES_SHAPE, 65);
 const SHARDS: usize = 16;
 /// Each thread's last `Term::op` node per slot of the hash, in front of the shared table. Nearly every call finds a node
 /// that exists (99% in a cmp3d mine, almost all from the join), and the table's lock and lookup were over half of that
-/// mine's time; 2^16 slots (512 KB) took its job CPU from 25.8 to 16.9 s, 2^12 to 2^18 all helped (docs/tier-cycle.md,
+/// mine's time; 2^16 slots (512 KB) took its job CPU from 25.8 to 16.9 s, 2^12 to 2^18 all helped (docs/tier-cycle/,
 /// "The interner's per-thread cache").
 const OP_CACHE_SLOTS: usize = 1 << 16;
 thread_local! {
@@ -73,7 +73,7 @@ thread_local! {
 }
 /// A node's address with a 16-bit `tag` from its hash in the top bits (user addresses are below 2^48), 0 for none: the
 /// interner's cache slots and cells hold these, so a lookup passes over another node without loading it (loads of cold
-/// nodes were most of `Term::op`'s cost, docs/tier-cycle.md, "Profile after the lock-free reads and the memo per
+/// nodes were most of `Term::op`'s cost, docs/tier-cycle/, "Profile after the lock-free reads and the memo per
 /// candidate").
 fn tagged(m: &'static Interned, tag: u64) -> u64 {
     let p = m as *const Interned as u64;

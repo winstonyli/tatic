@@ -6,7 +6,7 @@ first chose option 3 (a depth cap per side, so the join is monotone in the rule 
 no depth that keeps the visit cap's strength at an acceptable cost, and the user then chose option 1. Monotone caps that
 stay adaptive are surveyed and parked ("Survey"). The inexactness later made the miner's choices depend on scheduling
 (2026-10-18); the user chose to fix the memo's history rather than the memo, and each candidate is now scored from an
-empty memo ("Survey 3", "Spike of the snapshot"). Measurements are in `docs/tier-cycle.md` ("The miner sees the join");
+empty memo ("Survey 3", "Spike of the snapshot"). Measurements are in `docs/tier-cycle/` ("The miner sees the join");
 this file keeps the options and the reasoning.
 
 ## Context
@@ -21,7 +21,7 @@ this file keeps the options and the reasoning.
 - A/B over salts 1-10 (run `2026-10-17-join-memo`, old 8d5b29d against the exact miner): M mines 2 to 0, own 13 to 26,
   cold 1568 to 1563, pooled 33 to 36; summed cmp3d mine time 33 to 51 s. At salt 6 the exact cmp3d mine ran about 81000 join
   searches reaching 13.4M terms, 95% met, with about 41000 memo hits (a probe with the cost line added, not recorded;
-  option 1's recorded figures are in `docs/tier-cycle.md`); the gain bound skipped 3603 of 15158
+  option 1's recorded figures are in `docs/tier-cycle/`); the gain bound skipped 3603 of 15158
   scorings against 2720 of 5434 before. Nearly every candidate touches the large set of terms a join examined, so the
   memo entry is invalidated and the search rerun for each candidate.
 - Kernel cost of joined proofs against the machine proofs they replace (run `2026-10-17-join-proof-cost`, 135 served
@@ -110,7 +110,7 @@ Wall times come from arms run two at a time (visit with depth 2, depth 3 with de
 Chosen by the user after the probe. A failed join still traces every term it examined (exact: it can only flip to met
 through a step at one of them). A met join traces only the terms on its path and their subterms, so it is dropped when
 a rule added or removed matches one of them, and kept when the added rules act only elsewhere. Results
-(`docs/tier-cycle.md`, "The miner sees the join"): over salts 1-10 the miner picks exactly the rules the exact miner
+(`docs/tier-cycle/`, "The miner sees the join"): over salts 1-10 the miner picks exactly the rules the exact miner
 picks, in 46 s of mining against 51; re-searching every kept met plan at each memo hit (`JOIN_CHECK`) found no plan that
 failed, in at least 230000 hits. The
 inexactness is real in principle and unseen in practice; the survey below is parked until it shows.
@@ -145,7 +145,7 @@ gain, which scores rules one at a time).
 
 ## Survey 2 (2026-10-18): a bound on path cost, split freely between the sides
 
-Asked after the timing one-off (`docs/tier-cycle.md`, "The timing one-off is the join memo's inexactness"). A Sonnet
+Asked after the timing one-off (`docs/tier-cycle/`, "The timing one-off is the join memo's inexactness"). A Sonnet
 subagent searched; the two sources below were re-read before writing this.
 
 - **The split between the sides does not change the answer of a cost-bounded search.** GBFHS

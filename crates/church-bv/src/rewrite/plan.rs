@@ -107,7 +107,7 @@ pub enum Plan {
     /// the closed law `lhs = rhs` over the pattern variables `V(0..)`, at the terms `args` (one per variable)
     Law(LawKind, Term, Term, Vec<Term>),
     /// any step taken while counting (`Rules::counting`), which compiles no plan: the constructors share one, so scoring allocates
-    /// none (they were 1.6% of a sweep's samples; docs/tier-cycle.md, "Survey: the lemmas and the allocator")
+    /// none (they were 1.6% of a sweep's samples; docs/tier-cycle/, "Survey: the lemmas and the allocator")
     Counting,
 }
 pub type PlanRc = std::rc::Rc<Plan>;

@@ -270,7 +270,7 @@ fn read_labels(tsv: &str) -> Vec<(usize, Vec<f32>, bool)> {
 }
 
 /// `LABELS=<tsv> <exe> ctx_scorer::reproduce_stage1 --exact --ignored --nocapture`: stage 1's recorded offline numbers
-/// (docs/tier-cycle.md, "A learned scorer over the extras"): fit on salts 4 to 9, test on salt 10, all rows.
+/// (docs/tier-cycle/, "A learned scorer over the extras"): fit on salts 4 to 9, test on salt 10, all rows.
 #[test]
 #[ignore]
 fn reproduce_stage1() {

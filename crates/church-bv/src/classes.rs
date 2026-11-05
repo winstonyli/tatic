@@ -131,7 +131,7 @@ fn the_size_5_table_maps_terms_to_their_representatives() {
 }
 
 /// Every stored representative is a fixpoint below its root (spec §5): no proper subterm is one the table replaces, a
-/// displaced representative included (docs/tier-cycle.md, "Displaced representatives stay inside stored ones").
+/// displaced representative included (docs/tier-cycle/, "Displaced representatives stay inside stored ones").
 #[test]
 fn representatives_are_fixpoints_below_the_root() {
     fn subterms(t: &Term, out: &mut Vec<Term>) {
@@ -170,7 +170,7 @@ fn the_full_table_is_pinned() {
 }
 
 /// A class's key: a term's values on the key's inputs (all widths end to end) and whether it is an `lt` (a second sort),
-/// hashed to 128 bits (SipHash: foldhash on fixed seeds built no faster, docs/tier-cycle.md, "What a build spends").
+/// hashed to 128 bits (SipHash: foldhash on fixed seeds built no faster, docs/tier-cycle/, "What a build spends").
 fn class_hash(vals: &[u8], lt: bool) -> (u64, u64) {
     use std::hash::{Hash, Hasher};
     let (mut h1, mut h2) = (std::collections::hash_map::DefaultHasher::new(), std::collections::hash_map::DefaultHasher::new());
@@ -225,7 +225,7 @@ impl Classes {
             }
         };
         // a run at a time, so each loop has its operator and mask fixed (called per element through a function pointer it
-        // was 65% of a build: docs/tier-cycle.md, "What a build spends")
+        // was 65% of a build: docs/tier-cycle/, "What a build spends")
         let zip = |o: usize, out: &mut [u8], a: &[u8], b: &[u8]| {
             for r in runs.windows(2) {
                 let s = r[0].0..r[1].0;
@@ -298,7 +298,7 @@ impl Classes {
         drop(reps);
         // a displaced representative stays inside the representatives built over it, at sizes its successor (larger) could
         // not reach: put the successor there, so each is a fixpoint below its root (spec §5; values unchanged, a term may
-        // pass `size`; docs/tier-cycle.md, "Displaced representatives stay inside stored ones"). A successor holds no
+        // pass `size`; docs/tier-cycle/, "Displaced representatives stay inside stored ones"). A successor holds no
         // displaced term (it parses, so its subterms do), so one pass is enough.
         fn subst(t: Term, moved: &hashbrown::HashMap<Term, Term>) -> Term {
             if let Some(&n) = moved.get(&t) {
@@ -466,7 +466,7 @@ impl Classes {
 
     /// `t` with the table's replacement taken at every node, bottom-up: what `step` would reach, with no plan built and no
     /// step counted. An operator node's result is kept in `memo` and read back when asked again (`stream_laws` asks for a
-    /// group's head once per conjecture; docs/tier-cycle.md, "F1 landed"); a leaf is replaced, not looked up.
+    /// group's head once per conjecture; docs/tier-cycle/, "F1 landed"); a leaf is replaced, not looked up.
     pub fn normalize(&self, job: &Job, n: usize, k: usize, t: &Term, memo: &mut NormalForms) -> Term {
         let Node::Op(o, a, b) = *t.node() else { return self.replacement(job, n, k, t).map_or(*t, |(r, _)| r) };
         if let Some(r) = memo.get(t) {

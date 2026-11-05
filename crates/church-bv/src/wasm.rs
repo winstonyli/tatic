@@ -1,4 +1,4 @@
-//! Wasm programs as kernel data (docs/tier-cycle.md, option B; "Wasm programs over Church words" there).
+//! Wasm programs as kernel data (docs/tier-cycle/, option B; "Wasm programs over Church words" there).
 //!
 //! A program is a Church-encoded instruction tree typed by its start and end stacks,
 //! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> push -> bin -> cmp -> dup -> if -> loop -> store -> load -> F S`, where each
@@ -932,7 +932,7 @@ pub fn wasm_programs_as_kernel_data() {
 }
 
 /// The countdown invariant at n=24 stays fast. Without `conv`'s pair memo it walked a shared case tree once per path
-/// (docs/tier-cycle.md, "The countdown invariant was exponential"; n=32 took over 600 s).
+/// (docs/tier-cycle/, "The countdown invariant was exponential"; n=32 took over 600 s).
 #[test]
 pub fn countdown_invariant_is_not_exponential() {
     let n = 24;

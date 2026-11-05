@@ -177,7 +177,7 @@ pub(super) fn embeds(s: &Term, t: &Term) -> bool {
 /// the step budget, so a call `rewrite(t)` made while `t` itself is being rewritten further out can only repeat that work until the
 /// budget runs out: a rewrite cycle. A chain that returns to a larger copy of a term it is rewriting (one that term embeds in) is
 /// taken to grow without end. The cut returns `t` unchanged in both cases, so the chain ends one lap round instead of at the budget
-/// (docs/tier-cycle.md, "Cycle cut").
+/// (docs/tier-cycle/, "Cycle cut").
 pub fn rewrite(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     if !matches!(*t.node(), Node::Op(..)) {
         return rewrite_memo(job, t, n, k);
@@ -244,7 +244,7 @@ fn rewrite_memo(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     if budget1 > 0 && low.saturating_add(1) >= plen {
         let trace = Trace::new(job.rw.trace.as_ref().map(|v| v[trace0.unwrap_or(0)..].to_vec()).unwrap_or_default());
         // once each, in address order (a replay only asks whether the path cuts any of them); a fresh set per entry grew and
-        // rehashed for 2.2% of a sweep (docs/tier-cycle.md, "Survey: the next lever")
+        // rehashed for 2.2% of a sweep (docs/tier-cycle/, "Survey: the next lever")
         let mut rewrote = job.rw.rewrote[rewrote0..].to_vec();
         rewrote.sort_unstable_by_key(|t| t.addr());
         rewrote.dedup();
@@ -289,7 +289,7 @@ fn check_replay(job: &mut Job, t: &Term, n: usize, k: usize, c: &Rewritten) {
 
 fn rewrite_uncached(job: &mut Job, t: &Term, n: usize, k: usize) -> (Term, PlanRc) {
     let Node::Op(o, a, b) = *t.node() else { return (*t, Plan::refl(job, t)) };
-    // children first: trying the library rules on a node before its children are normalized raised M 3x (docs/tier-cycle.md, "Rule order")
+    // children first: trying the library rules on a node before its children are normalized raised M 3x (docs/tier-cycle/, "Rule order")
     let ((a2, pa), (b2, pb)) = (rewrite(job, &a, n, k), rewrite(job, &b, n, k));
     let cong = Plan::cong(job, o, pa, pb);
     let t1 = Term::op(o, a2, b2);

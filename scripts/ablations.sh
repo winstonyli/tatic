@@ -64,7 +64,7 @@ risen() { cols "$1" | awk '$3 > $2 || $5 > $4 {print $1; exit}'; }
 salts() { cols "$1" | awk '{print $1}' | sort -n | paste -sd,; }
 # per salt line, one row per counter: salt name A B
 wcols() { sed -nE 's/^salt ([0-9]+): .*; work A (.*) B (.*)$/\1|\2|\3/p' "$@" | awk -F'|' '{na = split($2, x, " "); split($3, y, " "); for (i = 1; i <= na; i++) {split(x[i], p, "="); split(y[i], q, "="); print $1, p[1], p[2], q[2]}}'; }
-# each counter's tolerance: max(its A/A spread, 1%); the spreads are a few ppm (docs/tier-cycle.md, "Work counts as the
+# each counter's tolerance: max(its A/A spread, 1%); the spreads are a few ppm (docs/tier-cycle/, "Work counts as the
 # gate's cost")
 tols="interp=0.01 walk=0.01 match=0.01 op=0.01"
 # columns of "salt N: M A a B b; held A a B b; jobcpu A a B b": salt mA mB hA hB cA cB

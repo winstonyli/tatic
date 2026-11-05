@@ -123,7 +123,7 @@ pub fn rtp() -> Option<bool> {
     mpclient_status().and_then(rtp_from_status).or_else(rtp_powershell)
 }
 
-/// `ProductStatus`, the first field `MpManagerStatusQueryEx` writes (probed on this machine, docs/tier-cycle.md,
+/// `ProductStatus`, the first field `MpManagerStatusQueryEx` writes (probed on this machine, docs/tier-cycle/,
 /// "Survey: workflow time outside the sweep").
 fn mpclient_status() -> Option<u32> {
     let dir = std::env::var("ProgramFiles").ok()?;

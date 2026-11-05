@@ -18,11 +18,11 @@ representation.
 ## What exists already
 
 - The screen (`SCREEN_INPUTS`), the miner's conjecture-then-prove loop and the class table already learn from execution
-  and kernel results; the calibration of random testing is `docs/tier-cycle.md`, "How much random testing is worth".
+  and kernel results; the calibration of random testing is `docs/tier-cycle/`, "How much random testing is worth".
 - Wasm semantics is small, specified and deterministic, and the formalization's remaining obligations are lemma-proving
   work (`PARKED.md`, "The formalised Wasm target machine's remaining obligations"). Learning the rules from interaction
   would give a statistical imitation of rules that can be written down.
-- v0.6 stage 1 is a caution for any learned scorer: AUC 0.69 and no curve shift (`docs/tier-cycle.md`, "A learned
+- v0.6 stage 1 is a caution for any learned scorer: AUC 0.69 and no curve shift (`docs/tier-cycle/`, "A learned
   scorer over the extras").
 
 ## Where a learned model could add something
@@ -36,5 +36,5 @@ representation.
 
 Limit: none of these unblocks goal 1. The JIT's blocker is that its programs lack arithmetic depth (and the specialiser
 does not add any, 2026-11-01), plus a bridge from the loop's width-n laws to the JIT's i64; it is not missing knowledge
-of the machine. A hand-written depth workload exists (Hacker's Delight, `docs/tier-cycle.md`), and there the fixed table,
+of the machine. A hand-written depth workload exists (Hacker's Delight, `docs/tier-cycle/`), and there the fixed table,
 not mined rules, does the rewriting.

@@ -7,7 +7,7 @@
 // where `look(t) p = t Bool0 (p (Bool^n -> Bool0) proj0 rot)` is the lookup of `width.rs` (tuple `t` read at the Nat_1
 // position `p`, false past the end) and `lower` is the chain of `embed`s down to Nat_1. It is proved for EVERY good position,
 // with no per-position case tree. The older positionwise route (the proof a tree over the positions, at numerals) and the bridge of
-// this theorem to `Bv_n` are gone; their measurements are in `docs/tier-cycle.md` ("Laws uniform in the width").
+// this theorem to `Bv_n` are gone; their measurements are in `docs/tier-cycle/` ("Laws uniform in the width").
 //
 // Cost, as measured by the ignored `symmul_uniform_stage_scaling` (per-stage check times, no bridge): the stream theorem H_n checks
 // in 7.4, 9.2, 18.7 ms for n = 4, 6, 8. Sizes count DISTINCT nodes, i.e. they hold only because the kernel shares subterms (the
@@ -471,7 +471,7 @@ fn header_states_what_the_size_claims_depend_on() {
     }
     let src = include_str!("symmul_stream.rs");
     let header: String = src.lines().take_while(|l| l.starts_with("//")).collect::<Vec<_>>().join("\n");
-    for phrase in ["distinct nodes", "NOT bridged", "docs/tier-cycle.md", "7.4, 9.2, 18.7 ms"] {
+    for phrase in ["distinct nodes", "NOT bridged", "docs/tier-cycle/", "7.4, 9.2, 18.7 ms"] {
         assert!(header.contains(phrase), "the header must say: {phrase}");
     }
 }

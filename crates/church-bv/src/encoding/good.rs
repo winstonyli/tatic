@@ -246,7 +246,7 @@ pub fn good_lt(n: usize) -> (Expr, Expr) {
     })
 }
 
-// ---- Case splits at Sort0 (docs/tier-cycle.md, "An invariant across an `if`"). `GoodBool`'s motive is in Sort1 and
+// ---- Case splits at Sort0 (docs/tier-cycle/, "An invariant across an `if`"). `GoodBool`'s motive is in Sort1 and
 // the kernel has no cumulativity, so a claim in Sort0 (an invariant over Sort0 answers) cannot split a bit through it;
 // `GoodBool0`, a Sort1 type, can, and `GoodBool` eliminates into it.
 

@@ -604,7 +604,7 @@ pub fn stream_sets() -> Vec<Vec<usize>> {
     (1u32..128).filter(|m| matches!(m.count_ones(), 2 | 3)).map(|m| (0..7).filter(|i| m >> i & 1 == 1).map(|i| ops[i]).collect()).collect()
 }
 
-/// Terms grown per level of a stream (the probe's budget, docs/tier-cycle.md "Triples match pairs per grown term").
+/// Terms grown per level of a stream (the probe's budget, docs/tier-cycle/ "Triples match pairs per grown term").
 pub const STREAM_BUDGET: usize = 20000;
 
 /// The stream laws' variables (`x`, `y`, `z`).
@@ -830,7 +830,7 @@ fn assert_sequences_pinned(pinned: [(usize, usize, usize, u64); 2]) {
 
 /// The two sequences a sweep builds at salt 1 (the loops' at `STREAM_LEVELS` growths, the extras' at the deepest held
 /// band's), pinned by length and an FNV-1a digest of their laws' text: a cheaper way to group, order or filter the
-/// streams' terms must leave them byte-identical (docs/tier-cycle.md, "Grouping the streams' terms, and the 2-growth build
+/// streams' terms must leave them byte-identical (docs/tier-cycle/, "Grouping the streams' terms, and the 2-growth build
 /// inside the 4-growth one"). Its own run is the workload for counting a build's instructions.
 #[test]
 #[ignore]
@@ -1070,7 +1070,7 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
                     (r, plan_spent, proof)
                 });
                 cost.add(spent.join);
-                // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle.md, "A rewrite cycle")
+                // a law that used up the step budget: a rewrite cycle, or rules that grow (docs/tier-cycle/, "A rewrite cycle")
                 if plan_spent.steps >= LAW_STEPS {
                     exhausted += 1;
                     println!("EXHAUSTED {name}");
@@ -1181,7 +1181,7 @@ pub fn closed_terms_fold_to_constants() {
     })
 }
 
-// --- Proposal yield (docs/tier-cycle.md): what a proposer's samples are worth to the kernel ---
+// --- Proposal yield (docs/tier-cycle/): what a proposer's samples are worth to the kernel ---
 
 /// The kernel's cost for a true law under the installed rules: whole-term machine proofs and rule steps (of a `LAW_STEPS` budget) that
 /// `rewrite_law` used, and whether it proved the law at all. The difficulty grade a proposer is scored by.
@@ -1205,7 +1205,7 @@ pub fn law_cost(job: &mut Job, kv: usize, t1: &Term, t2: &Term) -> Cost {
     Cost { fallbacks: spent.fallbacks, steps: spent.steps, proved }
 }
 
-/// Per-proposal credit for a mined library `rules` (docs/tier-cycle.md). Each rule's held-out gain is how many more `held` laws are hard
+/// Per-proposal credit for a mined library `rules` (docs/tier-cycle/). Each rule's held-out gain is how many more `held` laws are hard
 /// without it; a proposal uses a rule when it is cheap under `rules` but hard without that rule; each rule's gain is split evenly over
 /// the proposals that use it. Returns the per-rule gains, the per-rule user counts and the per-proposal credits.
 pub fn proposal_credit(job: &mut Job, rules: &[(Term, Term)], kv: usize, held: &[(Term, Term)], props: &[(Term, Term)]) -> (Vec<i64>, Vec<usize>, Vec<f64>) {

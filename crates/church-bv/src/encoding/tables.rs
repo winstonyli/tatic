@@ -8,7 +8,7 @@ use super::*;
 
 /// Closed `Pi v_0..v_(k-1). GoodBool v_0 -> .. -> GoodBool v_(k-1) -> body(v)`, by case analysis on all `k`
 /// bits; `leaf(values)` proves `body(literal bits)`. Every node's motive applies one closed `P = \v. body(v)`, so the
-/// kernel types `body` once rather than at each of the 2^k - 1 nodes (docs/tier-cycle.md, "One motive for a case tree").
+/// kernel types `body` once rather than at each of the 2^k - 1 nodes (docs/tier-cycle/, "One motive for a case tree").
 pub fn lemma_n(k: usize, body: &dyn Fn(&[Expr]) -> Expr, leaf: &dyn Fn(&[bool]) -> Expr) -> (Expr, Expr) {
     fn elim(k: usize, p: &Expr, leaf: &dyn Fn(&[bool]) -> Expr, vals: &mut Vec<Option<bool>>) -> Expr {
         let Some(j) = vals.iter().position(|v| v.is_none()) else {

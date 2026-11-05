@@ -1,4 +1,4 @@
-// Spike kept as a test (2026-11-01; finding in docs/tier-cycle.md, "Laws uniform in the width"): can the unchanged kernel check laws that are uniform in
+// Spike kept as a test (2026-11-01; finding in docs/tier-cycle/, "Laws uniform in the width"): can the unchanged kernel check laws that are uniform in
 // the bit width, using "bits as a stream with prefix statements" (part2 spec, section 53, option 3)?
 //
 // Level facts that shape the design (kernel has no cumulativity; Pi lands in max(dom, cod); Church X over

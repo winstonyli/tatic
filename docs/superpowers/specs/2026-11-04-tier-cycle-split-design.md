@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Split `docs/tier-cycle.md` by section (DOC2)

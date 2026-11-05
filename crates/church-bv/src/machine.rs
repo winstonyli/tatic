@@ -286,7 +286,7 @@ pub fn mimalloc_defaults_to_large_pages() {
 }
 
 /// The process turns mimalloc's purge off (`purge_delay` is option 15 in v3's list, -1 for never; `Setup::process` sets it): fails if
-/// that stops. Measured in docs/tier-cycle.md ("P1 timed").
+/// that stops. Measured in docs/tier-cycle/ ("P1 timed").
 #[test]
 #[cfg(all(windows, target_env = "msvc"))]
 pub fn mimalloc_defaults_to_no_purge() {
@@ -354,7 +354,7 @@ pub fn carry_cap(job: &Job) -> usize {
 }
 
 /// `tree_encoding` results past its cheap screens, by the same key, shared by a process's threads behind one lock: per thread,
-/// 87.6% of a sweep's searches redid another thread's (docs/tier-cycle.md, "Survey: long-lived sweep workers"). Pure in its key;
+/// 87.6% of a sweep's searches redid another thread's (docs/tier-cycle/, "Survey: long-lived sweep workers"). Pure in its key;
 /// `carry_cap()` is a screen before the lookup.
 static TREE_ENCS: crate::task::SharedMemo<(usize, usize, Term, Term), Option<std::sync::Arc<TreeEnc>>> = crate::task::SharedMemo::new();
 
@@ -465,7 +465,7 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
     let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
     // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
     // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
-    // decision-diagram proofs lost to the case tree at nv = 9 and 11 (docs/tier-cycle.md, "Decision diagrams deleted")
+    // decision-diagram proofs lost to the case tree at nv = 9 and 11 (docs/tier-cycle/, "Decision diagrams deleted")
     // `ab` gets the bits too at a leaf (`Some`), the symbolic ones in the statement (`None`)
     type CaseFn<'a> = dyn Fn(&[Expr], Option<&[bool]>) -> (Expr, Expr) + 'a;
     let mut guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {

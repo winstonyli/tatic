@@ -33,7 +33,7 @@ pub struct Setup {
 }
 
 /// Turns mimalloc's purge off (`purge_delay`, option 15 in v3's list, to -1: freed pages stay mapped) unless `setup` names
-/// `MIMALLOC_PURGE_DELAY`: -7.3% job CPU at one pinned thread, 8 of 8 rounds, peak memory unchanged (docs/tier-cycle.md,
+/// `MIMALLOC_PURGE_DELAY`: -7.3% job CPU at one pinned thread, 8 of 8 rounds, peak memory unchanged (docs/tier-cycle/,
 /// "P1 timed"). Set here, not by a compile-time define as `.cargo/config.toml` does for the large-page options, because v3's
 /// default is a literal with no define; the purge expiry is read as pages are freed, so a set after load takes effect.
 fn purge_off_unless_set(setup: &Setup) {
@@ -123,7 +123,7 @@ impl Setup {
     /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, collapse, join,
     /// promoted, a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
     /// shrmask, and the driver's gen). Parsed once: `rule_step` asks for every rule it tries, and reading the
-    /// environment each time was 11% of a mine (docs/tier-cycle.md). The first time a name is switched off, this prints
+    /// environment each time was 11% of a mine (docs/tier-cycle/). The first time a name is switched off, this prints
     /// `ABLATED <name>`, once per setup: `streams_ab.sh` fails an arm whose `.exe.env` names a switch that never took
     /// effect, a misspelled or deleted one, or one the arm never reached.
     pub fn ablated(&self, name: &str) -> bool {
@@ -190,7 +190,7 @@ fn exe_env() -> Option<String> {
 
 /// `<exe>.env` is read when the exe is started by its 8.3 short path, as the ablations driver starts it. `current_exe`
 /// then names the short file (`B_PROM~1.EXE`), whose `.env` does not exist: every B arm of the driver's ablations ran
-/// unablated until 2026-10-24 (docs/tier-cycle.md, "Ablations of the class table").
+/// unablated until 2026-10-24 (docs/tier-cycle/, "Ablations of the class table").
 #[cfg(windows)]
 #[test]
 fn exe_env_is_found_from_a_short_path() {

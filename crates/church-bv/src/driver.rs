@@ -1,7 +1,7 @@
 //! The mine-and-serve loop and the sweeps over it (formerly `scripts/loop_stream.sh` and local sweep scripts). Serving
 //! (`search::rule_set_kernel_check`) and mining (`search::rule_miner`) run as tasks of one worker process of this exe (`worker`,
 //! `Worker`): each task gets its own `Setup` (environment, results, caches), a `Job` per rewriting thread and its own log,
-//! while the pure memos carry over (`task.rs`, `job::hidden_state_is_classified`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle.md, "Loop overhead").
+//! while the pure memos carry over (`task.rs`, `job::hidden_state_is_classified`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle/, "Loop overhead").
 //! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
 //!
 //! The laws come from the streams (spec docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §9):
@@ -18,9 +18,9 @@
 //! Options (env, defaults in brackets): SPHASE [0], B [150], K [4], OFFSET [0], THREADS [2] (miner pool), ROUNDS [no cap],
 //! WARM_RULES=<file> (start with those rules in force), CHECK_FAST [0] (serve without proof building or kernel checks; M is
 //! unchanged), MACHINE_STATE [1] (a machine-state line at start and end, about 2 s each). Other variables pass through to the
-//! children: RULEMINER_FAST=1 (exact counts without proving every candidate, docs/tier-cycle.md "Miner speedups"),
+//! children: RULEMINER_FAST=1 (exact counts without proving every candidate, docs/tier-cycle/ "Miner speedups"),
 //! RULEMINER_SHUFFLE=<salt> (the stream sequence's salt).
-//! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md, docs/tier-cycle.md "Count and slicing"): every mine
+//! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md, docs/tier-cycle/ "Count and slicing"): every mine
 //! with rule rounds also mines its own `EXTRAS_N` laws, the next the filter keeps from the stream sequence grown as deep
 //! as the held-out bands (`scope_extras`, fresh slices); off with ABLATE=gen; GEN_DRAW=d draws them from the sequence at
 //! salt + 1000 d instead. POOL=p with EXTRAS_SELECT=first|small|ctx hands each mine p x n laws and the miner keeps n: the first n, or the n stragglers with the fewest rewrite steps (then the smallest normal form; a shortfall is filled with the pool's other laws in order), or (`ctx`, with CTX_WEIGHTS=<weights file>, `RULEMINER_CTX_WEIGHTS`) the stragglers the context model scores highest; `first` with POOL>1 only serves as a control
@@ -53,7 +53,7 @@ use std::io::{BufRead, BufReader};
 
 /// The process's stdout and stderr pointed at one file, for a task's log (`worker`): one handle (one fd) for both, so they
 /// share the file offset as a child's `try_clone`d handles do. std looks the handle up on every write (checked by a probe,
-/// docs/tier-cycle.md, "A persistent worker"), so `println!` follows it.
+/// docs/tier-cycle/, "A persistent worker"), so `println!` follows it.
 #[cfg(windows)]
 mod stdio {
     use std::ffi::c_void;
@@ -258,7 +258,7 @@ fn the_filter_drops_twins_skeletons_and_trivial_laws() {
 
 /// The `JOIN_VISIT` each mine runs with, as text for its env: 100 unless `MINE_JOIN_VISIT` says otherwise. Serving and the
 /// held-out check keep the process's own (1000); a mine's search time is 99% failed joins, so a lower budget there
-/// saves CPU at level held-out M (docs/tier-cycle.md, "A join budget for the mines alone").
+/// saves CPU at level held-out M (docs/tier-cycle/, "A join budget for the mines alone").
 fn mine_join_visit(setup: &Setup) -> String {
     setup.or("MINE_JOIN_VISIT", 100u32).to_string()
 }
@@ -382,7 +382,7 @@ fn loop_modes_schedule_their_mines() {
 }
 
 /// `JOIN_VISIT` for the mines alone: 100 (landed 2026-10-30; serving and the held-out check keep 1000, `MINE_JOIN_VISIT`
-/// overrides). At n 319 it keeps held-out M (5166 against 5340) at 21% of the job CPU (docs/tier-cycle.md, "A join budget
+/// overrides). At n 319 it keeps held-out M (5166 against 5340) at 21% of the job CPU (docs/tier-cycle/, "A join budget
 /// for the mines alone").
 #[test]
 fn mines_join_with_a_budget_of_100_unless_overridden() {
@@ -761,11 +761,11 @@ fn filter(served: &[(Term, Term)], held: &[(Term, Term)]) -> impl Fn(&(Term, Ter
 /// Laws each mine takes from its scope's extras (n): fresh slices of 317-319 had held-out M 5291 against 6400 for the
 /// earlier shared slices of the 2-growth phase 0, at 7.0 G of walk against 1.5 (run `2026-10-27-xgrid-f4950h`, gate
 /// salts 1-3). Over the measured fresh arms (n 319-688) held-out M fell about 770 per e-fold of n with no knee and walk
-/// grew about linearly in n, so n is a price (docs/tier-cycle.md "Count and slicing"); nothing below 319 was measured.
+/// grew about linearly in n, so n is a price (docs/tier-cycle/ "Count and slicing"); nothing below 319 was measured.
 /// The variable `EXTRAS_N` overrides it.
 const EXTRAS_N: usize = 319;
 
-/// Draws one scope's extras (spec §1-3; docs/tier-cycle.md "Count and slicing"): the stream sequence at the scope's
+/// Draws one scope's extras (spec §1-3; docs/tier-cycle/ "Count and slicing"): the stream sequence at the scope's
 /// salt (+ 1000 × `GEN_DRAW`, default 0) grown as deep as the deepest held-out band (`held_levels`), every phase and
 /// size, the first laws the filter keeps against the laws `scope`'s loops serve and the held-out laws, n (`EXTRAS_N`)
 /// for each mine in fresh slices. Sets each loop's `extras` and `extra_at`, or says by how much the sequence is short.
@@ -922,7 +922,7 @@ pub fn run_sweep() {
     std::fs::create_dir_all(&out).unwrap();
     let salt: usize = setup.or("SALT", 1);
     // Large pages off in the children: most are short, each pays the 64 MiB large-page commit up front, and a sweep with them
-    // on cost 0.3-2.9 s more CPU and 60% more peak memory (docs/tier-cycle.md, "How often the large-page stall hits a sweep").
+    // on cost 0.3-2.9 s more CPU and 60% more peak memory (docs/tier-cycle/, "How often the large-page stall hits a sweep").
     let env: Vec<(String, String)> = [("RULEMINER_FAST", "1".to_string()), ("RULEMINER_SHUFFLE", salt.to_string()), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0".to_string())]
         .into_iter()
         .map(|(k, v)| (k.to_string(), v))

@@ -37,7 +37,7 @@ impl Word for u128 {
 /// Terms' width-`n` values on a fixed list of inputs, one vector per interned term, each made from its children's vectors:
 /// pools and repeated screens share subterms, so each distinct term is evaluated once per input list. The vectors sit end
 /// to end in fixed blocks of about 64 KB (never grown or copied), so a new term rarely allocates and a known one costs a
-/// single lookup. One doubling `Vec` was a little slower and held up to 1.4x the memory (docs/tier-cycle.md, "`ValueMemo` in fixed
+/// single lookup. One doubling `Vec` was a little slower and held up to 1.4x the memory (docs/tier-cycle/, "`ValueMemo` in fixed
 /// 64 KB blocks").
 pub struct ValueMemo<W: Word> {
     mask: u128,
@@ -57,7 +57,7 @@ pub struct ValueMemo<W: Word> {
 }
 
 /// `out[i] = op(x[i], y[i])` for operator `O`: its function for `W` is a constant here, so it inlines into the loop (called
-/// through the pointer per element it was about 4% of a sweep, docs/tier-cycle.md, "Profile at a7b0719"), and the `u8`
+/// through the pointer per element it was about 4% of a sweep, docs/tier-cycle/, "Profile at a7b0719"), and the `u8`
 /// loops work on byte lanes ("`zip_word` on native bytes").
 fn zip_word<W: Word, const O: usize>(out: &mut [std::mem::MaybeUninit<W>], x: &[W], y: &[W], mask: u128) {
     let (op, mask) = (W::pick(const { &OP_INFO[O].words }), W::of(mask));
@@ -87,7 +87,7 @@ const VALUE_BLOCK: usize = 1 << 16;
 pub(crate) const SCREEN_INPUTS: usize = 204;
 
 /// The plausibility screen's value memos, by width and variable count, shared by a process's threads behind one lock: per
-/// thread, 66% of a sweep's screen fills redid another thread's (docs/tier-cycle.md, "Per-thread refills"). Pure: values on
+/// thread, 66% of a sweep's screen fills redid another thread's (docs/tier-cycle/, "Per-thread refills"). Pure: values on
 /// fixed pseudo-random inputs.
 static SCREENS: crate::task::SharedMemo<(usize, usize), ValueMemo<u128>> = crate::task::SharedMemo::new();
 
@@ -115,7 +115,7 @@ impl<W: Word> ValueMemo<W> {
 
     /// `t`'s value class: the id of the first vector asked about with `t`'s values, so two terms share a class exactly
     /// when they agree on every input. Grouping terms by class keys on an integer; copying each 4096-byte vector into its
-    /// key was 11-13% of a stream's build (docs/tier-cycle.md, "Grouping the streams' terms, and the 2-growth build inside
+    /// key was 11-13% of a stream's build (docs/tier-cycle/, "Grouping the streams' terms, and the 2-growth build inside
     /// the 4-growth one").
     pub fn class(&mut self, t: &Term) -> u32 {
         use std::hash::BuildHasher;
@@ -206,7 +206,7 @@ impl<W: Word> ValueMemo<W> {
 }
 
 /// `exhaustive`'s inputs by width and variable count, built once per process: `bitwise_holds` asks for up to five widths
-/// on every call (docs/tier-cycle.md, "F3 landed").
+/// on every call (docs/tier-cycle/, "F3 landed").
 static EXHAUSTIVE_INPUTS: crate::task::SharedMemo<(usize, usize), std::sync::Arc<[Box<[u8]>]>> = crate::task::SharedMemo::new();
 
 impl ValueMemo<u8> {
@@ -223,7 +223,7 @@ impl ValueMemo<u8> {
 /// (bitwise operators and shifts) a position reads only a few neighbours, so these widths hold every case; `verdict`'s
 /// `Bitwise` replacements and `prove_eq`'s per-position step rest on it (the kernel checks the proof regardless). Whole
 /// value vectors per width: a recursive `interp` pair per input was a quarter of a sweep's samples in `verdict` alone
-/// (docs/tier-cycle.md, "One exhaustive check for both").
+/// (docs/tier-cycle/, "One exhaustive check for both").
 pub fn bitwise_holds(a: &Term, b: &Term, k: usize) -> bool {
     (1..=5).all(|w| ValueMemo::exhaustive(w, k).agree(a, b))
 }

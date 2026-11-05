@@ -9,7 +9,7 @@
 # spec docs/superpowers/specs/2026-10-23-work-counts-design.md). Last line: loops with the same rules, and arms that
 # failed (non-zero exit, no M, no WORK line, or a switch of its .exe.env that never took effect); exits 1 if any arm failed. Differing rules are reported, not failed.
 # Untimed gates (the verdict is counts) run JOBS=3 with ARM_CACHE=%LOCALAPPDATA%\claude-runs\tatic\arm-cache, so an unchanged arm
-# (HEAD) is copied, not rerun; JOBS=4 gave 1.85x the throughput of one at a time with the counts unchanged (docs/tier-cycle.md,
+# (HEAD) is copied, not rerun; JOBS=4 gave 1.85x the throughput of one at a time with the counts unchanged (docs/tier-cycle/,
 # "Under load too"). Timed gates keep JOBS=1 and no cache.
 a=$1; b=$2; shift 2
 root="$(cd "$(dirname "$0")/.." && pwd)"
@@ -122,7 +122,7 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   o="$RUN_DIR/s${s}_$arm"
   # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env, this
   # script, runs.exe and the held-out laws, and an arm with the same hash and salt is copied, not run, if the environment
-  # it read is unchanged (`changed`): the gate's results repeat (counts to a few ppm, docs/tier-cycle.md, "Work counts
+  # it read is unchanged (`changed`): the gate's results repeat (counts to a few ppm, docs/tier-cycle/, "Work counts
   # as the gate's cost"). Off by default: an A/A of one exe would otherwise run once.
   # The exe by its long name (here and in the ABLATED check below): the .exe.env of a short (8.3) name like
   # B_COLL~1.EXE does not exist, so B hashed as A (the exe itself reads `<its canonical path>.env`).

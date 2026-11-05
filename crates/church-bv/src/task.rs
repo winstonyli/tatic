@@ -1,7 +1,7 @@
 //! Process-wide memos for `driver::worker`, which runs many tasks (a sweep's children) in one process. A task's
 //! configuration and outcome live in its `job::Setup`; every process-wide mutable static in church_bv is a pure memo, whose
 //! value depends only on its key (configuration included), kept across tasks: a `SharedMemo`, or one of the few on
-//! `job::hidden_state_is_classified`'s list, which holds every static to that rule (docs/tier-cycle.md, "A persistent
+//! `job::hidden_state_is_classified`'s list, which holds every static to that rule (docs/tier-cycle/, "A persistent
 //! worker").
 
 use std::sync::Mutex;

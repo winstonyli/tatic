@@ -9,5 +9,5 @@
 - **In scope:** 25 of 25 (no exclusions).
 - **Measure:** `CORPUS=docs/corpora/hd-own/cases.txt cargo test -p church-bv --lib --release corpus_report -- --ignored --nocapture`
   (optional `CORPUS_RULES=<mined rules file>`). Expected: 80 operators, the table leaves 54 and changes 17 terms; pinned by
-  `corpus::tests::the_hand_written_corpus_reproduces_the_probe_counts`. Findings: `docs/tier-cycle.md`, "Hacker's Delight
+  `corpus::tests::the_hand_written_corpus_reproduces_the_probe_counts`. Findings: `docs/tier-cycle/`, "Hacker's Delight
   routines".

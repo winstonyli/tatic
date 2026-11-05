@@ -20,7 +20,7 @@ impl Clock {
 /// `_PHASE`, `_SKIP`), which the driver reads when it writes the law file (`driver::write_laws`).
 pub struct MinerConfig {
     /// `RULEMINER_ROUNDS`: greedy rounds (default no cap: the mine stops when no candidate gains; a cap trimmed general rules,
-    /// docs/tier-cycle.md "cmp3d's library lost its general rules").
+    /// docs/tier-cycle/ "cmp3d's library lost its general rules").
     pub rounds: usize,
     /// `RULEMINER_THREADS`: scoring threads, clamped to 1..=12.
     pub threads: usize,
@@ -482,7 +482,7 @@ fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Te
                         // `x = y` holds for the straggler's variables, but the cuts become free variables, so the rule itself is checked:
                         // one that only held through a relation between the cuts would be scored every round and then fail its proof
                         if yy.size() < pat.size() + 4 && seen_pat.insert((pat, Some(rhs))) && (1..=4).all(|w| pat.plausibly_equals(&rhs, w, cuts.len())) {
-                            // not ordered: orienting cross-side rules by the rule order raised M in every family (docs/tier-cycle.md,
+                            // not ordered: orienting cross-side rules by the rule order raised M in every family (docs/tier-cycle/,
                             // "A rewrite cycle"); a growing one can cycle with the built-in rules until the step budget runs out
                             cands.push((pat, rhs));
                         }
@@ -504,14 +504,14 @@ fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Te
         }
     }
     // per left side, the smallest right side only, ties by `Term`'s order. Scoring every right side instead (each left side's rival
-    // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle.md)
+    // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle/)
     // an identity (a pattern's pool group holds the pattern itself) never gains, and as the smallest right side it would displace
     // its left side's real candidates
     cands.retain(|(l, r)| l != r);
     cands.sort_by_key(|(l, r)| (l.size(), *l, r.size(), *r));
     cands.dedup();
     // rivals: the other right sides of each left side; a round's winner gives way to a rival that gains more on the same laws
-    // (`Rounds::pick`; docs/tier-cycle.md, "Preferences and rival orientations in the miner")
+    // (`Rounds::pick`; docs/tier-cycle/, "Preferences and rival orientations in the miner")
     let mut rivals: hashbrown::HashMap<Term, Vec<(Term, Term)>> = Default::default();
     for (l, r) in &cands {
         rivals.entry(*l).or_default().push((*l, *r));
@@ -527,7 +527,7 @@ fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Te
 }
 
 /// The pool route's variables: over three the miner finds small rules that carry to unseen laws (held-out M -6.9% against
-/// two, docs/tier-cycle.md, "A pool route over three variables finds them").
+/// two, docs/tier-cycle/, "A pool route over three variables finds them").
 const POOL_VARS: usize = 3;
 
 /// The pool route's terms: every term of up to 5 nodes over `POOL_VARS` variables and the constants, by their values on every
@@ -939,7 +939,7 @@ impl<'a> Rounds<'a> {
     }
 
     /// one round on top of `s`: the rule it takes, with its gain: the winner, or a rival orientation of it that gains more and
-    /// proves (docs/tier-cycle.md, "With small rules, the lookahead buys nothing: take the rival")
+    /// proves (docs/tier-cycle/, "With small rules, the lookahead buys nothing: take the rival")
     fn pick(&mut self, job: &mut Job, s: &Chosen) -> Option<((Term, Term), i64)> {
         let (scorer, provable, rivals, cfg) = (self.scorer, self.provable, self.rivals, self.cfg);
         let (stragglers, guard_w) = (&scorer.laws.stragglers, scorer.laws.guard_w);
@@ -984,9 +984,9 @@ impl<'a> Rounds<'a> {
         // an empty memo: a memo kept across a worker's candidates made a gain depend on which candidates that worker scored before
         // (its join entries are inexact by design), so the choice depended on scheduling, and it saved no time (docs/decisions/
         // 2026-10-17-monotone-join.md, "Spike of the snapshot"). The join store is shared instead, read-only: the workers read
-        // the copy frozen as the round starts, which only this thread's searches fed (docs/tier-cycle.md, "Spike of the join
+        // the copy frozen as the round starts, which only this thread's searches fed (docs/tier-cycle/, "Spike of the join
         // store"). Expressions are per thread, so each worker grows its own (1.5x
-        // faster scoring on cmp3d, docs/tier-cycle.md, "Miner speedups")
+        // faster scoring on cmp3d, docs/tier-cycle/, "Miner speedups")
         // a rule's gain on top of the rules chosen so far; it changes only the laws `aff` it can touch
         let score_rule = |job: &mut Job, rule: &(Term, Term), aff: &[usize]| -> (i64, Vec<bool>, i64) {
             let mut with = chosen.clone();
@@ -1159,7 +1159,7 @@ impl<'a> Rounds<'a> {
                 open.push(Open { before: s, round, proof, line, rule: rule_show(&rule) });
                 (s, round) = (next, round + 1);
                 // the newest three rounds stay open: a winner's proof (about 87 ms on cmp3d) runs while the next three rounds are
-                // scored (about 60 ms each at 6 threads); docs/tier-cycle.md, "Why six threads gave little"
+                // scored (about 60 ms each at 6 threads); docs/tier-cycle/, "Why six threads gave little"
                 if let Some(o) = self.settle(job, &mut open, 3) {
                     (s, round) = (o.before, o.round);
                 }
@@ -1225,7 +1225,7 @@ fn a_provers_rules_ignore_the_callers_switches() {
 }
 
 /// The pool route looks patterns up over three variables, `lt` roots too: a pattern's group is the pool's terms equal to it on
-/// every input (docs/tier-cycle.md, "A pool route over three variables finds them").
+/// every input (docs/tier-cycle/, "A pool route over three variables finds them").
 #[test]
 fn the_pool_finds_terms_over_three_variables() {
     let mut pool = Pool::new(4);

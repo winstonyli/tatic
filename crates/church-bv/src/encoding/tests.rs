@@ -24,7 +24,7 @@ pub fn run(n: usize) {
 
 /// `table_app`'s memo (keyed on the truth table) gives one closed lambda for one truth table however the table is given, a
 /// different one for another table, and the right values. (Hash-consing makes a rebuilt lambda pointer-equal too, so this
-/// checks the key, not that the memo is hit; the speed is in docs/tier-cycle.md, "Truth tables built once".)
+/// checks the key, not that the memo is hit; the speed is in docs/tier-cycle/, "Truth tables built once".)
 #[test]
 fn table_bodies_are_shared_per_truth_table() {
     tatic_kernel::scoped(|| {

@@ -6083,7 +6083,7 @@ Both fixed, each doubling costs about 2x. In release, 100 to 400 deep doubles to
 
 Asked because the joins' leftover laws need pure-bitwise identities (`and(x, and(y, x)) = and(x, y)`,
 `xor(y, or(x, y)) = and(x, not y)`) and bridges (`or(x, y) - xor(x, y) = and(x, y)`), which the miner cannot propose
-(`docs/tier-cycle.md`, "Canonical forms: hand-coded or learned"). Fetched 2026-10-22: SiMBA (ar5iv HTML), GAMBA and
+(`docs/tier-cycle/`, "Canonical forms: hand-coded or learned"). Fetched 2026-10-22: SiMBA (ar5iv HTML), GAMBA and
 Ruler (abstract; Ruler's method from its ar5iv HTML), CoBRA (blog). From search summaries only, not read: MBA-Blast,
 MBA-Solver, Enumo, Knuth's 4-input tables, null polynomials. From general knowledge, no source fetched: ANF and ROBDDs.
 
@@ -6116,7 +6116,7 @@ MBA-Solver, Enumo, Knuth's 4-input tables, null polynomials. From general knowle
 
 What it means here: the hand-coded option is SiMBA's form (conjunction-basis coefficients over the atoms); the learned one
 is Ruler's grouping with the smallest member of each class as its representative, kernel-proved. The options and the
-choice are in `docs/tier-cycle.md`, "Canonical forms: hand-coded or learned".
+choice are in `docs/tier-cycle/`, "Canonical forms: hand-coded or learned".
 
 ## Sources
 

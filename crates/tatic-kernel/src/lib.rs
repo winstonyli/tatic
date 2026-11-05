@@ -1244,7 +1244,7 @@ impl InferCache {
     }
 
     /// Empties the cache for the next call, keeping its capacity: a sweep makes thousands of calls, and growing
-    /// each one's maps from empty was most of `Checker::infer`'s 0.9% under `reserve_rehash` (`docs/tier-cycle.md`,
+    /// each one's maps from empty was most of `Checker::infer`'s 0.9% under `reserve_rehash` (`docs/tier-cycle/`,
     /// "where the growth comes from"). Clearing costs time in the capacity, so a map grown past `KEEP` is let go.
     fn reset(&mut self) {
         const KEEP: usize = 1 << 14;
@@ -1470,7 +1470,7 @@ fn closed_prefix_spine(s: &Spaces, e: &Expr, p: &Expr) -> Option<Expr> {
 /// function, so the memo also covers each shorter prefix of a spine. It goes under every lambda,
 /// not only those the spine's arguments fill: a Church boolean selects under its own `\C t f`, so a
 /// table of `mux` gates applied to its first arguments drops the branches they rule out, and each
-/// longer prefix holds only its sub-diagram (docs/tier-cycle.md, "Full head normal form").
+/// longer prefix holds only its sub-diagram (docs/tier-cycle/, "Full head normal form").
 fn hnf_rc(s: &Spaces, p: &Expr) -> Expr {
     if let Some(hit) = hc::hnf_get(s, p) {
         return hit;
@@ -1652,7 +1652,7 @@ thread_local! {
 /// it the walk is a tree walk over shared nodes: two equal but distinct
 /// subterms under a case tree that shares its tail (a borrow chain applied to
 /// continuations) were compared once per path, 2^n times for n bits
-/// (docs/tier-cycle.md, "The countdown invariant was exponential"). Unequal
+/// (docs/tier-cycle/, "The countdown invariant was exponential"). Unequal
 /// pairs need no entry: the first one ends the call.
 fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
     if s.same(a, b) {

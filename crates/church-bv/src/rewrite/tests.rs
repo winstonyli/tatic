@@ -87,7 +87,7 @@ fn rule_order_does_not_change_rewriting() {
 }
 
 /// A rule no other route proves, with `shr1` under `add` (a carry machine refuses `shr1`), is proved over every input
-/// when it has at most `EVERY_INPUT_BITS` input bits; a false one is not, nor a true one past the cap (docs/tier-cycle.md,
+/// when it has at most `EVERY_INPUT_BITS` input bits; a false one is not, nor a true one past the cap (docs/tier-cycle/,
 /// "At the loops' width, every-input proofs").
 #[test]
 fn a_rule_past_every_route_is_proved_over_every_input() {
@@ -155,7 +155,7 @@ fn rule_overlap_report() {
 
 /// `embeds` on chains of one operator: `s` is y under 50 `add(_, x)` nodes and `t` is z under 60, so `s` does not embed,
 /// and the plain recursion, coupling or skipping at each of `t`'s 60 nodes, makes about 3 x 2^60 = 3.5e18 calls. A
-/// sweep's mine spun on such a pair for hours (docs/tier-cycle.md, "The hang"). With y at the bottom of both, `s` embeds
+/// sweep's mine spun on such a pair for hours (docs/tier-cycle/, "The hang"). With y at the bottom of both, `s` embeds
 /// (the plain recursion finds it in 111 calls: this half checks the answer, not the speed).
 #[test]
 fn embedding_long_chains_finishes() {
@@ -556,7 +556,7 @@ fn proving_leaves_the_callers_rewrite_state() {
     })
 }
 
-/// sbo3's rewrite cycle (docs/tier-cycle.md, "Why ordered sbo3 still cycled"): two rules and a permutative one bring
+/// sbo3's rewrite cycle (docs/tier-cycle/, "Why ordered sbo3 still cycled"): two rules and a permutative one bring
 /// `sub(sub(z, x), sub(y, z))` back to itself. `rewrite` cuts it, so the law is proved without using up the step budget, and the
 /// proof checks.
 /// The table's normal form is off: this tests the rules' cuts and memo, which act only where the table does not (spec,
@@ -577,7 +577,7 @@ fn rewrite_cycles_are_cut() {
     })
 }
 
-/// cmp3d's growing chain (docs/tier-cycle.md, "Growth cut"): the two rules rewrite into each other and each lap copies the first
+/// cmp3d's growing chain (docs/tier-cycle/, "Growth cut"): the two rules rewrite into each other and each lap copies the first
 /// argument in, so no term repeats. The term on the path embeds in its larger copy, and the cut ends the chain there instead of at
 /// the budget (which it runs out with only the repeat cut).
 /// The table's normal form is off: this tests the rules' cuts and memo, which act only where the table does not (spec,
@@ -603,7 +603,7 @@ fn growing_rewrite_chains_are_cut() {
 /// traces that rule's left side matches at no term where no rule fired; the rule miner seeds each candidate's scoring with them. The whole memo would replay
 /// results the extra rule changes.
 /// A pattern matches a term only where the term's shape has every bit the pattern needs, so a trace whose shapes lack one
-/// can be skipped (docs/tier-cycle.md, "Survey: the next lever"); and the filter does reject.
+/// can be skipped (docs/tier-cycle/, "Survey: the next lever"); and the filter does reject.
 #[test]
 fn shapes_hold_every_bit_a_matching_pattern_needs() {
     let rules = parse_rules("sub(sub(x, y), z) -> sub(x, add(y, z))\nor(x, and(x, y)) -> x\nadd(x, 0) -> x\nxor(x, x) -> 0\nand(-1, x) -> x\nx -> x\n");
@@ -964,7 +964,7 @@ fn join_store_is_fed_only_where_it_is_read() {
 }
 
 /// A memo hit gives what a fresh rewrite would, also under rules that cycle: an entry made where the path was short is replayed
-/// inside a call that a fresh rewrite would cut (docs/tier-cycle.md, the law 168 entry under Open).
+/// inside a call that a fresh rewrite would cut (docs/tier-cycle/, the law 168 entry under Open).
 #[test]
 fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
     let job = &mut Job::new(Setup::process());
@@ -994,7 +994,7 @@ fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
 }
 
 /// A rewrite whose cuts were all against terms its own call took up is kept: any replay cuts them again. One cut against a
-/// term further out is not (docs/tier-cycle.md, "Survey: `rewrite_memo`'s 17.4% of CPU").
+/// term further out is not (docs/tier-cycle/, "Survey: `rewrite_memo`'s 17.4% of CPU").
 /// The table's normal form is off: this tests the rules' cuts and memo, which act only where the table does not (spec,
 /// Testing).
 #[test]

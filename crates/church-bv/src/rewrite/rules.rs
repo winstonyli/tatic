@@ -17,7 +17,7 @@ pub struct Rules {
 impl Rules {
     /// The built-in rules of `setup` and the run-time rules `mined`, most specific first: larger left sides first, ties by
     /// text. `rule_step` applies the first rule that matches, so a library's order would otherwise change its normal forms:
-    /// the same pooled library served in six orders gave total M 47-62 on add3 (docs/tier-cycle.md, "Rule order"). Any
+    /// the same pooled library served in six orders gave total M 47-62 on add3 (docs/tier-cycle/, "Rule order"). Any
     /// order of the same rules now serves identically. Both switches off.
     pub fn new(setup: &Setup, mined: Vec<(Term, Term)>) -> Rules {
         Rules { table: Rc::new(RuleTable::sorted(setup, mined)), score_only: false, trace_rules: false }
@@ -62,7 +62,7 @@ pub fn rule_show((l, r): &RuleKey) -> String {
 }
 
 /// A rule as `rule_step` tries it, with what does not depend on the term decided when the rule set is installed (deciding
-/// it per term, and building the rule list per term, were about 10% of a sweep: docs/tier-cycle.md, "Profile at f447a57").
+/// it per term, and building the rule list per term, were about 10% of a sweep: docs/tier-cycle/, "Profile at f447a57").
 #[derive(Clone, Copy)]
 pub(crate) struct TableRule {
     pub(super) name: &'static str,
@@ -105,7 +105,7 @@ pub(super) fn class(t: &Term) -> usize {
 /// too), and the pairs of positions within depth 2 (`shallow`) where it has one subpattern (a repeated variable, say),
 /// which a match must fill with one subterm, terms being hash-consed.
 /// Keyed by the root operator alone, `rule_step_in` called `match_pat` on 16.7 rules a call, 31M a sweep
-/// (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching"); with the operands' classes alone, 31% of the
+/// (docs/tier-cycle/, "Per-thread refills and the miner's trace matching"); with the operands' classes alone, 31% of the
 /// join's matcher calls failed at the grandchildren and 8.5% at a leaf ("Why the join's matches fail"), and with the shape
 /// alone, 48% on a repeated variable within depth 2 ("Which repeated-variable failures the index could reject"). The
 /// join's index carries each step's `Need`, so a step over the cap is skipped without loading the step.
@@ -426,7 +426,7 @@ pub fn shr_not_law(job: &mut Job, n: usize) -> Option<(Expr, Expr)> {
 
 /// The law behind a rule: bitwise/shift rules by the per-position prover, the rest by the carry machines.
 /// The most input bits (`n * k`) an every-input proof takes on: at 12, 4096 cases a position, about 0.4 s a rule to build
-/// and check, and 16x that for each 4 bits more (docs/tier-cycle.md, "At the loops' width, every-input proofs").
+/// and check, and 16x that for each 4 bits more (docs/tier-cycle/, "At the loops' width, every-input proofs").
 pub const EVERY_INPUT_BITS: usize = 12;
 
 /// Proof of `t1 = t2` over `k` vectors at width `n` for any operators, by every input: per output position (`n`, or one
@@ -584,7 +584,7 @@ pub fn rule_order_or_tie(l: &Term, r: &Term) -> bool {
 }
 
 /// Whether rule pattern `p` matches `t`, bindings on the stack: the rule miner asks this tens of millions of times a sweep
-/// (docs/tier-cycle.md, "Per-thread refills and the miner's trace matching").
+/// (docs/tier-cycle/, "Per-thread refills and the miner's trace matching").
 pub fn matches(p: &Term, t: &Term) -> bool {
     match_pat(p, t, &mut [None; RULE_VARS])
 }
@@ -706,7 +706,7 @@ pub fn rule_step(job: &mut Job, t: &Term) -> Option<(Term, PlanRc)> {
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the term order (that of the `show()` text)
         // (a path order on every tied instance, the removed `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`,
-        // `PERM_ORDER=tie`, never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle.md)
+        // `PERM_ORDER=tie`, never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle/)
         if r.permutative && inst >= *t {
             return None;
         }
@@ -739,7 +739,7 @@ pub fn rule_step(job: &mut Job, t: &Term) -> Option<(Term, PlanRc)> {
 
 /// The terms `rule_step` was asked about while rewriting, with the rule that fired on each (`RewriteState::trace`), and the OR of the
 /// terms' shapes (`Term::shape`): a left side whose `needs` the OR lacks matches none of them, so most scans are skipped
-/// without touching the terms (docs/tier-cycle.md, "Survey: the next lever").
+/// without touching the terms (docs/tier-cycle/, "Survey: the next lever").
 #[derive(Clone, Default)]
 pub struct Trace {
     pub(super) items: Vec<(Term, Fired)>,

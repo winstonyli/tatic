@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # `tier-cycle.md` split Implementation Plan (DOC2)

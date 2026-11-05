@@ -64,7 +64,7 @@ An experiment on whether rule mining can run alongside execution: laws are
 served in batches, rules are mined from each served batch, and the next batch
 is served under the rules mined so far. The metric M is the number of laws that
 still need a whole-term machine proof. The measured results are in
-`docs/tier-cycle.md`, with raw rows and the scripts that produced them under
+`docs/tier-cycle/`, with raw rows and the scripts that produced them under
 `docs/runs/`.
 
 - The laws come from the streams: `search::stream_sequence(salt)`, the operator-set
@@ -91,7 +91,7 @@ still need a whole-term machine proof. The measured results are in
 - Which parts of the rewriter, prover, miner and loop are learned and which are
   fixed by hand, with the evidence per part: `docs/learned-vs-fixed.md`.
 
-Results on the streams, with their A/A baseline, are in `docs/tier-cycle.md`
+Results on the streams, with their A/A baseline, are in `docs/tier-cycle/`
 ("The gate on the streams and its A/A baseline"). The earlier results on the
 hand-built three-variable families (`add3`, `sbo3`, `cmp3d`, `mix3`, the pooled
 and cross-family libraries) were in `docs/loop-result.md`, deleted on 2026-10-26
@@ -972,7 +972,7 @@ proof speed); the longer list this section kept until 2026-10-27 is in
   specialiser's inlining does not add any (2026-11-01). A hand-written
   workload with depth (Hacker's Delight routines) shows the fixed class
   table, not the mined rules, doing the rewriting
-  (`docs/tier-cycle.md`, "Other ways to join the JIT and the loop", option
+  (`docs/tier-cycle/`, "Other ways to join the JIT and the loop", option
   A's results, 2026-10-17 to 2026-11-01). Lowering templates can be stated and proved as
   kernel laws, so compilations could be mined by target cost (same doc,
   "Compiling hot transformations, with learnable compilations"; parked in

@@ -54,7 +54,7 @@ struct StoredStep {
 /// `join_eq` serves a pair from the store before it searches. The miner keeps one per mine, fed by its main thread's
 /// searches with the memo on (not its proofs, which run on that thread only at some thread counts); its workers read a
 /// copy frozen when a round of scoring starts, so a candidate's gain depends neither on the thread count nor on which
-/// worker scored what (docs/tier-cycle.md, "Spike of the join store"). The copy is the whole store, once a round.
+/// worker scored what (docs/tier-cycle/, "Spike of the join store"). The copy is the whole store, once a round.
 #[derive(Clone, Default)]
 pub struct JoinStore {
     edges: hashbrown::HashMap<Term, Vec<StoredEdge>>,
@@ -178,9 +178,9 @@ pub fn prove_eq(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option
     }
     // the class table's normal form of both sides was a step here (spec 2026-10-22-class-table-normal-form-design.md
     // §4); with the table's step in the rewriter, the sides arrive normalized, so it closed nothing and was deleted
-    // (docs/tier-cycle.md, "Ablations of the class table")
+    // (docs/tier-cycle/, "Ablations of the class table")
     // congruence on equal operators and generalizing a shared subterm into a variable were removed: neither decided a law
-    // (docs/tier-cycle.md, "Ablating the fixed rewriter and prover parts")
+    // (docs/tier-cycle/, "Ablating the fixed rewriter and prover parts")
     if let Some(p) = shr_mask_eq(job, n, k, a, b) {
         return Some(p);
     }
@@ -203,7 +203,7 @@ fn machine_fallback(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Op
 }
 
 /// `a = b` by the bounded join, else by the whole-term machine proof: the floor laws' normal forms all join within a few
-/// equation steps (docs/tier-cycle.md, "Equational reach of the floor").
+/// equation steps (docs/tier-cycle/, "Equational reach of the floor").
 pub(super) fn join_or_machine(job: &mut Job, n: usize, k: usize, a: &Term, b: &Term) -> Option<PlanRc> {
     join_eq(job, n, k, a, b).or_else(|| machine_fallback(job, n, k, a, b))
 }
@@ -226,7 +226,7 @@ pub(super) struct JoinEq {
 /// variable occurs in `to` at least as often as in `from`, the step at `t` has `size(t) + size(to) - size(from)` nodes or
 /// more (each binding is counted in `to` at least as often as in `t`): it needs that growth from the room the cap leaves
 /// above `size(t)`. Otherwise each variable binds at least one node, so it needs `size(to)` of the cap (`of_cap`). 43% of
-/// the join's matcher calls have a bound over the cap (docs/tier-cycle.md, "How much the size bound would skip").
+/// the join's matcher calls have a bound over the cap (docs/tier-cycle/, "How much the size bound would skip").
 #[derive(Clone, Copy, Debug)]
 pub(super) struct Need {
     nodes: isize,
@@ -289,12 +289,12 @@ fn join_visit(job: &Job) -> usize {
 
 /// The plan of `a = b` by joining them: from both at once over `join_eqs`, the side with fewer pending terms expanding its
 /// one with the least depth plus size (a step that grows the term by a node costs 2, a same-size one 1, one that shrinks
-/// it by a node 0; against breadth-first, a lower stream M for about a third less CPU: docs/tier-cycle.md, "Depth plus
+/// it by a node 0; against breadth-first, a lower stream M for about a third less CPU: docs/tier-cycle/, "Depth plus
 /// size on the sweep"), through terms of at most the larger side's size plus 2 nodes, until the two reached sets meet or
 /// more than `JOIN_VISIT` (1000) terms are reached (5000 left a few laws fewer to the machine proof for 2-3 times the sweep time:
-/// docs/tier-cycle.md, "The bounded join removes the floor"). Only pairs equal on random inputs are searched, so an unequal
+/// docs/tier-cycle/, "The bounded join removes the floor"). Only pairs equal on random inputs are searched, so an unequal
 /// pair costs no search. `ABLATE=join` switches it off. With the memo on, a pair the job's `JoinStore` has a path for
-/// is served from it without a search (77% of a cold:cmp3d mine's searches: docs/tier-cycle.md, "Spike of the join store").
+/// is served from it without a search (77% of a cold:cmp3d mine's searches: docs/tier-cycle/, "Spike of the join store").
 /// The terms it examined go to `RewriteState::trace` (`Fired::Join`) and, with the result, to `RewriteState::memo`'s `joins`, so the rule
 /// miner reuses it as it does a rewrite: a failed search, all of them (under other rules it is the same search when no rule
 /// in or out touches them), served only while the store has no path for the pair; a met one, the terms on its path and their subterms, where the rules its plan used fired (the
@@ -420,7 +420,7 @@ impl JoinStep {
     /// The order of `join_walk` at `t`, the term the step reached: its path, unless the step shrank the term. A skipped
     /// step's other order passes a middle term of `size(t) - Δ + δ` (`Δ` this step's size change, `δ` the skipped one's)
     /// against the end term's `size(t) + δ`, so with `Δ >= 0` the cap stops neither and the search reaches the same terms
-    /// (docs/tier-cycle.md, "Making the picks less sensitive").
+    /// (docs/tier-cycle/, "Making the picks less sensitive").
     pub(super) fn order(self, t: Term) -> Option<StepPath> {
         (t.size() >= self.from.size()).then_some(self.path)
     }
@@ -514,7 +514,7 @@ type JoinPlace = [(usize, Term, Term, bool)];
 /// are skipped, as a step there and this one, the other taken first, reach the same term. `join_search` orders the walk
 /// only after a step that did not shrink the term (`JoinStep::order`), where the cap cannot stop the other order's middle
 /// term, so a search reaches the same terms at each depth as unordered: the same rules and M on salts 1-5, 6% less search
-/// time (docs/tier-cycle.md, "The order made exact").
+/// time (docs/tier-cycle/, "The order made exact").
 #[allow(clippy::too_many_arguments)]
 pub(super) fn join_walk(
     t: Term,
@@ -650,7 +650,7 @@ impl Reached {
 
 /// `join_eq`'s search, adding the terms it examined to `examined`. A step's term is looked up among those reached by its
 /// `sh` and `is_step` before anything is made, so only new terms' rewritten subterms are made (58% of a cmp3d mine's steps
-/// reached a term its side had: docs/tier-cycle.md, "Lazy join steps"); the spine above one is made only when the search
+/// reached a term its side had: docs/tier-cycle/, "Lazy join steps"); the spine above one is made only when the search
 /// expands it or its path meets (36.8% of new terms were expanded: "What the join's duplicates and term building are"),
 /// and plans only on the path that meets. With `feed`, a met path goes to the store the job feeds.
 fn join_search(job: &mut Job, a: &Term, b: &Term, examined: &mut Option<hashbrown::HashSet<Term>>, feed: bool) -> Option<PlanRc> {

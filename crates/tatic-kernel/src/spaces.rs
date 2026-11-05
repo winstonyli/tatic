@@ -347,7 +347,7 @@ impl Spaces {
         debug_assert!(in_region || persistent_kids, "a region child with no region open");
         // A region child with no parent yet means no node over it exists: `parents` rises only when a node is pushed, and
         // persistent nodes have no region children. So the lookup, a cache miss, is skipped (a quarter of all builds;
-        // docs/tier-cycle.md, "Skipping the lookup that must miss").
+        // docs/tier-cycle/, "Skipping the lookup that must miss").
         debug_assert!(!fresh_kid || i.region.find(h, &n).is_none(), "a node over a parentless child already exists");
         if in_region && !fresh_kid && let Some(r) = i.region.find(h, &n) {
             return r;
