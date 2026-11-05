@@ -53,8 +53,8 @@ The belief layer (`crates/church-bv/src/`):
 - `belief.rs`: a calibrated estimate of whether a claimed equality is refuted or unprovable, from its shape and the cheap evidence it has passed; it is meant to order and budget work (nothing reads a belief yet) and never accepts a claim. Pure statistics (`crates/church-bv/src/belief.rs#auc`, grouped folds `crates/church-bv/src/belief.rs#fold_of`) sit under the estimators, the claim dump and the report.
 
 The miner, driver, loop and gate:
-- `miner.rs`: how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
-- `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`crates/church-bv/src/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`crates/church-bv/src/miner.rs#dump_pool`, `scripts/ctx_dump.sh`), and its fitted model (a weights file, `Model::to_text`) is what `EXTRAS_SELECT=ctx` scores the pool with at run time (`crates/church-bv/src/miner.rs#ctx_pool_ranks`, `CTX_WEIGHTS`).
+- `miner.rs` (with `miner/`): how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/streams_ab.sh`: the A/B gate. `tools/runs/src/gate.rs#gate`: the cheaper four-sweep gate, which has no held-out check.
+- `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`crates/church-bv/src/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`crates/church-bv/src/miner/laws.rs#dump_pool`, `scripts/ctx_dump.sh`), and its fitted model (a weights file, `Model::to_text`) is what `EXTRAS_SELECT=ctx` scores the pool with at run time (`crates/church-bv/src/miner/laws.rs#ctx_pool_ranks`, `CTX_WEIGHTS`).
 - `tools/runs/` (own crate): the recorded-run runner and gate. `tools/shr_probe.py`: a probe script.
 - `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/`, `tour_check.sh` (TOUR cites) and `cite_check.sh` (section cites into `docs/tier-cycle/` and `RELATED_WORK.md`, plus `tour_check.sh`). `experiments/` (older experiment scripts) is git-ignored and exists only on the author's machine.
 - `crates/tatic/benches/`: criterion benchmarks of execution and proofs.
@@ -95,9 +95,9 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 4. `run_loop` serves a batch of laws under the rules in force, records the batch's M, then runs the mines scheduled after it: `crates/church-bv/src/driver.rs#run_loop`.
 5. Serving: each law is rewritten, then closed by the prover cascade (flow (d)); the leftover that needed a whole-term machine proof or stayed unproved is M: `crates/church-bv/src/search.rs#rule_set_kernel_check_task`.
 6. A mine may also take extras, more laws from a deeper stream sequence, filtered against served and held-out laws: `crates/church-bv/src/driver.rs#scope_extras`.
-7. The mine task maps to the miner: `crates/church-bv/src/driver.rs#task_fn`. It finds the stragglers under the base rules: `crates/church-bv/src/miner.rs#laws_of`.
-8. It generates candidate rules from the stragglers' normal forms: `crates/church-bv/src/miner.rs#candidates`, and scores them in greedy rounds: `crates/church-bv/src/miner.rs#play`. In a sweep (`RULEMINER_FAST`) only each round's winner is proved, in the background (`crates/church-bv/src/miner.rs#Prover`); `settle` rolls back rounds built on a winner whose proof fails. Without that switch every candidate is proved first.
-9. Each committed rule is recorded as chosen: `crates/church-bv/src/miner.rs#settle`; the driver appends it to the loop's rules file and the next batch is served under it.
+7. The mine task maps to the miner: `crates/church-bv/src/driver.rs#task_fn`. It finds the stragglers under the base rules: `crates/church-bv/src/miner/laws.rs#laws_of`.
+8. It generates candidate rules from the stragglers' normal forms: `crates/church-bv/src/miner/candidates.rs#candidates`, and scores them in greedy rounds: `crates/church-bv/src/miner/rounds.rs#play`. In a sweep (`RULEMINER_FAST`) only each round's winner is proved, in the background (`crates/church-bv/src/miner/rounds.rs#Prover`); `settle` rolls back rounds built on a winner whose proof fails. Without that switch every candidate is proved first.
+9. Each committed rule is recorded as chosen: `crates/church-bv/src/miner/rounds.rs#settle`; the driver appends it to the loop's rules file and the next batch is served under it.
 10. The A/B gate runs a sweep for an A and a B build per salt, then scores each loop's final rules on the held-out bands and compares M, held-out M, CPU and work counts: `scripts/streams_ab.sh#arm`. The held-out laws come from `crates/church-bv/src/classes.rs#held_laws`.
 
 ### (c) From term to theorem (the JIT's proofs)
@@ -113,7 +113,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 2. Per node (`crates/church-bv/src/rewrite/rewriter.rs#rewrite_uncached`): the class table's lookup and proved step come first (a node the table knows is final), then the fixed rules, then the mined rules (`crates/church-bv/src/rewrite/rules.rs#run_order`). Everything rewritten carries a `Plan` recording why.
 3. `crates/church-bv/src/rewrite/join.rs#prove_eq` closes the rewritten pair, first match wins: equal sides (refl), the bitwise truth table, the per-position check for shift terms, the bit-0 mask reduction, then `join_or_machine`: the bounded join, else the whole-term machine proof.
 4. The floor is the set of laws that reach the machine; the join and the rules exist to push it down, and M counts it. See `docs/tier-cycle/#The floor and the bounded join`.
-5. The random-input screen is not part of serving: it refutes a candidate law or rule before any proof is tried (`crates/church-bv/src/miner.rs#candidates`, and the class table's replacement check in `crates/church-bv/src/classes.rs#Classes`), and gates the machine and join steps with a cheap difference test.
+5. The random-input screen is not part of serving: it refutes a candidate law or rule before any proof is tried (`crates/church-bv/src/miner/candidates.rs#candidates`, and the class table's replacement check in `crates/church-bv/src/classes.rs#Classes`), and gates the machine and join steps with a cheap difference test.
 6. A rule is itself proved before it is used: `crates/church-bv/src/rewrite/rules.rs#prove_rule` tries its own route first, then the every-input fallback.
 
 ## Glossary
@@ -154,7 +154,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Redraw spread (sigma)**: the difference between two arms that differ only in `GEN_DRAW`; the gate is deterministic, so this A/A spread is the noise floor a win must beat. A doc measure, not computed in code. `docs/tier-cycle/#The streams and the gate`
 - **Globals / Ctx**: the trusted list of constant types and the local binder types. `crates/tatic-kernel/src/check.rs#Globals`
 - **Good witness (GoodBool, GoodBv)**: hypotheses that let a proof split a symbolic bit. `crates/church-bv/src/encoding/gates.rs#binders`
-- **Guard laws**: machine-free laws scored along with stragglers so a regressing candidate is visible. `crates/church-bv/src/miner.rs#Laws`
+- **Guard laws**: machine-free laws scored along with stragglers so a regressing candidate is visible. `crates/church-bv/src/miner/laws.rs#Laws`
 - **Held-out bands**: committed law files of sizes 11, 13, 15, 17 that no loop serves. `crates/church-bv/src/classes.rs#HELD_BANDS`
 - **Held-out M**: M of a loop's final rules on the held-out bands. `docs/tier-cycle/#Metrics`
 - **hp reset**: the host zeroes the bump-allocator pointer before every compiled call. `crates/tatic/src/jit.rs#invoke`
@@ -184,8 +184,8 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Sample battery**: the fixed inputs on which compiled code and interpreter must agree. `crates/tatic/src/jit.rs#sample_arg_vectors`
 - **Screen**: a random-input test that refutes a claimed law before proving it. `crates/church-bv/src/rewrite/values.rs#SCREEN_INPUTS`
 - **Specialisation trace**: the list of beta-v steps replayed by the independent checker. `crates/tatic/src/verify/spec_check.rs#Step`
-- **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `crates/church-bv/src/miner.rs#laws_of`
-- **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified; `ctx` keeps the same stragglers but orders them by a fitted context model's score instead of by cost (the weights file named by `CTX_WEIGHTS`, columns without the marginal-coverage group). `crates/church-bv/src/miner.rs#kept_indices`
+- **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `crates/church-bv/src/miner/laws.rs#laws_of`
+- **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified; `ctx` keeps the same stragglers but orders them by a fitted context model's score instead of by cost (the weights file named by `CTX_WEIGHTS`, columns without the marginal-coverage group). `crates/church-bv/src/miner/laws.rs#kept_indices`
 - **Stream / salt**: operator-set law streams, interleaved round-robin; the salt reshuffles. `crates/church-bv/src/search.rs#stream_sequence`
 - **Sweep**: three cold loops for one salt and build. `crates/church-bv/src/driver.rs#run_sweep`
 - **TermStore**: the hash-consing store of terms. `crates/tatic/src/lang/term.rs#TermStore`
