@@ -23,13 +23,14 @@ So the move cuts no coupling; it makes the existing one visible.
 - f1: one crate `crates/church-bv`, lib + bin, flat modules plus `uniform/`. TB2's core/studies directories are decided against.
 - g1: two steps. Step 1 is the plain crate move that keeps the 749-name test list. Step 2 is the real bin; its CLI scope is
   settled after step 1 has landed, so this spec fixes step 1 and only frames step 2.
+- m1, m3 (2026-11-04): data files in `crates/church-bv/data/`; dead-code lint settled by counting, then one crate-level attribute if needed.
 - c1/e1 (SR8): `crates/` layout and hoisted `[workspace.package]` / `[workspace.dependencies]` are in place (c599226).
 
 ## Step 1 design
 
 **Layout.** `crates/tatic/tests/church_bv/*.rs` and `uniform/` move (rename only, one commit) to `crates/church-bv/src/`;
 `main.rs` becomes `lib.rs`. The data files (`class_key.txt`, `held_{11,13,15,17}.txt`) move to `crates/church-bv/data/`
-(my call: data apart from code; the repoint count is the same either way). `crates/church-bv/Cargo.toml`: package
+(decided m1). `crates/church-bv/Cargo.toml`: package
 `church-bv` with `version/edition/license.workspace = true`, dependencies `tatic-kernel`, `tatic-rng`, `hashbrown`,
 `mimalloc` through `.workspace = true`. Root `members` gains `crates/church-bv`. `tatic` loses the directory and nothing else:
 its `tatic-rng` dev-dependency is still used by `compile_fuzz`, `syntax_fuzz`, `ir_fuzz` and `typing`.
@@ -61,7 +62,7 @@ mimalloc as before; step 2's bin carries the shipping one. The comment in `crate
 **Caches.** The exe hash changes once: the gate's arm cache and the lemma cache (keyed on exe bytes, `lemma_cache.rs:90`)
 miss once. Instruction counts across the move are compared by the `church_bv` exe before and after (ICOUNT.md), as in SR8.
 
-**Open question for the builder to settle by measuring, not by taste.** In a lib, items used only by tests warn as dead code
+**Dead-code lint (decided m3: measure, then one attribute).** In a lib, items used only by tests warn as dead code
 in a non-test build, where they did not in a test binary. The plan's first task counts the warnings; if there are many, the
 settled answer is one crate-level `#![cfg_attr(not(test), allow(dead_code))]` that step 2 deletes once the bin uses them,
 not per-item allows. That attribute is the only expected new line in the code.
