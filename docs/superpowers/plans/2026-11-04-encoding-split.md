@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # `encoding.rs` split Implementation Plan (TB3, encoding half)
