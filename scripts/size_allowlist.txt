@@ -4,4 +4,3 @@ crates/church-bv/src/search.rs 1292
 crates/tatic/tests/compile_fuzz.rs 1140
 crates/tatic/src/jit/lower_wat.rs 1109
 crates/church-bv/src/machine.rs 1089
-crates/church-bv/src/driver.rs 1009

@@ -194,6 +194,8 @@ struct LoopCfg {
     extras: std::sync::Arc<Vec<(Term, Term)>>,
     /// each of `mines`' slice of `extras`
     extra_at: Vec<std::ops::Range<usize>>,
+    /// the extras variables, checked once by `scope_extras` and written to each mine's environment by `run_loop`
+    plan: crate::miner::ExtrasPlan,
     /// further variables for the children (a sweep's RULEMINER_FAST and RULEMINER_SHUFFLE)
     env: Vec<(String, String)>,
 }
@@ -207,30 +209,6 @@ fn extra_slices(len: usize, loops: usize, mines: usize, n: usize) -> Result<Vec<
         return Err(k * n - len);
     }
     Ok((0..k).map(|j| j * n..(j + 1) * n).collect())
-}
-
-/// The driver variables `POOL` and `EXTRAS_SELECT` (`first`, `small` or `ctx`): the miner cuts each mine's pool of `POOL x n`
-/// extras down to `n` (`miner::kept_indices`). Unset is today's draw (pool 1, the mine's n extras as they come); a pool of
-/// more than one needs a selector, and a pool of 0 is an error.
-fn extras_select(select: Option<&str>, pool: usize) -> Result<Option<crate::miner::Keep>, String> {
-    if pool == 0 {
-        return Err("POOL must be at least 1".to_string());
-    }
-    match select {
-        Some(s) => crate::miner::Keep::parse(s).map(Some),
-        None if pool > 1 => Err(format!("POOL {pool} needs EXTRAS_SELECT=first|small|ctx")),
-        None => Ok(None),
-    }
-}
-
-/// The driver variable `CTX_WEIGHTS` (the context model's weights file, `RULEMINER_CTX_WEIGHTS`): required by, and only
-/// meaningful with, `EXTRAS_SELECT=ctx`.
-fn ctx_weights(select: Option<crate::miner::Keep>, weights: Option<&str>) -> Result<Option<String>, String> {
-    match (select == Some(crate::miner::Keep::Ctx), weights) {
-        (true, None) => Err("EXTRAS_SELECT=ctx needs CTX_WEIGHTS=<weights file>".to_string()),
-        (false, Some(_)) => Err("CTX_WEIGHTS is only read with EXTRAS_SELECT=ctx".to_string()),
-        (_, w) => Ok(w.map(String::from)),
-    }
 }
 
 /// The filter drops a twin of a served law (here through `sub(y, 0)`, which normalizes to `y`), a law with a served
@@ -309,36 +287,6 @@ fn nested_laws(count: usize) -> Vec<(Term, Term)> {
     (0..count).map(|i| ((0..i).fold(Term::v(0), |t, _| Term::op(ADD, t, Term::v(1))), Term::ZERO)).collect()
 }
 
-
-/// `POOL` and `EXTRAS_SELECT`: unset is today's draw; `first` and `small` pick the miner's selection; anything else, a
-/// pool of more than one without a selector, or a pool of 0 is an error naming the variables.
-#[test]
-fn extras_select_parses_and_needs_a_selector_for_a_pool() {
-    use crate::miner::Keep;
-    assert_eq!(extras_select(None, 1), Ok(None));
-    assert_eq!(extras_select(Some("first"), 4), Ok(Some(Keep::First)));
-    assert_eq!(extras_select(Some("small"), 1), Ok(Some(Keep::Small)));
-    assert!(extras_select(Some("bogus"), 1).unwrap_err().contains("EXTRAS_SELECT"));
-    assert!(extras_select(None, 4).unwrap_err().contains("EXTRAS_SELECT"));
-    assert!(extras_select(None, 0).unwrap_err().contains("POOL"));
-}
-
-#[test]
-fn extras_select_accepts_ctx() {
-    assert_eq!(extras_select(Some("ctx"), 4), Ok(Some(crate::miner::Keep::Ctx)));
-}
-
-/// `CTX_WEIGHTS` goes with `EXTRAS_SELECT=ctx` and with nothing else: each without the other names the variable.
-#[test]
-fn ctx_weights_needs_ctx_and_ctx_needs_weights() {
-    use crate::miner::Keep;
-    assert_eq!(ctx_weights(Some(Keep::Ctx), Some("w.txt")), Ok(Some("w.txt".to_string())));
-    assert_eq!(ctx_weights(Some(Keep::Small), None), Ok(None));
-    assert_eq!(ctx_weights(None, None), Ok(None));
-    assert!(ctx_weights(Some(Keep::Ctx), None).unwrap_err().contains("CTX_WEIGHTS"));
-    assert!(ctx_weights(Some(Keep::Small), Some("w.txt")).unwrap_err().contains("CTX_WEIGHTS"));
-    assert!(ctx_weights(None, Some("w.txt")).unwrap_err().contains("CTX_WEIGHTS"));
-}
 
 /// The miner names a straggler `a.show() = b.show()` (`read_named_laws`) and credits it by that name; the extras file is
 /// written with `law_text`. The labels join the two, so they must stay equal.
@@ -423,6 +371,7 @@ impl LoopCfg {
             check_fast: setup.flag("CHECK_FAST", false),
             extras: Default::default(),
             extra_at: vec![],
+            plan: Default::default(),
             env: vec![],
         };
         if takes_extras(&cfg, setup.ablated("gen")) {
@@ -775,24 +724,23 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     let held: Vec<(Term, Term)> = HELD_BANDS.into_iter().flat_map(held_laws).collect();
     let c = scope[0].clone();
     let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
-    let (n, mines) = (setup.or("EXTRAS_N", EXTRAS_N), c.mines.len());
-    let pool = setup.or("POOL", 1usize);
-    let select = extras_select(setup.var("EXTRAS_SELECT"), pool)?;
-    ctx_weights(select, setup.var("CTX_WEIGHTS"))?;
+    let plan = crate::miner::ExtrasPlan::from_vars(setup, EXTRAS_N)?;
+    let (n, pool, mines) = (plan.n, plan.pool, c.mines.len());
     // built once per process and salt (its `STREAMS` lines give the time)
     let deep = stream_sequence(salt, held_levels(HELD_BANDS.into_iter().max().unwrap()));
     let keep = filter(&served, &held);
-    // with `EXTRAS_SELECT` each mine gets its whole pool and the miner keeps n (`RULEMINER_EXTRAS_*`, `run_loop`)
-    let per_mine = if select.is_some() { pool * n } else { n };
+    // with `EXTRAS_SELECT` each mine gets its whole pool and the miner keeps n (`ExtrasPlan::child_env`, `run_loop`)
+    let per_mine = plan.per_mine();
     let laws: Vec<(Term, Term)> = deep.iter().filter(|l| keep(l)).take(scope.len() * mines * per_mine).copied().collect();
     let at = extra_slices(laws.len(), scope.len(), mines, per_mine).map_err(|short| {
         format!("{}: the extras sequence of {} laws keeps {}, {short} short of {} loops x {mines} mines x POOL {pool} x n {n}", c.out.display(), deep.len(), laws.len(), scope.len())
     })?;
-    println!("GEN {}: n {n}, pool {pool}, select {select:?}, {} laws from a sequence of {}", c.out.display(), laws.len(), deep.len());
+    println!("GEN {}: n {n}, pool {pool}, select {:?}, {} laws from a sequence of {}", c.out.display(), plan.by, laws.len(), deep.len());
     let laws = std::sync::Arc::new(laws);
     for (i, cfg) in scope.iter_mut().enumerate() {
         cfg.extras = laws.clone();
         cfg.extra_at = at[i * mines..(i + 1) * mines].to_vec();
+        cfg.plan = plan.clone();
     }
     Ok(())
 }
@@ -830,24 +778,14 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
         env.push(write_laws(setup, &env, &out.join(format!("laws_mine_{name}.txt")), "RULEMINER_LAWFILE"));
         if let Some(at) = cfg.extra_at.get(slot) {
             let extra: String = cfg.extras[at.clone()].iter().map(|l| law_text(l) + "\n").collect();
-            let keep = setup.or("EXTRAS_N", EXTRAS_N);
-            println!("GEN_EXTRA {name}: {} laws, keep {}", at.len(), if setup.var("EXTRAS_SELECT").is_some() { keep } else { at.len() });
+            let plan = &cfg.plan;
+            println!("GEN_EXTRA {name}: {} laws, keep {}", at.len(), if plan.by.is_some() { plan.n } else { at.len() });
             std::fs::write(out.join(format!("laws_extra_{name}.txt")), &extra).unwrap();
             let lawfile = env.last().unwrap().1.clone();
             let served = crate::search::read_named_laws(&lawfile).len();
             append(Path::new(&lawfile), &extra);
-            // `scope_extras` checked the value: the miner reads the pool from line `served` and keeps `keep` of it
-            if let Some(by) = setup.var("EXTRAS_SELECT") {
-                env.push(("RULEMINER_EXTRAS_FROM".into(), served.to_string()));
-                env.push(("RULEMINER_EXTRAS_KEEP".into(), keep.to_string()));
-                env.push(("RULEMINER_EXTRAS_BY".into(), by.to_string()));
-                env.extend(setup.var("CTX_WEIGHTS").map(|w| ("RULEMINER_CTX_WEIGHTS".to_string(), w.to_string())));
-                // after `lawfile` was read: the dump is a switch of the miner (`MinerConfig::pool_dump`), which reads only `first` pools
-                if setup.flag("POOL_DUMP", false) {
-                    assert_eq!(by, "first", "POOL_DUMP dumps the pool of a `first` mine, not of EXTRAS_SELECT={by}");
-                    env.push(("RULEMINER_POOL_DUMP".into(), out.join(format!("dump_{name}")).display().to_string()));
-                }
-            }
+            // the miner reads the pool from line `served` and keeps `plan.n` of it; the dump is a switch of the miner (`MinerConfig::pool_dump`)
+            env.extend(plan.child_env(served, &out.join(format!("dump_{name}"))));
         }
         let records = worker.run("search::rule_miner", &env, &log).unwrap_or_else(|| panic!("rule_miner failed (see {})", log.display()));
         // the chosen rules
@@ -944,6 +882,7 @@ pub fn run_sweep() {
         check_fast: true,
         extras: Default::default(),
         extra_at: vec![],
+        plan: Default::default(),
         env: env.clone(),
     };
     // the one stage: three cold loops on phases 1-3 of the streams (spec §10)

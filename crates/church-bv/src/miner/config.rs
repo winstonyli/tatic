@@ -50,14 +50,15 @@ pub enum Keep {
 }
 
 impl Keep {
+    const NAMES: [(&'static str, Keep); 3] = [("first", Keep::First), ("small", Keep::Small), ("ctx", Keep::Ctx)];
+
     /// The driver variable `EXTRAS_SELECT` / `RULEMINER_EXTRAS_BY`.
     pub fn parse(s: &str) -> Result<Keep, String> {
-        match s {
-            "first" => Ok(Keep::First),
-            "small" => Ok(Keep::Small),
-            "ctx" => Ok(Keep::Ctx),
-            _ => Err(format!("EXTRAS_SELECT: expected first, small or ctx, got {s}")),
-        }
+        Keep::NAMES.iter().find(|(n, _)| *n == s).map(|&(_, k)| k).ok_or_else(|| format!("EXTRAS_SELECT: expected first, small or ctx, got {s}"))
+    }
+
+    fn name(self) -> &'static str {
+        Keep::NAMES.iter().find(|&&(_, k)| k == self).unwrap().0
     }
 }
 
@@ -67,6 +68,70 @@ pub struct ExtrasKeep {
     pub from: usize,
     pub n: usize,
     pub by: Keep,
+}
+
+/// The driver's extras variables, parsed and checked once (`driver::scope_extras`) and written to a mine's environment by
+/// `child_env`, which `MinerConfig::new` reads back as `extras`, `ctx_weights` and `pool_dump`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ExtrasPlan {
+    /// `EXTRAS_N`: the laws each mine keeps.
+    pub n: usize,
+    /// `POOL`: the mine is handed `pool x n` laws and cuts them down to `n` (1 without `by`).
+    pub pool: usize,
+    /// `EXTRAS_SELECT`: unset is today's draw (the mine's `n` extras as they come); a pool of more than one needs a selector.
+    pub by: Option<Keep>,
+    /// `CTX_WEIGHTS`: the context model's weights file, required by, and only meaningful with, `by` = `ctx`.
+    pub ctx_weights: Option<String>,
+    /// `POOL_DUMP` (switch): the miner also writes the pool's raw facts, which it reads only of a `first` pool.
+    pub pool_dump: bool,
+}
+
+impl ExtrasPlan {
+    pub fn from_vars(s: &Setup, default_n: usize) -> Result<ExtrasPlan, String> {
+        let (n, pool) = (s.or("EXTRAS_N", default_n), s.or("POOL", 1usize));
+        if pool == 0 {
+            return Err("POOL must be at least 1".to_string());
+        }
+        let by = match s.var("EXTRAS_SELECT") {
+            Some(v) => Some(Keep::parse(v)?),
+            None if pool > 1 => return Err(format!("POOL {pool} needs EXTRAS_SELECT=first|small|ctx")),
+            None => None,
+        };
+        let ctx_weights = s.var("CTX_WEIGHTS").map(String::from);
+        match (by == Some(Keep::Ctx), &ctx_weights) {
+            (true, None) => return Err("EXTRAS_SELECT=ctx needs CTX_WEIGHTS=<weights file>".to_string()),
+            (false, Some(_)) => return Err("CTX_WEIGHTS is only read with EXTRAS_SELECT=ctx".to_string()),
+            _ => {}
+        }
+        let pool_dump = s.flag("POOL_DUMP", false);
+        if let (true, Some(by)) = (pool_dump, by) {
+            if by != Keep::First {
+                return Err(format!("POOL_DUMP dumps the pool of a `first` mine, not of EXTRAS_SELECT={}", by.name()));
+            }
+        }
+        Ok(ExtrasPlan { n, pool, by, ctx_weights, pool_dump })
+    }
+
+    /// The laws a mine is handed: its whole pool when `by` cuts it, else its `n`.
+    pub fn per_mine(&self) -> usize {
+        if self.by.is_some() { self.pool * self.n } else { self.n }
+    }
+
+    /// A mine's `RULEMINER_*` variables for a pool read from line `from` of its lawfile (none without `by`); a pool dump
+    /// goes to `dump`.
+    pub fn child_env(&self, from: usize, dump: &std::path::Path) -> Vec<(String, String)> {
+        let Some(by) = self.by else { return vec![] };
+        let mut env = vec![
+            ("RULEMINER_EXTRAS_FROM".to_string(), from.to_string()),
+            ("RULEMINER_EXTRAS_KEEP".to_string(), self.n.to_string()),
+            ("RULEMINER_EXTRAS_BY".to_string(), by.name().to_string()),
+        ];
+        env.extend(self.ctx_weights.iter().map(|w| ("RULEMINER_CTX_WEIGHTS".to_string(), w.clone())));
+        if self.pool_dump {
+            env.push(("RULEMINER_POOL_DUMP".to_string(), dump.display().to_string()));
+        }
+        env
+    }
 }
 
 impl MinerConfig {

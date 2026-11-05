@@ -510,3 +510,60 @@ fn a_false_winner_rolls_the_rounds_back() {
     // the rounds after the rollback replay the plain mine's (the false rule's left side has no candidate of its own here)
     assert_eq!(chosen, plain);
 }
+
+fn plan(vars: &[(&str, &str)]) -> Result<ExtrasPlan, String> {
+    ExtrasPlan::from_vars(&Setup::with_env(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()), 319)
+}
+
+/// `POOL` and `EXTRAS_SELECT`: unset is today's draw (319 laws a mine); `first`, `small` and `ctx` pick the miner's selection
+/// (`ctx` also needs its weights); anything else, a pool of more than one without a selector, or a pool of 0 is an error
+/// naming the variables.
+#[test]
+fn the_extras_plan_parses_and_needs_a_selector_for_a_pool() {
+    let p = plan(&[]).unwrap();
+    assert_eq!((p.n, p.pool, p.by, p.per_mine()), (319, 1, None, 319));
+    let p = plan(&[("EXTRAS_N", "5"), ("POOL", "4"), ("EXTRAS_SELECT", "first")]).unwrap();
+    assert_eq!((p.n, p.pool, p.by, p.per_mine()), (5, 4, Some(Keep::First), 20));
+    assert_eq!(plan(&[("EXTRAS_SELECT", "small")]).unwrap().by, Some(Keep::Small));
+    assert_eq!(plan(&[("POOL", "4"), ("EXTRAS_SELECT", "ctx"), ("CTX_WEIGHTS", "w.txt")]).unwrap().by, Some(Keep::Ctx));
+    assert!(plan(&[("EXTRAS_SELECT", "bogus")]).unwrap_err().contains("EXTRAS_SELECT"));
+    assert!(plan(&[("POOL", "4")]).unwrap_err().contains("EXTRAS_SELECT"));
+    assert!(plan(&[("POOL", "0")]).unwrap_err().contains("POOL"));
+}
+
+/// `CTX_WEIGHTS` goes with `EXTRAS_SELECT=ctx` and with nothing else: each without the other names the variable.
+#[test]
+fn ctx_weights_need_ctx_and_ctx_needs_weights() {
+    assert_eq!(plan(&[("EXTRAS_SELECT", "ctx"), ("CTX_WEIGHTS", "w.txt")]).unwrap().ctx_weights.as_deref(), Some("w.txt"));
+    assert_eq!(plan(&[("EXTRAS_SELECT", "small")]).unwrap().ctx_weights, None);
+    assert!(plan(&[("EXTRAS_SELECT", "ctx")]).unwrap_err().contains("CTX_WEIGHTS"));
+    assert!(plan(&[("EXTRAS_SELECT", "small"), ("CTX_WEIGHTS", "w.txt")]).unwrap_err().contains("CTX_WEIGHTS"));
+    assert!(plan(&[("CTX_WEIGHTS", "w.txt")]).unwrap_err().contains("CTX_WEIGHTS"));
+}
+
+/// `POOL_DUMP` dumps the pool of a `first` mine only; without a selector it is ignored.
+#[test]
+fn a_pool_dump_needs_a_first_pool() {
+    assert!(plan(&[("EXTRAS_SELECT", "first"), ("POOL_DUMP", "1")]).unwrap().pool_dump);
+    assert!(plan(&[("EXTRAS_SELECT", "small"), ("POOL_DUMP", "1")]).unwrap_err().contains("POOL_DUMP"));
+    assert!(plan(&[("POOL_DUMP", "1")]).unwrap().child_env(0, std::path::Path::new("d")).is_empty());
+}
+
+/// What `child_env` writes, `MinerConfig::new` reads back as the same extras, weights and dump (the driver and the miner
+/// agree on the three `RULEMINER_EXTRAS_*` variables, `RULEMINER_CTX_WEIGHTS` and `RULEMINER_POOL_DUMP`).
+#[test]
+fn the_extras_plan_round_trips_through_the_miner_config() {
+    for (select, weights, dump) in [("first", None, true), ("small", None, false), ("ctx", Some("w.txt"), false)] {
+        let mut vars = vec![("EXTRAS_N", "7"), ("POOL", "3"), ("EXTRAS_SELECT", select)];
+        vars.extend(weights.map(|w| ("CTX_WEIGHTS", w)));
+        vars.extend(dump.then_some(("POOL_DUMP", "1")));
+        let p = plan(&vars).unwrap();
+        let mut env = p.child_env(11, std::path::Path::new("out/dump_a"));
+        env.push(("RULEMINER_LAWFILE".to_string(), "unused".to_string()));
+        let c = MinerConfig::new(&Setup::with_env(env));
+        let k = c.extras.expect("set");
+        assert_eq!((k.from, k.n, Some(k.by)), (11, 7, p.by), "{select}");
+        assert_eq!(c.ctx_weights.as_deref(), weights, "{select}");
+        assert_eq!(c.pool_dump.as_deref(), dump.then_some("out/dump_a"), "{select}");
+    }
+}
