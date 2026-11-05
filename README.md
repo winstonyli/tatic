@@ -31,7 +31,7 @@ anything else is served by the interpreter. Kernel-checked equivalence proofs
 cover only the terms in the proof fragment, and a term runs compiled only
 with a proof covering every input (the installation gate, below). Alongside the JIT, the
 repository holds a Church-encoded bit-vector library and a rewrite-rule miner
-(`crates/tatic/tests/church_bv/`), which are research experiments and are
+(`crates/church-bv/src/`), which are research experiments and are
 not needed to use the JIT.
 
 ## Requirements
@@ -69,11 +69,11 @@ still need a whole-term machine proof. The measured results are in
 
 - The laws come from the streams: `search::stream_sequence(salt)`, the operator-set
   streams round-robin, built once per process and salt; a phase is a residue class
-  mod `STREAM_STRIDE`. Held-out laws are in `crates/tatic/tests/church_bv/held_*.txt`. The
+  mod `STREAM_STRIDE`. Held-out laws are in `crates/church-bv/src/held_*.txt`. The
   design is in the spec
   [`2026-10-22-class-table-normal-form-design.md`](docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md),
   §9.
-- The driver is the ignored test `driver::loop_stream` (`crates/tatic/tests/church_bv/driver.rs`):
+- The driver is the ignored test `driver::loop_stream` (`crates/church-bv/src/driver.rs`):
   `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> <church_bv test exe> driver::loop_stream --exact --ignored --nocapture`.
   `none` only serves, `ref` mines once on the whole stream, `loop` mines after
   each batch. It writes `<dir>/m.tsv` (one row per batch: M, laws, rules in
@@ -82,7 +82,7 @@ still need a whole-term machine proof. The measured results are in
   `driver::sweep` with `SWEEP=cold:streams` (the only stage) runs three cold
   loops on phases 1-3 into `SWEEP_OUT=<dir>`; `scripts/streams_ab.sh` is the gate
   built on it (A/B per salt, plus held-out M under each loop's rules).
-- The miner (`search::rule_miner` in `crates/tatic/tests/church_bv/search.rs`) takes its
+- The miner (`search::rule_miner` in `crates/church-bv/src/search.rs`) takes its
   settings from `RULEMINER_*` environment variables; the driver passes its laws
   as a file (`RULEMINER_LAWFILE`). Two options: `NODUPLHS` (no candidate whose left side
   already has a rule in force; on by default, `0` turns it off) and `GUARD=<k>`
@@ -108,7 +108,7 @@ cargo run --release             # runs the demo in crates/tatic/src/bin/demo.rs
 cargo run --release --bin repl  # an interactive REPL (crates/tatic/src/bin/repl.rs)
 cargo test                      # unit tests across all modules
 cargo bench                     # criterion benchmarks (crates/tatic/benches/) -- see below
-cargo test --profile sweep --test church_bv --no-run  # fat-LTO build for sweeps and timing (Cargo.toml)
+cargo test --profile sweep -p church-bv --lib --no-run  # fat-LTO build for sweeps and timing (Cargo.toml)
 cargo build --release --manifest-path tools/runs/Cargo.toml  # gates and timings of sweeps (Windows), tools/runs
 ```
 
@@ -134,7 +134,7 @@ cargo clippy --workspace --all-targets
 cargo test --release --test compile_fuzz --test syntax_fuzz
 cargo test --release -p tatic-kernel --test kernel_fuzz --test kernel_soundness_fuzz
 cargo test --release --lib ir_fuzz -- --ignored
-cargo test --release --test church_bv a_large_check -- --ignored
+cargo test --release -p church-bv --lib a_large_check -- --ignored
 cargo bench
 cargo run --release
 ```

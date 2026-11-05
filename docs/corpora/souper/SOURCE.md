@@ -19,6 +19,6 @@
     arithmetic files (`mul`/`select`/`*.with.overflow`), the path-condition `pc` (`div-shr`, `ub`), `ub` (`shl` by a
     variable), `large-lhs` (`ctpop` with 32-bit mask constants and shifts by 2, 4, 8, 16), `sub` (`add`/`sub` of the
     constant 10, which the term language cannot name; only 0 and -1 exist).
-- **Measure:** `CORPUS=docs/corpora/souper/cases.txt cargo test --test church_bv --release corpus_report -- --ignored --nocapture`.
+- **Measure:** `CORPUS=docs/corpora/souper/cases.txt cargo test -p church-bv --lib --release corpus_report -- --ignored --nocapture`.
   Result (2026-11-01): 14 cases, 52 operators; the table changes 10 and leaves 42; the base rewriter also leaves 42.
   Overlap with `hd-own`: P1 to P7, P14 and P15 are the same routines as there, written with Souper's `sub x 1`.

@@ -621,7 +621,7 @@ fn env_echo_task(setup: &Arc<Setup>) {
 /// A worker runs each task with its own environment, log and result records, leaks no variable or record from one task to
 /// the next (task 10 reuses task 9's log; task 1's count is not in task 2's WORK line), starts afresh
 /// after a failed task, and is replaced when a task's process-start variables differ. Starts processes:
-/// `cargo test --release --test church_bv driver::worker_runs_tasks -- --exact --ignored --nocapture`.
+/// `cargo test --release -p church-bv --lib driver::worker_runs_tasks -- --exact --ignored --nocapture`.
 #[test]
 #[ignore]
 fn worker_runs_tasks() {

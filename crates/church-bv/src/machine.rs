@@ -327,7 +327,7 @@ impl Drop for MachineBanner {
     }
 }
 
-/// Prints one machine-state line, for a human: `cargo test --release --test church_bv machine::machine_state_line --
+/// Prints one machine-state line, for a human: `cargo test --release -p church-bv --lib machine::machine_state_line --
 /// --exact --ignored --nocapture`. The driver composes its own (`driver::machine_state`).
 #[test]
 #[ignore]

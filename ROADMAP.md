@@ -13,7 +13,7 @@ Every milestone serves at least one of these; work that serves none needs a stat
    it on every input (`README.md`, top; the code in `crates/tatic/src/`).
 2. **A kernel that improves itself.** It mines rewrite rules from the laws it proves, so later proofs are cheaper, and
    grows its own vocabulary through checked definitions, since a fixed vocabulary saturates (`docs/tier-cycle.md`,
-   "Idea" and "Risks"; the miner in `crates/tatic/tests/church_bv/`).
+   "Idea" and "Risks"; the miner in `crates/church-bv/src/`).
 3. **The KR&R tier of a cycle with a GPU model.** A learned model on the GPU tier (nothing
    built; the idea came from the tiered-AI direction of the inactive scratchtape repo, which this repo does not rely on) proposes what to explore; the kernel checks and proves it, and returns rules and signals.
    The model's output is untrusted (`docs/tier-cycle.md`).

@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # `church_bv` as a workspace crate, step 1 (TB1)

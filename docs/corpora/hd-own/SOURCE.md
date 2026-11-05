@@ -7,7 +7,7 @@
 - **Format:** `cases.txt`, `name<TAB>term` per line, `show` syntax over `x`, `y`, `z`; constants 0 and -1 only, so `1` is
   `sub(0, -1)`; `shl1`/`shr1` take a second, ignored operand; `lt` is assumed to give 0 or 1.
 - **In scope:** 25 of 25 (no exclusions).
-- **Measure:** `CORPUS=docs/corpora/hd-own/cases.txt cargo test --test church_bv --release corpus_report -- --ignored --nocapture`
+- **Measure:** `CORPUS=docs/corpora/hd-own/cases.txt cargo test -p church-bv --lib --release corpus_report -- --ignored --nocapture`
   (optional `CORPUS_RULES=<mined rules file>`). Expected: 80 operators, the table leaves 54 and changes 17 terms; pinned by
   `corpus::tests::the_hand_written_corpus_reproduces_the_probe_counts`. Findings: `docs/tier-cycle.md`, "Hacker's Delight
   routines".
