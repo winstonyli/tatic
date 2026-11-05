@@ -59,7 +59,7 @@ The miner, driver, loop and gate:
 - `scripts/`: `ablations.sh`, `bench_ab.sh`, `test_gate.sh` (A/B and test wrappers), `rules/`, `tour_check.sh` (TOUR cites) and `cite_check.sh` (section cites into `docs/tier-cycle/` and `RELATED_WORK.md`, plus `tour_check.sh`). `experiments/` (older experiment scripts) is git-ignored and exists only on the author's machine.
 - `crates/tatic/benches/`: criterion benchmarks of execution and proofs.
 
-Test and fuzz suites (each protects one layer). In `crates/tatic-kernel/tests/`: `church_encoding.rs` and `church_lemmas.rs` (the Church-encoded kernel library), `kernel_fuzz.rs` and `kernel_soundness_fuzz.rs` (the kernel never accepts a false claim). In `crates/tatic/tests/`: `compile_fuzz.rs` (compiled code against the interpreter), `syntax_fuzz.rs` (the parser), `golden_wat.rs` with `golden/` (pinned WAT output), `rule_match_census.rs` (rule-matching counts).
+Test and fuzz suites (each protects one layer). In `crates/tatic-kernel/tests/`: `church_encoding.rs` and `church_lemmas.rs` (the Church-encoded kernel library), `kernel_fuzz.rs` and `kernel_soundness_fuzz.rs` (the kernel never accepts a false claim). In `crates/tatic/tests/`: `compile_fuzz.rs` (compiled code against the interpreter), `syntax_fuzz.rs` (the parser), `golden_wat.rs` with `golden/` (pinned WAT output).
 
 Project state: `ROADMAP.md`, `PARKED.md`, `docs/tier-cycle/`, `docs/learned-vs-fixed.md`, `RELATED_WORK.md` (a record of the surveyed landscape, not a design proposal).
 

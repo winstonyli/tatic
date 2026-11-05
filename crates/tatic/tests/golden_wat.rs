@@ -88,3 +88,11 @@ fn specialised_benchmark_terms_lower_to_their_golden_wat() {
     }
     assert!(changed.is_empty(), "emitted WAT changed for {changed:?}; if intended, rerun with UPDATE_GOLDEN=1 and review the diff");
 }
+
+#[test]
+fn the_redundant_arithmetic_benchmark_still_evaluates() {
+    let mut s = TermStore::new();
+    let h = samples::redundant_arithmetic_recursion(&mut s);
+    assert!(try_compile(&s, h).is_some());
+    assert_eq!(tatic::lang::eval::apply_term(&s, h, &[10]).unwrap(), 440);
+}
