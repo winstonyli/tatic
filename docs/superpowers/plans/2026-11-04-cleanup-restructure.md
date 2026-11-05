@@ -93,8 +93,7 @@ Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
   **Done 2026-11-05, narrowed** (m1): the 12 direct reads in the ignored experiment tests (`belief` 7, `corpus` 2, `uniform/symmul*` 3) go through `Setup::process()` (`var`, `or`), so they see `<exe>.env` and report as other reads do; the rest stay direct and `job.rs`'s module doc says why (the `TATIC_WORKER` and `*_PROBE` test switches, `Setup`'s own oracle, `UPDATE_GOLDEN` in another crate). Not done: a registry of every knob (m2) - no bug it would fix; the plan's "~150 lines" was about 15. Lib suite 318 passed.
 
 ### Scripts and tools (SC, RB)
-- **SC1. `scripts/experiments/` (372 untracked files):** delete, or track a curated subset. Unrecoverable from git: needs the
-  user's decision (D4). Also DOC8 (stale pointer to it).
+- **SC1. `scripts/experiments/` (its premise was stale: 109 entries, 1.1 MB, gitignored on purpose).** **Decided against 2026-11-05** (the user, "c1"): it stays ignored and unreshaped, since it is one machine's scratch (106 `.sh`, one `.py`, `logs/` with 264 files) and nothing tracked depends on it; the earlier 2026-10-26 cleanup had already ruled the gitignore intentional. The one tracked pointer, a doc comment in `crates/church-bv/src/encoding/tests.rs` naming `lemma_times.sh`, now says the script lives in the ignored directory. Shared gate/kk/curve scripts are SC2's and SC6's. DOC8 (the stale pointer) is this doc-comment fix.
 - **SC2. Give shared gate/kk/curve scripts a stable home** and stop citing dated run folders as tools (`docs/runs/2026-10-31/scripts/gate.sh`
   is called by every Q2 gate). 3-4 files, ~10 live cites; historical rows stay as written.
 - **SC3. Group `scripts/` by role** (gates, checks, tests, probes); breaks `test_gate.sh`, which extracts functions from

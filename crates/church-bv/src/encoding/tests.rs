@@ -130,7 +130,7 @@ pub fn add_zero_proof_size_scales_gently() {
 
 /// Build and check time of one lemma at the widths in `env` (comma separated, else `default`), each built and checked
 /// inside one `scoped` call so the proof is interned as it is built (design doc section 69); `NO_SCOPE=1` is the
-/// unscoped control. Prints `<label> n=..: build .., check .., proof dag=..`. `scripts/experiments/lemma_times.sh`
+/// unscoped control. Prints `<label> n=..: build .., check .., proof dag=..`. `lemma_times.sh` (in the gitignored `scripts/experiments/`, kept on one machine)
 /// runs the callers by name.
 fn scaling_scoped(label: &str, env: &str, default: &str, build: impl Fn(usize) -> (Expr, Expr)) {
     let job = &Job::new(Setup::process());
