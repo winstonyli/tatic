@@ -43,7 +43,7 @@ The bit-vector library and target machine (`crates/church-bv/src/`; `lib.rs` hol
 - `entry.rs`: the `church-bv <subcommand>` table (`sweep`, `worker`, `loop-stream`, `proof-cost-split`, `rule-set-kernel-check`, `ctx-fit`, `overlap-report`, `q1-report`) and `main` (`crates/church-bv/src/entry.rs#main`); each subcommand runs on a default-stack thread, as a test would, and the binary tells `Worker` to re-enter itself as `church-bv worker` (`crates/church-bv/src/driver.rs#declare_reentry`).
 
 The rewriter and provers (`crates/church-bv/src/`):
-- `rewrite.rs`: terms, plans, rule table, the rewriter and the `prove_eq` cascade. `job.rs`: per-task and per-thread state.
+- `rewrite/` (the parent re-exports the pieces): `term` (interned terms), `values` (value memos and screens), `plan` (plans and the proof compiler), `rules` (rule table and admission), `rewriter` (the rewriter and its memo), `join` (bounded join, machine fallback, `prove_eq`), `laws` (`rewrite_plan`, `rewrite_law`); its tests are `rewrite/tests.rs`. `job.rs`: per-task and per-thread state.
 - `search.rs`: the law supply (`crates/church-bv/src/search.rs#stream_sequence`), rule admission (`crates/church-bv/src/search.rs#rule_admissible`) and cost (`crates/church-bv/src/search.rs#law_cost`), and the bodies of the two worker tasks: serving (`crates/church-bv/src/search.rs#rule_set_kernel_check_task`) and mining (`crates/church-bv/src/search.rs#rule_miner`).
 
 External corpora (`crates/church-bv/src/`):
@@ -109,12 +109,12 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 
 ### (d) Serving one law (the rewriter and the prover cascade)
 
-1. Entry: `crates/church-bv/src/rewrite.rs#rewrite_plan` rewrites both sides, children first, then closes the pair with `prove_eq`. `rewrite_law` compiles the plan into a kernel proof.
-2. Per node (`crates/church-bv/src/rewrite.rs#rewrite_uncached`): the class table's lookup and proved step come first (a node the table knows is final), then the fixed rules, then the mined rules (`crates/church-bv/src/rewrite.rs#run_order`). Everything rewritten carries a `Plan` recording why.
-3. `crates/church-bv/src/rewrite.rs#prove_eq` closes the rewritten pair, first match wins: equal sides (refl), the bitwise truth table, the per-position check for shift terms, the bit-0 mask reduction, then `join_or_machine`: the bounded join, else the whole-term machine proof.
+1. Entry: `crates/church-bv/src/rewrite/laws.rs#rewrite_plan` rewrites both sides, children first, then closes the pair with `prove_eq`. `rewrite_law` compiles the plan into a kernel proof.
+2. Per node (`crates/church-bv/src/rewrite/rewriter.rs#rewrite_uncached`): the class table's lookup and proved step come first (a node the table knows is final), then the fixed rules, then the mined rules (`crates/church-bv/src/rewrite/rules.rs#run_order`). Everything rewritten carries a `Plan` recording why.
+3. `crates/church-bv/src/rewrite/join.rs#prove_eq` closes the rewritten pair, first match wins: equal sides (refl), the bitwise truth table, the per-position check for shift terms, the bit-0 mask reduction, then `join_or_machine`: the bounded join, else the whole-term machine proof.
 4. The floor is the set of laws that reach the machine; the join and the rules exist to push it down, and M counts it. See `docs/tier-cycle.md#The floor and the bounded join`.
 5. The random-input screen is not part of serving: it refutes a candidate law or rule before any proof is tried (`crates/church-bv/src/miner.rs#candidates`, and the class table's replacement check in `crates/church-bv/src/classes.rs#Classes`), and gates the machine and join steps with a cheap difference test.
-6. A rule is itself proved before it is used: `crates/church-bv/src/rewrite.rs#prove_rule` tries its own route first, then the every-input fallback.
+6. A rule is itself proved before it is used: `crates/church-bv/src/rewrite/rules.rs#prove_rule` tries its own route first, then the every-input fallback.
 
 ## Glossary
 
@@ -123,7 +123,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Corpus**: a fixed, named list of expressions from one source, measured by the table and the rewriter. `crates/church-bv/src/corpus.rs#read_cases`
 - **Belief layer**: P(a claimed equality is refuted or unprovable) from shape and evidence; meant to order and budget work (nothing reads it yet), never accepts a claim. `crates/church-bv/src/belief.rs#auc`
 - **Beta-v**: contracting an application of a lambda to a value only; full beta is unsound under call-by-value with errors and `Rec`. `crates/tatic/src/verify/spec_check.rs#check`
-- **Bounded join**: bounded two-sided search that rewrites both sides with the rules plus assoc/comm until they meet. `crates/church-bv/src/rewrite.rs#join_eq`
+- **Bounded join**: bounded two-sided search that rewrites both sides with the rules plus assoc/comm until they meet. `crates/church-bv/src/rewrite/join.rs#join_eq`
 - **CacheEntry**: the per-hash JIT outcome; every variant but `Compiled` is served by the interpreter. `crates/tatic/src/jit.rs#CacheEntry`
 - **Carry cap**: the most carries per side the machine proof takes on. `crates/church-bv/src/machine.rs#carry_cap`
 - **Carry vector**: a machine's state between bit positions, one bit per carrying node. `crates/church-bv/src/machine.rs#carries`
@@ -132,19 +132,19 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Class table**: a learned map from the value signature of a term to its smallest representative, used as a rewriting step; a replacement is used only if it is provable. `crates/church-bv/src/classes.rs#Classes`
 - **Classify / Shape**: the one case analysis of a body node shared by the IR builder and the proof walkers. `crates/tatic/src/jit/shape.rs#classify`
 - **Combinator**: a lambda or `Rec` lifted out as its own function (or a partial-application wrapper) in the IR. `crates/tatic/src/jit/ir.rs#Combinator`
-- **Compiler (Plan to proof)**: turns a rewriter `Plan` into a checked kernel proof on demand. `crates/church-bv/src/rewrite.rs#Compiler`
+- **Compiler (Plan to proof)**: turns a rewriter `Plan` into a checked kernel proof on demand. `crates/church-bv/src/rewrite/plan.rs#Compiler`
 - **Const (postulate)**: a kernel constant typed by the `Globals` list; it never unfolds, so it acts as an axiom. `crates/tatic-kernel/src/lib.rs#const_type`
 - **Content hash**: BLAKE3 of a node's tag and payload; equal structure gives equal hash in any store. `crates/tatic/src/lang/term.rs#content_hash`
-- **Cycle cut**: the rewriter returns a term unchanged when a term on its path embeds in it, ending growing chains early. `crates/church-bv/src/rewrite.rs#cut_at`
+- **Cycle cut**: the rewriter returns a term unchanged when a term on its path embeds in it, ending growing chains early. `crates/church-bv/src/rewrite/rewriter.rs#cut_at`
 - **Decompile (translation validation)**: rebuilds the source term from the IR alone so a builder bug cannot cancel itself. `crates/tatic/src/verify/decompile.rs#decompile`
 - **Dispatch**: whether unknown calls are lowered fast (trap on arity mismatch) or curried. `crates/tatic/src/jit/ir.rs#Dispatch`
 - **Encoding (phi, g)**: a coarse labelling of carry vectors through which both machines factor; found by `crates/church-bv/src/machine.rs#moore_encoding`.
 - **EquivalenceProof**: a kernel-checked refl proof packaged with its globals and arity. `crates/tatic/src/proof.rs#EquivalenceProof`
-- **Every-input fallback**: a rule no other route proves is proved by case-splitting over all input bits when width x variables is at most 12; a rule past the cap stays unproved. `crates/church-bv/src/rewrite.rs#EVERY_INPUT_BITS`
+- **Every-input fallback**: a rule no other route proves is proved by case-splitting over all input bits when width x variables is at most 12; a rule past the cap stays unproved. `crates/church-bv/src/rewrite/rules.rs#EVERY_INPUT_BITS`
 - **Extras**: additional laws mined alongside a loop's batch; each mine takes its own slice. `crates/church-bv/src/driver.rs#EXTRAS_N`
 - **Ev / ev_rec**: the postulated inductive family and recursor behind the universal tail-recursion theorem. `crates/tatic/src/proof/hardening.rs#prove_tail_recursive_universal`
 - **Expr**: a Copy handle to an interned kernel term. `crates/tatic-kernel/src/lib.rs#Expr`
-- **Fallback (machine)**: a whole-term carry-machine proof used when rewriting and join fail; counted toward M. `crates/church-bv/src/rewrite.rs#machine_fallback`
+- **Fallback (machine)**: a whole-term carry-machine proof used when rewriting and join fail; counted toward M. `crates/church-bv/src/rewrite/join.rs#machine_fallback`
 - **Floor**: the laws that still need the machine after rewriting and the join. `docs/tier-cycle.md#The floor and the bounded join`
 - **Free**: a builder-scope parameter the kernel refuses to type, so an escaped one cannot act as an axiom. `crates/tatic-kernel/src/lib.rs#free_escaped`
 - **Free share**: the share of a band's laws proved with no whole-term machine proof. `docs/tier-cycle.md#Metrics`
@@ -162,27 +162,27 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Installation gate**: arity, type check, instantiate, samples, then kernel theorem (a term that calls its own parameter is refused first); only then `Compiled`. `crates/tatic/src/jit.rs#try_install`
 - **Job / Setup**: one thread's rewriting state over the per-task shared configuration. `crates/church-bv/src/job.rs#Job`, `crates/church-bv/src/job.rs#Setup`
 - **Kernel**: the trusted checker; the only place typing and definitional equality are decided. `crates/tatic-kernel/src/lib.rs#check_in`
-- **Law**: an equation between two bit-vector terms; `crates/church-bv/src/rewrite.rs#Term` is the interned expression tree.
+- **Law**: an equation between two bit-vector terms; `crates/church-bv/src/rewrite/term.rs#Term` is the interned expression tree.
 - **Lemma cache**: on-disk cache of already-checked lemma statements shared by processes of one build. `crates/church-bv/src/lemma_cache.rs#Cache`
 - **Lawfile**: text file of `lhs = rhs` lines handed to a worker task. `crates/church-bv/src/driver.rs#write_laws`
 - **Loop**: serve a batch, mine, serve the next batch under the new rules. `crates/church-bv/src/driver.rs#run_loop`
 - **M**: per batch, the laws that needed a whole-term machine proof or were not proved; laws closed by the bounded join are not counted; lower is better. `docs/tier-cycle.md#Metrics`
 - **Machine**: a term turned into a bit-serial automaton whose state is a carry vector. `crates/church-bv/src/machine.rs#Machine`
-- **Mined rules**: rules chosen at run time by the miner, tried after the fixed rules. `crates/church-bv/src/rewrite.rs#run_order`
+- **Mined rules**: rules chosen at run time by the miner, tried after the fixed rules. `crates/church-bv/src/rewrite/rules.rs#run_order`
 - **Mine**: one run of the rule miner on a lawfile. `crates/church-bv/src/miner.rs#mine`
 - **Per-instance proof**: a proof that follows one concrete execution; allowed only at arity 0. `crates/tatic/src/proof/per_instance.rs#prove_closure_expr_instance`
 - **Peel**: splits a term into parameter count, body and whether it is recursive. `crates/tatic/src/jit/shape.rs#peel`
 - **Phase**: a residue class of the stream sequence. `crates/church-bv/src/search.rs#residue`
-- **Plan / LawKind**: the rewriter's proof sketch and the name of the prover of each leaf. `crates/church-bv/src/rewrite.rs#Plan`, `crates/church-bv/src/rewrite.rs#LawKind`
+- **Plan / LawKind**: the rewriter's proof sketch and the name of the prover of each leaf. `crates/church-bv/src/rewrite/plan.rs#Plan`, `crates/church-bv/src/rewrite/plan.rs#LawKind`
 - **Pool**: `POOL=p` hands each mine p x n extras and `EXTRAS_SELECT` keeps n. `crates/church-bv/src/driver.rs#POOL`
 - **Postulates**: the untrusted builder that grows `Globals`; each pushed type is checked to be a type, its inhabitation is assumed. `crates/tatic-kernel/src/postulates.rs#Postulates`
-- **PROMOTED**: mined rules frozen in code: learned once, then fixed. `crates/church-bv/src/rewrite.rs#PROMOTED`
-- **prove_eq**: the cascade that closes a rewritten pair: refl, truth table, per-position check, mask reduction, join, machine. `crates/church-bv/src/rewrite.rs#prove_eq`
-- **prove_rule**: proves a rule itself before it is used; the every-input fallback is its last resort. `crates/church-bv/src/rewrite.rs#prove_rule`
+- **PROMOTED**: mined rules frozen in code: learned once, then fixed. `crates/church-bv/src/rewrite/rules.rs#PROMOTED`
+- **prove_eq**: the cascade that closes a rewritten pair: refl, truth table, per-position check, mask reduction, join, machine. `crates/church-bv/src/rewrite/join.rs#prove_eq`
+- **prove_rule**: proves a rule itself before it is used; the every-input fallback is its last resort. `crates/church-bv/src/rewrite/rules.rs#prove_rule`
 - **Rec**: a term form that ties a knot for direct self-recursion. `crates/tatic/src/lang/term.rs#Term`
-- **Rule order**: the polynomial weight a rule must lower to be admitted. `crates/church-bv/src/rewrite.rs#rule_order_ok`
+- **Rule order**: the polynomial weight a rule must lower to be admitted. `crates/church-bv/src/rewrite/rules.rs#rule_order_ok`
 - **Sample battery**: the fixed inputs on which compiled code and interpreter must agree. `crates/tatic/src/jit.rs#sample_arg_vectors`
-- **Screen**: a random-input test that refutes a claimed law before proving it. `crates/church-bv/src/rewrite.rs#SCREEN_INPUTS`
+- **Screen**: a random-input test that refutes a claimed law before proving it. `crates/church-bv/src/rewrite/values.rs#SCREEN_INPUTS`
 - **Specialisation trace**: the list of beta-v steps replayed by the independent checker. `crates/tatic/src/verify/spec_check.rs#Step`
 - **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `crates/church-bv/src/miner.rs#laws_of`
 - **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified; `ctx` keeps the same stragglers but orders them by a fitted context model's score instead of by cost (the weights file named by `CTX_WEIGHTS`, columns without the marginal-coverage group). `crates/church-bv/src/miner.rs#kept_indices`

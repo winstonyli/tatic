@@ -44,7 +44,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   per definition and a confluence argument, and pays only for expressiveness, which abbreviations do not add. Trigger:
   (a) when a consumer needs the named form (the GPU model reading rules, or a rule order that should weigh a defined
   operator as 1); (b) when a definition must appear in normal forms. Evidence: operator-site survey, 2026-10-25
-  (`crates/church-bv/src/rewrite.rs` shape bits and `rewrite_uncached`, `machine.rs` `Machine::step`). Status: parked.
+  (`crates/church-bv/src/rewrite/term.rs` shape bits and `rewrite/rewriter.rs` `rewrite_uncached`, `machine.rs` `Machine::step`). Status: parked.
 - **Definitions as an enumerator vocabulary (v0.4's definitions lever)** — what: definitions the miner's enumerators
   build terms from, expanded to base operators, so a candidate reaches larger terms within the same size caps. Why
   decided against (2026-10-26): an abbreviation adds only reach past the size caps, and that reach does not transfer.
@@ -204,7 +204,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   16 input bits (a cheaper case split or kernel evaluation), or a gate shows the old routes prove nothing the
   fallback could not. Evidence: `docs/tier-cycle.md`, "At the loops' width, every-input proofs" and "Kept: the
   every-input fallback" (2026-10-26);
-  `rewrite.rs`, `prove_rule`. Status: parked.
+  `rewrite/rules.rs`, `prove_rule`. Status: parked.
 - **Boolean combinations of comparisons (`lt` results under `and`/`or`/`not`)** — why: machine side is cheap (spike passed) but the gain is capped at about 17% of M in the head start and the rule side is untouched. Trigger: the cmp3d library becomes the limiting factor, or the kernel extending its own vocabulary (goal 2, `ROADMAP.md`; its enumerator form was decided against: "Definitions as an enumerator vocabulary", under "Proposer and loop"); restart from the spike patch and a half-day `prove_rule` probe. Evidence: `docs/superpowers/specs/2026-10-09-boolean-comparisons-spec.md`, "Spike result (2026-10-09): PASSED". Status: parked.
 
 ## Kernel memos, footprint and allocation
@@ -415,7 +415,7 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   and 8.8% (`fill_op`) once the fill stopped zeroing first (`c8c2e68`; run `2026-10-29-zerofill3-prof`).
   Status: parked, trigger not met (2026-10-29).
 - **Operators as an `enum Op`, with their bit-level and kernel forms in the rows** — what: replace the `usize`
-  operator ids (`rewrite.rs`'s `ADD` to `SHR1`) with an `enum Op` whose `info()` gives the typed row, so the wildcard
+  operator ids (`rewrite/term.rs`'s `ADD` to `SHR1`) with an `enum Op` whose `info()` gives the typed row, so the wildcard
   dispatchers become exhaustive matches and a new operator is a compile error wherever it needs handling; and derive
   from the rows what is now restated beside them. Bit-level forms: `OpInfo::truth`, `Term::bit`, `machine::term_gb`,
   `machine::BIT_OPS` (`pos_bit`), `Machine::step`'s `and`, `or` and `xor` arms, and the `good2(.., &OP_INFO[k].truth)`
@@ -426,13 +426,13 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
   `OP_INFO.len()`, the order is not) and the test `operators_match_a_bit_at_a_time`'s `by_bits` (by name, ending in
   `_ => panic!`). Why parked: by decision 2026-10-29, typed rows alone landed (`7637e88`) and this was surveyed as a
   separate change. The
-  dispatchers today: `witnessed` (`rewrite.rs`) sends every operator but `add`, `sub`, `shl1` and `shr1` to an
+  dispatchers today: `witnessed` (`rewrite/plan.rs`) sends every operator but `add`, `sub`, `shl1` and `shr1` to an
   `and`/`or`/`xor` match ending in `_ => xor`, so an `lt` there would be witnessed as `xor`; not reached as far as
   checked, since `lt` terms occur only at roots (`miner.rs`, the pool's doc comment) and a law's arguments are subterms
   below its match. `Machine::step` (`machine.rs`) treats every operator but 1, 2, 3 and 6 as an adder, a subtractor
   when `o >= 4` (`lt` is `sub`'s borrow; `parse` rejects `shr1`); `Machine::last` and `shift_k` use bare 5, 6 and 7;
   `classes::OPS: [usize; 8]` is not tied to `OP_INFO.len()`. A one-byte `Op` would make `Node` 24 bytes instead of 32
-  (its size is asserted in `rewrite.rs`) and each interned node 8 bytes smaller, which moves the addresses terms hash
+  (its size is asserted in `rewrite/tests.rs`) and each interned node 8 bytes smaller, which moves the addresses terms hash
   by (`op_hash`) and the memory per term, so it needs its own count. Trigger: the user's
   call, or a ninth operator. Evidence: the call sites above (2026-10-29). Status: parked (by decision, 2026-10-29).
 - **One value memo shared by the streams** — what: one process-wide exhaustive width-4 memo for every stream's
@@ -458,3 +458,4 @@ run or decision), `decided against` (measured and rejected; kept short so it is 
 - **Execution-learned model for an unformalized target** — what: a model learned from executing instructions on a target with no formalization (native ISA), giving sample-tier equivalence only. Why parked: the installation gate accepts only kernel proofs over every input, so sample-only installs need a policy decision first. Trigger: a decision to allow a sample tier, or a target whose formalization is out of reach. Evidence: `docs/decisions/2026-10-31-learned-target-model.md`; the "Native ISA semantics below wasm" entry. Status: parked.
 - **Belief layer stage 2: score unprovability (or the cheap path's misses)** — what: the counts and logistic arms, the grouped-fold comparison and the paired bootstrap of `docs/superpowers/specs/2026-10-31-belief-layer-design.md`, rerun with "unproved" as the negative class (A_unp: 2693 of 63384 screen-pass claims). Why parked: the spec's headline score A_ref had 0 hard negatives, so stage 2 never started; moving the headline to A_unp changes the spec's question (the comparator is no longer the screen, which cannot see unprovability) and needs a decision. Alternative to weigh beside it: keep refutation as the score but count width-4 failure as evidence rather than as part of the subset, so the 370 claims that pass the screen and fail only width 4 become the negatives (above the 100 gate; the screen-only comparator then has something to miss). Update 2026-11-01: all 2693 unproved claims are provable at width 4 by `prove_rule` (spike, same section), so A_unp would predict which claims the cheap `verdict` path misses (2652 contain `shr1`), a cost question rather than a truth one. Trigger: a decision on that question, or a claim source whose screen-pass claims are refuted (a proposer's, i2). Evidence: `docs/tier-cycle.md`, "The belief layer's calibration milestone stops at its first gate" (runs `2026-11-01-belief-dump-all-2`, `-shr1-spike-3`, `-shr1-spike-4`); code kept in `crates/church-bv/src/belief.rs` (`belief_counts`, `cells_at`, `logistic_fit`, `paired_bootstrap`). Decided 2026-11-01 (f1): not run. Predicting `verdict`'s miss is predicting a deterministic function that costs milliseconds, with no consumer, and a high AUC is foreseeable from the 2652-of-14904 `shr1` split; the written design is `docs/superpowers/specs/2026-11-01-belief-cost-design.md` (draft, unapproved) for a claim source whose label costs more than the model. Status: decided against, trigger as above.
 - **LLVM InstCombine tests as a corpus for the table and mined rules** — what: the integer-only functions of `llvm/test/Transforms/InstCombine` (about 1,700 entries of typed `.ll`) translated into the loop's term language, as a second external corpus beside Souper's. Why parked: by decision (2026-11-01): far larger translation work (an LLVM IR parser, filtering memory, casts, vectors, floats, `mul`/`div`) and a less fixed selection than Souper's `test/Infer`; the Souper corpus is run first. Trigger: the Souper run finds the table or mined rules matter on external code and a wider sample is needed. Evidence: directory listing read 2026-11-01 (file contents not opened). Status: parked.
+- **Split `encoding.rs` (1979 lines) by concern (the other half of TB3)** — what: five files under `encoding/` (gates, good, division, witness, tables) behind `pub use`, as `rewrite/` was done; why parked: by decision 2026-11-04 (c1, `rewrite.rs` only), a smaller file with fewer cross-piece privates, so less to gain; trigger: a change that must read or edit `encoding.rs` end to end, or a second reader lost in it; evidence: `docs/superpowers/specs/2026-11-04-rewrite-split-design.md` (the method and its privacy hazards), `crates/church-bv/src/encoding.rs` 1979 lines (2026-11-04); status: parked.
