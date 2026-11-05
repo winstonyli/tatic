@@ -77,7 +77,7 @@ fn a_self_call_inside_a_nested_if_branch_gets_a_universal_proof_and_a_correct_in
 /// chain have finite stack. With the old 10,000-step budget a loop
 /// like this built a ~40,000-level expression and died with
 /// `STATUS_STACK_OVERFLOW` -- not a failed proof, a crashed process,
-/// reachable from `jit::JitEngine::apply`. See `RELATED_WORK.md` §30.
+/// reachable from `jit::JitEngine::apply`. See `docs/related-work/` §30.
 ///
 /// Declining is the correct outcome here; surviving to decline is the
 /// point of the test.
@@ -445,7 +445,7 @@ fn a_capturing_clo_returning_root_declines_without_evaluating_its_own_argument()
     // all (unlike the self-call/inline-call paths those bound), so
     // evaluating it wastefully was a real crash risk, not just wasted
     // cycles, whenever it was about to be thrown away regardless. Since
-    // `eval_dyn` runs through `kernel::grow` (`RELATED_WORK.md` 32) it
+    // `eval_dyn` runs through `kernel::grow` (`docs/related-work/` 32) it
     // is only wasted cycles; the test still pins the early decline.
     let mut s = TermStore::new();
     // Open on `cap`, used alone: the parser rejects it.

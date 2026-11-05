@@ -387,7 +387,7 @@ fn builder_bug(kind: BuilderBug, msg: impl FnOnce() -> String) {
 /// decompiler, lowering, wasmtime, sample verification and the provers
 /// all walk the result: the whole JIT path costs about 0.4 s at this size,
 /// doubling with it. The corpus's largest compiled term is 838 nodes
-/// (`RELATED_WORK.md` §47).
+/// (`docs/related-work/` §47).
 const MAX_TREE_NODES: u64 = 16_384;
 
 /// `h`'s size as a tree (every shared subterm counted once per use), or
@@ -437,7 +437,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     // closure applied at the wrong arity) -- a real runtime distinction the
     // term semantics doesn't model as separate from ordinary evaluation.
     // `jit.rs` doesn't install such a fragment: the kernel types closures by
-    // exact arity, so it gets no universal proof (`RELATED_WORK.md` §40).
+    // exact arity, so it gets no universal proof (`docs/related-work/` §40).
     // Sample verification alone would miss one reached only off-sample.
     // A mismatch here is a builder bug like an ill-formed module.
     if crate::verify::decompile::decompile(&m, &mut TermStore::new()) != Some(h) {
@@ -466,7 +466,7 @@ pub struct Compiled {
 ///
 /// The claim for a specialised result: its module decompiles to `h'`, and
 /// `h' ≡ h` by a checked βv trace. That equivalence is not kernel-checked
-/// (RELATED_WORK.md §37).
+/// (docs/related-work/ §37).
 pub fn compile_specialised(store: &TermStore, h: Hash) -> Option<Compiled> {
     compile_candidate(store, h, crate::jit::specialise::specialise(store, h))
 }

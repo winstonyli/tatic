@@ -72,7 +72,7 @@ one run are unaffected.
 
 Related, from memory and not re-checked: this is full laziness (sharing maximal free expressions, as in
 Peyton Jones's "The Implementation of Functional Programming Languages", 1987) applied to the spine prefixes the
-reducer meets, rather than by lambda lifting ahead of time. Rocq's `Zupdate` (section 77 of `RELATED_WORK.md`)
+reducer meets, rather than by lambda lifting ahead of time. Rocq's `Zupdate` (section 77 of `docs/related-work/`)
 shares an evaluated closure in a similar way.
 
 **The NEG control's wall was the error message (kernel change, kept, 2026-10-14).** With the law replaced by
@@ -397,7 +397,7 @@ superlinear"). So the `lows` memo can only get cheaper per lookup, not go away.
 n=64 (profile diff above): node-table and memo probes (a hit reads the candidate node at a random address), the
 `lows` memo, and rehashing. Today a node is one mimalloc block of 80 bytes: `std::rc::Rc`'s two counts (16), the
 header (`loose`, `free`, `generation`, `uses`: 16) and `Expr` (48; `size_of` checks in `kernel/tests.rs`). mimalloc is
-v3 (`libmimalloc-sys` 0.1.49), the global allocator of every binary. `RELATED_WORK.md` §64 surveyed node
+v3 (`libmimalloc-sys` 0.1.49), the global allocator of every binary. `docs/related-work/` §64 surveyed node
 representations for linearity ("Allocation"), and "A per-scope arena for the table's nodes" above ruled out a
 bulk-freed arena of `Rc` nodes, because 16% of a scope's nodes outlive it. The schemes:
 

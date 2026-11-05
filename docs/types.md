@@ -41,7 +41,7 @@ other:
 per distinct arity `k` actually used (`ClosurePostulates::clo_ty`; see
 section 6.2/7 for the history: a single universal `Clo` was replaced by
 one opaque `Sort(0)` postulate per arity, which was itself later replaced
-by this section's own current, derived representation — see `RELATED_WORK.md`
+by this section's own current, derived representation — see `docs/related-work/`
 section 11). `Clo_k` and `Clo_j` are already structurally distinct Pi
 types whenever `k ≠ j`, so `kernel::check` itself rejects a `Clo_j` value
 supplied where `Clo_k` is expected, for free, from ordinary Pi-formation —
@@ -220,7 +220,7 @@ Every argument, and the result, is `Int` — `Clo_k` itself *is*
 `Int -> .. -> Int` (`k` copies), so this rule is nothing more than the
 kernel's own ordinary Pi-application rule, unconditionally, regardless of
 what `x`'s own real parameter types are (no bespoke "`apply_ref`" axiom
-mediates the call anymore — see section 2 and `RELATED_WORK.md` section
+mediates the call anymore — see section 2 and `docs/related-work/` section
 11 for why one used to be needed and no longer is). This is still a
 genuine loss of precision lower_wat.rs's own `call_indirect` dispatch
 already has (`proof.rs`'s docs: "per lower_wat.rs's `call_indirect`
@@ -369,7 +369,7 @@ arity kernel-*typechecked* under this scheme (both sides were just
 `Clo`), which was unsound in exactly the way `Clo_1 = Clo_2` would be.
 
 Section 7 (below, also kept as history) proposed the fix; it's now
-implemented, and — per `RELATED_WORK.md` section 11 — since further
+implemented, and — per `docs/related-work/` section 11 — since further
 simplified past what section 7 itself proposed: `Clo` is the arity-indexed
 family described in section 2, `Clo_k`, definitionally distinct from
 `Clo_j` for any `j ≠ k`, but no longer itself postulated at all (it's the
@@ -427,7 +427,7 @@ quietly unifying; that's the entire soundness gain, no more, no less.
   trace genuinely recurses through the native Rust stack rather than a
   flat loop, so it is bounded by its own, separately-tuned
   `DynBudget::recursion_depth` (see `eval_dyn_direct_call`'s and
-  `eval_dyn_tail_recursive`'s own docs in `proof.rs`, and `RELATED_WORK.md`
+  `eval_dyn_tail_recursive`'s own docs in `proof.rs`, and `docs/related-work/`
   §9 for how that bound was found empirically).
 - **A capture of a capture**: not a missing rule at all (section 3.1,
   section 5) — the shape can't arise given how `Γ` is scoped and how
@@ -500,7 +500,7 @@ restriction, is no longer out of scope — see section 6.3's own update.
 **A second correction, this one removing rather than widening scope**:
 `Clo_k : Sort(0)` — described throughout this section as a postulate,
 which is what it was when this section was written — no longer *is* one.
-`RELATED_WORK.md` section 11 replaces it with the literal curried
+`docs/related-work/` section 11 replaces it with the literal curried
 `Int -> .. -> Int` arrow type, derived from `Int` (already postulated),
 and `apply_ref(k)` (cited above as "now mak[ing] the kernel itself reject
 a `Clo_j` value... supplied where `Clo_k` is expected") is gone entirely —
@@ -511,7 +511,7 @@ from ordinary Pi-type structural inequality. `ite_clo_ref` (this
 section's own `mk_clo_ref`/`call_ref`/`pap_ref`, and the whole
 `Env_γ`/capture-signature apparatus this section already describes as
 needing the same treatment) stay genuinely postulated — see
-`RELATED_WORK.md` section 11 for exactly which pieces survive and why.
+`docs/related-work/` section 11 for exactly which pieces survive and why.
 
 **A third correction.** "Pi-type structural inequality" rejects a `Clo_j`
 where a `Clo_k` is expected only when the two arrow chains differ. It
@@ -519,4 +519,4 @@ can't tell `\x. \y. e` (`Clo_2`) from `\x. (\y. e)` (a `Clo_1` returning
 a `Clo_1`), since both are `Int -> Int -> Int`, while compiled code calls
 them differently. The provers still decline such a mismatch, because
 they choose `Clo_k` from how many arguments each call site passes
-(`RELATED_WORK.md` §40, §46).
+(`docs/related-work/` §40, §46).

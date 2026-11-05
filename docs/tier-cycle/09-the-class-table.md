@@ -2,7 +2,7 @@
 
 ### Canonical forms: from the survey to the table's phase 1 (2026-10-22/23)
 
-*Canonical forms: hand-coded or learned (survey, 2026-10-22; literature in `RELATED_WORK.md` §81).* The laws the join
+*Canonical forms: hand-coded or learned (survey, 2026-10-22; literature in `docs/related-work/` §81).* The laws the join
 cannot reach at any budget ("What the join can't reach") need pure-bitwise identities and bitwise-arithmetic bridges.
 The miner cannot propose the first kind: its candidates come from subterms that use add or sub
 (`miner.rs`, `candidates`), and the bitwise collapse (`rewrite.rs`, `abstract_atoms` and the `LawKind::Bitwise` step)

@@ -33,7 +33,7 @@ pub(crate) struct Module {
 /// that a closure value never reaches a variable called at another arity.
 /// `Curried` is required as soon as any variable anywhere is. Under `Fast`
 /// a mismatch traps; `jit.rs` keeps such a fragment out through the
-/// universal-proof gate (`RELATED_WORK.md` §40).
+/// universal-proof gate (`docs/related-work/` §40).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Dispatch {
     Fast,

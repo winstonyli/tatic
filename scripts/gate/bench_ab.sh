@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # A/B benchmark: a base revision against the working tree, then the base
 # again as a noise check. On this laptop a re-run of unchanged code moves
-# benches by up to ±100% (RELATED_WORK.md §49, §51), so a change is real
+# benches by up to ±100% (docs/related-work/ §49, §51), so a change is real
 # only where candidate-vs-base clearly exceeds base-again-vs-base.
 #
 #   scripts/gate/bench_ab.sh [REV] [cargo bench args] [-- criterion args]

@@ -6,7 +6,7 @@ use super::*;
 /// module-level doc for the full derivation: which base types get
 /// postulated and why, how `Zero`/`Succ` are transported into
 /// `ChildTy`, and the "generic recursion/induction principle" gap in
-/// `RELATED_WORK.md` §1/§3 this answers). This test is now a
+/// `docs/related-work/` §1/§3 this answers). This test is now a
 /// *consumer* of that API, not the construction itself -- every
 /// `check`/`assert_eq!` below is unchanged from this construction's
 /// original, self-contained form, confirming the extraction changed
@@ -59,7 +59,7 @@ use super::*;
 /// would still need the exact same per-leaf axiom discipline `Ev`
 /// already has -- what it would save is inventing a *new* postulated
 /// base type per strategy, not that per-leaf postulation itself. See
-/// `RELATED_WORK.md` §3 for the fuller accounting.
+/// `docs/related-work/` §3 for the fuller accounting.
 #[test]
 fn nat_via_w_is_a_genuinely_computing_inductive_type() {
     let mut p = Postulates::new();
@@ -238,7 +238,7 @@ fn nat_via_w_is_a_genuinely_computing_inductive_type() {
 
 #[test]
 fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
-    // Prototype for RELATED_WORK.md sec 14's open question: can a
+    // Prototype for docs/related-work/ sec 14's open question: can a
     // Sigma-tagged "either T1 or T2" encoding typecheck a Pair for a
     // SYMBOLIC (universally quantified) tag, not just a concrete one?
     // Hypothesis: build both the type selector (`fam`) and the paired
@@ -260,7 +260,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // -- bool_rec's own shape (`wrap_c_ct_cf`), but targeting Sort(1)
     // so C can select between *types*, not just Sort0 values (Nat
     // Postulates' own bool_rec hardcodes Sort(0) -- see this file's own
-    // is_zero test and RELATED_WORK.md's universe-mismatch finding).
+    // is_zero test and docs/related-work/'s universe-mismatch finding).
     fn wrap_c_ct_cf_sort1(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Expr) -> Expr {
         let c_ty = arrow(*bool_ref, sort(1));
         let true_d1 = shift(true_ref, 0, 1);
@@ -352,7 +352,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // --- THE KEY CLAIM: Pair(fam, a, b) typechecks for a's tag being a
     // genuinely SYMBOLIC (universally quantified) postulate, not a
     // concrete Sup value -- unlike the earlier tagged-Sigma
-    // investigation (RELATED_WORK.md sec 14), which needed `a` concrete.
+    // investigation (docs/related-work/ sec 14), which needed `a` concrete.
     let a = p.get(a_pos);
 
     // value_motive := \x:Nat. fam -- literally reuses `fam` as the
@@ -498,7 +498,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
 
     // --- THE ULTIMATE CLAIM: Pair(fam, a, b_val) typechecks as
     // Sigma(Nat, fam), for `a` a genuinely symbolic tag -- unlike the
-    // earlier tagged-Sigma investigation (RELATED_WORK.md sec 14),
+    // earlier tagged-Sigma investigation (docs/related-work/ sec 14),
     // which needed `a` concrete before `Pair`'s own definitional-
     // equality check could ever succeed.
     let pr = pair(fam, a, b_val);

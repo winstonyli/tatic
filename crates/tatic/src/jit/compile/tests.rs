@@ -410,7 +410,7 @@ fn a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_o
     // until runtime at all, chosen by an ordinary `If` between two
     // *different* literal lambdas, exactly the case a call-site-
     // traced "pre-generate every (root,k) wrapper" mechanism could
-    // never have covered (see `RELATED_WORK.md`'s own discussion of
+    // never have covered (see `docs/related-work/`'s own discussion of
     // why that narrower alternative was rejected).
     let mut s = TermStore::new();
     let top = inconsistent_arity_runtime_chosen_instance(&mut s);
@@ -741,7 +741,7 @@ fn a_trace_the_checker_rejects_falls_back_to_h_and_is_counted_in_release() {
 #[test]
 fn a_term_is_compiled_only_up_to_a_tree_size() {
     // Everything downstream walks the tree, and the emitted code is as
-    // big as it, so sharing can't shrink the cost (RELATED_WORK.md §47).
+    // big as it, so sharing can't shrink the cost (docs/related-work/ §47).
     let mut s = TermStore::new();
     let at_the_cap = crate::testing::test_corpus::doubling(&mut s, 13);
     assert_eq!(tree_size(&s, at_the_cap), MAX_TREE_NODES);

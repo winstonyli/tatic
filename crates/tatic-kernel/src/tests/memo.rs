@@ -2,7 +2,7 @@ use super::*;
 
 /// `d(k+1) = f d(k) d(k)`, 20 levels deep: a million leaves as a
 /// tree, 20 shared nodes as a DAG. Without the memo `infer` walked the
-/// tree (`RELATED_WORK.md` §63). Postulates as `Const`s, per stage 3.
+/// tree (`docs/related-work/` §63). Postulates as `Const`s, per stage 3.
 #[test]
 fn infer_is_linear_in_the_dag_of_a_shared_term() {
     assert_scales("infer on a DAG", 10, 20, 3, 0, |n| {
@@ -77,7 +77,7 @@ fn infer_cache_is_emptied_between_calls() {
 /// J motives in `postulates.rs` put shared subterms under unused
 /// binders the same way. Finding `b(i+1)`'s lowest loose variable and
 /// skipping the `i + 1` binders below it once cost O(i) each, which made
-/// the whole check quadratic (`RELATED_WORK.md` §80).
+/// the whole check quadratic (`docs/related-work/` §80).
 #[test]
 fn infer_memo_skips_unused_inner_binders() {
     assert_scales("infer under unused binders", 100, 800, 12, 0, |depth| {
@@ -134,7 +134,7 @@ fn infer_memo_keeps_same_length_contexts_apart() {
 /// `def_eq` on two right-nested chains `f (f (... x))`, 16,000 deep,
 /// that differ only at the bottom. `conv` used to try a structural `==`
 /// at every level, each walking down to the bottom again: 23 s in a
-/// debug build (`RELATED_WORK.md` §61). `==` is now one id comparison.
+/// debug build (`docs/related-work/` §61). `==` is now one id comparison.
 #[test]
 fn def_eq_is_linear_on_a_chain_that_differs_at_the_bottom() {
     assert_scales("def_eq on chains", 1000, 16000, 24, 0, |n| {
@@ -170,7 +170,7 @@ fn work_is_deterministic_and_scales_with_the_query() {
 /// `whnf` keeps each argument's node rather than copying it into
 /// a new one: the memos are keyed by node, and a copy used to miss them,
 /// so `nf` then normalised the whole argument again at every
-/// application (`RELATED_WORK.md` §48).
+/// application (`docs/related-work/` §48).
 #[test]
 fn whnf_keeps_the_arguments_it_was_given() {
     let x = var(7);
@@ -200,7 +200,7 @@ fn whnf_keeps_the_arguments_it_was_given() {
 /// (beta-reducing the whole chain), `def_eq`'s `conv`, and
 /// `Debug` in the error message -- must survive a term 1,000 levels
 /// deep on a 1 MB thread: the Windows main thread's size, where a debug
-/// build used to overflow at depth ~90 (`RELATED_WORK.md` 31). Goes
+/// build used to overflow at depth ~90 (`docs/related-work/` 31). Goes
 /// through `check`, which has no depth guard, on purpose.
 #[test]
 fn check_survives_a_term_far_deeper_than_the_native_stack_allows() {

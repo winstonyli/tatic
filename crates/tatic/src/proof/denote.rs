@@ -4,7 +4,7 @@ use super::*;
 //
 // A function composing an `Expr` from more than one recursive sub-call can
 // still make a composition mistake, even though a pushed `Const` shifts
-// nothing (`RELATED_WORK.md` §68, §69).
+// nothing (`docs/related-work/` §68, §69).
 //
 // This helper turns any such mistake into an immediate, precisely located
 // panic instead: called once at the *return point* of any function that

@@ -9,7 +9,7 @@ pub fn whnf(e: &Expr) -> Expr {
 /// (`None` for none); `(e, None)` for anything else. Memoised for every application of two or more
 /// arguments on the way down, so the levels of a stuck spine, each asking for its own, walk the
 /// spine once in all, not once each: that made `nf` and `def_eq` quadratic in a stuck spine's
-/// length (`RELATED_WORK.md` §79). One argument is answered directly.
+/// length (`docs/related-work/` §79). One argument is answered directly.
 fn spine(s: &Spaces, e: &Expr) -> (Expr, Option<Expr>) {
     let Node::App(f, _) = s.node(e) else { return (*e, None) };
     let closed = (s.loose(&f) == 0).then_some(f);
@@ -140,7 +140,7 @@ fn under_lams(s: &Spaces, w: Expr) -> Expr {
 /// term keeps its nodes: its arguments' and also its stuck head's or
 /// target's. The memos are keyed by node, and before terms were hash-consed
 /// a copy missed them, so each level of a stuck spine reduced the whole
-/// spine below it again (`RELATED_WORK.md` §48, §59).
+/// spine below it again (`docs/related-work/` §48, §59).
 fn whnf_step(s: &Spaces, e: &Expr) -> Option<Expr> {
     s.tick();
     grow(|| match s.node(e) {
@@ -274,12 +274,12 @@ thread_local! {
 
 /// `def_eq`'s comparison. Syntactically equal sides are equal without
 /// reducing, since `nf` is a function; most calls from `infer` are
-/// (`RELATED_WORK.md` §56), and with the spaces hash-consed that test is
+/// (`docs/related-work/` §56), and with the spaces hash-consed that test is
 /// one id comparison. Else `nf(e)` is `whnf(e)`'s outermost constructor
 /// over the `nf` of each child, so the normal forms are equal exactly when
 /// the two weak head normal forms have the same constructor and pairwise
 /// equal children's normal forms. Recursing on that reduces only where the
-/// sides differ (`RELATED_WORK.md` §57).
+/// sides differ (`docs/related-work/` §57).
 ///
 /// A pair already shown equal in this call is answered from `EQUAL`. Without
 /// it the walk is a tree walk over shared nodes: two equal but distinct

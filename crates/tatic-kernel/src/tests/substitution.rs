@@ -273,7 +273,7 @@ fn beta_leaves_const_and_free_alone() {
     assert_eq!(nf(&app(lam(sort(0), f1), var(5))), f1);
 }
 
-/// `subst_top`'s one pass (`RELATED_WORK.md` §53) must give exactly
+/// `subst_top`'s one pass (`docs/related-work/` §53) must give exactly
 /// what substituting and then shifting gives, both when the body uses
 /// the variable and when it doesn't.
 #[test]
@@ -403,7 +403,7 @@ fn subst_top_leaves_an_unused_argument_alone() {
 }
 
 /// Substituting under binders shifts the argument once, where it's used,
-/// not again at every binder crossed on the way (`RELATED_WORK.md` §52).
+/// not again at every binder crossed on the way (`docs/related-work/` §52).
 /// Timed against one shift of the argument, so it holds on any machine.
 #[test]
 fn subst_top_shifts_a_used_argument_once() {

@@ -12,7 +12,7 @@ Cite format: a backticked file path, a hash, then a symbol (as in `crates/tatic/
 
 Written in `ROADMAP.md#Goals`; status is in `ROADMAP.md#Milestones`, not here. Check new work against them.
 
-1. A JIT on proved equivalence. Built: a term is compiled and installed only if it passes a sample battery and a kernel-checked theorem. Its type system is in `TYPES.md#The closures fragment's type system`.
+1. A JIT on proved equivalence. Built: a term is compiled and installed only if it passes a sample battery and a kernel-checked theorem. Its type system is in `docs/types.md#The closures fragment's type system`.
 2. A kernel that improves itself. Mined rewrite rules and a learned class table are built; growth of the kernel's own vocabulary through checked definitions is not (`PARKED.md#Parked work`). Goals 1 and 2 have not met in a milestone: `ROADMAP.md#Goals` says why.
 3. The kernel as the knowledge-representation-and-reasoning (KR&R) tier of a cycle with a GPU model that proposes and the kernel disposes. The kernel side exists; the model and the cycle do not (`PARKED.md#Proposer and loop`, idea in `docs/tier-cycle/#Idea`, verdict interface in `docs/tier-cycle/#Interface`). A "calibrated belief layer" between model and kernel is a design note only (`ROADMAP.md#calibrated belief layer`).
 
@@ -56,12 +56,12 @@ The miner, driver, loop and gate:
 - `miner.rs` (with `miner/`): how rules are chosen. `driver.rs`: loops, sweeps, extras, workers. `scripts/gate/streams_ab.sh`: the A/B gate.
 - `ctx_scorer.rs`: an offline study of ranking the miner's extras by a model that sees each law's pool context (`crates/church-bv/src/ctx_scorer.rs#q1`); it reads a pool dump the miner writes when asked (`crates/church-bv/src/miner/laws.rs#dump_pool`, `scripts/study/ctx_dump.sh`), and its fitted model (a weights file, `Model::to_text`) is what `EXTRAS_SELECT=ctx` scores the pool with at run time (`crates/church-bv/src/miner/laws.rs#ctx_pool_ranks`, `CTX_WEIGHTS`).
 - `tools/runs/` (own crate): the measured-run runner and timer the gate launches its arms through.
-- `scripts/` is grouped by role (`check/layout_check.sh` fails on a file left directly in it). `gate/`: `streams_ab.sh` (the A/B gate), `arm_env.sh` (the environments of its arms), `gate.sh` (untimed, with the arm cache), `ablations.sh`, `bench_ab.sh`, `curve.sh` (an arm summed over salts, using `arm_row.sh`) and `test_gate.sh`. `check/`: the repo guards `tour_check.sh` (TOUR cites), `cite_check.sh` (section cites into `docs/tier-cycle/` and `RELATED_WORK.md`, plus `tour_check.sh`), `size_check.sh`, `test_placement_check.sh`, `tier_cycle_check.sh`, `layout_check.sh`, `front_matter_check.sh` (specs and plans open with a valid `status:`), `script_header_check.sh` (every dated script under `docs/runs/*/scripts/` opens with a description: `grep -m1 -E "^(#[^!]|\"\"\")" docs/runs/*/scripts/*` lists them), each with its `*_check_check.sh` test. `study/`: the Q2 and context-scorer scripts (`q2_*.sh`, `ctx_*.sh`) and `rules/`. `experiments/` (older experiment scripts) is git-ignored and exists only on the author's machine.
+- `scripts/` is grouped by role (`check/layout_check.sh` fails on a file left directly in it). `gate/`: `streams_ab.sh` (the A/B gate), `arm_env.sh` (the environments of its arms), `gate.sh` (untimed, with the arm cache), `ablations.sh`, `bench_ab.sh`, `curve.sh` (an arm summed over salts, using `arm_row.sh`) and `test_gate.sh`. `check/`: the repo guards `tour_check.sh` (TOUR cites), `cite_check.sh` (section cites into `docs/tier-cycle/` and `docs/related-work/`, plus `tour_check.sh`), `size_check.sh`, `test_placement_check.sh`, `doc_index_check.sh` (the indexes of `docs/tier-cycle/` and `docs/related-work/`), `layout_check.sh`, `front_matter_check.sh` (specs and plans open with a valid `status:`), `script_header_check.sh` (every dated script under `docs/runs/*/scripts/` opens with a description: `grep -m1 -E "^(#[^!]|\"\"\")" docs/runs/*/scripts/*` lists them), each with its `*_check_check.sh` test. `study/`: the Q2 and context-scorer scripts (`q2_*.sh`, `ctx_*.sh`) and `rules/`. `experiments/` (older experiment scripts) is git-ignored and exists only on the author's machine.
 - `crates/tatic/benches/`: criterion benchmarks of execution and proofs.
 
 Test and fuzz suites (each protects one layer). In `crates/tatic-kernel/tests/`: `church_encoding.rs` and `church_lemmas.rs` (the Church-encoded kernel library), `kernel_fuzz.rs` and `kernel_soundness_fuzz.rs` (the kernel never accepts a false claim). In `crates/tatic/tests/`: `compile_fuzz.rs` (compiled code against the interpreter), `syntax_fuzz.rs` (the parser), `golden_wat.rs` with `golden/` (pinned WAT output).
 
-Project state: `ROADMAP.md`, `PARKED.md`, `docs/tier-cycle/`, `docs/learned-vs-fixed.md`, `RELATED_WORK.md` (a record of the surveyed landscape, not a design proposal).
+Project state: `ROADMAP.md`, `PARKED.md`, `docs/tier-cycle/`, `docs/learned-vs-fixed.md`, `docs/related-work/` (the surveyed landscape and the implementation notes, one file per `§`).
 
 ## Running things
 
@@ -205,7 +205,7 @@ One home per fact; link instead of restating.
 - Which pipeline parts are learned or fixed, verdicts only: `docs/learned-vs-fixed.md`.
 - Runs: raw output under `%LOCALAPPDATA%\claude-runs\tatic`, one row each in `docs/runs.md` (columns defined by `docs/runs.md#run id`), curated rows in `docs/runs/<date>/`.
 - Specs and plans: `docs/superpowers/`, each with a `status:` front matter line that overrides older status text; decisions too long for a parked line go in `docs/decisions/`.
-- The type system of the closures fragment: `TYPES.md`.
+- The type system of the closures fragment: `docs/types.md`. What is proven, and the fuzzers: `docs/proven.md`. The rest of the old README: `docs/syntax.md`, `docs/benchmarks.md`, `docs/design-notes.md`, `docs/loop-experiment.md`.
 - Project kind and the rules for all of the above: `CLAUDE.md#tatic`.
 
 ## Known doc/code disagreements

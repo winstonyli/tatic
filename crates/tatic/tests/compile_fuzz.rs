@@ -38,7 +38,7 @@
 //! `a_branch_that_goes_wrong_off_the_samples_is_never_installed` puts a
 //! term that goes wrong behind `if x == OFF_SAMPLE`, where `verify()`'s
 //! samples never reach it, so it tests the two static gates themselves
-//! (RELATED_WORK.md §41).
+//! (docs/related-work/ §41).
 
 use tatic::jit::compile;
 use tatic::lang::eval;
@@ -657,7 +657,7 @@ fn gen_outer_leaf(rng: &mut Rng, s: &mut TermStore, skip: u32, scope: u32) -> Ha
 /// ill-typed, so `eval` fails on them: a closure where an `Int` is
 /// expected, an `Int` called, and a lambda over-applied. The fourth is
 /// well typed but passes a two-argument closure where `g` is only ever
-/// called with one (RELATED_WORK.md §40):
+/// called with one (docs/related-work/ §40):
 ///
 /// ```text
 /// (\g. (\k. k e1) (g a) + (\k. k e2) (g b)) (\x. \y. body)
@@ -738,7 +738,7 @@ const HOSTS: [&str; 4] = ["function", "tail loop", "non-tail recursion", "called
 /// other hosts almost always use a called parameter as an `Int` somewhere
 /// too, and then no proof exists. Here `prove_closure_expr` proves a
 /// theorem that types `x1` as a closure, which the JIT, always called
-/// with `Int`s, can't rely on (RELATED_WORK.md §41).
+/// with `Int`s, can't rely on (docs/related-work/ §41).
 ///
 /// Returns the term, its arity, and indices into `HOSTS` and
 /// `WRONG_KINDS`.

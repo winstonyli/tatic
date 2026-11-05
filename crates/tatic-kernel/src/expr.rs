@@ -5,7 +5,7 @@ use super::*;
 // A term is a handle (`Expr`) to its outermost node, and the node holds its children as handles, so every subterm is
 // a node and a term is a DAG. Each node caches its loose-variable and free-level ranges, computed from its children
 // when it is built: `shift`, `instantiate` and `is_var_free` read them to skip the subterms they would leave
-// unchanged, and keep those as they are (`RELATED_WORK.md` §64).
+// unchanged, and keep those as they are (`docs/related-work/` §64).
 
 /// A term's outermost constructor over children of type `C`. `Node<Expr>` is what [`Expr::node`] hands out.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]

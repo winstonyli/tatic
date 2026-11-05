@@ -15,11 +15,11 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 /// Warm `jit`'s cache on `h` once, outside the timed loop, and fail the
 /// run if what got cached is not the path the group's `jit_warm_cache_hit`
-/// bar claims to measure. The installation gate (`RELATED_WORK.md` 29) can
+/// bar claims to measure. The installation gate (`docs/related-work/` 29) can
 /// turn a compiled term into an interpreted one with nothing here noticing
 /// -- the bar keeps reporting a number, just a different one -- which is
 /// how `inconsistent_arity_loop_carried_parameter_loop`'s bar changed
-/// meaning unseen (`RELATED_WORK.md` 30). Each group states the path it
+/// meaning unseen (`docs/related-work/` 30). Each group states the path it
 /// expects, so a change to the gate or a proof budget breaks the run
 /// instead.
 fn warm(jit: &mut JitEngine, store: &TermStore, h: Hash, args: &[i64], expect_compiled: bool) {
@@ -223,7 +223,7 @@ fn closure_typed_loop_carried_parameter_loop(c: &mut Criterion) {
 }
 
 /// Isolates the cost of the JIT's curried-dispatch fallback
-/// (`emit_curried_stages`/`Lowering::dynamic_apply`, see `RELATED_WORK.md`
+/// (`emit_curried_stages`/`Lowering::dynamic_apply`, see `docs/related-work/`
 /// §9's own "since implemented" note): the same loop, the same hot
 /// `g(x)` call each iteration, as `closure_typed_loop_carried_parameter_loop`,
 /// except one syntactically-present-but-dead call site elsewhere in the
@@ -245,8 +245,8 @@ fn closure_typed_loop_carried_parameter_loop(c: &mut Criterion) {
 /// `prove_closure_expr_instance`'s per-execution trace -- `Universal`
 /// here because the term is closed (arity 0), but one trace step per
 /// iteration against a 200-step budget. At 20,000 the budget runs out,
-/// the installation gate (`RELATED_WORK.md` 29) declines, and every bar
-/// measured the interpreter (`RELATED_WORK.md` 30). The baseline is
+/// the installation gate (`docs/related-work/` 29) declines, and every bar
+/// measured the interpreter (`docs/related-work/` 30). The baseline is
 /// benched at the same length, in this same group, so the pair stays
 /// comparable; the companion group keeps 20,000 for its own comparison
 /// with `capturing_closure_loop`.

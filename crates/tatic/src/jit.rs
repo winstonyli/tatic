@@ -8,13 +8,13 @@
 //!    fragment (`compile::compile_specialised`, which specialises `h`
 //!    first, then compiles with `try_compile` — the certificate-checked
 //!    specialisation `h' ≡ h` itself is not kernel-checked, see
-//!    `RELATED_WORK.md` §37). If that fails, the term simply isn't in the
+//!    `docs/related-work/` §37). If that fails, the term simply isn't in the
 //!    compilable fragment — fall back to the interpreter and remember not
 //!    to try again.
 //! 2. If it compiles, don't trust it blindly. Three things must hold before
 //!    it is installed: it is simply typed as `Int -> ... -> Int`
 //!    (`typing::well_typed`: compiled code can't tell an `Int` from a
-//!    closure, see `RELATED_WORK.md` §38), it agrees with the interpreter
+//!    closure, see `docs/related-work/` §38), it agrees with the interpreter
 //!    (the reference semantics) on a battery of sample inputs, *and*
 //!    `proof.rs` produced
 //!    a kernel-checked theorem covering every input
@@ -38,7 +38,7 @@
 //! `denote`, which *models* the compiler (`compile::build_node` and the
 //! `lower_wat` templates) rather than reading its
 //! output. So the pair is strictly stronger than either alone and still
-//! short of end-to-end soundness (`RELATED_WORK.md` 28). Neither half
+//! short of end-to-end soundness (`docs/related-work/` 28). Neither half
 //! says anything about types, which is what the typing check is for.
 //! `kernel_verify` below tries `proof.rs`'s strategies in order, first
 //! success wins: a straight-line term gets one `refl` proof covering every
@@ -68,7 +68,7 @@ use crate::proof;
 use crate::lang::term::{Hash, TermStore};
 
 // The largest is 12, not 20: `verify` interprets every sample, and `fib(20)`
-// alone was 4.6 of a 15.5 ms cold-call total (RELATED_WORK.md §71).
+// alone was 4.6 of a 15.5 ms cold-call total (docs/related-work/ §71).
 const SAMPLE_ARGS: &[i64] = &[0, 1, 2, 3, 5, -1, -3, 7, 12];
 
 enum CacheEntry {
@@ -221,7 +221,7 @@ impl JitEngine {
         // and neither half of the gate below sees it unless a sample reaches
         // that code (the kernel theorem is over postulated symbols with no
         // types). So only a simply typed term is installed; see `typing.rs`
-        // and `RELATED_WORK.md` §38. The check is on `h`: a specialisation
+        // and `docs/related-work/` §38. The check is on `h`: a specialisation
         // `h'` is βv-equivalent to it, and βv preserves types.
         if !crate::verify::typing::well_typed(terms, h, frag.arity) {
             return Err(Some(CacheEntry::IllTyped));
@@ -238,7 +238,7 @@ impl JitEngine {
         // The kernel theorems model the structure of the term that was
         // compiled, so for a specialised fragment they are proved about
         // `h'`. `h' ≡ h` itself is certificate-checked, not
-        // kernel-checked (RELATED_WORK.md §37).
+        // kernel-checked (docs/related-work/ §37).
         let (proof_store, proof_term) = specialised.as_ref().map_or((terms, h), |(s, t)| (s, *t));
         // The installation gate. `verify()` agreeing on the sample
         // battery is necessary but not sufficient: it is a finite
@@ -254,7 +254,7 @@ impl JitEngine {
         // runs. `verify()` remains the only check touching emitted
         // code, which is why it stays as the first half of this gate
         // rather than being replaced by the proof. See
-        // `RELATED_WORK.md` 28.
+        // `docs/related-work/` 28.
         if !Self::kernel_verify(proof_store, proof_term, frag.arity) {
             return Err(Some(CacheEntry::NoUniversalProof));
         }
@@ -296,16 +296,16 @@ impl JitEngine {
     ///    `compile.rs`'s curried-dispatch capability, including one threaded
     ///    through a recursive loop). Above arity 0 such certificates reach
     ///    only `verify()`'s own samples, so they aren't built
-    ///    (`RELATED_WORK.md` 28).
+    ///    (`docs/related-work/` 28).
     ///
     /// Anything else (e.g. a callee reached only through a captured/
     /// parameter variable whose concrete identity isn't statically known
-    /// at proof-construction time -- see `RELATED_WORK.md` §9) is `false`
+    /// at proof-construction time -- see `docs/related-work/` §9) is `false`
     /// -- see `proof.rs` for what's in scope and why.
     fn kernel_verify(terms: &TermStore, h: Hash, arity: usize) -> bool {
         // The compiled entry point is only ever passed `Int`s. The provers
         // type a called parameter as a closure (`Clo_k`), so their theorem
-        // for such a term covers no call the JIT makes (RELATED_WORK.md §42).
+        // for such a term covers no call the JIT makes (docs/related-work/ §42).
         if calls_a_parameter(terms, h) {
             return false;
         }
@@ -426,7 +426,7 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
             // Exactly one possible 0-argument call -- `vec![a; 0]` is `[]`
             // regardless of `a`, so falling through to the `_` arm below
             // would push the same empty sample `SAMPLE_ARGS[..6].len()`
-            // times over, repeating the same check (`RELATED_WORK.md` §9).
+            // times over, repeating the same check (`docs/related-work/` §9).
             out.push(vec![]);
         }
         1 => {
@@ -451,7 +451,7 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
             // misindexes two argument positions, since swapping equal
             // values changes nothing observable -- this was a real,
             // previously-unfuzzed verification-coverage gap for every
-            // arity->=3 term (see RELATED_WORK.md).
+            // arity->=3 term (see docs/related-work/).
             for &a in &SAMPLE_ARGS[..6] {
                 out.push(vec![a; arity]);
             }

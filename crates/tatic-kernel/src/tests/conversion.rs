@@ -1,7 +1,7 @@
 use super::*;
 
 /// `def_eq` answers syntactically equal sides without normalising
-/// them (`RELATED_WORK.md` §56). `d (d (... (d x)))` with
+/// them (`docs/related-work/` §56). `d (d (... (d x)))` with
 /// `d = \x. x x` has a normal form of 2^n nodes, so normalising both
 /// sides and comparing takes about 0.3 s at n = 14.
 #[test]
@@ -14,7 +14,7 @@ fn def_eq_answers_equal_sides_without_normalising() {
 
 /// `def_eq` compares weak head normal forms and recurses into the
 /// children, so a part both sides share is never normalised
-/// (`RELATED_WORK.md` §57). Here the domains are equal copies of §56's
+/// (`docs/related-work/` §57). Here the domains are equal copies of §56's
 /// doubling term and only the codomains need reducing.
 #[test]
 fn def_eq_normalises_only_where_the_sides_differ() {
@@ -48,7 +48,7 @@ fn def_eq_agrees_with_comparing_normal_forms() {
 /// `whnf` keeps the node of a stuck head or target, not only of
 /// the arguments: the memos are keyed by node, and a copy used to
 /// miss them, so each level of a stuck spine then reduced the whole
-/// spine below it again (`RELATED_WORK.md` §59).
+/// spine below it again (`docs/related-work/` §59).
 #[test]
 fn whnf_keeps_the_stuck_part_it_was_given() {
     let stuck = app(app(var(0), var(1)), var(2));
@@ -75,7 +75,7 @@ fn whnf_keeps_the_stuck_part_it_was_given() {
 /// `nf` and `def_eq` on stuck spines 16,000 applications deep, one of
 /// them with a redex for its head. At 2,000 each took over 10 s in a
 /// debug build when every level re-reduced the spine below it
-/// (`RELATED_WORK.md` §59), and 0.7 s when every level walked it
+/// (`docs/related-work/` §59), and 0.7 s when every level walked it
 /// (§79). Timed against spines a sixteenth as deep: 17-35x in a debug
 /// build now, 256x if quadratic. Below about 1,000 the spines stay in
 /// cache and the ratio overstates the growth. At an eighth, a quadratic

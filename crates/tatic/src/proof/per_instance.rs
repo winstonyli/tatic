@@ -73,7 +73,7 @@ pub(super) enum DynVal {
 /// (e.g. one per argument at a call site) before they're all actually
 /// consumed, holding each across further construction (`call_ref`, ...)
 /// that may lazily push more postulates -- safe since a pushed postulate
-/// is a `Const` and shifts nothing (`RELATED_WORK.md` §69).
+/// is a `Const` and shifts nothing (`docs/related-work/` §69).
 pub(super) enum DynDenoted {
     Int(Expr),
     Clo(Expr, Rc<ConcreteClo>),
@@ -199,7 +199,7 @@ pub(super) fn build_env_expr_dyn( combinators: &mut ClosureCombinators, captures
 /// `recursion_depth` (50) and `inline_call_depth` (25) -- because the
 /// last two paths recurse through the native stack, and each was tuned
 /// against a debug-build test thread's stack at a different per-level
-/// cost. `eval_dyn` now runs through `kernel::grow` (`RELATED_WORK.md`
+/// cost. `eval_dyn` now runs through `kernel::grow` (`docs/related-work/`
 /// 32), so recursion depth is bounded by heap and all three reduce to
 /// one cost bound.
 pub(super) struct DynBudget {
@@ -209,7 +209,7 @@ pub(super) struct DynBudget {
 impl DynBudget {
     /// `steps`
     /// was cut from 10,000 to 200 against two native-stack ceilings
-    /// (`RELATED_WORK.md` §30): `kernel::check`'s recursion, and the
+    /// (`docs/related-work/` §30): `kernel::check`'s recursion, and the
     /// recursive `Drop` of a discarded deep `Rc<Expr>` chain, which is
     /// what crashed `benches/execution.rs`. Both are gone now -- the
     /// kernel's traversals and `Expr`'s `Drop` run through
@@ -231,7 +231,7 @@ impl DynBudget {
 /// that's itself self-recursive: the *inconsistent*-arity closure
 /// parameter this whole per-instance methodology exists for is exactly
 /// as likely to be threaded, unchanged, through a tail-recursive loop as
-/// to sit in a straight-line callee -- and `RELATED_WORK.md`'s own
+/// to sit in a straight-line callee -- and `docs/related-work/`'s own
 /// "recursive use of curried dispatch has no kernel-proof coverage"
 /// gap is precisely this case.
 ///
@@ -631,7 +631,7 @@ pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self
 /// exactly the case that one can never cover: a closure-typed parameter
 /// called with genuinely inconsistent arities across call sites (see
 /// this section's own module docs for the methodology, and
-/// `TYPES.md`/`RELATED_WORK.md` for why `denote_closure`'s own universal
+/// `docs/types.md`/`docs/related-work/` for why `denote_closure`'s own universal
 /// approach is a dead end here without a real dependent sum in the
 /// kernel).
 ///

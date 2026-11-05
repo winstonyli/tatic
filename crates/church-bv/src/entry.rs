@@ -1,4 +1,4 @@
-//! The `church-bv` binary's subcommands: the entry points that scripts and `tools/runs` start (README, "Benchmarks"). Each is the
+//! The `church-bv` binary's subcommands: the entry points that scripts and `tools/runs` start (docs/benchmarks.md). Each is the
 //! body of an `#[ignore]`d test, run by name instead of by libtest arguments; the settings stay in the environment
 //! (`Setup::process`). The test exe still runs the same bodies under their old test names.
 
@@ -36,7 +36,7 @@ pub fn main() -> ExitCode {
             Err(()) => ExitCode::from(101),
         },
         None => {
-            eprintln!("usage: church-bv <subcommand>   (settings are environment variables; see README, \"Benchmarks\")");
+            eprintln!("usage: church-bv <subcommand>   (settings are environment variables; see docs/benchmarks.md)");
             TABLE.iter().for_each(|(n, _)| eprintln!("  {n}"));
             ExitCode::from(2)
         }

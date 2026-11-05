@@ -40,7 +40,7 @@ pub(super) struct CtxBinder {
     pub(super) jump: u32,
 }
 
-/// `infer`'s memo for one public `infer` or `check` call (`RELATED_WORK.md`
+/// `infer`'s memo for one public `infer` or `check` call (`docs/related-work/`
 /// §63). A context is named by an id: 0 is the caller's, and entering a
 /// binder whose type is the node `a` from context `cid` gives the id
 /// interned for `(cid, a)`. Equal ids then mean the same sequence of binder
@@ -377,7 +377,7 @@ impl Checker<'_> {
     /// close to a native-stack budget tuned in a debug test thread, and
     /// inlining these arms back into `infer` measurably shrank its margin
     /// and overflowed a deep-recursion test. Every traversal here, and
-    /// `eval_dyn`, now runs through [`grow`] (`RELATED_WORK.md` 31, 32), so
+    /// `eval_dyn`, now runs through [`grow`] (`docs/related-work/` 31, 32), so
     /// frame size only decides how soon a deep walk moves to a new stack
     /// segment. They are kept because smaller hot frames cost nothing, not
     /// because anything depends on them.
@@ -465,7 +465,7 @@ impl Checker<'_> {
 
     /// `infer` on a child. A node with two or more parents is memoised by
     /// node and context id, so a shared subterm is inferred once per context
-    /// rather than once per occurrence (`RELATED_WORK.md` §63). A node with one
+    /// rather than once per occurrence (`docs/related-work/` §63). A node with one
     /// parent can only be reached twice through a shared ancestor, which is
     /// memoised instead, so skipping it keeps the walk linear in the DAG and
     /// costs unshared terms no hashing. Only successes are stored: an error
@@ -681,7 +681,7 @@ pub fn infer(ctx: &Ctx, e: &Expr) -> Result<Expr, String> {
 /// Safe at any depth: every traversal it reaches runs through [`grow`],
 /// so an expression is bounded by heap, not native stack. That is also
 /// why there is no depth guard here or in [`typecheck`] any more -- the
-/// one that used to exist (`MAX_CHECK_DEPTH`, `RELATED_WORK.md` 30) was
+/// one that used to exist (`MAX_CHECK_DEPTH`, `docs/related-work/` 30) was
 /// purely a stack-survival bound. How long a deep check takes is the
 /// caller's to bound; `proof.rs`'s step budgets do that.
 pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Result<(), String> {
@@ -696,7 +696,7 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
     }
     // The claim must be a type before anything is checked against it, as
     // in Lean's `check_constant_val` and Coq's `infer_definition`
-    // (RELATED_WORK §67): the rules below compare `expected` by `def_eq`
+    // (docs/related-work/ §67): the rules below compare `expected` by `def_eq`
     // and never infer it, so a malformed claim would otherwise be proved.
     // One cache for both, so a claim's subterms the proof shares hit it.
     scoped(|| {

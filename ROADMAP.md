@@ -17,11 +17,8 @@ Every milestone serves at least one of these; work that serves none needs a stat
 3. **The KR&R tier of a cycle with a GPU model.** A learned model on the GPU tier (nothing
    built; the idea came from the tiered-AI direction of the inactive scratchtape repo, which this repo does not rely on) proposes what to explore; the kernel checks and proves it, and returns rules and signals.
    The model's output is untrusted (`docs/tier-cycle/`).
-   Between the two, a calibrated belief layer (design note, 2026-10-22). Its first calibration milestone (2026-11-01) built
-   the claim dump and the statistics and stopped at its gate: no claim that passes the screen and the exhaustive width-4 check is refuted (on this claim distribution), so there was
-   nothing for a belief about refutation to rank. The unproved ones are all provable at width 4 (spike, 2026-11-01), so
-   unprovability is the cheap path's gap, not a truth to predict, and scoring it is decided against for now
-   (`PARKED.md`, "Belief layer stage 2"; `docs/tier-cycle/`, "The belief layer's calibration milestone stops at its first gate"). For each claimed equality it
+   Between the two, a calibrated belief layer (design note, 2026-10-22; its first milestone stopped at its gate, see
+   `PARKED.md`, "Belief layer stage 2", and `docs/tier-cycle/`, "The belief layer's calibration milestone stops at its first gate"). For each claimed equality it
    would estimate P(the kernel proves it) from the claim's shape and its evidence: random tests passed, small widths
    checked exhaustively, the model's score. Evidence that decides a claim outright sets it to 1, such as a pure bitwise
    term's values on the 0/1 inputs; a counterexample sets it to 0 for good. It learns from the outcomes: kernel-checked proofs and counterexamples. It
@@ -31,12 +28,9 @@ Every milestone serves at least one of these; work that serves none needs a stat
    proved later). Its first calibration: `docs/tier-cycle/`, "How much random testing is worth", where a test's worth
    depends on the kind of claim.
 
-Goals 1 and 2 meet in compiled hot transformations with learned compilations (`README.md`, "Future work"). That is
-not a milestone yet: neither the mined rules nor the class table find work in the JIT's programs, whose add/sub
-trees are one operator over leaves, and the specialiser's inlining adds no depth (`docs/tier-cycle/`, "Other ways to
-join the JIT and the loop", option A's results, 2026-10-17 to 2026-11-01). A hand-written depth workload (Hacker's Delight)
-shows the fixed table, not mined rules, doing the rewriting; and the loop's laws are at one small width, the JIT's `Int` is
-i64 (`PARKED.md`, "laws uniform in the width").
+Goals 1 and 2 meet in compiled hot transformations with learned compilations. That is not a milestone yet: the mined
+rules find no work in the JIT's programs (`PARKED.md`, "Compile hot transformations", with its trigger; results in
+`docs/tier-cycle/`, "Other ways to join the JIT and the loop").
 
 ## Milestones
 

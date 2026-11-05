@@ -87,7 +87,7 @@ fn a_global_whose_type_is_open_is_rejected() {
 /// argument's own lambda domain (or, for `WRec`, in `children_ty`)
 /// reduces away under `def_eq` and is never itself inferred -- this is
 /// the case the final review's counterexample found with the door
-/// removed (`RELATED_WORK.md` §67).
+/// removed (`docs/related-work/` §67).
 #[test]
 fn a_free_is_rejected_everywhere() {
     let g = two_globals();
@@ -153,7 +153,7 @@ fn a_free_is_rejected_everywhere() {
 
 /// `check_in` checks its claim is a type before checking the proof, as
 /// Lean's `check_constant_val` and Coq's `infer_definition` do
-/// (RELATED_WORK §67). Without that, a malformed claim is "proved".
+/// (docs/related-work/ §67). Without that, a malformed claim is "proved".
 #[test]
 fn a_claim_that_isnt_a_type_is_rejected() {
     let g = two_globals();

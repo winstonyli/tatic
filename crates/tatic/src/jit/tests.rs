@@ -2,7 +2,7 @@
 #[test]
 fn the_verify_battery_probes_zero_negatives_and_a_loop_that_runs_many_times() {
     // What `verify` is the only check of (the emitted code) depends on the
-    // battery reaching these; the cap at 12 (RELATED_WORK.md §71) must not
+    // battery reaching these; the cap at 12 (docs/related-work/ §71) must not
     // shrink it below them.
     let samples: Vec<i64> = sample_arg_vectors(1).into_iter().map(|v| v[0]).collect();
     assert!(samples.contains(&0), "no zero");
@@ -34,7 +34,7 @@ fn a_closure_of_the_wrong_arity_off_the_samples_is_not_installed() {
     // wrong arity: it traps at n = 777, which no sample reaches. Types
     // don't see arity, so typing.rs accepts it. What keeps it out is the
     // universal-proof gate: the kernel types a closure by its exact
-    // arity (`Clo_k`), so no proof can exist (RELATED_WORK.md §40).
+    // arity (`Clo_k`), so no proof can exist (docs/related-work/ §40).
     assert!(crate::verify::typing::well_typed(&s, h, 1));
     let c = crate::jit::compile::compile_specialised(&s, h).unwrap();
     assert!(c.specialised.is_none());
@@ -52,7 +52,7 @@ fn a_closure_of_the_wrong_arity_off_the_samples_is_not_installed() {
 fn a_parameter_that_is_only_called_gets_no_universal_proof() {
     // The JIT passes only `Int`s, so a theorem that types a called
     // parameter as a closure covers none of its calls
-    // (RELATED_WORK.md §42). Both provers produced one: the closure
+    // (docs/related-work/ §42). Both provers produced one: the closure
     // prover for the first term, the tail-recursive one for the second.
     for src in [
         r"\a. \f. if a == 777 then f 5 else a",
@@ -135,7 +135,7 @@ fn sample_arg_vectors_for_arity_zero_is_a_single_trivial_sample() {
     // `vec![a; 0]` is `[]` regardless of `a` -- without the dedicated
     // `0` arm, the `_` catch-all would push the same empty sample
     // once per `SAMPLE_ARGS[..6]` entry (see `sample_arg_vectors`'s
-    // own comment and `RELATED_WORK.md` §9 for the redundant-proof-
+    // own comment and `docs/related-work/` §9 for the redundant-proof-
     // search cost this was causing).
     assert_eq!(sample_arg_vectors(0), vec![Vec::<i64>::new()]);
 }
@@ -502,7 +502,7 @@ fn a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_pa
     // `prove_closure_expr_instance`'s own inlining (via
     // `eval_dyn_tail_recursive`) now covers a recursive use of the
     // curried-dispatch capability too -- previously the standing gap
-    // this whole test existed to document (see `RELATED_WORK.md`).
+    // this whole test existed to document (see `docs/related-work/`).
     // `jit.rs`'s own sample-based `verify()` is still the actual
     // trust gate installing the compiled form regardless.
     assert!(jit.is_kernel_verified(top));

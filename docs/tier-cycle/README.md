@@ -1,6 +1,6 @@
 # Findings log (index)
 
-The tier-cycle findings log, one file per section (the two long sections are split again at their subsections). Code comments, `PARKED.md` and `TOUR.md` cite a section as `docs/tier-cycle/, "Title"` by its heading title, which is unchanged; the title is the key, not the file name. Concatenating the files in the order below gives the whole log. `scripts/tier_cycle_check.sh` checks that this list matches the directory.
+The tier-cycle findings log, one file per section (the two long sections are split again at their subsections). Code comments, `PARKED.md` and `TOUR.md` cite a section as `docs/tier-cycle/, "Title"` by its heading title, which is unchanged; the title is the key, not the file name. Concatenating the files in the order below gives the whole log. `scripts/check/doc_index_check.sh` checks that this list matches the directory.
 
 - [00-title.md](00-title.md): The kernel as the KR&R tier of a cyclical system, 6 lines
 - [01-idea.md](01-idea.md): Idea, 11 lines

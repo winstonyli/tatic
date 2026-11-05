@@ -170,7 +170,7 @@ fn inconsistent_call_arity_for_a_parameter_is_still_out_of_scope_for_the_closure
     // and the runnable capability tests alongside it). That's an
     // intentional, expected gap, not a regression -- extending
     // kernel-checked proof coverage to this new capability is
-    // separately scoped future work (see `RELATED_WORK.md`'s own
+    // separately scoped future work (see `docs/related-work/`'s own
     // notes on why it doesn't fit this file's existing, purely
     // structural methodology), not a byproduct of compile.rs alone
     // accepting more terms.
@@ -337,7 +337,7 @@ fn calling_a_literal_lambda_whose_own_body_picks_between_two_closures_gets_a_clo
 fn a_literal_lambda_picking_between_two_different_arity_closures_is_out_of_scope() {
     // Same shape as the test above, except the picker's own `else`
     // branch now has arity *2*, not 1: `Clo`, before the
-    // arity-indexed `Clo_k` refactor (`TYPES.md` section 7), was a
+    // arity-indexed `Clo_k` refactor (`docs/types.md` section 7), was a
     // single, arity-blind kernel type, so this exact shape would have
     // kernel-*typechecked* under the old scheme (`ite_clo : Int -> Clo
     // -> Clo -> Clo` accepts any two `Clo`-typed branches, whatever
@@ -503,7 +503,7 @@ fn a_whole_functions_result_being_a_closure_now_gets_a_closure_proof() {
 fn a_bare_closure_typed_parameter_read_gets_a_closure_proof() {
     // `f`'s own arity is inferred as 1
     // only because `infer_closure_arities` needs *some* use-site call
-    // to assign it one at all (see `TYPES.md` section 3.1's own
+    // to assign it one at all (see `docs/types.md` section 3.1's own
     // "Default" rule), supplied here by the condition `f 0` (its own
     // value otherwise unused); both branches then read `f` itself as
     // a bare value, exercising `Term::Var(i)`'s own `Denoted::Clo`

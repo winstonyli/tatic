@@ -94,7 +94,7 @@ fn bind_accepts_a_parameter_typed_by_an_earlier_one() {
 }
 
 /// A push inside a scope adds a global: `close` doesn't wrap it, and
-/// the closed term refers to it by `Const` (RELATED_WORK §70, stage 4).
+/// the closed term refers to it by `Const` (docs/related-work/ §70, stage 4).
 #[test]
 fn a_push_inside_a_scope_is_a_global_that_close_leaves_alone() {
     let mut p = Postulates::new();
@@ -110,7 +110,7 @@ fn a_push_inside_a_scope_is_a_global_that_close_leaves_alone() {
 
 /// A push inside a scope survives `abandon` too: `abandon` rolls back
 /// bound parameters but not globals, so `globals.len()` is unchanged
-/// and the pushed value still type-checks (RELATED_WORK §70, stage 4).
+/// and the pushed value still type-checks (docs/related-work/ §70, stage 4).
 #[test]
 fn a_push_inside_a_scope_survives_abandon() {
     let mut p = Postulates::new();
@@ -125,7 +125,7 @@ fn a_push_inside_a_scope_survives_abandon() {
 }
 
 /// A push inside a nested scope survives both `close`s, the same way
-/// a push in a single scope survives one (RELATED_WORK §70, stage 4).
+/// a push in a single scope survives one (docs/related-work/ §70, stage 4).
 #[test]
 fn a_push_inside_a_nested_scope_survives_both_closes() {
     let mut p = Postulates::new();

@@ -19,7 +19,7 @@ use super::*;
 // Applying one *through a parameter* (`call_indirect`) is therefore just
 // ordinary kernel `App`, checked by `kernel::infer`'s own Pi-application
 // rule -- no per-arity axiom needed at all for that generic case (see
-// `RELATED_WORK.md` section 11 for the migration away from an earlier,
+// `docs/related-work/` section 11 for the migration away from an earlier,
 // opaque-`Clo`-plus-`apply_k`-axiom design). Two different arities stay
 // genuinely distinct, definitionally-unequal kernel types on their own,
 // with no need to remember "which arity was already postulated" --
@@ -451,7 +451,7 @@ impl ClosurePostulates {
     }
 
     /// `Clo_arity := Int -> .. -> Int` (`arity` copies) -- the literal
-    /// curried arrow type, *not* postulated (see `RELATED_WORK.md` section
+    /// curried arrow type, *not* postulated (see `docs/related-work/` section
     /// 11 for the investigation this answers): every consumer below only
     /// ever needs "the callable shape with `arity` `Int` parameters and an
     /// `Int` result" (every argument/result stays uniformly `Int`
@@ -460,7 +460,7 @@ impl ClosurePostulates {
     /// real Pi type already gives that for free -- no opaque `Sort(0)`
     /// axiom needed at all. Two different arities still stay genuinely
     /// distinct, definitionally-unequal kernel types (the fix for the
-    /// "arity-blind `Clo`" gap `TYPES.md` section 7 describes): `Int ->
+    /// "arity-blind `Clo`" gap `docs/types.md` section 7 describes): `Int ->
     /// Int` and `Int -> Int -> Int` are already structurally distinct
     /// under `kernel::check`'s own Pi-formation rules, with no reliance on
     /// remembering "which arity was already postulated" the way the old
@@ -497,7 +497,7 @@ impl ClosurePostulates {
     /// `Int` has no recursor in this kernel (deliberately -- it's an
     /// open-ended arithmetic domain, never given a
     /// case-elimination principle), so there's no way to build this from
-    /// anything already postulated (see `RELATED_WORK.md` section 11's own
+    /// anything already postulated (see `docs/related-work/` section 11's own
     /// correction). Called directly by whichever site needs it.
     pub(super) fn ite_clo_ref(&mut self, arity: usize) -> Expr {
         if let Some(&pos) = self.ite_clo_pos.get(&arity) {

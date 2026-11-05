@@ -14,5 +14,10 @@ ok "a missing section fails and is named" "$([ $rc = 1 ] && echo "$out" | grep -
 out=$(run 'see `docs/tier-cycle/`, "An italic
   lead-in (2026-01-01, run x)".'); rc=$?
 ok "a wrapped title resolves" "$([ $rc = 0 ] && echo ok)"
+mkdir -p "$t/docs/related-work"; printf '## 9. x\n' > "$t/docs/related-work/09-x.md"; printf '## 12. y\n' > "$t/docs/related-work/12-y.md"
+out=$(run 'see `docs/related-work/` §9 and §12, and §12 of `docs/related-work/`.'); rc=$?
+ok "§ cites resolve to numbered files, in both orders" "$([ $rc = 0 ] && echo "$out" | grep -q '^3 section cites checked, 0 unresolved' && echo ok)"
+out=$(run 'see `docs/related-work/` §9 and §13.'); rc=$?
+ok "a § with no file fails and is named" "$([ $rc = 1 ] && echo "$out" | grep -q '§13' && echo ok)"
 [ $fail = 0 ] && echo "cite_check_check: ok"
 exit $fail

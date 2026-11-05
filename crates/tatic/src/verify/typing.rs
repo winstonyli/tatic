@@ -6,13 +6,13 @@
 //! calls an `Int`, returns garbage where `eval` returns `TypeError` or
 //! `NotAFunction`. `jit.rs`'s sample battery only catches that when a
 //! sample reaches the ill-typed code, and the kernel theorem is stated over
-//! postulated symbols that say nothing about types (`RELATED_WORK.md` §28,
+//! postulated symbols that say nothing about types (`docs/related-work/` §28,
 //! §38). This closes the gap statically: [`well_typed`] accepts a term only
 //! if it has type `Int -> ... -> Int`. By the usual type-safety argument, a
 //! term that does can then never reach `TypeError`, `NotAFunction` or
 //! `UnboundVariable` on `Int` arguments; `DivByZero` and divergence remain
 //! possible, as in any typed language. That claim is fuzzed, not proved
-//! (`a_well_typed_term_never_goes_wrong`, `RELATED_WORK.md` §45).
+//! (`a_well_typed_term_never_goes_wrong`, `docs/related-work/` §45).
 //!
 //! The types are `Int`, `a -> b` and unification variables, with no
 //! polymorphism: a closure used at two different types is declined. Two

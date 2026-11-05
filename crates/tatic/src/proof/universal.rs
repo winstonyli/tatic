@@ -83,7 +83,7 @@ use super::*;
 // reference, and an `If` choosing between two `Clo`-typed values is in scope
 // too (`ite_clo_ref`) -- see `prove_tail_recursive_universal`'s own doc comment below
 // for the one thing still out of scope here (a captured free variable).
-// `params_and_close_typed`'s scope locals are `Free`s (`RELATED_WORK.md`
+// `params_and_close_typed`'s scope locals are `Free`s (`docs/related-work/`
 // §70), never pushed onto `globals`; a lazily-memoized postulate
 // (`ClosureCombinators::register`/`call_ref`/`pap_ref`,
 // `ClosurePostulates::mk_env_ref`/`env_ty`/`ite_clo_ref`) may be pushed from

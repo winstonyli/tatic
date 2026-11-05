@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn every_arith_postulates_starts_from_one_checked_prelude() {
-    // `push` type-checks each entry (RELATED_WORK §69), so building the
+    // `push` type-checks each entry (docs/related-work/ §69), so building the
     // 10-entry prelude per proof cost ~5 µs, half of a small proof.
     // Each `new` must reuse one checked copy: same nodes, not rebuilt.
     let a = ArithPostulates::new();
@@ -19,7 +19,7 @@ fn every_arith_postulates_starts_from_one_checked_prelude() {
 
 /// `a + a`, for a shared `a`, denotes `a` once: both operands of the
 /// denotation share their children, so the kernel's pointer-keyed
-/// caches see one subterm, not two copies (`RELATED_WORK.md` §48).
+/// caches see one subterm, not two copies (`docs/related-work/` §48).
 #[test]
 fn a_shared_subterm_is_denoted_once() {
     // Hand-built: an open body (`x` free), passed to `setup` with arity 1.
@@ -61,7 +61,7 @@ fn straight_line_term_gets_a_kernel_checked_proof() {
 /// Confirms a `Clo_k`-shaped value can be built as the literal curried
 /// `Int -> .. -> Int` arrow type, reusing `Int` (already postulated by
 /// `ArithPostulates`) instead of an opaque `Sort(0)` postulate family
-/// (`RELATED_WORK.md` section 11):
+/// (`docs/related-work/` section 11):
 ///
 /// 1. Such a value can be called directly via ordinary `kernel::app`,
 ///    typechecking as `Int` with no separate "how to call this" axiom
@@ -76,7 +76,7 @@ fn straight_line_term_gets_a_kernel_checked_proof() {
 ///    `kernel::check` rejects a `Clo_3`-shaped value where a `Clo_2` is
 ///    expected, for free, from ordinary Pi-type structural inequality --
 ///    so this doesn't reopen the arity-blind-`Clo` unsoundness
-///    `TYPES.md` section 6.2 documents.
+///    `docs/types.md` section 6.2 documents.
 #[test]
 fn a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates() {
     fn curried_arrow(int_ty: &Expr, k: usize) -> Expr {
@@ -140,7 +140,7 @@ fn a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates() {
         .expect("bool_rec_true_eq, instantiated at Clo2, should already prove ite(Clo2,true,f,g) = f");
 
     // Arity mismatch is still rejected: a Clo3-shaped value can't stand
-    // in where a Clo2 is expected -- the soundness gain `TYPES.md`
+    // in where a Clo2 is expected -- the soundness gain `docs/types.md`
     // section 6.2/7 documents survives this representation change.
     assert!(
         arith.p.check(&h, &clo2_ty).is_err(),

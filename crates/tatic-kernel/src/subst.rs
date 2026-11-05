@@ -52,7 +52,7 @@ fn shift_child(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Expr {
 /// `body` uses it, so not at all when `body` doesn't mention `Var(0)`:
 /// `infer`'s `App` rule substitutes every argument into its function's
 /// codomain, usually `Int`, and shifting the argument there cost a walk of
-/// it per application (`RELATED_WORK.md` §50, §58).
+/// it per application (`docs/related-work/` §50, §58).
 pub(super) fn subst_top(s: &Spaces, body: &Expr, a: &Expr) -> Expr {
     instantiate(s, body, a, 0)
 }
@@ -62,7 +62,7 @@ pub(super) fn subst_top(s: &Spaces, body: &Expr, a: &Expr) -> Expr {
 /// above it drop by one for the discharged binder. Equal to substituting
 /// `shift(a, 0, 1)` and then shifting the result by -1, but `a` is shifted
 /// only where it's used, not at every binder crossed and again in the
-/// result (`RELATED_WORK.md` §52).
+/// result (`docs/related-work/` §52).
 ///
 /// A subterm with no loose variable at or above its depth is kept as it is.
 pub(super) fn instantiate(s: &Spaces, e: &Expr, a: &Expr, d: u32) -> Expr {

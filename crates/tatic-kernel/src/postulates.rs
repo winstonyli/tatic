@@ -21,12 +21,12 @@ use super::*;
 /// this by taking a small base type as primitive (or, as here, postulated).
 ///
 /// A postulate is referred to by `Const(level)` and checked as one of the
-/// kernel's `Globals` (`RELATED_WORK.md` §69).
+/// kernel's `Globals` (`docs/related-work/` §69).
 ///
 /// A scope's parameters (`bind`) are `Free(level)`s, which no push shifts.
 /// Levels come from a counter that never reuses one, so a `Free` that
 /// escapes its scope can't be bound by a later scope's `close` and is
-/// rejected by the kernel instead (`RELATED_WORK.md` §70).
+/// rejected by the kernel instead (`docs/related-work/` §70).
 ///
 /// A `push` may happen inside an open scope: it adds a global, which that
 /// scope's `close` doesn't wrap. Its type must be closed, so a scope's own
@@ -81,7 +81,7 @@ fn abstract_frees(e: &Expr, first: u32, levels: &[u32], d: u32) -> Expr {
 /// depth, as `Checker::infer` does, so a shared subterm is walked once and its
 /// result stays shared. Unmemoised, a doubling DAG is walked as the tree
 /// it unfolds to, and the copy loses the sharing `infer`'s memo relies on
-/// (`RELATED_WORK.md` §63).
+/// (`docs/related-work/` §63).
 fn abstract_frees_in(s: &Spaces, e: &Expr, first: u32, levels: &[u32], d: u32, memo: &mut FreesMemo) -> Expr {
     if s.free(e) <= first {
         return *e;
@@ -126,7 +126,7 @@ impl Postulates {
     pub fn push(&mut self, ty: Expr) -> usize {
         let pos = self.globals.len();
         assert!(ty.loose() == 0 && ty.free() == 0, "a postulate's type must be closed: {ty:?}");
-        // RELATED_WORK §68: an ill-formed entry sat in the context unchecked
+        // docs/related-work/ §68: an ill-formed entry sat in the context unchecked
         // until a claim that used it failed. This also catches a postulate
         // referencing itself or a later one: `infer` checks it against
         // `self.globals` as it stands before this push, so a forward
@@ -167,7 +167,7 @@ impl Postulates {
         assert!(self.scopes == s.depth + 1, "scopes must close innermost-first");
         // A loose `Var` here would be captured by the new binders: it's a
         // sign a scope local escaped `bind`.
-        assert!(body.loose() == 0, "close's body has a loose Var: a scope local escaped bind (RELATED_WORK §70)");
+        assert!(body.loose() == 0, "close's body has a loose Var: a scope local escaped bind (docs/related-work/ §70)");
         let levels: Vec<u32> = self.params[s.params_len..].iter().map(|(l, _)| *l).collect();
         let mut acc = abstract_frees(&body, s.first, &levels, 0);
         for i in (0..levels.len()).rev() {
@@ -182,7 +182,7 @@ impl Postulates {
     }
     /// Rolls back what was bound since `s` was opened, closing nothing (for
     /// a build that gave up). `next_free` stays where it is, so no level is
-    /// handed out twice (`RELATED_WORK.md` §67).
+    /// handed out twice (`docs/related-work/` §67).
     pub fn abandon(&mut self, s: Scope) {
         assert!(self.scopes == s.depth + 1, "scopes must close innermost-first");
         self.params.truncate(s.params_len);

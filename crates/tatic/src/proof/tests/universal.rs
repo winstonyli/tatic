@@ -31,7 +31,7 @@ fn a_capturing_partial_application_created_inside_a_self_call_argument_gets_a_un
     // immediately calling a fully-applied closure. This is exactly the
     // shape that exposed a real staleness bug, caught by compile_fuzz's
     // random-term fuzzing before this dedicated regression test existed:
-    // a missed `mk_env_ref` push under scope-time priming (`RELATED_WORK.md`
+    // a missed `mk_env_ref` push under scope-time priming (`docs/related-work/`
     // §70); kept as a regression test.
     let mut s = TermStore::new();
     let h = source(

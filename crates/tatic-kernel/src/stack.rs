@@ -5,7 +5,7 @@
 // grows with both a term's depth and its reduction length. Measured
 // before this existed: a debug build on a 1 MB thread (the Windows main
 // thread) overflowed at depth ~90, a release build at ~450-570
-// (`RELATED_WORK.md` 31). Rather than hand-convert `infer`/`check` into
+// (`docs/related-work/` 31). Rather than hand-convert `infer`/`check` into
 // an explicit continuation machine -- hundreds of new lines inside the
 // trusted kernel, no longer reading like the typing rules they implement
 // -- each recursive entry point runs through `grow`, which spills onto a

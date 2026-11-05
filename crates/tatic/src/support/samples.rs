@@ -50,10 +50,10 @@ pub fn gcd_with_two_base_cases(s: &mut TermStore) -> Hash {
 /// so it is lambda lifted (`lower_wat::direct_only`): `acc` is passed as a
 /// parameter and nothing allocates. Until that change it paid one
 /// bump-allocator call per iteration, and this bench is where the
-/// difference shows (`RELATED_WORK.md` §36). The literal application
+/// difference shows (`docs/related-work/` §36). The literal application
 /// `(\y. acc+y) n` is also a redex whose argument (`n`, a `Var`) is a
 /// value, so `compile_specialised` βv-reduces it to `acc+n` in one step
-/// before the term ever reaches the IR builder (`RELATED_WORK.md` §37);
+/// before the term ever reaches the IR builder (`docs/related-work/` §37);
 /// this bench measures both changes together, through the JIT.
 pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
     source(s, r"rec f n acc = if n <= 0 then acc else f (n - 1) ((\y. acc + y) n)")
@@ -74,7 +74,7 @@ pub fn capturing_closure_loop(s: &mut TermStore) -> Hash {
 /// certificate-checked steps before the term reaches `try_compile`, so the
 /// warm path this bench measures no longer allocates a partial
 /// application's environment or dispatches through `caller` at all
-/// (`RELATED_WORK.md` §37).
+/// (`docs/related-work/` §37).
 pub fn partial_application_loop(s: &mut TermStore) -> Hash {
     source(s, r"rec f n acc = if n <= 0 then acc else f (n - 1) ((\g z. g z) ((\x y. x + y) acc) n)")
 }
@@ -100,7 +100,7 @@ pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) 
 /// `Combinators::needs_generic_dispatch` -- switches the *whole* fragment
 /// to curried dispatch, including the hot, live `g x` call the dead branch
 /// has nothing to do with. This isolates exactly the cost
-/// `RELATED_WORK.md`'s own design discussion flagged but never measured:
+/// `docs/related-work/`'s own design discussion flagged but never measured:
 /// what a single, syntactically-present-but-never-taken inconsistent call
 /// site costs an otherwise fast-path loop.
 pub fn inconsistent_arity_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) -> Hash {

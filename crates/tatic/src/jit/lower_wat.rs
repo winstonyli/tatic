@@ -126,7 +126,7 @@
 //! either traps or (astronomically unlikely) coincidentally lands on some
 //! unrelated table entry. `jit.rs` never installs such a term: it isn't
 //! simply typed, so `typing::well_typed` declines it before the sample
-//! battery runs (`RELATED_WORK.md` §38). Sample verification alone was
+//! battery runs (`docs/related-work/` §38). Sample verification alone was
 //! not enough: it only sees the ill-typed code when a sample reaches it.
 //!
 //! `call_indirect`'s own operand order needs the callee's packed value
@@ -177,7 +177,7 @@
 //! path -- this is an additive fallback, not a replacement, and its real
 //! per-call cost (roughly 1.5x on an otherwise fast-path-eligible hot
 //! loop) is paid only by a fragment that actually needs it -- see
-//! `RELATED_WORK.md` for the measured numbers.
+//! `docs/related-work/` for the measured numbers.
 //!
 //! A *recursive* (`Rec`-wrapped) use of this mechanism gets kernel-proof
 //! backing too, per instance rather than universally (the loop-carried
@@ -186,7 +186,7 @@
 //! `proof::eval_dyn`'s own `self_ctx`-threaded recursion (mutually with
 //! `eval_dyn_tail_recursive`) for a *non*-tail-recursive one, including
 //! branching (e.g. an embedded self-call inside `1 + f(n-1)`, or two in
-//! one leaf as in naive Fibonacci). See `RELATED_WORK.md` for what's
+//! one leaf as in naive Fibonacci). See `docs/related-work/` for what's
 //! still open: a universal (not just per-instance) proof for either
 //! shape needs a real dependent sum in the kernel's own type theory.
 

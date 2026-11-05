@@ -97,7 +97,7 @@ pub(crate) fn unwind_app_spine(store: &TermStore, mut h: Hash) -> (Hash, Vec<Has
 /// What shape one node of a function body is -- the case analysis
 /// `build_node` and every walker in `proof.rs` that models it share, so
 /// that the compiler and the proofs cannot disagree about which case a
-/// term falls into (`RELATED_WORK.md` 33). Each consumer still decides
+/// term falls into (`docs/related-work/` 33). Each consumer still decides
 /// for itself which shapes it supports and what they mean; only the
 /// classification is common.
 ///

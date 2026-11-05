@@ -43,7 +43,7 @@
 //! other argument. That's a result-checking / certifying-computation
 //! regime, not translation validation, and using the latter name for it
 //! would claim precisely the all-inputs guarantee it lacks -- see
-//! `jit::JitEngine::kernel_verify` and `RELATED_WORK.md` 28. tatic has no
+//! `jit::JitEngine::kernel_verify` and `docs/related-work/` 28. tatic has no
 //! per-compilation validator; the only all-inputs evidence it builds is
 //! the universal theorem below.
 //!
@@ -74,7 +74,7 @@
 //! (predicativity was never actually the obstacle -- `WRec` already
 //! supports eliminating into any `Sort(k)`), but wiring it in as a
 //! replacement for the postulated family below is a separate, not yet
-//! attempted follow-on (see `RELATED_WORK.md`) -- `Ev` itself is also an
+//! attempted follow-on (see `docs/related-work/`) -- `Ev` itself is also an
 //! *indexed* family (depends on `params`/`v`), which a plain `Nat`'s own
 //! structural recursor doesn't directly hand you either way. So, for
 //! now, `prove_tail_recursive_universal` postulates a
@@ -168,7 +168,7 @@ pub struct ArithPostulates {
 
 impl ArithPostulates {
     /// The prelude every proof starts from. `push` type-checks each entry
-    /// (RELATED_WORK §69), which cost ~5 µs a proof when every proof
+    /// (docs/related-work/ §69), which cost ~5 µs a proof when every proof
     /// rebuilt it, so it is built and checked once per thread and cloned:
     /// `globals` is an `im::Vector`, and the clone shares its nodes.
     pub fn new() -> Self {
@@ -316,7 +316,7 @@ pub(super) fn collect_literals(store: &TermStore, h: Hash, scope: &LitScope, out
 /// expression: `params[i]` stands for `Var(i)`, and every operator/literal
 /// is read off `arith` (which must already have every literal postulated).
 /// A shared subterm is denoted once and its denotation shared, so the
-/// result is linear in the DAG (`RELATED_WORK.md` §48). That is exact:
+/// result is linear in the DAG (`docs/related-work/` §48). That is exact:
 /// the fragment has no binders, so a subterm's denotation depends only on
 /// its hash.
 fn denote(store: &TermStore, h: Hash, arith: &ArithPostulates, params: &[Expr]) -> Option<Expr> {
