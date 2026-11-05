@@ -390,7 +390,7 @@ fn wrap_c_ct_cf(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Exp
 /// A real, computing `Nat` built from this kernel's own existing four
 /// primitives alone (`Pi`/`Lam`/`Id`/`W`, plus `Postulates` for the base
 /// types a predicative kernel can't derive from nothing) -- the reusable
-/// form of `tests::nat_via_w_is_a_genuinely_computing_inductive_type`'s
+/// form of `tests::worked::nat_via_w_is_a_genuinely_computing_inductive_type`'s
 /// own construction. See that test's doc comment for the full
 /// derivation, including the induction-hypothesis-closure typing gap
 /// `WRec`'s own `children_ty` field (see `Expr::WRec`'s own doc) closes.
@@ -531,7 +531,7 @@ impl NatPostulates {
     /// `f_zero : ChildTy(false) -> Nat`, `Zero`'s own child function --
     /// exposed separately from `zero` because it's exactly the shape
     /// `WRec`'s own automatic reduction needs an induction-hypothesis
-    /// closure to have (see `tests::nat_via_w_is_a_genuinely_computing_inductive_type`,
+    /// closure to have (see `tests::worked::nat_via_w_is_a_genuinely_computing_inductive_type`,
     /// which uses this to rebuild and typecheck that closure by hand).
     pub fn zero_child_fn(&self, p: &Postulates) -> Expr {
         let nat_ty = self.nat_ty(p);
