@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # `rewrite.rs` split Implementation Plan (TB3, rewrite half)
