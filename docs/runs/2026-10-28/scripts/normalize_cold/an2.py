@@ -1,3 +1,4 @@
+# an2.py <run> [L=4] [stride=4]: per stream, cold normalize time split into miss and hit part, warm normalize time and ns per node, from the NP rows of the run's out.log.
 import re
 import sys
 

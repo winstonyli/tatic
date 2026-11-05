@@ -1,3 +1,4 @@
+# an1.py <run>: the NP rows of the run's out.log (normalize-cold probe) summed per level L and pass: build seconds, miss time by part, counts.
 import re
 import sys
 

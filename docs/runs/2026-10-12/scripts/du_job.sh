@@ -1,3 +1,4 @@
+# du_job.sh <salt>: the pooled stage of one salt over the library of sweep_f1_<salt> (bv_du.exe, driver::sweep); seconds appended to du_done.txt in the kk.sh run folder.
 salt=$1; out="$(bash "$(dirname "$0")/kk.sh")/du${TAG}_$salt"; rm -rf "$out"; mkdir -p "$out"
 start=$(date +%s)
 LIB=$(bash "$(dirname "$0")/kk.sh")/sweep_f1_$salt SWEEP_OUT="$out" SALT=$salt SWEEP="pooled" cmd //c start "" //b //belownormal //wait "$TEMP/bv_du.exe" driver::sweep --exact --ignored --nocapture > "$out/log.txt" 2>&1

@@ -1,3 +1,4 @@
+# sm_job.sh: four cmp3d loops (stride 15, phase 3, B=100, K=3) alternating RULEMINER_STATE_MEMO=0 and 1; wall seconds appended to sm_times.txt.
 for m in 0 1 0 1; do
   i=$((i+1)); d=$(bash "$(dirname "$0")/kk.sh")/sm${m}_$i; rm -rf $d; mkdir -p $d
   s=$(date +%s)
