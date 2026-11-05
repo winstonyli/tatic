@@ -4,7 +4,7 @@ An experiment on whether rule mining can run alongside execution: laws are
 served in batches, rules are mined from each served batch, and the next batch
 is served under the rules mined so far. The metric M is the number of laws that
 still need a whole-term machine proof. The measured results are in
-`docs/tier-cycle/`, with raw rows and the scripts that produced them under
+`docs/tier-cycle/README.md`, with raw rows and the scripts that produced them under
 `docs/runs/`.
 
 - The laws come from the streams: `search::stream_sequence(salt)`, the operator-set

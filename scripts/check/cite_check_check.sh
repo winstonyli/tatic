@@ -37,7 +37,28 @@ out=$(rs "// see docs/related-work/'s own discussion."); rc=$?
 ok "a code cite with no section fails" "$([ $rc = 1 ] && echo "$out" | grep -q 'no section' && echo ok)"
 out=$(rs 'let p = "docs/tier-cycle/"; // see `docs/tier-cycle/` ("A heading").'); rc=$?
 ok "a code string is not a cite, a parenthesised title is" "$([ $rc = 0 ] && echo "$out" | grep -q '^1 section cites checked, 0 unresolved' && echo ok)"
-out=$(run 'the index is `docs/related-work/`.'); rc=$?
-ok "a doc may name the directory alone" "$([ $rc = 0 ] && echo ok)"
+out=$(run 'findings are in `docs/related-work/`.'); rc=$?
+ok "a doc naming a directory with no section fails" "$([ $rc = 1 ] && echo "$out" | grep -q 'no section' && echo ok)"
+out=$(run 'the index is `docs/related-work/README.md`, a TOUR cite `docs/tier-cycle/#A heading`.'); rc=$?
+ok "the index and a TOUR cite pass" "$([ $rc = 0 ] && echo ok)"
+cm() { printf '%s\n' "$2" > "$t/$1"; perl "$here/cite_check.pl" "$t" "$1" 2>&1; }
+out=$(cm x.sh '# see docs/tier-cycle/, "No such section".'); rc=$?
+ok "a shell comment is read" "$([ $rc = 1 ] && echo "$out" | grep -q 'No such section' && echo ok)"
+out=$(cm x.toml '# see docs/tier-cycle/, "A heading".
+p = "docs/tier-cycle/"'); rc=$?
+ok "a toml comment is read, its strings are not" "$([ $rc = 0 ] && echo "$out" | grep -q '^1 section cites checked, 0 unresolved' && echo ok)"
+out=$(cm x.sh '# see docs/tier-cycle.md, "A heading".'); rc=$?
+ok "a long doc's old name fails" "$([ $rc = 1 ] && echo "$out" | grep -q 'old name' && echo ok)"
+out=$(run 'see `docs/tier-cycle/`, "A hea".'); rc=$?
+ok "a title cut mid-word fails" "$([ $rc = 1 ] && echo ok)"
+out=$(run 'see `docs/tier-cycle/`, "A heading and a stray quote
+then docs/tier-cycle/ bare, and much later on '"$long$long"' a "tail'); rc=$?
+ok "an unclosed quote does not swallow what follows" "$([ $rc = 1 ] && [ "$(echo "$out" | grep -c 'no section')" = 2 ] && echo ok)"
+rm -f "$t"/x.sh "$t"/x.toml "$t"/crates/x.rs; mkdir -p "$t/docs/runs" "$t/docs/superpowers" "$t/scripts/check"
+for f in docs/runs/r.md docs/runs.md docs/superpowers/s.md scripts/check/c.sh; do printf '# in docs/tier-cycle/ somewhere\n' > "$t/$f"; done
+printf 'in `docs/tier-cycle/`, "A heading".\n' > "$t/PARKED.md"; printf 'in docs/tier-cycle/ alone\n' > "$t/new.md"
+git -C "$t" init -q . && git -C "$t" add -A 2>/dev/null
+out=$(perl "$here/cite_check.pl" "$t" 2>&1); rc=$?
+ok "by default every tracked doc is read but the history and the guards" "$([ $rc = 1 ] && echo "$out" | grep -q '^new.md: docs/tier-cycle/ with no section' && [ "$(echo "$out" | grep -c 'no section')" = 1 ] && echo ok)"
 [ $fail = 0 ] && echo "cite_check_check: ok"
 exit $fail

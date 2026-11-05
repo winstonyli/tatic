@@ -16,7 +16,7 @@ Every milestone serves at least one of these; work that serves none needs a stat
    "Idea" and "Risks"; the miner in `crates/church-bv/src/`).
 3. **The KR&R tier of a cycle with a GPU model.** A learned model on the GPU tier (nothing
    built; the idea came from the tiered-AI direction of the inactive scratchtape repo, which this repo does not rely on) proposes what to explore; the kernel checks and proves it, and returns rules and signals.
-   The model's output is untrusted (`docs/tier-cycle/`).
+   The model's output is untrusted (`docs/tier-cycle/`, "Idea").
    Between the two, a calibrated belief layer (design note, 2026-10-22; its first milestone stopped at its gate, see
    `PARKED.md`, "Belief layer stage 2", and `docs/tier-cycle/`, "The belief layer's calibration milestone stops at its first gate"). For each claimed equality it
    would estimate P(the kernel proves it) from the claim's shape and its evidence: random tests passed, small widths
@@ -34,4 +34,4 @@ rules find no work in the JIT's programs (`PARKED.md`, "Compile hot transformati
 
 ## Milestones
 
-No milestone is open. v0.6 (`git tag -n99 v0.6.0`; findings in `docs/tier-cycle/`, sections on the learned scorer, straggler verdicts, `small` and the crossover) closed with selection by `small` as the answer; what it left is in `PARKED.md`.
+No milestone is open. v0.6 (`git tag -n99 v0.6.0`; findings in `docs/tier-cycle/`, "A learned scorer over the extras", "Q2 primary run" and "Selecting the extras by straggler verdict") closed with selection by `small` as the answer; what it left is in `PARKED.md`.

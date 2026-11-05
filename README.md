@@ -51,11 +51,11 @@ Winston Li).
 
 This project was developed with substantial AI assistance: over 90% of the
 commits (500 of 536 when this note was written) carry a `Co-Authored-By:
-Claude` trailer, and the design notes in `docs/related-work/` were written the
+Claude` trailer, and the design notes in `docs/related-work/README.md` were written the
 same way. Treat the measurements and proofs as claims to re-run, not as
 audited results. The design specs and implementation plans behind the work are
 in `docs/superpowers/` (each starts with its `status:`); the experiment scripts
-that some commits and `docs/related-work/` refer to (`scripts/experiments/`) are
+that some commits and `docs/related-work/README.md` refer to (`scripts/experiments/`) are
 not part of this repository.
 
 ## Quick start
@@ -124,5 +124,5 @@ The closures fragment's `Int`/`Clo` type system is written down in [`docs/types.
 - [`docs/proven.md`](docs/proven.md): the validation routine, exactly what is proven and what isn't, and the fuzzers.
 - [`docs/syntax.md`](docs/syntax.md): the surface syntax. [`docs/design-notes.md`](docs/design-notes.md): why the code is shaped as it is.
 - [`docs/benchmarks.md`](docs/benchmarks.md): the benchmarks and the `church-bv` entry points.
-- [`docs/loop-experiment.md`](docs/loop-experiment.md): the rule-mining loop; its findings are in [`docs/tier-cycle/`](docs/tier-cycle/README.md).
-- [`docs/related-work/`](docs/related-work/README.md): the survey and the implementation notes, cited by `§`.
+- [`docs/loop-experiment.md`](docs/loop-experiment.md): the rule-mining loop; its findings are in [`docs/tier-cycle/README.md`](docs/tier-cycle/README.md).
+- [`docs/related-work/README.md`](docs/related-work/README.md): the survey and the implementation notes, cited by `§`.

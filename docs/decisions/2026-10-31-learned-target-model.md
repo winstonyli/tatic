@@ -36,5 +36,5 @@ representation.
 
 Limit: none of these unblocks goal 1. The JIT's blocker is that its programs lack arithmetic depth (and the specialiser
 does not add any, 2026-11-01), plus a bridge from the loop's width-n laws to the JIT's i64; it is not missing knowledge
-of the machine. A hand-written depth workload exists (Hacker's Delight, `docs/tier-cycle/`), and there the fixed table,
+of the machine. A hand-written depth workload exists (`docs/tier-cycle/`, "Hacker's Delight routines, a workload with arithmetic depth"), and there the fixed table,
 not mined rules, does the rewriting.

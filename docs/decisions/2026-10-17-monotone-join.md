@@ -21,7 +21,7 @@ this file keeps the options and the reasoning.
 - A/B over salts 1-10 (run `2026-10-17-join-memo`, old 8d5b29d against the exact miner): M mines 2 to 0, own 13 to 26,
   cold 1568 to 1563, pooled 33 to 36; summed cmp3d mine time 33 to 51 s. At salt 6 the exact cmp3d mine ran about 81000 join
   searches reaching 13.4M terms, 95% met, with about 41000 memo hits (a probe with the cost line added, not recorded;
-  option 1's recorded figures are in `docs/tier-cycle/`); the gain bound skipped 3603 of 15158
+  option 1's recorded figures are in `docs/tier-cycle/`, "The miner sees the join"); the gain bound skipped 3603 of 15158
   scorings against 2720 of 5434 before. Nearly every candidate touches the large set of terms a join examined, so the
   memo entry is invalidated and the search rerun for each candidate.
 - Kernel cost of joined proofs against the machine proofs they replace (run `2026-10-17-join-proof-cost`, 135 served
