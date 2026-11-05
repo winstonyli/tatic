@@ -11,7 +11,7 @@ this file keeps the options and the reasoning.
 
 ## Context
 
-- `join_eq` (`tests/church_bv/rewrite.rs`) is a bounded bidirectional search over rule steps (both usable directions) and
+- `join_eq` (`crates/church-bv/src/rewrite.rs`) is a bounded bidirectional search over rule steps (both usable directions) and
   AC steps, terms capped at the larger side's size + 2, stopping when the two sides together have reached 1000 terms
   (checked per layer).
 - The miner (`search::rule_miner`) was blind to the join: a candidate that acts only inside a law's join did not count as

@@ -6110,8 +6110,8 @@ MBA-Solver, Enumo, Knuth's 4-input tables, null polynomials. From general knowle
   vectors are sound for booleans and bv4, Z3 for bv32, sampling for rationals. Enumo (Pal et al., OOPSLA 2023) makes the
   enumeration programmable.
 - **Proofs.** None of the MBA tools emits a checkable proof; they test or call Z3. Here the kernel already proves both
-  layers: `bitwise_law_k` (`tests/church_bv/rewrite.rs`) any pure-bitwise identity per bit, and `add_tree_law`
-  (`tests/church_bv/machine.rs`) equal sum trees of add-free leaves by a carry encoding, up to `CARRY_CAP` carries.
+  layers: `bitwise_law_k` (`crates/church-bv/src/rewrite.rs`) any pure-bitwise identity per bit, and `add_tree_law`
+  (`crates/church-bv/src/machine.rs`) equal sum trees of add-free leaves by a carry encoding, up to `CARRY_CAP` carries.
   `pool_conjectures` (`machine.rs`) already groups a pool by its exhaustive values, Ruler's characteristic vector.
 
 What it means here: the hand-coded option is SiMBA's form (conjunction-basis coefficients over the atoms); the learned one
