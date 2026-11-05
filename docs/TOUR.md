@@ -174,7 +174,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Peel**: splits a term into parameter count, body and whether it is recursive. `crates/tatic/src/jit/shape.rs#peel`
 - **Phase**: a residue class of the stream sequence. `crates/church-bv/src/search.rs#residue`
 - **Plan / LawKind**: the rewriter's proof sketch and the name of the prover of each leaf. `crates/church-bv/src/rewrite/plan.rs#Plan`, `crates/church-bv/src/rewrite/plan.rs#LawKind`
-- **Pool**: `POOL=p` hands each mine p x n extras and `EXTRAS_SELECT` keeps n. `crates/church-bv/src/driver.rs#POOL`
+- **Pool**: `POOL=p` hands each mine p x n extras and `EXTRAS_SELECT` keeps n. `crates/church-bv/src/miner/config.rs#ExtrasPlan`
 - **Postulates**: the untrusted builder that grows `Globals`; each pushed type is checked to be a type, its inhabitation is assumed. `crates/tatic-kernel/src/postulates.rs#Postulates`
 - **PROMOTED**: mined rules frozen in code: learned once, then fixed. `crates/church-bv/src/rewrite/rules.rs#PROMOTED`
 - **prove_eq**: the cascade that closes a rewritten pair: refl, truth table, per-position check, mask reduction, join, machine. `crates/church-bv/src/rewrite/join.rs#prove_eq`
