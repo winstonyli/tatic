@@ -1,5 +1,4 @@
 # path max_lines: tracked .rs files allowed over the size_check.sh limit; the list only shrinks (see the script).
-crates/tatic/src/proof/tests.rs 1716
 crates/church-bv/src/miner.rs 1706
 crates/church-bv/src/rewrite/tests.rs 1305
 crates/church-bv/src/search.rs 1292
