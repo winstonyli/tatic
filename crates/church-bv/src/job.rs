@@ -683,7 +683,7 @@ fn hidden_state_is_classified() {
         ("encoding.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
         ("work.rs", "SLOT", "this thread's work counts: no task reads them, the worker prints them after it"),
     ];
-    const PROCESS_WIDE: [(&str, &str, &str); 8] = [
+    const PROCESS_WIDE: [(&str, &str, &str); 9] = [
         ("work.rs", "SLOTS", "every thread's work counts, read only by take"),
         ("rewrite.rs", "TABLE", "the term table: interning is pure"),
         ("classes.rs", "CLASSES", "the class table: built once from the baked-in key, pure"),
@@ -692,6 +692,7 @@ fn hidden_state_is_classified() {
         ("driver.rs", "NONCE", "env_echo's per-process nonce, process-wide on purpose"),
         ("job.rs", "PROCESS_SETUP", "the one-test process's Setup; tasks build their own"),
         ("job.rs", "NEXT_JOB", "job ids, unique per process on purpose"),
+        ("driver.rs", "REENTRY", "how this exe is started as a worker: set once by the binary's main, before any task"),
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let (mut bad, mut seen) = (vec![], vec![]);

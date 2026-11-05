@@ -22,7 +22,7 @@ fn lookup(name: &str) -> Option<fn()> {
 
 /// Runs `f` on a thread of its own with the default stack size, as libtest runs a test (a Windows exe's main thread has 1 MiB and
 /// this code recurses deeply). `Err` is a panic, already reported by the panic hook.
-fn run_on_thread(f: fn()) -> Result<(), ()> {
+fn run_on_thread(f: impl FnOnce() + Send + 'static) -> Result<(), ()> {
     std::thread::Builder::new().name("entry".into()).spawn(f).expect("start the entry thread").join().map_err(|_| ())
 }
 
@@ -60,12 +60,10 @@ mod tests {
 
     #[test]
     fn entries_run_off_the_main_thread() {
-        use std::sync::atomic::{AtomicBool, Ordering};
-        static OTHER: AtomicBool = AtomicBool::new(false);
-        static CALLER: std::sync::OnceLock<std::thread::ThreadId> = std::sync::OnceLock::new();
-        CALLER.set(std::thread::current().id()).unwrap();
-        run_on_thread(|| OTHER.store(std::thread::current().id() != *CALLER.get().unwrap(), Ordering::SeqCst)).unwrap();
-        assert!(OTHER.load(Ordering::SeqCst));
+        let caller = std::thread::current().id();
+        let (tx, rx) = std::sync::mpsc::channel();
+        run_on_thread(move || tx.send(std::thread::current().id()).unwrap()).unwrap();
+        assert_ne!(rx.recv().unwrap(), caller);
     }
 
     #[test]
