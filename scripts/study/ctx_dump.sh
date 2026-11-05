@@ -9,11 +9,13 @@ root="$(cd "$(dirname "$0")/../.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "ctx_dump: $runs not built (cargo build --release in tools/runs)"; exit 1; }
 [ -n "${RUN_DIR:-}" ] || { echo "ctx_dump: RUN_DIR unset (launch through run.ps1)"; exit 1; }
+. "$root/scripts/gate/arm_env.sh"
 status=0
 for s in "$@"; do
   o="$RUN_DIR/s${s}_A"
   mkdir -p "$o"; rm -f "$o/exit"
-  "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 "SALT=$s" "SWEEP_OUT=$(cygpath -w "$o")" "$exe" sweep < /dev/null > "$o/result.txt" 2>&1
+  mapfile -t e < <(sweep_env "$s" "$(cygpath -w "$o")")
+  "$runs" run "$(cygpath -w "$o")" -- "${e[@]}" "$exe" sweep < /dev/null > "$o/result.txt" 2>&1
   echo $? > "$o/exit"
   echo "salt $s: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
   [ "$(cat "$o/exit")" = 0 ] || { status=1; continue; }

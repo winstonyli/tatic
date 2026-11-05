@@ -1,6 +1,6 @@
 //! `runs time`: alternating timing of two or more arms in rounds, each run measured by `runs::job`. Before each round
 //! it waits for a quiet machine, and it counts only rounds no one else loaded: `scripts/quiet_ab`'s rules, which it
-//! replaced, with `cpu_ab.ps1`'s, `cpu_arms.ps1`'s and `hc_rounds.ps1`'s experiments as presets.
+//! replaced.
 
 use crate::{append, job, state};
 use regex::Regex;
@@ -69,47 +69,6 @@ pub fn order(arms: usize, r: usize) -> Vec<usize> {
 /// `s` with `{r}`, `{arm}` and `{dir}` replaced.
 pub fn subst(s: &str, r: usize, arm: &str, dir: &Path) -> String {
     s.replace("{r}", &r.to_string()).replace("{arm}", arm).replace("{dir}", &dir.display().to_string())
-}
-
-/// `--sweep`: `hc_rounds.ps1`'s experiment, full salt-1 sweeps on normal pages, with the sweep's machine-state checks
-/// moved out of the job (`runs` records the machine itself).
-pub fn sweep_arms(old: &str, new: &str) -> Vec<Arm> {
-    let env: Vec<(String, String)> = [("MACHINE_STATE", "0"), ("SALT", "1"), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0"), ("SWEEP_OUT", "{dir}/{arm}.{r}")]
-        .map(|(k, v)| (k.to_string(), v.to_string()))
-        .to_vec();
-    [("old", old), ("new", new)].map(|(name, exe)| Arm { name: name.into(), env: env.clone(), exe: exe.into(), args: crate::gate::sweep_args() }).to_vec()
-}
-
-/// `--pcs`: `proof_cost_split` on the held-out band 11 (1000 laws) with no mined rules (`<root>` is the checkout). With one
-/// exe the arms come from `arm_envs` (`NAME:VAR=val,...`; `NAME:` for none); with two exes they are `old` and `new`.
-pub fn pcs_arms(root: &Path, exes: &[String], arm_envs: &[String]) -> Result<Vec<Arm>, String> {
-    let base = vec![
-        ("CHECK_LAWFILE".to_string(), root.join(r"crates\church-bv\data\held_11.txt").display().to_string()),
-    ];
-    let args: Vec<String> = ["proof-cost-split"].map(String::from).to_vec();
-    let arm = |name: &str, exe: &str, extra: Vec<(String, String)>| Arm { name: name.into(), env: [base.clone(), extra].concat(), exe: exe.into(), args: args.clone() };
-    match (exes, arm_envs.is_empty()) {
-        ([old, new], true) => Ok(vec![arm("old", old.as_str(), vec![]), arm("new", new.as_str(), vec![])]),
-        ([exe], false) => arm_envs
-            .iter()
-            .map(|a| {
-                let (name, vars) = a.split_once(':').ok_or_else(|| format!("--arm-env {a}: expected NAME:VAR=val,..."))?;
-                let env = vars
-                    .split(',')
-                    .filter(|v| !v.is_empty())
-                    .map(|v| v.split_once('=').map(|(k, x)| (k.to_string(), x.to_string())).ok_or_else(|| format!("--arm-env {a}: {v} is not VAR=val")))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(arm(name, exe.as_str(), env))
-            })
-            .collect(),
-        _ => Err("--pcs takes <exe> with --arm-env options, or <old exe> <new exe> without".into()),
-    }
-}
-
-/// `proof_cost_split`'s `COST rule-proofs: n=.. build=..ms check=..ms ...` line (search.rs), whose build and check
-/// times `cpu_ab.ps1` printed.
-pub fn pcs_greps() -> Vec<Grep> {
-    Vec::from(["build", "check"].map(|f| parse_grep(&format!(r"{f}=^COST rule-proofs:.* {f}=([0-9.]+)ms")).unwrap()))
 }
 
 struct Row {
@@ -315,7 +274,7 @@ fn rounds(t: &Timing, tsv: &Path, stop: &Path, deadline: Instant, p: &mut Progre
             let label = format!("{}.{round}", a.name);
             let out = dir.join(format!("{label}.out.txt"));
             let sub = |s: &str| subst(s, round, &a.name, dir);
-            let mut spec = job::RunSpec::new(sub(&a.exe), a.args.iter().map(|x| sub(x)).collect(), job::Output::Split(out.clone(), dir.join(format!("{label}.err.txt"))));
+            let mut spec = job::RunSpec::new(sub(&a.exe), a.args.iter().map(|x| sub(x)).collect(), job::Output(out.clone(), dir.join(format!("{label}.err.txt"))));
             spec.env = a.env.iter().map(|(k, v)| (k.clone(), sub(v))).collect();
             spec.affinity = t.affinity;
             spec.priority = t.priority;
@@ -421,7 +380,7 @@ mod tests {
     #[test]
     fn grep_takes_the_last_matching_line() {
         let text = "COST rule-proofs: n=1 build=1.0ms check=2.0ms nodes=3\nCOST rule-proofs: n=1 build=3.5ms check=4.25ms nodes=3\nCOST other: build=9ms\n";
-        let g = pcs_greps();
+        let g = ["build", "check"].map(|f| parse_grep(&format!(r"{f}=^COST rule-proofs:.* {f}=([0-9.]+)ms")).unwrap());
         assert_eq!(g.iter().map(|g| grep_last(&g.re, text)).collect::<Vec<_>>(), [Some("3.5".to_string()), Some("4.25".to_string())]);
         assert!(parse_grep("nocapture=x").is_err());
     }
@@ -431,19 +390,6 @@ mod tests {
         let bytes = b"x=1\r\n\xff\xfe junk\r\nx=2\r\n";
         let text = String::from_utf8_lossy(bytes);
         assert_eq!(grep_last(&parse_grep("x=^x=([0-9]+)$").unwrap().re, &text), Some("2".to_string()));
-    }
-
-    #[test]
-    fn pcs_arms_from_one_exe_or_two() {
-        let s = Path::new(r"C:\s");
-        let one = pcs_arms(s, &["bf.exe".into()], &["old:".into(), "new:NO_PREFETCH=1,X=2".into()]).unwrap();
-        assert_eq!(one.iter().map(|a| a.name.as_str()).collect::<Vec<_>>(), ["old", "new"]);
-        assert_eq!(one[1].env.last().unwrap(), &("X".to_string(), "2".to_string()));
-        assert!(one[0].env.contains(&("CHECK_LAWFILE".to_string(), r"C:\s\crates\church-bv\data\held_11.txt".to_string())));
-        let two = pcs_arms(s, &["a.exe".into(), "b.exe".into()], &[]).unwrap();
-        assert_eq!((two[0].exe.as_str(), two[1].exe.as_str()), ("a.exe", "b.exe"));
-        assert!(pcs_arms(s, &["bf.exe".into()], &[]).is_err());
-        assert!(pcs_arms(s, &["bf.exe".into()], &["bad".into()]).is_err());
     }
 
     #[test]

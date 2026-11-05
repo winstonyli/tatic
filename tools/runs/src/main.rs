@@ -1,11 +1,9 @@
-//! `runs`: gates, timings and machine state for church_bv's sweeps, in one tool (README, "Benchmarks"). Build it with
+//! `runs`: measured runs, timings and machine state for church_bv's sweeps, in one tool (README, "Benchmarks"). Build it with
 //! `cargo build --release --manifest-path tools/runs/Cargo.toml` and run `tools/runs/target/release/runs.exe`. Every
 //! command prints progress as it goes and writes its records under the run directory (`runs dir`).
 #[cfg(not(windows))]
 compile_error!("tools/runs is Windows-only: it measures runs with job objects and reads Windows' machine state");
 
-mod cmp;
-mod gate;
 mod job;
 mod state;
 mod time;
@@ -21,13 +19,9 @@ const USAGE: &str = "usage:
   runs state                  RTP=.. CPU=..% lockpriv=..
   runs run <dir> [--affinity M] [--priority P] -- [VAR=val]... <exe> <args>...
                               one measured run; output in <dir>/out.txt and err.txt
-  runs cmp <tag> [--dir D]     compare <tag>_old_<s> with <tag>_new_<s>, salts 1 and 2 (exit 1 if they differ)
-  runs gate <tag> <old exe> <new exe>   four sweeps (new 1, old 1, old 2, new 2), then cmp; <run dir>/<tag>_gate.txt
   runs time <dir> --rounds N [--max-hours 3] [--others pat,...] [--foreign-max 20] [--quiet-secs 60] [--keep-dirty]
             [--max-rounds 4N] [--grep NAME=REGEX]... [--affinity M] [--priority P] -- <arm> [-- <arm>]...
-            an arm is <name> [VAR=val]... <exe> <args>... (name: letters, digits, _ . -); {r}, {arm}, {dir} are substituted
-  runs time <dir> --sweep <old exe> <new exe>             hc_rounds.ps1's sweeps (6 clean rounds)
-  runs time <dir> --pcs <exe> --arm-env NAME:VAR=val,... --arm-env ...   proof_cost_split arms (or --pcs <old> <new>)";
+            an arm is <name> [VAR=val]... <exe> <args>... (name: letters, digits, _ . -); {r}, {arm}, {dir} are substituted";
 
 fn main() {
     // `runs` and its sampler thread stay out of the way of the run they measure (ab.sh lowered itself too)
@@ -56,8 +50,6 @@ fn dispatch(args: &[String]) -> Result<i32, String> {
             Ok(0)
         }
         "run" => cmd_run(rest),
-        "cmp" => cmd_cmp(rest),
-        "gate" => cmd_gate(rest),
         "time" => cmd_time(rest),
         _ => Err(format!("unknown command {cmd}")),
     }
@@ -72,7 +64,7 @@ fn cmd_run(words: &[String]) -> Result<i32, String> {
     let (exe, args) = cmd.split_first().ok_or("run needs an exe after --")?;
     let dir = PathBuf::from(dir);
     std::fs::create_dir_all(&dir).map_err(|e| format!("{}: {e}", dir.display()))?;
-    let mut spec = job::RunSpec::new(exe, args.to_vec(), job::Output::Split(dir.join("out.txt"), dir.join("err.txt")));
+    let mut spec = job::RunSpec::new(exe, args.to_vec(), job::Output(dir.join("out.txt"), dir.join("err.txt")));
     spec.env = env;
     apply_limits(&mut spec, &p)?;
     let rtp = state::rtp();
@@ -80,29 +72,6 @@ fn cmd_run(words: &[String]) -> Result<i32, String> {
     let label = dir.file_name().map_or("run".to_string(), |n| n.to_string_lossy().into_owned());
     println!("{}", result_line(&label, &r, rtp));
     Ok(r.exit)
-}
-
-/// `runs cmp`: prints `cmp::cmp`'s lines; exits 1 if the sides differ.
-fn cmd_cmp(words: &[String]) -> Result<i32, String> {
-    let p = parse(words);
-    p.check(&["dir"])?;
-    let [tag] = &p.pos[..] else { return Err("cmp takes one tag".into()) };
-    let dir = match p.one("dir")? {
-        Some(d) => PathBuf::from(d),
-        None => run_dir()?,
-    };
-    let lines = cmp::cmp(&dir, tag);
-    for l in &lines {
-        println!("{l}");
-    }
-    Ok(if cmp::same(&lines) { 0 } else { 1 })
-}
-/// `runs gate`: exits 0 when the gate passes, 1 when a sweep failed or the outputs differ.
-fn cmd_gate(words: &[String]) -> Result<i32, String> {
-    let p = parse(words);
-    p.check(&[])?;
-    let [tag, old, new] = &p.pos[..] else { return Err("gate takes <tag> <old exe> <new exe>".into()) };
-    Ok(if gate::gate(&run_dir()?, tag, Path::new(old), Path::new(new))? { 0 } else { 1 })
 }
 
 /// Appends `line` and a newline to `path`.
@@ -114,31 +83,19 @@ fn append(path: &Path, line: &str) -> Result<(), String> {
 /// `runs time`: exits 0 unless a run, or a write of its records, failed (`done.txt` says which).
 fn cmd_time(words: &[String]) -> Result<i32, String> {
     let p = parse(words);
-    p.check(&["rounds", "max-hours", "others", "foreign-max", "quiet-secs", "keep-dirty", "max-rounds", "grep", "affinity", "priority", "sweep", "pcs", "arm-env"])?;
+    p.check(&["rounds", "max-hours", "others", "foreign-max", "quiet-secs", "keep-dirty", "max-rounds", "grep", "affinity", "priority"])?;
     let [dir] = &p.pos[..] else { return Err("time takes one directory".into()) };
     let num = |name: &str, default: f64| -> Result<f64, String> {
         p.one(name)?.map_or(Ok(default), |v| v.parse().map_err(|_| format!("--{name} {v}: not a number")))
     };
-    let mut greps = p.all("grep").iter().map(|v| match v {
+    let greps = p.all("grep").iter().map(|v| match v {
         [g] => time::parse_grep(g),
         _ => Err("--grep takes one NAME=REGEX".to_string()),
     }).collect::<Result<Vec<_>, _>>()?;
-    let arm_envs: Vec<String> = p.all("arm-env").iter().map(|v| v.join(" ")).collect();
-    let (arms, default_rounds) = match (&p.all("sweep")[..], &p.all("pcs")[..]) {
-        ([], []) => (p.rest.split(|w| w == "--").map(time::parse_arm).collect::<Result<Vec<_>, _>>()?, None),
-        ([[old, new]], []) if p.rest.is_empty() => (time::sweep_arms(old, new), Some(6)),
-        ([], [exes]) if p.rest.is_empty() => {
-            greps.extend(time::pcs_greps());
-            (time::pcs_arms(&checkout()?, exes, &arm_envs)?, None)
-        }
-        _ => return Err("give arms after --, or one of --sweep <old> <new> and --pcs <exe> [<new exe>]".into()),
-    };
-    let rounds = match (p.one("rounds")?, default_rounds) {
-        (Some(v), _) => v.parse().map_err(|_| format!("--rounds {v}: not a number"))?,
-        (None, Some(d)) => d,
-        (None, None) => return Err("--rounds N is needed".into()),
-    };
-    let mut probe = job::RunSpec::new("", vec![], job::Output::Both(PathBuf::new()));
+    let arms = p.rest.split(|w| w == "--").map(time::parse_arm).collect::<Result<Vec<_>, _>>()?;
+    let v = p.one("rounds")?.ok_or("--rounds N is needed")?;
+    let rounds = v.parse().map_err(|_| format!("--rounds {v}: not a number"))?;
+    let mut probe = job::RunSpec::new("", vec![], job::Output(PathBuf::new(), PathBuf::new()));
     apply_limits(&mut probe, &p)?;
     let t = time::Timing {
         dir: PathBuf::from(dir),
@@ -350,14 +307,14 @@ mod tests {
 
     #[test]
     fn words_split_into_positions_options_and_the_rest() {
-        let p = parse(&words("D --rounds 6 --keep-dirty --sweep a b -- x --y"));
+        let p = parse(&words("D --rounds 6 --keep-dirty --pair a b -- x --y"));
         assert_eq!(p.pos, ["D"]);
         let s = |x: &str| x.to_string();
-        assert_eq!(p.opts, vec![(s("rounds"), vec![s("6")]), (s("keep-dirty"), vec![]), (s("sweep"), vec![s("a"), s("b")])]);
+        assert_eq!(p.opts, vec![(s("rounds"), vec![s("6")]), (s("keep-dirty"), vec![]), (s("pair"), vec![s("a"), s("b")])]);
         assert_eq!(p.rest, ["x", "--y"]);
         assert_eq!(p.one("rounds").unwrap(), Some("6"));
         assert!(p.flag("keep-dirty").unwrap());
-        assert!(p.one("sweep").is_err());
+        assert!(p.one("pair").is_err());
         assert!(p.check(&["rounds", "keep-dirty"]).is_err());
     }
 

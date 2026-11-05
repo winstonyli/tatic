@@ -171,10 +171,10 @@ Re-running unchanged code on this laptop moves benches by up to
 ±100%, so only a change well beyond that noise column means anything.
 For example, `scripts/gate/bench_ab.sh HEAD --bench proofs`.
 
-Gates and timings of the church_bv sweeps go through `tools/runs` (its
+The A/B gate on two builds is `scripts/gate/streams_ab.sh`. Its arms and
+other timings of the church_bv sweeps go through `tools/runs` (its
 `main.rs` header and `runs` with no arguments list the commands).
-`runs gate <tag> <old exe> <new exe>` runs four sweeps and compares their
-outputs. `runs time <dir> --rounds N -- <arm> -- <arm>` runs arms in
+`runs time <dir> --rounds N -- <arm> -- <arm>` runs arms in
 alternating rounds, each in a job object that counts every process it
 starts; it waits for a quiet machine before each round and keeps only the
 rounds no other process loaded (RELATED_WORK §66). `runs state` prints

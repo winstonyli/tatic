@@ -32,11 +32,8 @@ use windows_sys::Win32::System::Threading::{
     PROCESS_QUERY_LIMITED_INFORMATION, ResumeThread, THREAD_SUSPEND_RESUME,
 };
 
-/// Where a run's output goes: one file for both streams through one handle (as `> log.txt 2>&1`), or two files.
-pub enum Output {
-    Both(PathBuf),
-    Split(PathBuf, PathBuf),
-}
+/// Where a run's output goes: its stdout's file, then its stderr's.
+pub struct Output(pub PathBuf, pub PathBuf);
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Priority {
@@ -349,15 +346,7 @@ pub fn run(spec: &RunSpec) -> Result<RunResult, String> {
     if let Some(d) = &spec.cwd {
         cmd.current_dir(d);
     }
-    match &spec.output {
-        Output::Both(p) => {
-            let f = create(p)?;
-            cmd.stderr(f.try_clone().map_err(|e| format!("{}: {e}", p.display()))?).stdout(f);
-        }
-        Output::Split(o, e) => {
-            cmd.stdout(create(o)?).stderr(create(e)?);
-        }
-    }
+    cmd.stdout(create(&spec.output.0)?).stderr(create(&spec.output.1)?);
     let job = Job::new(spec.priority, spec.affinity)?;
     // before the child joins the job, so its own notice is seen; stopped on every return path
     let watcher = Watcher::new(&job);
@@ -482,7 +471,7 @@ mod tests {
 
     fn helper_spec(mode: &str, d: &Path) -> RunSpec {
         let (exe, args) = helper_cmd();
-        let mut s = RunSpec::new(exe, args, Output::Split(d.join("out.txt"), d.join("err.txt")));
+        let mut s = RunSpec::new(exe, args, Output(d.join("out.txt"), d.join("err.txt")));
         s.env.push(("RUNS_HELPER".into(), mode.into()));
         s
     }
@@ -492,7 +481,7 @@ mod tests {
         let d = scratch("children");
         let (exe, args) = helper_cmd();
         let words = [vec!["/c".to_string(), exe.display().to_string()], args].concat();
-        let mut s = RunSpec::new("cmd", words, Output::Split(d.join("out.txt"), d.join("err.txt")));
+        let mut s = RunSpec::new("cmd", words, Output(d.join("out.txt"), d.join("err.txt")));
         s.env.push(("RUNS_HELPER".into(), "spin".into()));
         let r = run(&s).unwrap();
         assert_eq!(r.exit, 0, "{r:?}");
@@ -543,7 +532,7 @@ mod tests {
         std::fs::create_dir_all(&rel).unwrap();
         std::fs::copy(r"C:\Windows\System32\where.exe", rel.join("where.exe")).unwrap();
         let d = scratch("relative");
-        let mut s = RunSpec::new(rel.join("where.exe"), vec!["where.exe".into()], Output::Split(d.join("out.txt"), d.join("err.txt")));
+        let mut s = RunSpec::new(rel.join("where.exe"), vec!["where.exe".into()], Output(d.join("out.txt"), d.join("err.txt")));
         s.cwd = Some(d.to_path_buf());
         let r = run(&s);
         let _ = std::fs::remove_dir_all(rel.parent().unwrap());
@@ -565,7 +554,7 @@ mod tests {
     #[test]
     fn a_missing_exe_is_an_error() {
         let d = scratch("missing");
-        let s = RunSpec::new(d.join("no_such.exe"), vec![], Output::Both(d.join("log.txt")));
+        let s = RunSpec::new(d.join("no_such.exe"), vec![], Output(d.join("out.txt"), d.join("err.txt")));
         assert!(run(&s).unwrap_err().starts_with("starting "));
     }
 

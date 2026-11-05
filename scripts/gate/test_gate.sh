@@ -12,13 +12,13 @@ ok() { # <case> <got> <want>
 
 # --- the gate: a root with its scripts and a fake runs.exe (any arm that runs fails), two exes and a cache of arms
 mkdir -p "$T/root/scripts/gate" "$T/root/tools/runs/target/release" "$T/root/crates/church-bv/data"
-cp scripts/gate/streams_ab.sh scripts/gate/tree_mem.ps1 "$T/root/scripts/gate/"; echo fake > "$T/root/tools/runs/target/release/runs.exe"
+cp scripts/gate/streams_ab.sh scripts/gate/arm_env.sh scripts/gate/tree_mem.ps1 "$T/root/scripts/gate/"; echo fake > "$T/root/tools/runs/target/release/runs.exe"
 for b in 11 13 15 17; do echo $b > "$T/root/crates/church-bv/data/held_$b.txt"; done
 echo fake > "$T/A.exe"; echo fake > "$T/B.exe"; echo ABLATE=x > "$T/B.exe.env"
-# the key streams_ab.sh gives an exe: its bytes, its .exe.env, the script, runs.exe and the held-out laws (in band
+# the key streams_ab.sh gives an exe: its bytes, its .exe.env, the script, arm_env.sh, runs.exe and the held-out laws (in band
 # order, as streams_ab.sh's `bands` lists them)
 hfiles() { local b; for b in $(ls "$T/root/crates/church-bv/data" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$T/root/crates/church-bv/data/held_$b.txt"; done; }
-key() { { cat "$1" "$1.env" "$T/root/scripts/gate/streams_ab.sh" "$T/root/tools/runs/target/release/runs.exe"; hfiles | while read -r f; do cat "$f"; done; } 2>/dev/null | sha256sum | cut -c1-16; }
+key() { { cat "$1" "$1.env" "$T/root/scripts/gate/streams_ab.sh" "$T/root/scripts/gate/arm_env.sh" "$T/root/tools/runs/target/release/runs.exe"; hfiles | while read -r f; do cat "$f"; done; } 2>/dev/null | sha256sum | cut -c1-16; }
 mkarm() { # <dir> <M> <held> <jobcpu> <from>: a finished arm
   local l; mkdir -p "$1"
   for l in 1 2 3; do mkdir -p "$1/cold_streams_streams_${l}_none"; echo "rule $l" > "$1/cold_streams_streams_${l}_none/rules.txt"; done
@@ -92,6 +92,7 @@ ok "a variable read now unset misses" "$(unset GATE_T_X; hitb envgone)" "salt 1 
 echo 11b > "$T/root/crates/church-bv/data/held_11.txt"; ok "changed held-out laws miss" "$(hitb envheld | grep -c reused)" 0
 echo 11 > "$T/root/crates/church-bv/data/held_11.txt"; echo fake2 > "$T/root/tools/runs/target/release/runs.exe"
 ok "a changed runs.exe misses" "$(hitb envruns | grep -c reused)" 0; echo fake > "$T/root/tools/runs/target/release/runs.exe"
+echo '# changed' >> "$T/root/scripts/gate/arm_env.sh"; ok "a changed recipe misses" "$(hitb envrecipe | grep -c reused)" 0; cp scripts/gate/arm_env.sh "$T/root/scripts/gate/"
 # a name its .exe.env sets is read from there (trimmed, and upper-cased as on Windows), where the process doesn't set it
 printf 'ABLATE=x\n gate_t_x = 1 \n' > "$T/B.exe.env"; mkarm "$T/cache/$(key "$T/B.exe")/s1" 100 500 11 "arm B"
 printf 'ENV GATE_T_X=1\nENV GATE_T_U unset\n' > "$T/cache/$(key "$T/B.exe")/s1/task.log"
@@ -125,7 +126,7 @@ cache_put "$T/put/o2" "$T/put/cache/k/s1"; unset -f rm
 ok "a store after another writer's keeps its entry" "$(cat "$T/put/cache/k/s1/from") $(find "$T/put/cache" -name 's1*' | wc -l)" "$T/put/o1 1"
 # every name the gate sets, in the sweep's and the held-out check's environments, is skipped by `changed`: the names
 # come from the same functions that set them, so a new one can't miss the list
-source <(sed -n '/^sweep_env() {/,/^}/p;/^held_env() {/,/^}/p;/^changed() {/,/^}/p' scripts/gate/streams_ab.sh)
+. scripts/gate/arm_env.sh; source <(sed -n '/^changed() {/,/^}/p' scripts/gate/streams_ab.sh)
 mkdir -p "$T/set"; { sweep_env 1 o; held_env r l; } | sed 's/=.*/=other/; s/^/ENV /' > "$T/set/task.log"
 ok "the names the gate sets are skipped" "$(wc -l < "$T/set/task.log") [$(changed "$T/none.env" "$T/set")]" "7 []"
 # an arm's switches: each named in its .exe.env must have an ABLATED line somewhere in the arm (a task log, the

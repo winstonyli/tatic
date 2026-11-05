@@ -15,10 +15,9 @@ a=$1; b=$2; shift 2
 root="$(cd "$(dirname "$0")/../.." && pwd)"
 runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "streams_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
-# the environments the gate sets, one NAME=value per line: the sweep's (<salt> <out dir>) and the held-out check's
-# (<rules file> <law file>, Windows paths); `changed` skips their names
-sweep_env() { printf '%s\n' MACHINE_STATE=0 "SALT=$1" "SWEEP_OUT=$2"; }
-held_env() { printf '%s\n' MACHINE_STATE=0 CHECK_FAST=1 "CHECK_RULES=$1" "CHECK_LAWFILE=$2"; }
+# the environments the gate sets (`sweep_env`, `held_env`); `changed` skips their names
+recipe="$root/scripts/gate/arm_env.sh"
+. "$recipe"
 # the held-out files in band order (crates/church-bv/data/held_<band>.txt; the bands are HELD_BANDS in classes.rs)
 bands() { local b; for b in $(ls "$root/crates/church-bv/data" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$root/crates/church-bv/data/held_$b.txt"; done; }
 held() { # <exe> <rules file> <arm dir> <label>: held-out M over every band, the bands checked at once; per band `<label> <band> <laws> <free> <M>` to <arm dir>/held_bands.txt, the check's ABLATED and ENV lines to <arm dir>/held_lines.txt
@@ -121,7 +120,7 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   [ $arm = A ] && exe=$a || exe=$b
   o="$RUN_DIR/s${s}_$arm"
   # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env, this
-  # script, runs.exe and the held-out laws, and an arm with the same hash and salt is copied, not run, if the environment
+  # script, arm_env.sh, runs.exe and the held-out laws, and an arm with the same hash and salt is copied, not run, if the environment
   # it read is unchanged (`changed`): the gate's results repeat (counts to a few ppm, docs/tier-cycle/, "Work counts
   # as the gate's cost"). Off by default: an A/A of one exe would otherwise run once.
   # The exe by its long name (here and in the ABLATED check below): the .exe.env of a short (8.3) name like
@@ -129,7 +128,7 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   long=$(cygpath -u "$(cygpath -w -l "$exe")")
   if [ -n "${ARM_CACHE:-}" ]; then
     mapfile -t hf < <(bands)
-    c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" "$runs" "${hf[@]}" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
+    c="$(cygpath "$ARM_CACHE")/$(cat "$long" "$long.env" "$0" "$recipe" "$runs" "${hf[@]}" 2>/dev/null | sha256sum | cut -c1-16)/s$s"
     passed "$c" && v=$(changed "$long.env" "$c") && [ -n "$v" ] && echo "salt $s $arm: cached arm read $v"
     if passed "$c" && [ -z "$v" ]; then
       # through a temporary copy, so the other arm never sees this one's `failed` before the rest of it
