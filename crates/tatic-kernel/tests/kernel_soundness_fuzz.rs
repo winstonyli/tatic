@@ -1,4 +1,4 @@
-//! Fuzzes `kernel.rs` for an actual *soundness* violation -- not just
+//! Fuzzes `tatic-kernel` for an actual *soundness* violation -- not just
 //! crash-safety (`kernel_fuzz.rs`'s own, narrower property: `infer`/
 //! `check`/`typecheck` never panic on garbage). The property under test
 //! here is sharper and closer to what the whole project's "kernel-checked
@@ -12,7 +12,7 @@
 //! legitimately `Id`-provable without being computationally/
 //! definitionally equal at all; that's the entire point of postulating
 //! axioms rather than deriving everything from nothing (see
-//! `kernel.rs`'s own `Postulates` docs). The soundness question this file
+//! `tatic-kernel`'s own `Postulates` docs). The soundness question this file
 //! asks is narrower and sharper: can the kernel be tricked into accepting
 //! `Id(A, a, b)` for a pair that *nothing* in the context actually
 //! relates? If it ever can, that's a genuine soundness bug -- the kernel

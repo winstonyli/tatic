@@ -7869,7 +7869,7 @@ addendum, rule set before data). Salts 1-3, pool 4, Defender real-time protectio
 evaluating faster rather than less, the case Rocq's `vm_compute` and `native_compute` serve. The repo's JIT
 (`crates/tatic/src/jit.rs`, `compile.rs`, `lower_wat.rs`) is not that tool:
 - It compiles `term.rs` programs typed `Int -> ... -> Int` to wasm, not kernel `Expr` (with `J`, `WRec`, `SigRec`).
-  Nothing in `kernel.rs` or `crates/church-bv` calls it; the kernel checks the JIT's proofs, not the reverse.
+  Nothing in `tatic-kernel` or `crates/church-bv` calls it; the kernel checks the JIT's proofs, not the reverse.
 - It is not end-to-end sound by its own account: its kernel theorem is stated over `proof.rs`'s `denote`, a model of
   the compiler, not over the WAT that runs (`crates/tatic/src/jit.rs` header). Using it, or anything like it, for conversion would put
   the compiler, wasmtime and the postulated `Int` in the trusted base.

@@ -1267,7 +1267,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // Hypothesis: build both the type selector (`fam`) and the paired
     // value as WRec applications sharing the same underlying "motive"
     // Lam -- WRec's own typing rule hands back `app(motive, target)`
-    // as the type *by construction* (kernel.rs's own `infer`, `Expr::
+    // as the type *by construction* (tatic-kernel's own `infer`, `Expr::
     // WRec` case), so `def_eq` between the value's inferred type and
     // `fam`'s substituted form reduces to ordinary, unconditional
     // beta -- never needing the tag itself to reduce to a concrete Sup.

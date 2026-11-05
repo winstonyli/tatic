@@ -791,7 +791,7 @@ an unsound step (treating a `Prim` expression as a value) passes the
 certificate check but is still caught, by the `eval` comparison
 disagreeing on a `Div` term.
 
-**Robustness**: `crates/tatic-kernel/tests/kernel_fuzz.rs` fuzzes a different layer entirely: `kernel.rs`'s
+**Robustness**: `crates/tatic-kernel/tests/kernel_fuzz.rs` fuzzes a different layer entirely: `tatic-kernel`'s
 own type-checker, directly, with no well-typedness discipline on the
 generated terms at all (unlike `compile_fuzz.rs`, whose terms are built
 to be meaningful to both the interpreter and the compiler). Random `Expr`
@@ -888,7 +888,7 @@ guards against by hand): caught immediately, at seed 22.
   Benchmarks). On its own it didn't fix branching-leaf instance proofs
   being slow — that cost turned out to live in `shift` (see the next
   entry), not cloning.
-- **No `shift` cache**: `kernel.rs` once had a thread-local cache scoped
+- **No `shift` cache**: `tatic-kernel` once had a thread-local cache scoped
   around instance proofs (`with_shift_cache`), engaged from a dry run of
   how many nodes an instance visits. It won ~2x on `fib(8)` by recovering
   reshifts that eager substitution caused. Once `subst_top` shifted its
@@ -896,7 +896,7 @@ guards against by hand): caught immediately, at seed 22.
   to fill and drop than it saved on every term measured, so it was
   removed (§54), along with its hidden state in the kernel.
 - **Why a predicative kernel with exactly these five primitives**: see
-  `kernel.rs`'s module docs for the full argument, but briefly — `W`-types
+  `tatic-kernel`'s module docs for the full argument, but briefly — `W`-types
   are load-bearing (not derivable from `Pi`/`Sort`/`Id` alone with
   definitional computation, which an interpreter's hot path needs), and
   bootstrapping finite base types (`Bool`, `Nat`) from nothing hits a real,

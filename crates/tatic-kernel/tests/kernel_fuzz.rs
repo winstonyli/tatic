@@ -1,4 +1,4 @@
-//! Fuzzes `kernel.rs`'s own type-checker directly: random, mostly
+//! Fuzzes `tatic-kernel`'s own type-checker directly: random, mostly
 //! ill-typed (and sometimes genuinely malformed -- out-of-range `Var`
 //! indices, a universe level at `u32::MAX`, mismatched `Pi`/`Lam`
 //! domains) `Expr` trees, confirming `infer`/`check`/`typecheck` only
@@ -58,7 +58,7 @@ fn globals() -> kernel::Globals {
 /// A leaf `Expr`: a `Var` (sometimes genuinely in `scope`, sometimes
 /// deliberately at or past its edge, sometimes wildly out of range), a
 /// `Sort` (occasionally `u32::MAX`, exercising the exact overflow this
-/// fuzzer's own first run caught -- see `kernel.rs`'s own
+/// fuzzer's own first run caught -- see `tatic-kernel`'s own
 /// `a_maximal_universe_level_is_a_clean_type_error_not_an_overflow_panic`),
 /// a `Const` (in `globals()`'s range, or just past it, including its own
 /// open last entry), or a `Free` (never accepted; sets `rng.made_free`).
@@ -84,7 +84,7 @@ fn gen_leaf(rng: &mut Rng, scope: u32) -> Expr {
 
 /// `scope` tracks how many binders actually enclose the expression being
 /// built (only `Pi`/`Lam`/`W`'s own second child sees one more than its
-/// parent -- matching `kernel.rs`'s own `shift`/`subst` cutoff
+/// parent -- matching `tatic-kernel`'s own `shift`/`subst` cutoff
 /// convention exactly), so `gen_leaf`'s "genuinely in scope" `Var` case
 /// picks an index that's actually bound somewhere, not just plausible.
 fn gen_expr(rng: &mut Rng, scope: u32, depth: u32) -> Expr {

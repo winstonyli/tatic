@@ -431,7 +431,7 @@ pub(super) fn eval_dyn_direct_call(
 /// `eval_dyn_direct_call` -> back into `eval_dyn_inline_call`, one real
 /// native-stack round trip per inlined level). This extraction alone
 /// turned out not to be sufficient, unlike `infer_sup`'s own precedent
-/// (`kernel.rs`) it was modeled on: `eval_dyn_direct_call`'s own prologue
+/// (`tatic-kernel`) it was modeled on: `eval_dyn_direct_call`'s own prologue
 /// (`param_types_for`, `combinator_return_type`, and each argument's own
 /// `eval_dyn` call, all before dispatch is even decided) stays live on
 /// the stack for the whole nested call regardless of what's extracted out
