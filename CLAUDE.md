@@ -14,6 +14,7 @@ the history (`git tag -n99`).
   `bash scripts/tour_check.sh` must pass before committing it. The tour holds concepts and flow only: no measurements,
   dates or results (those live in `docs/tier-cycle/`).
 - `bash scripts/size_check.sh` fails on a tracked `.rs` file over 1000 lines that `scripts/size_allowlist.txt` does not list, or on a listed one that grew, shrank without its max lowered, or fell under the limit (the list only shrinks; `scripts/size_check_check.sh` tests it). Run it before committing a change that adds to a large file.
+- Test placement: a module's tests live inline up to 299 lines; a block of 300 or more goes to `foo/tests.rs` (`foo/tests/` once it splits further). `bash scripts/test_placement_check.sh` fails on a tracked `.rs` file with a longer top-level `mod tests`/`mod *_tests` block (no allowlist; `scripts/test_placement_check_check.sh` tests it). Run it before committing a change that adds tests to a large file.
 - Long runs launch through `~/.claude/runs/run.ps1` (raw output in `%LOCALAPPDATA%\claude-runs\tatic`, one row each in
   `docs/runs.md`); `runs dir` and `kk.sh` then write into that run's folder. Curated rows behind the doc's sections are
   in `docs/runs/<date>/`. Pin a recorded run with `run.ps1 -Affinity CFF`, not `start /wait /affinity` in `-Command`;
