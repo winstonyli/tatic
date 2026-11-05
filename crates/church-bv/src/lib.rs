@@ -15,6 +15,7 @@ mod ctx_scorer;
 mod corpus;
 mod driver;
 mod encoding;
+pub mod entry;
 mod job;
 mod wasm;
 mod lemma_cache;

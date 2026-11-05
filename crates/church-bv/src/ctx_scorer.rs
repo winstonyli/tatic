@@ -749,6 +749,10 @@ pub fn q1(mines: &[Mine], ks: &[usize], context: &str) -> String {
 #[test]
 #[ignore]
 fn q1_report() {
+    run_q1_report()
+}
+
+pub fn run_q1_report() {
     let setup = &job::Setup::process();
     let dirs = setup.var("Q1_DIRS").expect("Q1_DIRS");
     let dirs: Vec<&std::path::Path> = dirs.split(';').map(std::path::Path::new).collect();
@@ -764,6 +768,10 @@ fn q1_report() {
 #[test]
 #[ignore]
 fn ctx_fit() {
+    run_ctx_fit()
+}
+
+pub fn run_ctx_fit() {
     let setup = &job::Setup::process();
     let dirs = setup.var("Q1_DIRS").expect("Q1_DIRS");
     let dirs: Vec<&std::path::Path> = dirs.split(';').map(std::path::Path::new).collect();
@@ -790,6 +798,10 @@ fn ctx_fit() {
 #[test]
 #[ignore]
 fn overlap_report() {
+    run_overlap_report()
+}
+
+pub fn run_overlap_report() {
     let setup = &job::Setup::process();
     let list = |name: &str| setup.var(name).unwrap_or_else(|| panic!("{name}")).split(';').map(std::path::PathBuf::from).collect::<Vec<_>>();
     let (train, eval) = (list("TRAIN_DIRS"), list("EVAL_DIRS"));

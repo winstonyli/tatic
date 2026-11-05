@@ -131,9 +131,13 @@ fn task_fn(name: &str) -> Option<fn(&Arc<Setup>)> {
 #[test]
 #[ignore]
 fn worker() {
-    if std::env::var_os("TATIC_WORKER").is_none() {
-        return;
+    if std::env::var_os("TATIC_WORKER").is_some() {
+        run_worker();
     }
+}
+
+/// The worker loop (the `worker` subcommand; the test above runs it only when `Worker` started this process).
+pub fn run_worker() {
     for line in std::io::stdin().lines() {
         let line = line.expect("the task pipe");
         let mut fields = line.split('\t');
@@ -507,7 +511,7 @@ impl Worker {
 
     fn spawn(start: Vec<(String, String)>) -> WorkerProc {
         let mut child = Command::new(std::env::current_exe().unwrap())
-            .args(["driver::worker", "--exact", "--ignored", "--nocapture"])
+            .args(reentry())
             .envs(start.iter().cloned())
             .env("TATIC_WORKER", "1")
             .stdin(std::process::Stdio::piped())
@@ -891,6 +895,10 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
 #[test]
 #[ignore]
 fn loop_stream() {
+    run_loop_stream()
+}
+
+pub fn run_loop_stream() {
     let setup = &Setup::process();
     let worker = Worker::new();
     let cfg = LoopCfg::from_env(setup);
@@ -905,6 +913,10 @@ fn loop_stream() {
 #[test]
 #[ignore]
 fn sweep() {
+    run_sweep()
+}
+
+pub fn run_sweep() {
     let setup = &Setup::process();
     let out = PathBuf::from(setup.var("SWEEP_OUT").expect("set SWEEP_OUT=<dir>"));
     std::fs::create_dir_all(&out).unwrap();
@@ -976,4 +988,21 @@ fn sweep() {
     machine_state("end", &env, &workers[0], &out);
     // this thread's own work (the stream sequence, the extras lists) and the lanes' (their tasks' lines are in their logs)
     println!("{}", crate::work::line(crate::work::take()));
+}
+
+#[test]
+fn reentry_defaults_to_the_libtest_form() {
+    assert_eq!(reentry(), ["driver::worker", "--exact", "--ignored", "--nocapture"]);
+}
+
+static REENTRY: std::sync::OnceLock<Vec<String>> = std::sync::OnceLock::new();
+
+/// Declares how this exe is started as a worker (`Worker::spawn`'s arguments), once per process: the `church-bv` binary says
+/// `["worker"]`; the test exe never declares and gets the libtest form.
+pub fn declare_reentry(args: &[&str]) {
+    REENTRY.set(args.iter().map(|a| a.to_string()).collect()).expect("the worker's re-entry arguments are declared once");
+}
+
+fn reentry() -> Vec<String> {
+    REENTRY.get().cloned().unwrap_or_else(|| ["driver::worker", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec())
 }

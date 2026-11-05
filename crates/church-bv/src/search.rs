@@ -1044,6 +1044,10 @@ fn check_laws(job: &Job) -> (Rules, Vec<(Term, Term)>, usize, Vec<(String, Term,
 #[test]
 #[ignore]
 pub fn rule_set_kernel_check() {
+    run_rule_set_kernel_check()
+}
+
+pub fn run_rule_set_kernel_check() {
     rule_set_kernel_check_task(&Setup::process())
 }
 
@@ -1116,6 +1120,10 @@ pub fn rule_set_kernel_check_task(setup: &Arc<Setup>) {
 #[test]
 #[ignore]
 pub fn proof_cost_split() {
+    run_proof_cost_split()
+}
+
+pub fn run_proof_cost_split() {
     let job = &mut Job::new(Setup::process());
     use std::time::{Duration, Instant};
     tatic_kernel::scoped(|| {
