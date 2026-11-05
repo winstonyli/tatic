@@ -498,22 +498,6 @@ pub fn overlap(train: &[&std::path::Path], train_slice: usize, eval: &[&std::pat
     (evals.iter().filter(|t| seen.contains(*t)).count(), evals.len())
 }
 
-/// SplitMix64: a seeded generator for the shuffles and the bootstrap (no dependency, the same stream on every machine).
-struct Rng(u64);
-
-impl Rng {
-    fn next(&mut self) -> u64 {
-        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
-        let z = (self.0 ^ (self.0 >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
-        let z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
-        z ^ (z >> 31)
-    }
-
-    fn below(&mut self, n: usize) -> usize {
-        (self.next() % n as u64) as usize
-    }
-}
-
 /// How many of the first `k` laws of `order` (indices into `y`) are positive.
 pub fn capture_at_k(order: &[usize], y: &[bool], k: usize) -> usize {
     order.iter().take(k).filter(|&&i| y[i]).count()
@@ -524,9 +508,9 @@ pub fn capture_at_k(order: &[usize], y: &[bool], k: usize) -> usize {
 pub fn random_capture(y: &[bool], k: usize, seeds: std::ops::RangeInclusive<u64>) -> f64 {
     let (mut total, mut runs) = (0usize, 0usize);
     for seed in seeds {
-        let (mut v, mut rng) = (y.to_vec(), Rng(seed));
+        let (mut v, mut rng) = (y.to_vec(), tatic_rng::SplitMix64::new(seed));
         for i in (1..v.len()).rev() {
-            v.swap(i, rng.below(i + 1));
+            v.swap(i, rng.below((i + 1) as u32) as usize);
         }
         total += v.iter().take(k).filter(|&&b| b).count();
         runs += 1;
@@ -556,8 +540,8 @@ pub fn bootstrap_interval(diffs: &[f64], resamples: usize, seed: u64) -> (f64, f
     if diffs.is_empty() {
         return (0.0, 0.0);
     }
-    let (mut rng, n) = (Rng(seed), diffs.len());
-    let mut means: Vec<f64> = (0..resamples).map(|_| (0..n).map(|_| diffs[rng.below(n)]).sum::<f64>() / n as f64).collect();
+    let (mut rng, n) = (tatic_rng::SplitMix64::new(seed), diffs.len());
+    let mut means: Vec<f64> = (0..resamples).map(|_| (0..n).map(|_| diffs[rng.below(n as u32) as usize]).sum::<f64>() / n as f64).collect();
     means.sort_by(f64::total_cmp);
     (means[resamples * 25 / 1000], means[(resamples * 975 / 1000).min(resamples - 1)])
 }

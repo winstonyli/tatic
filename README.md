@@ -79,7 +79,7 @@ still need a whole-term machine proof. The measured results are in
   each batch. It writes `<dir>/m.tsv` (one row per batch: M, laws, rules in
   force, seconds and the join's counts). The module comment documents all
   options (`B`, `K`, `OFFSET`, `SPHASE`, `WARM_RULES=<file>`, ...).
-  `church-bv sweep` with `SWEEP=cold:streams` (the only stage) runs three cold
+  `church-bv sweep` runs three cold
   loops on phases 1-3 into `SWEEP_OUT=<dir>`; `scripts/streams_ab.sh` is the gate
   built on it (A/B per salt, plus held-out M under each loop's rules).
 - The miner (`search::rule_miner` in `crates/church-bv/src/search.rs`) takes its

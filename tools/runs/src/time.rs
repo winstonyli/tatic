@@ -74,7 +74,7 @@ pub fn subst(s: &str, r: usize, arm: &str, dir: &Path) -> String {
 /// `--sweep`: `hc_rounds.ps1`'s experiment, full salt-1 sweeps on normal pages, with the sweep's machine-state checks
 /// moved out of the job (`runs` records the machine itself).
 pub fn sweep_arms(old: &str, new: &str) -> Vec<Arm> {
-    let env: Vec<(String, String)> = [("MACHINE_STATE", "0"), ("SALT", "1"), ("SWEEP", crate::gate::SWEEP), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0"), ("SWEEP_OUT", "{dir}/{arm}.{r}")]
+    let env: Vec<(String, String)> = [("MACHINE_STATE", "0"), ("SALT", "1"), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0"), ("SWEEP_OUT", "{dir}/{arm}.{r}")]
         .map(|(k, v)| (k.to_string(), v.to_string()))
         .to_vec();
     [("old", old), ("new", new)].map(|(name, exe)| Arm { name: name.into(), env: env.clone(), exe: exe.into(), args: crate::gate::sweep_args() }).to_vec()

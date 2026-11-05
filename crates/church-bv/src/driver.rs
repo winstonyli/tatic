@@ -39,7 +39,7 @@
 //! beside it (the task's `key<TAB>value` records from `Setup::result`, which the driver reads). The last line printed is
 //! `mode=.. mines=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
-//! **A sweep** (the gate's unit, `scripts/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] [SWEEP=cold:streams] church-bv sweep`
+//! **A sweep** (the gate's unit, `scripts/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] church-bv sweep`
 //! (`MACHINE_STATE=0` skips its two machine-state lines too). It uses `RULEMINER_FAST=1` and
 //! `RULEMINER_SHUFFLE=$SALT`. Its one stage, `cold` (or `cold:streams`): three loops on phases 1-3 from no rules, in
 //! `cold_streams_streams_<phase>_none/`, one row each in `cold_streams.tsv` (`:` becomes `_`): family, stride-phase,
@@ -921,7 +921,6 @@ pub fn run_sweep() {
     let out = PathBuf::from(setup.var("SWEEP_OUT").expect("set SWEEP_OUT=<dir>"));
     std::fs::create_dir_all(&out).unwrap();
     let salt: usize = setup.or("SALT", 1);
-    let stages = setup.var("SWEEP").unwrap_or("cold:streams");
     // Large pages off in the children: most are short, each pays the 64 MiB large-page commit up front, and a sweep with them
     // on cost 0.3-2.9 s more CPU and 60% more peak memory (docs/tier-cycle.md, "How often the large-page stall hits a sweep").
     let env: Vec<(String, String)> = [("RULEMINER_FAST", "1".to_string()), ("RULEMINER_SHUFFLE", salt.to_string()), ("MIMALLOC_ALLOW_LARGE_OS_PAGES", "0".to_string())]
@@ -948,22 +947,14 @@ pub fn run_sweep() {
         env: env.clone(),
     };
     // the one stage: three cold loops on phases 1-3 of the streams (spec §10)
-    let loop_cfgs = |stage: &str| -> Vec<LoopCfg> {
-        assert!(stage == "cold" || stage == "cold:streams", "unknown stage {stage}: the sweep runs cold:streams (spec §10)");
-        (1..=3).map(|p| base(out.join(format!("{}_streams_{p}_none", stage.replace(':', "_"))), p)).collect()
-    };
-    // every scope's extras, drawn before the first stage, so a list too short for its slices stops the sweep before any work
-    let mut scopes: Vec<Vec<LoopCfg>> = stages.split_whitespace().map(loop_cfgs).collect();
-    let mut short = vec![];
-    for scope in &mut scopes {
-        if scope.iter().all(|c| takes_extras(c, setup.ablated("gen"))) {
-            if let Err(e) = scope_extras(setup, scope) {
-                short.push(e);
-            }
+    let mut cfgs: Vec<LoopCfg> = (1..=3).map(|p| base(out.join(format!("cold_streams_streams_{p}_none")), p)).collect();
+    // the extras are drawn before any work, so a list too short for its slices stops the sweep first
+    if cfgs.iter().all(|c| takes_extras(c, setup.ablated("gen"))) {
+        if let Err(e) = scope_extras(setup, &mut cfgs) {
+            panic!("extras lists too short for their slices:\n{e}");
         }
     }
-    assert!(short.is_empty(), "extras lists too short for their slices:\n{}", short.join("\n"));
-    // a stage's loops run on `SWEEP_LANES` (default 2) lanes, loop i on lane i % lanes (`run_lanes`); 2 × 6 mining threads fit the 12-thread cap. A lane has its own
+    // the loops run on `SWEEP_LANES` (default 2) lanes, loop i on lane i % lanes (`run_lanes`); 2 × 6 mining threads fit the 12-thread cap. A lane has its own
     // worker and lemma file (all its processes run this exe, so every statement in it was checked by this build; one shared
     // file would race on its save). SWEEP_LANES=1 for timings.
     let lanes: usize = setup.or("SWEEP_LANES", 2usize).max(1);
@@ -971,18 +962,16 @@ pub fn run_sweep() {
     lemmas.iter().for_each(|l| drop(std::fs::remove_file(l)));
     let workers: Vec<Worker> = (0..lanes).map(|_| Worker::new()).collect();
     machine_state("start", &env, &workers[0], &out);
-    for (stage, cfgs) in stages.split_whitespace().zip(&scopes) {
-        let tsv = out.join(format!("{}.tsv", stage.replace(':', "_")));
-        std::fs::write(&tsv, "").unwrap();
-        let ran = run_lanes(cfgs, lanes, |cfg, l| {
-            let t0 = std::time::Instant::now();
-            let s = run_loop(setup, cfg, &lemmas[l], &workers[l]);
-            (s, t0.elapsed().as_secs())
-        });
-        for (cfg, (s, secs)) in cfgs.iter().zip(ran) {
-            let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
-            append(&tsv, &format!("streams\t{STREAM_STRIDE}-{}\tfrom_none\t{}\t{}\t{}\t{secs}\t{}\t{}\t{}\n", cfg.sphase, s.total, ms.join(","), s.rules, s.exhausted, s.joined, s.reached));
-        }
+    let tsv = out.join("cold_streams.tsv");
+    std::fs::write(&tsv, "").unwrap();
+    let ran = run_lanes(&cfgs, lanes, |cfg, l| {
+        let t0 = std::time::Instant::now();
+        let s = run_loop(setup, cfg, &lemmas[l], &workers[l]);
+        (s, t0.elapsed().as_secs())
+    });
+    for (cfg, (s, secs)) in cfgs.iter().zip(ran) {
+        let ms: Vec<String> = s.ms.iter().map(|m| m.to_string()).collect();
+        append(&tsv, &format!("streams\t{STREAM_STRIDE}-{}\tfrom_none\t{}\t{}\t{}\t{secs}\t{}\t{}\t{}\n", cfg.sphase, s.total, ms.join(","), s.rules, s.exhausted, s.joined, s.reached));
     }
     lemmas.iter().for_each(|l| drop(std::fs::remove_file(l)));
     machine_state("end", &env, &workers[0], &out);

@@ -74,11 +74,11 @@ Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
   `tests/common/mod.rs`.
 - **TB5. Retire three prototype-era top-level test files** (~270 lines).
 - **TB6. Move `class_key.txt` and `held_*.txt` out of the test source directory** (5 files, ~12 path lines, 2 scripts, 1 Rust tool).
-- **TB8. `ctx_scorer` reimplements SplitMix64** despite `tatic::rng` (~20 lines).
+- **TB8. `ctx_scorer` reimplements SplitMix64** despite `tatic::rng` (~20 lines). **Done 2026-11-04** (`ctx_scorer::Rng` replaced by `tatic_rng::SplitMix64`; -17 lines; lib suite 318 pass, same streams).
 - **AR2. One module owns pool/extras selection** (`Keep`, `ExtrasKeep`, `POOL`, `EXTRAS_N`, `EXTRAS_SELECT`, `CTX_WEIGHTS`,
   `POOL_DUMP`): two parsers and one validator collapse (~150 lines deleted). The tripwire case: `Keep` grew `Ctx` this session.
 - **AR3. One sweep-arm recipe; delete superseded `runs gate` / `cmp` / `time --sweep|--pcs`** (~600 lines out, bash tally to Rust).
-- **AR6. Delete the one-case sweep-stage dispatcher in `driver::sweep`** (~40 lines).
+- **AR6. Delete the one-case sweep-stage dispatcher in `driver::sweep`** (~40 lines). **Done 2026-11-04**: the `SWEEP` variable, stage list and scopes are gone (output dirs and `cold_streams.tsv` unchanged), also from `gate.rs`, `time.rs`, `streams_ab.sh`, `ctx_dump.sh`, README; -26 lines in `driver.rs`; one sweep identical to the reference (WORK, result files, tsv bar seconds); `test_gate.sh` 1 failed before fixing its expected name count 8 to 7 (`ar6-test-gate`), the other cases pass; `tools/runs` 45 pass.
 - **AR7. Route the remaining direct `std::env` reads through `Setup`**, knobs declared once (~150 lines).
 
 ### Scripts and tools (SC, RB)

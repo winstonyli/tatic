@@ -1,5 +1,5 @@
 #!/bin/bash
-# streams_ab.sh <exe A> <exe B> <salts...>: the gate on the streams (spec §9). Per salt, SWEEP=cold:streams (extras
+# streams_ab.sh <exe A> <exe B> <salts...>: the gate on the streams (spec §9). Per salt, the cold sweep (extras
 # on, 2 lanes, 6 scoring workers) with A and B, `JOBS` arms at a time (default 1; `ARM_CACHE` reuses arms), each a `runs run` (job
 # CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
 # loop's final rules (every crates/church-bv/data/held_<band>.txt, HELD_BANDS; CHECK_FAST: the laws that still need a
@@ -17,7 +17,7 @@ runs="$root/tools/runs/target/release/runs.exe"
 [ -x "$runs" ] || { echo "streams_ab: $runs not built (cargo build --release in tools/runs)"; exit 1; }
 # the environments the gate sets, one NAME=value per line: the sweep's (<salt> <out dir>) and the held-out check's
 # (<rules file> <law file>, Windows paths); `changed` skips their names
-sweep_env() { printf '%s\n' MACHINE_STATE=0 SWEEP=cold:streams "SALT=$1" "SWEEP_OUT=$2"; }
+sweep_env() { printf '%s\n' MACHINE_STATE=0 "SALT=$1" "SWEEP_OUT=$2"; }
 held_env() { printf '%s\n' MACHINE_STATE=0 CHECK_FAST=1 "CHECK_RULES=$1" "CHECK_LAWFILE=$2"; }
 # the held-out files in band order (crates/church-bv/data/held_<band>.txt; the bands are HELD_BANDS in classes.rs)
 bands() { local b; for b in $(ls "$root/crates/church-bv/data" | sed -nE 's/^held_([0-9]+)\.txt$/\1/p' | sort -n); do echo "$root/crates/church-bv/data/held_$b.txt"; done; }
