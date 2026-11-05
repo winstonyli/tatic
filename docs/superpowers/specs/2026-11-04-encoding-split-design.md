@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Split `encoding.rs` by concern (TB3, `encoding` half)

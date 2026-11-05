@@ -679,8 +679,8 @@ fn hidden_state_is_classified() {
         ("rewrite/term.rs", "OP_CACHE", "op results by operator and operand values"),
         ("rewrite/plan.rs", "CLOSED", "memo's closed library terms by key"),
         ("rewrite/plan.rs", "COUNTING", "the one Counting plan, shared"),
-        ("encoding.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
-        ("encoding.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
+        ("encoding/gates.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
+        ("encoding/tables.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
         ("work.rs", "SLOT", "this thread's work counts: no task reads them, the worker prints them after it"),
     ];
     const PROCESS_WIDE: [(&str, &str, &str); 9] = [
@@ -696,7 +696,7 @@ fn hidden_state_is_classified() {
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let (mut bad, mut seen) = (vec![], vec![]);
-    let pieces = std::fs::read_dir(dir.join("rewrite")).unwrap();
+    let pieces = ["rewrite", "encoding"].into_iter().flat_map(|d| std::fs::read_dir(dir.join(d)).unwrap());
     for entry in std::fs::read_dir(&dir).unwrap().chain(pieces) {
         let path = entry.unwrap().path();
         if path.extension().is_none_or(|e| e != "rs") {
