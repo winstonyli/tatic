@@ -170,7 +170,7 @@ fn inconsistent_call_arity_for_a_parameter_is_still_out_of_scope_for_the_closure
     // and the runnable capability tests alongside it). That's an
     // intentional, expected gap, not a regression -- extending
     // kernel-checked proof coverage to this new capability is
-    // separately scoped future work (see `docs/related-work/`'s own
+    // separately scoped future work (see `docs/related-work/` §9's own
     // notes on why it doesn't fit this file's existing, purely
     // structural methodology), not a byproduct of compile.rs alone
     // accepting more terms.

@@ -1,7 +1,7 @@
 ## 14. Adding `Sigma` (dependent sums) as a fifth kernel primitive
 
 A web survey of prior art on the open dependent-sum research question
-(closing this document's own long-standing "an honest single kernel type
+(closing §9's own long-standing "an honest single kernel type
 for 'either `Clo_1` or `Clo_2`'" gap) turned up two useful, opposed
 precedents: typed closure conversion via existential/Sigma packaging
 (Minamide/Morrisett/Harper; Bowman & Ahmed's PLDI'18 extension to the
@@ -116,8 +116,8 @@ every other case-discriminating mechanism available here (`bool_rec`,
 `ite_clo_ref`, `ite_bool_ref`), is necessarily a *postulate* (`Int` has no
 recursor in this kernel, deliberately — see `ite_clo_ref`'s own doc — and
 a genuinely computing type-level `Bool` recursor hits the exact
-"vacuous-eliminator, one universe up" wall this document's README
-citation already names for bootstrapping `Bool`/`Nat` themselves).
+"vacuous-eliminator, one universe up" wall `docs/design-notes.md`
+already names for bootstrapping `Bool`/`Nat` themselves).
 Postulates never reduce by construction, so `def_eq` fails, confirmed
 directly by `kernel::infer` rejecting the pair with a "type mismatch"
 between `f`'s own `Clo_1` type and the stuck, unreduced `ite_sort_ref(a,
@@ -150,7 +150,7 @@ recursor; the one type that does compute generically, `W`, has no way to
 fold an *arbitrary arithmetic condition* into a `Sup`-shaped dispatch
 without first deciding it, which is exactly the open question). This
 isn't a gap `Sigma` closes by existing — it's the same "separate, larger
-research question" this document already named before `Sigma` was added,
+research question" §9 already named before `Sigma` was added,
 now with a concretely-ruled-out approach rather than an unexamined one.
 
 **Reopened, a later session: the above overclaimed the wall's extent —
@@ -203,7 +203,7 @@ reduces to a *stuck* expression (`bool_rec`/`sort_rec` never
 auto-reduce, concrete tag or not), so producing an inhabitant of it
 needs `NatPostulates::bool_rec_true_eq`/`false_eq` (propositional) plus
 `transport`, bridging a real, concrete witness (`nat.star`/`nat.zero`)
-across — the same `cong1`/`f_cong` trick this document's own `is_zero`
+across — the same `cong1`/`f_cong` trick the `is_zero`
 proof (§3) already established, one level up.
 
 **What this changes, and what it doesn't.** The earlier verdict —

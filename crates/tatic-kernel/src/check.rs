@@ -119,7 +119,7 @@ impl InferCache {
 
     /// Empties the cache for the next call, keeping its capacity: a sweep makes thousands of calls, and growing
     /// each one's maps from empty was most of `Checker::infer`'s 0.9% under `reserve_rehash` (`docs/tier-cycle/`,
-    /// "where the growth comes from"). Clearing costs time in the capacity, so a map grown past `KEEP` is let go.
+    /// "Survey: where the growth comes from"). Clearing costs time in the capacity, so a map grown past `KEEP` is let go.
     fn reset(&mut self) {
         const KEEP: usize = 1 << 14;
         fn empty_map<K, V>(m: &mut IdMap<K, V>) {

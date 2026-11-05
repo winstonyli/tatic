@@ -451,7 +451,7 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
             // misindexes two argument positions, since swapping equal
             // values changes nothing observable -- this was a real,
             // previously-unfuzzed verification-coverage gap for every
-            // arity->=3 term (see docs/related-work/).
+            // arity->=3 term (see docs/related-work/ §17).
             for &a in &SAMPLE_ARGS[..6] {
                 out.push(vec![a; arity]);
             }

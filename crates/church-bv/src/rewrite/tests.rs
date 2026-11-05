@@ -964,7 +964,7 @@ fn join_store_is_fed_only_where_it_is_read() {
 }
 
 /// A memo hit gives what a fresh rewrite would, also under rules that cycle: an entry made where the path was short is replayed
-/// inside a call that a fresh rewrite would cut (docs/tier-cycle/, the law 168 entry under Open).
+/// inside a call that a fresh rewrite would cut (docs/tier-cycle/, "Memo replays that a fresh rewrite would cut").
 #[test]
 fn memo_hits_match_fresh_rewrites_under_cycling_rules() {
     let job = &mut Job::new(Setup::process());

@@ -1181,7 +1181,7 @@ pub fn closed_terms_fold_to_constants() {
     })
 }
 
-// --- Proposal yield (docs/tier-cycle/): what a proposer's samples are worth to the kernel ---
+// --- Proposal yield (docs/tier-cycle/, "Per-proposal credit"): what a proposer's samples are worth to the kernel ---
 
 /// The kernel's cost for a true law under the installed rules: whole-term machine proofs and rule steps (of a `LAW_STEPS` budget) that
 /// `rewrite_law` used, and whether it proved the law at all. The difficulty grade a proposer is scored by.
@@ -1205,7 +1205,7 @@ pub fn law_cost(job: &mut Job, kv: usize, t1: &Term, t2: &Term) -> Cost {
     Cost { fallbacks: spent.fallbacks, steps: spent.steps, proved }
 }
 
-/// Per-proposal credit for a mined library `rules` (docs/tier-cycle/). Each rule's held-out gain is how many more `held` laws are hard
+/// Per-proposal credit for a mined library `rules` (docs/tier-cycle/, "Per-proposal credit"). Each rule's held-out gain is how many more `held` laws are hard
 /// without it; a proposal uses a rule when it is cheap under `rules` but hard without that rule; each rule's gain is split evenly over
 /// the proposals that use it. Returns the per-rule gains, the per-rule user counts and the per-proposal credits.
 pub fn proposal_credit(job: &mut Job, rules: &[(Term, Term)], kv: usize, held: &[(Term, Term)], props: &[(Term, Term)]) -> (Vec<i64>, Vec<usize>, Vec<f64>) {

@@ -91,7 +91,7 @@ pub(super) fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], e
         }
     }
     // per left side, the smallest right side only, ties by `Term`'s order. Scoring every right side instead (each left side's rival
-    // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle/)
+    // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle/, "Why add3 did better with sbo3's library")
     // an identity (a pattern's pool group holds the pattern itself) never gains, and as the smallest right side it would displace
     // its left side's real candidates
     cands.retain(|(l, r)| l != r);

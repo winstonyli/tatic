@@ -231,7 +231,7 @@ impl DynBudget {
 /// that's itself self-recursive: the *inconsistent*-arity closure
 /// parameter this whole per-instance methodology exists for is exactly
 /// as likely to be threaded, unchanged, through a tail-recursive loop as
-/// to sit in a straight-line callee -- and `docs/related-work/`'s own
+/// to sit in a straight-line callee -- and `docs/related-work/` §9's own
 /// "recursive use of curried dispatch has no kernel-proof coverage"
 /// gap is precisely this case.
 ///
@@ -631,7 +631,7 @@ pub(super) fn eval_dyn_node( h: Hash, combinators: &mut ClosureCombinators, self
 /// exactly the case that one can never cover: a closure-typed parameter
 /// called with genuinely inconsistent arities across call sites (see
 /// this section's own module docs for the methodology, and
-/// `docs/types.md`/`docs/related-work/` for why `denote_closure`'s own universal
+/// `docs/types.md`/`docs/related-work/` §9 for why `denote_closure`'s own universal
 /// approach is a dead end here without a real dependent sum in the
 /// kernel).
 ///

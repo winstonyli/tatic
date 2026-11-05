@@ -177,7 +177,7 @@
 //! path -- this is an additive fallback, not a replacement, and its real
 //! per-call cost (roughly 1.5x on an otherwise fast-path-eligible hot
 //! loop) is paid only by a fragment that actually needs it -- see
-//! `docs/related-work/` for the measured numbers.
+//! `docs/related-work/` §9 for the measured numbers.
 //!
 //! A *recursive* (`Rec`-wrapped) use of this mechanism gets kernel-proof
 //! backing too, per instance rather than universally (the loop-carried
@@ -186,7 +186,7 @@
 //! `proof::eval_dyn`'s own `self_ctx`-threaded recursion (mutually with
 //! `eval_dyn_tail_recursive`) for a *non*-tail-recursive one, including
 //! branching (e.g. an embedded self-call inside `1 + f(n-1)`, or two in
-//! one leaf as in naive Fibonacci). See `docs/related-work/` for what's
+//! one leaf as in naive Fibonacci). See `docs/related-work/` §14 for what's
 //! still open: a universal (not just per-instance) proof for either
 //! shape needs a real dependent sum in the kernel's own type theory.
 

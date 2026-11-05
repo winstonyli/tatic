@@ -502,7 +502,7 @@ fn a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_pa
     // `prove_closure_expr_instance`'s own inlining (via
     // `eval_dyn_tail_recursive`) now covers a recursive use of the
     // curried-dispatch capability too -- previously the standing gap
-    // this whole test existed to document (see `docs/related-work/`).
+    // this whole test existed to document (see `docs/related-work/` §9).
     // `jit.rs`'s own sample-based `verify()` is still the actual
     // trust gate installing the compiled form regardless.
     assert!(jit.is_kernel_verified(top));

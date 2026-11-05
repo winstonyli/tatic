@@ -4,7 +4,7 @@
 cd "${1:-$(dirname "$0")/../..}" || exit 2
 bad=$(git ls-files 'docs/superpowers/specs/*.md' 'docs/superpowers/plans/*.md' | while read -r f; do
   [ "$(sed -n 1p "$f" | tr -d '\r')" = --- ] || { echo "$f: no front matter"; continue; }
-  s=$(sed -n '2,/^---/p' "$f" | tr -d '\r' | sed -n 's/^status: *//p' | head -1)
+  s=$(tr -d '\r' < "$f" | awk 'NR==1 {next} /^---$/ {print s; exit} /^status:/ && s=="" {s=$0; sub(/^status: */,"",s)}')
   case $s in
     draft|active|done) ;;
     '"superseded-by: '*'"') t=${s#'"superseded-by: '}; t=${t%'"'}; [ -f "$(dirname "$f")/$t" ] || [ -f "$t" ] || echo "$f: superseded by a missing file: $t" ;;

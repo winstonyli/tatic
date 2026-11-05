@@ -1,4 +1,4 @@
-//! Wasm programs as kernel data (docs/tier-cycle/, option B; "Wasm programs over Church words" there).
+//! Wasm programs as kernel data (docs/tier-cycle/, "Wasm programs as kernel data, kept"; option B of "Formalizing the target machine" there).
 //!
 //! A program is a Church-encoded instruction tree typed by its start and end stacks,
 //! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> push -> bin -> cmp -> dup -> if -> loop -> store -> load -> F S`, where each

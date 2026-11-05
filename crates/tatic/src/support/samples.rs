@@ -100,7 +100,7 @@ pub fn closure_typed_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) 
 /// `Combinators::needs_generic_dispatch` -- switches the *whole* fragment
 /// to curried dispatch, including the hot, live `g x` call the dead branch
 /// has nothing to do with. This isolates exactly the cost
-/// `docs/related-work/`'s own design discussion flagged but never measured:
+/// `docs/related-work/` §9's own design discussion flagged but never measured:
 /// what a single, syntactically-present-but-never-taken inconsistent call
 /// site costs an otherwise fast-path loop.
 pub fn inconsistent_arity_loop_carried_parameter_loop(s: &mut TermStore, iters: i64) -> Hash {

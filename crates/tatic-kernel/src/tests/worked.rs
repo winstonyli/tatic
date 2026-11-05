@@ -260,7 +260,7 @@ fn a_tagged_selector_built_via_wrec_typechecks_a_pair_for_a_symbolic_tag() {
     // -- bool_rec's own shape (`wrap_c_ct_cf`), but targeting Sort(1)
     // so C can select between *types*, not just Sort0 values (Nat
     // Postulates' own bool_rec hardcodes Sort(0) -- see this file's own
-    // is_zero test and docs/related-work/'s universe-mismatch finding).
+    // is_zero test and docs/related-work/ §14's universe-mismatch finding).
     fn wrap_c_ct_cf_sort1(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Expr) -> Expr {
         let c_ty = arrow(*bool_ref, sort(1));
         let true_d1 = shift(true_ref, 0, 1);

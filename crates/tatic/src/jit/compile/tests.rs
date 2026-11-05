@@ -410,7 +410,7 @@ fn a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_o
     // until runtime at all, chosen by an ordinary `If` between two
     // *different* literal lambdas, exactly the case a call-site-
     // traced "pre-generate every (root,k) wrapper" mechanism could
-    // never have covered (see `docs/related-work/`'s own discussion of
+    // never have covered (see `docs/related-work/` §9's own discussion of
     // why that narrower alternative was rejected).
     let mut s = TermStore::new();
     let top = inconsistent_arity_runtime_chosen_instance(&mut s);

@@ -74,7 +74,7 @@
 //! (predicativity was never actually the obstacle -- `WRec` already
 //! supports eliminating into any `Sort(k)`), but wiring it in as a
 //! replacement for the postulated family below is a separate, not yet
-//! attempted follow-on (see `docs/related-work/`) -- `Ev` itself is also an
+//! attempted follow-on (see `docs/related-work/` §3) -- `Ev` itself is also an
 //! *indexed* family (depends on `params`/`v`), which a plain `Nat`'s own
 //! structural recursor doesn't directly hand you either way. So, for
 //! now, `prove_tail_recursive_universal` postulates a

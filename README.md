@@ -29,7 +29,7 @@ tatic is a research prototype, not a production compiler. The compilable
 fragment is small (simply typed `Int -> ... -> Int` terms with closures);
 anything else is served by the interpreter. Kernel-checked equivalence proofs
 cover only the terms in the proof fragment, and a term runs compiled only
-with a proof covering every input (the installation gate, below). Alongside the JIT, the
+with a proof covering every input (the installation gate, [docs/proven.md](docs/proven.md)). Alongside the JIT, the
 repository holds a Church-encoded bit-vector library and a rewrite-rule miner
 (`crates/church-bv/src/`), which are research experiments and are
 not needed to use the JIT.

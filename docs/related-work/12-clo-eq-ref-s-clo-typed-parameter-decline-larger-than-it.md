@@ -56,7 +56,7 @@ widening plus a flag.
 scoped session, not folded into a batch alongside smaller items.** This
 is comparable in size to the generic-dispatch rewrite (`docs/related-work/`
 §9) or larger, touching the historically most staleness-bug-prone part of
-this file (§4's own five-plus-bug count already came from this same
+`proof.rs` (§4's own five-plus-bug count already came from this same
 neighborhood) under exactly the conditions (deep proof-composition
 changes, `Anchored` discipline threaded through new call sites) that have
 produced real bugs here before. Attempting it under the same time budget
@@ -175,6 +175,6 @@ left to build here. §12's original decline, in `clo_eq_ref` itself, is a
 real and permanent property of that one methodology (a universal axiom
 has no way to ask "which concrete value is this, at runtime" the way a
 per-instance proof can) -- but it is not, and was never, an overall
-capability gap once `eval_dyn` is counted as part of this file's answer
+capability gap once `eval_dyn` is counted as part of `proof.rs`'s answer
 to "can a `Clo`-typed parameter be proven," which it always has been.
 

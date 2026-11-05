@@ -126,7 +126,7 @@ impl Setup {
     /// Whether the rewriter's rule `name` is switched off by `ABLATE` (comma list: comm, assoc, collapse, join,
     /// promoted, a built-in rule's name, the class table's normal form classes, `prove_eq`'s eq_truth, eq_pos,
     /// shrmask, and the driver's gen). Parsed once: `rule_step` asks for every rule it tries, and reading the
-    /// environment each time was 11% of a mine (docs/tier-cycle/). The first time a name is switched off, this prints
+    /// environment each time was 11% of a mine (docs/tier-cycle/, "The rewriter is now the mine's largest part"). The first time a name is switched off, this prints
     /// `ABLATED <name>`, once per setup: `streams_ab.sh` fails an arm whose `.exe.env` names a switch that never took
     /// effect, a misspelled or deleted one, or one the arm never reached.
     pub fn ablated(&self, name: &str) -> bool {

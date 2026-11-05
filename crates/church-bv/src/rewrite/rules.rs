@@ -706,7 +706,7 @@ pub fn rule_step(job: &mut Job, t: &Term) -> Option<(Term, PlanRc)> {
         }
         // a permutative rule (ordered rewriting): only when the instance goes down in the term order (that of the `show()` text)
         // (a path order on every tied instance, the removed `PERM_ORDER=lpo`, raised M, and the tie-break order before `show()`,
-        // `PERM_ORDER=tie`, never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle/)
+        // `PERM_ORDER=tie`, never became the default; the rewrite cycles both targeted are cut in `rewrite` instead: docs/tier-cycle/, "Cycle cut; lpo and a cycling penalty are negative results")
         if r.permutative && inst >= *t {
             return None;
         }

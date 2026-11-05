@@ -19,5 +19,25 @@ out=$(run 'see `docs/related-work/` §9 and §12, and §12 of `docs/related-work
 ok "§ cites resolve to numbered files, in both orders" "$([ $rc = 0 ] && echo "$out" | grep -q '^3 section cites checked, 0 unresolved' && echo ok)"
 out=$(run 'see `docs/related-work/` §9 and §13.'); rc=$?
 ok "a § with no file fails and is named" "$([ $rc = 1 ] && echo "$out" | grep -q '§13' && echo ok)"
+out=$(run 'see `docs/related-work/` section 9, sections 9 and 12, `docs/related-work/` 12 and docs/related-work/ sec 9.'); rc=$?
+ok "section N, sec N and bare numbers resolve" "$([ $rc = 0 ] && echo "$out" | grep -q '^5 section cites checked, 0 unresolved' && echo ok)"
+out=$(run 'see `docs/related-work/` section 13.'); rc=$?
+ok "a section N with no file fails" "$([ $rc = 1 ] && echo "$out" | grep -q '§13' && echo ok)"
+out=$(run 'see `docs/tier-cycle/`, “No such section”.'); rc=$?
+ok "a curly-quoted title is read" "$([ $rc = 1 ] && echo "$out" | grep -q 'No such section' && echo ok)"
+long=$(printf 'x%.0s' {1..120}); printf '## %s\n' "$long" >> "$t/docs/tier-cycle/a.md"
+out=$(run "see docs/tier-cycle/, \"$long\"."); rc=$?
+ok "a long title is read" "$([ $rc = 0 ] && echo "$out" | grep -q '^1 section cites checked' && echo ok)"
+mkdir -p "$t/crates"; rs() { printf '%s\n' "$1" > "$t/crates/x.rs"; perl "$here/cite_check.pl" "$t" crates/x.rs 2>&1; }
+out=$(rs '/// see `docs/related-work/`
+/// section 9, and `docs/tier-cycle/`,
+/// "A heading".'); rc=$?
+ok "a cite wrapped in a code comment resolves" "$([ $rc = 0 ] && echo "$out" | grep -q '^2 section cites checked, 0 unresolved' && echo ok)"
+out=$(rs "// see docs/related-work/'s own discussion."); rc=$?
+ok "a code cite with no section fails" "$([ $rc = 1 ] && echo "$out" | grep -q 'no section' && echo ok)"
+out=$(rs 'let p = "docs/tier-cycle/"; // see `docs/tier-cycle/` ("A heading").'); rc=$?
+ok "a code string is not a cite, a parenthesised title is" "$([ $rc = 0 ] && echo "$out" | grep -q '^1 section cites checked, 0 unresolved' && echo ok)"
+out=$(run 'the index is `docs/related-work/`.'); rc=$?
+ok "a doc may name the directory alone" "$([ $rc = 0 ] && echo ok)"
 [ $fail = 0 ] && echo "cite_check_check: ok"
 exit $fail
