@@ -7,7 +7,7 @@ also peeled past `s` to the gate constant at the bottom of the spine, so `s` was
 evaluated again once per path that reached it. `sub` chains grew about 0.7n-fold per level (n=16: 1.5, 9.9, 69 and
 407 ms at depth 1-4).
 
-The mechanism is in `crates/tatic-kernel/src/lib.rs`:
+The mechanism is in `crates/tatic-kernel/src/subst.rs`, `hc.rs` and `reduce.rs`:
 - `closed_prefix_spine` runs first for every `App` in `whnf_step`. It finds the longest proper prefix `P` of the
   spine with no loose variable, with `d` arguments left over.
 - `hnf_rc(P, d)` is `P`'s head normal form to depth `d`: its whnf, then the body's whnf under each of up to `d`
@@ -21,7 +21,7 @@ The mechanism is in `crates/tatic-kernel/src/lib.rs`:
   boolean selects under its own `\C t f` and a table prefix drops the branches its arguments rule out ("Full head normal
   form", in "Where a sweep spends its time"). That can reduce more than the application would have.
 
-Check: `closed_function_values_are_reduced_once` (`crates/tatic-kernel/src/tests.rs`). It builds
+Check: `closed_function_values_are_reduced_once` (`crates/tatic-kernel/src/tests/substitution.rs`). It builds
 `b(i+1) = \C x y. b(i) C (b(i) C y x) (b(i) C x y)` to depth 30, both outside a scope and inside one. With
 `closed_prefix_spine` disabled, depth 20 took 9.6 s for one `def_eq`, doubling per level. With it, the whole test
 reports 0.00 s.
@@ -95,7 +95,7 @@ The fix is `brief_nf(e)`, a printer that normalizes as it prints:
 - The text is the same as `brief(&nf(e))`. The wrec children-type message uses it too. The other `nf` callers
   are semantic (`infer_sup`'s occurs check, `typecheck`'s returned type, `normalize`) and stay as they were.
 
-Check: `brief_nf_normalizes_only_what_it_prints` (`crates/tatic-kernel/src/tests.rs`). It compares the output with
+Check: `brief_nf_normalizes_only_what_it_prints` (`crates/tatic-kernel/src/tests/substitution.rs`). It compares the output with
 `brief(&nf(..))` on three small terms, and prints the Church numeral `16 4`, whose normal form has 4^16 nested
 applications. With `brief(&nf(e))` restored, the test went over 4 GB within 8 s.
 

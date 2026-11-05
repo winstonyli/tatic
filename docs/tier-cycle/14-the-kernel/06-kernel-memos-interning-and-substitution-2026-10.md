@@ -7,7 +7,7 @@
   step once instead of m + 1 times. Building leaves was 32% of lemma time, `table_app` included; open what is left now.
   Done: "One builder memo, and each step once per leaf", below.
 - *Normal forms of closed terms across `def_eq` calls (kernel).* `ReductionCache` lives for one top-level `def_eq`/`whnf`/
-  `nf` call (`crates/tatic-kernel/src/lib.rs` near 1424), so every leaf renormalizes the same closed gate applications (`and` of two literal
+  `nf` call (`crates/tatic-kernel/src/reduce.rs`), so every leaf renormalizes the same closed gate applications (`and` of two literal
   bits, say). A cache keyed by canonical pointer, per interning generation, for closed terms would collapse them. Reduction
   is context-free for closed terms, so it is sound, but it touches the trusted kernel. Gain unmeasured: first count distinct
   canonical closed `App` nodes normalized per lemma. Counted: at most about 1%, not worth it ("A closed-term normal-form
@@ -16,7 +16,7 @@
   `hty` and `inv_expr` (now hit the table memo).
 
 **Interning in the kernel's reduction (survey, 2026-10-13; read-only, a subagent's report checked at the cited lines).** The
-hash-cons table (`mod hc`, `crates/tatic-kernel/src/lib.rs` near 828) already uses a pointer hash (`PtrHasher`) and shallow keys (child
+hash-cons table (`mod hc`, `crates/tatic-kernel/src/hc.rs`) already uses a pointer hash (`PtrHasher`) and shallow keys (child
 pointers); removing or narrowing it lost badly ("Hash-consing cost", above). Open options, most promising first:
 1. `args_id` (near 1136) re-interns every argument of every `instantiate_n` (`intern((*a).clone(), None)`, a clone and a
    probe) although `beta_spine`/`whnf_step` hold canonical `Rc`s; taking `&Rc<Expr>` and skipping canonical ones removes

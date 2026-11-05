@@ -32,7 +32,7 @@ Decisions, 2026-11-04 (the user):
 - **D3 `tier-cycle.md`: split by H2** (DOC2), after the cite checker (DOC3, done). Not started.
 - **D4 `scripts/experiments`: leave ignored, fix stale doc pointers.** Done (`docs/TOUR.md`; the README line already says it is not in the repo).
 - **D6 grouping step, 2026-11-04 (the user, "as rec"):** x1 layer directories for `src/` (SR1), y1 extract `shape.rs` (SR2), z1 `uniform/` only for `church_bv` (TB2). TB3 (`rewrite.rs`/`encoding.rs` split) is not decided (split boundaries, `origin/lazy-view` collision) and is not part of this step. Target tree: `lang/{term,eval,syntax}`, `jit/{compile,ir,lower_wat,specialise,shape}`, `verify/{decompile,spec_check,typing}`, `support/{samples,rng}`, `testing/{test_corpus,ir_fuzz,independence}`, `kernel` and `proof` in place, `main.rs` to `bin/demo.rs`.
-- **D2 / D5 (`kernel.rs` split, SR3 against the architecture survey)**: open; SR3 waits for SR4, which makes it moot if the crate lands.
+- **D2 / D5 (`kernel.rs` split, SR3 against the architecture survey)**: decided 2026-11-04 (split by role, as SR3 below); SR4 was done first.
 
 Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
 
@@ -48,6 +48,7 @@ Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
 - **SR3. Split `kernel.rs` (2198 lines) into role files under `kernel/`** (expr, stack, subst, hc, reduce, check), root re-exports.
   No external path changes. **Conflict:** the architecture survey rejected this ("fewer, larger files are a feature in the trusted
   core"); decision D5.
+  **Done 2026-11-04** (the user, "1" on Decide r1: split both kernel files now; the architecture survey's "fewer, larger files" objection is overridden by the size ratchet): `crates/tatic-kernel/src/lib.rs` (2203 lines) is the crate doc, `use`s and `mod`/`pub use` lines (71); pieces `expr.rs` (term type, builders), `stack.rs`, `show.rs`, `subst.rs`, `hc.rs` (was the inline `mod hc` of `subst`'s range, hoisted to its crate-root file so its `pub(super)` still means the crate root), `reduce.rs`, `check.rs` (`Ctx`, `Globals`, `InferCache`, `infer`, `check`), all under 750 lines. `tests.rs` (2607 lines) keeps the shared helpers and `mod` lines (283); its 94 tests moved to `tests/{substitution,conversion,memo,worked,typing,rules,scopes}.rs` (test names gain a segment, `tests::<piece>::<name>`). Moves only: the sorted multiset of trimmed lines differs by the `mod`/`pub use`/`use super::*;` lines and `hc`'s doc comment marker (`///` to `//!`); visibility edits are `pub(super)` on `InferCache`, `CtxBinder`, their fields and three methods, and on `Expr`'s `r` and `epoch`. Checks: 757 workspace test names equal the baseline after mapping the new segment; workspace 709 passed, 0 failed (run `2026-11-04-ksplit-suite`); `test_gate.sh` run `2026-11-04-ksplit-test-gate`; two known warnings only; size allowlist 13 to 11 entries.
 - **SR4. Kernel as its own workspace crate** so "the kernel imports nothing from tatic" is a compile error. IFACE. Same as RB1,
   AR4. Replaces nothing: `independence.rs` and its 3 tests guard `decompile`, `spec_check` and `typing`, not the kernel, and
   stay (corrected 2026-11-04; the earlier text said it replaced them). ~443 use lines in 31 files, plus the `tatic-rng` crate.

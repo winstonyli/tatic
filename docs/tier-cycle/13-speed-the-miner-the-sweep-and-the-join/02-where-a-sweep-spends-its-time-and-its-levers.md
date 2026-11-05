@@ -135,7 +135,7 @@
     but peak commit is 446-490 MB. It jumps as the first parallel round starts (71 to 276 MB while live goes 51 to 87 MB).
     Ruled out: mimalloc's delayed purging (`MIMALLOC_PURGE_DELAY=0`: 444-486 MB), what `mi_collect(true)` at phase ends
     can return (439-494 MB), and the miner threads' own stacks (44-60 KB each). Found: the kernel's large `check_in` runs
-    on a 64 MB stacker segment (`CHECK_SEGMENT`, crates/tatic-kernel/src/lib.rs), and stacker's `CreateFiber(size)` commits the whole
+    on a 64 MB stacker segment (`CHECK_SEGMENT`, crates/tatic-kernel/src/stack.rs), and stacker's `CreateFiber(size)` commits the whole
     size. With 4 MB, peak commit falls to 312-395 MB. Those pages are commit charge only, never touched, so they cost no
     RAM (the kernel.rs comment said "costs nothing until touched"; corrected). Parked: PARKED.md, "Large `check_in` segments that commit only what they touch". The 100-200 MB
     still between live and commit is mimalloc's per-thread retention over 6 scoring threads plus speculative provers; not
