@@ -33,7 +33,7 @@ The JIT (`crates/tatic/src/`):
 The kernel and proofs. The kernel (`tatic-kernel`), the seeded generator (`tatic-rng`) and `church-bv` (below) are workspace crates under `crates/`; `crates/tatic` is the `tatic` package that depends on the kernel, so the kernel importing anything from `tatic` is a compile error:
 - `crates/tatic-kernel/src/lib.rs` declares the trusted checker's pieces: `expr.rs` (terms and builders), `stack.rs` (stack growth), `show.rs` (printers), `subst.rs` and `hc.rs` (substitution and its memos), `reduce.rs` (`whnf`, `def_eq`, `normalize`), `check.rs` (`infer`, `check`, `Ctx`, `Globals`). `crates/tatic-kernel/src/postulates.rs`: the proof-term builder. `crates/tatic-kernel/src/spaces.rs`, `crates/tatic-kernel/src/bin.rs`: storage and serialization. `crates/tatic/src/testing/independence.rs`: the test that keeps trusted files from importing untrusted ones.
 - `crates/tatic/src/proof.rs`: what is and is not established, plus the pure prover `crates/tatic/src/proof.rs#prove_pure_expr`. "What does the theorem actually say?" (it is about `denote`: `crates/tatic/src/proof.rs#denote`, not about the emitted WAT)
-- `crates/tatic/src/proof/closures.rs`, `crates/tatic/src/proof/per_instance.rs`, `crates/tatic/src/proof/universal.rs`, `crates/tatic/src/proof/hardening.rs`: the closure, per-instance and universal provers, and the debug self-check `crates/tatic/src/proof/hardening.rs#debug_assert_has_type`.
+- `crates/tatic/src/proof/closures.rs`, `crates/tatic/src/proof/per_instance.rs`, `crates/tatic/src/proof/universal.rs`, `crates/tatic/src/proof/denote.rs`: the closure, per-instance and universal provers, the closure denotation they share (`denote.rs`), and its debug self-check `crates/tatic/src/proof/denote.rs#debug_assert_has_type`.
 
 The bit-vector library and target machine (`crates/church-bv/src/`; `lib.rs` holds only the `mod` lines and the test allocator; `main.rs` is the `church-bv` binary):
 - `encoding/` (parent `encoding.rs` re-exports the pieces): `gates` (Church Bool and vector terms, gate builders), `good` (the "good" witnesses), `division` (equality, wrapping division), `proofs` (add identity, commutativity, associativity), `tables` (truth-table and BDD builders), `tests`. `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
@@ -104,7 +104,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 
 1. `kernel_verify` (flow (a) step 9) calls a prover with the interned term and gets an `EquivalenceProof` or `None`: `crates/tatic/src/proof.rs#EquivalenceProof`.
 2. The statement is about `denote`, the term's meaning as a kernel expression over the postulated arithmetic (`crates/tatic/src/proof.rs#denote`), not about the emitted WAT; the proof is a kernel-checked `refl` between that meaning and the compiled form's.
-3. Pure arithmetic terms: `crates/tatic/src/proof.rs#prove_pure_expr`. Terms with closures: `crates/tatic/src/proof/closures.rs#prove_closure_expr`. Self-recursion that tail-calls: `crates/tatic/src/proof/hardening.rs#prove_tail_recursive_universal` over the postulated inductive family (Ev). Arity 0 only: `crates/tatic/src/proof/per_instance.rs#prove_closure_expr_instance`.
+3. Pure arithmetic terms: `crates/tatic/src/proof.rs#prove_pure_expr`. Terms with closures: `crates/tatic/src/proof/closures.rs#prove_closure_expr`. Self-recursion that tail-calls: `crates/tatic/src/proof/universal.rs#prove_tail_recursive_universal` over the postulated inductive family (Ev). Arity 0 only: `crates/tatic/src/proof/per_instance.rs#prove_closure_expr_instance`.
 4. Proof terms are built with the untrusted `Postulates` builder and typed by the trusted checker `crates/tatic-kernel/src/check.rs#check_in`, so a prover bug should make a proof fail to check rather than pass a false one.
 
 ### (d) Serving one law (the rewriter and the prover cascade)
@@ -142,7 +142,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **EquivalenceProof**: a kernel-checked refl proof packaged with its globals and arity. `crates/tatic/src/proof.rs#EquivalenceProof`
 - **Every-input fallback**: a rule no other route proves is proved by case-splitting over all input bits when width x variables is at most 12; a rule past the cap stays unproved. `crates/church-bv/src/rewrite/rules.rs#EVERY_INPUT_BITS`
 - **Extras**: additional laws mined alongside a loop's batch; each mine takes its own slice. `crates/church-bv/src/driver.rs#EXTRAS_N`
-- **Ev / ev_rec**: the postulated inductive family and recursor behind the universal tail-recursion theorem. `crates/tatic/src/proof/hardening.rs#prove_tail_recursive_universal`
+- **Ev / ev_rec**: the postulated inductive family and recursor behind the universal tail-recursion theorem. `crates/tatic/src/proof/universal.rs#prove_tail_recursive_universal`
 - **Expr**: a Copy handle to an interned kernel term. `crates/tatic-kernel/src/expr.rs#Expr`
 - **Fallback (machine)**: a whole-term carry-machine proof used when rewriting and join fail; counted toward M. `crates/church-bv/src/rewrite/join.rs#machine_fallback`
 - **Floor**: the laws that still need the machine after rewriting and the join. `docs/tier-cycle/#The floor and the bounded join`

@@ -431,9 +431,8 @@ pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
 mod universal;
 #[allow(unused_imports)]
 pub use universal::*;
-mod hardening;
-#[allow(unused_imports)]
-pub use hardening::*;
+mod denote;
+use denote::*;
 mod closures;
 #[allow(unused_imports)]
 pub use closures::*;
