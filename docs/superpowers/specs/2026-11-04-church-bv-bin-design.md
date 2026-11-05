@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # `church-bv` binary (TB1 step 2)
