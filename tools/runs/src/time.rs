@@ -86,7 +86,7 @@ pub fn pcs_arms(root: &Path, exes: &[String], arm_envs: &[String]) -> Result<Vec
     let base = vec![
         ("CHECK_LAWFILE".to_string(), root.join(r"crates\church-bv\data\held_11.txt").display().to_string()),
     ];
-    let args: Vec<String> = ["search::proof_cost_split", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec();
+    let args: Vec<String> = ["proof-cost-split"].map(String::from).to_vec();
     let arm = |name: &str, exe: &str, extra: Vec<(String, String)>| Arm { name: name.into(), env: [base.clone(), extra].concat(), exe: exe.into(), args: args.clone() };
     match (exes, arm_envs.is_empty()) {
         ([old, new], true) => Ok(vec![arm("old", old.as_str(), vec![]), arm("new", new.as_str(), vec![])]),

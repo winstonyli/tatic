@@ -1,5 +1,5 @@
 #!/bin/bash
-# ctx_q1.sh <test exe> [context-key]: the offline Q1 report (`ctx_scorer::q1_report`) on the stage-0 dump (seven arm folders
+# ctx_q1.sh <church-bv exe> [context-key]: the offline Q1 report (`church-bv q1-report`) on the stage-0 dump (seven arm folders
 # s4_A..s10_A of the ctx-dump run, or DUMP_ROOT). The key is space-free so it survives run.ps1's -Command: `full` = the 35-column
 # "context" model, `no-g3` (default) = the 33-column model Q2 runs (decision c1). The last verdict lines go to
 # $RUN_DIR/headline.txt.
@@ -20,7 +20,7 @@ export MACHINE_STATE=0
 export Q1_DIRS="$dirs"
 export Q1_CONTEXT="$ctx"
 out=${RUN_DIR:-.}
-"$exe" ctx_scorer::q1_report --exact --ignored --nocapture < /dev/null | tee "$out/q1.txt"
+"$exe" q1-report < /dev/null | tee "$out/q1.txt"
 status=${PIPESTATUS[0]}
 grep -E '^(context model|gate met|verdict)' "$out/q1.txt" | tail -3 > "$out/headline.txt" 2>/dev/null
 exit "$status"

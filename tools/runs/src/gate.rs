@@ -9,9 +9,9 @@ use std::path::Path;
 /// The sweep's stage (`SWEEP`): the cold mine on the streams (spec §10).
 pub const SWEEP: &str = "cold:streams";
 
-/// A sweep's arguments to the church_bv exe.
+/// A sweep's arguments to the `church-bv` exe.
 pub fn sweep_args() -> Vec<String> {
-    ["driver::sweep", "--exact", "--ignored", "--nocapture"].map(String::from).to_vec()
+    ["sweep"].map(String::from).to_vec()
 }
 
 /// Runs the gate under `dir`; Ok(true) when every sweep succeeded and `cmp` found the sides the same.
@@ -69,7 +69,7 @@ mod tests {
         crate::Scratch::new(&format!("gate-{name}"))
     }
 
-    /// The test exe stands in for a sweep: its harness finds no `driver::sweep` test, exits 0, and prints the same
+    /// The test exe stands in for a sweep: its harness takes `sweep` as a test filter (no test of this crate has "sweep" in its name), finds none, exits 0, and prints the same
     /// lines but timings both times.
     #[test]
     fn a_gate_of_two_identical_exes_passes() {
@@ -89,7 +89,7 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_sweep_stops_the_gate() {
+    fn a_failed_arm_stops_the_gate() {
         let d = scratch("fail");
         let exe = std::env::current_exe().unwrap();
         // where.exe rejects the sweep's arguments and exits nonzero

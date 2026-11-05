@@ -27,7 +27,7 @@ held() { # <exe> <rules file> <arm dir> <label>: held-out M over every band, the
   while read -r hf; do
     band=${hf##*held_}; band=${band%.txt}
     mapfile -t e < <(held_env "$(cygpath -w "$2")" "$(cygpath -w "$hf")")
-    env "${e[@]}" "$1" search::rule_set_kernel_check --exact --ignored --nocapture < /dev/null > "$t/$band" 2>&1 &
+    env "${e[@]}" "$1" rule-set-kernel-check < /dev/null > "$t/$band" 2>&1 &
   done < <(bands)
   wait
   while read -r hf; do
@@ -138,7 +138,7 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   fi
   mkdir -p "$o"; rm -f "$o/exit" "$o/failed" "$o/held_lines.txt" "$o/held_bands.txt"
   mapfile -t e < <(sweep_env $s "$(cygpath -w "$o")")
-  ( "$runs" run "$(cygpath -w "$o")" -- "${e[@]}" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
+  ( "$runs" run "$(cygpath -w "$o")" -- "${e[@]}" "$exe" sweep < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
   while [ ! -f "$o/exit" ]; do
     mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
     [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; powershell -NoProfile -File "$(cygpath -w "$root/scripts/tree_mem.ps1")" -Match "$(cygpath -w "$o")" -Kill < /dev/null > /dev/null; }

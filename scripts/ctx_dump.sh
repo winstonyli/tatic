@@ -13,7 +13,7 @@ status=0
 for s in "$@"; do
   o="$RUN_DIR/s${s}_A"
   mkdir -p "$o"; rm -f "$o/exit"
-  "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams "SALT=$s" "SWEEP_OUT=$(cygpath -w "$o")" "$exe" driver::sweep --exact --ignored --nocapture < /dev/null > "$o/result.txt" 2>&1
+  "$runs" run "$(cygpath -w "$o")" -- MACHINE_STATE=0 SWEEP=cold:streams "SALT=$s" "SWEEP_OUT=$(cygpath -w "$o")" "$exe" sweep < /dev/null > "$o/result.txt" 2>&1
   echo $? > "$o/exit"
   echo "salt $s: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
   [ "$(cat "$o/exit")" = 0 ] || { status=1; continue; }
