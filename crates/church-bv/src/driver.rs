@@ -10,7 +10,7 @@
 //! 0). Phase 0 fed the mines' extras until 2026-10-28; they now come from a deeper sequence (`scope_extras`), and the
 //! stride stays, so the loops' laws do.
 //!
-//! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] <exe> driver::loop_stream --exact --ignored --nocapture`.
+//! **One loop:** `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> [options] church-bv loop-stream`.
 //! Batch r is the laws OFFSET+r*B .. OFFSET+(r+1)*B of phase SPHASE of the stream sequence at salt RULEMINER_SHUFFLE. It is
 //! served under the rules in force *before* it is mined, so M is what the stream costs when rules arrive as it does. The mode
 //! picks the loop's mines (`schedule`): `ref` mines once on all K batches before serving them; `loop` mines each batch after
@@ -39,8 +39,8 @@
 //! beside it (the task's `key<TAB>value` records from `Setup::result`, which the driver reads). The last line printed is
 //! `mode=.. mines=.. B=.. K=.. offset=.. total_M=.. rules=.. exhausted=.. joined=.. reached=..`.
 //!
-//! **A sweep** (the gate's unit, `scripts/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] [SWEEP=cold:streams] <exe> driver::sweep
-//! --exact --ignored --nocapture` (`MACHINE_STATE=0` skips its two machine-state lines too). It uses `RULEMINER_FAST=1` and
+//! **A sweep** (the gate's unit, `scripts/streams_ab.sh`): `SWEEP_OUT=<dir> [SALT=1] [SWEEP=cold:streams] church-bv sweep`
+//! (`MACHINE_STATE=0` skips its two machine-state lines too). It uses `RULEMINER_FAST=1` and
 //! `RULEMINER_SHUFFLE=$SALT`. Its one stage, `cold` (or `cold:streams`): three loops on phases 1-3 from no rules, in
 //! `cold_streams_streams_<phase>_none/`, one row each in `cold_streams.tsv` (`:` becomes `_`): family, stride-phase,
 //! from_none, total M, per-batch M, rules at the end, seconds, exhausted, joined, reached (as in m.tsv, summed over the batches).

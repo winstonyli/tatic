@@ -35,11 +35,12 @@ The kernel and proofs. The kernel (`tatic-kernel`), the seeded generator (`tatic
 - `crates/tatic/src/proof.rs`: what is and is not established, plus the pure prover `crates/tatic/src/proof.rs#prove_pure_expr`. "What does the theorem actually say?" (it is about `denote`: `crates/tatic/src/proof.rs#denote`, not about the emitted WAT)
 - `crates/tatic/src/proof/closures.rs`, `crates/tatic/src/proof/per_instance.rs`, `crates/tatic/src/proof/universal.rs`, `crates/tatic/src/proof/hardening.rs`: the closure, per-instance and universal provers, and the debug self-check `crates/tatic/src/proof/hardening.rs#debug_assert_has_type`.
 
-The bit-vector library and target machine (`crates/church-bv/src/`; `lib.rs` holds only the `mod` lines and the test allocator):
+The bit-vector library and target machine (`crates/church-bv/src/`; `lib.rs` holds only the `mod` lines and the test allocator; `main.rs` is the `church-bv` binary):
 - `encoding.rs`: Church Bool and vector terms and gate builders. `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
 - `classes.rs`, `class_key.txt`, `held_*.txt`: the class table, its key and the held-out laws.
 - `wasm.rs`: the formal target machine. `lemma_cache.rs`, `work.rs`, `task.rs`: caching, counters, shared memo (`crates/church-bv/src/task.rs#SharedMemo`).
 - `uniform/`: laws proved uniformly in the bit width over the unchanged kernel (`width.rs` is the shared vocabulary; `bitwise`, `mul`, `shift`, `symmul`, `symmul_stream` are the law families).
+- `entry.rs`: the `church-bv <subcommand>` table (`sweep`, `worker`, `loop-stream`, `proof-cost-split`, `rule-set-kernel-check`, `ctx-fit`, `overlap-report`, `q1-report`) and `main` (`crates/church-bv/src/entry.rs#main`); each subcommand runs on a default-stack thread, as a test would, and the binary tells `Worker` to re-enter itself as `church-bv worker` (`crates/church-bv/src/driver.rs#declare_reentry`).
 
 The rewriter and provers (`crates/church-bv/src/`):
 - `rewrite.rs`: terms, plans, rule table, the rewriter and the `prove_eq` cascade. `job.rs`: per-task and per-thread state.
@@ -90,7 +91,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 
 1. A deterministic list of candidate bit-vector laws is built per salt by interleaving operator-set streams: `crates/church-bv/src/search.rs#stream_sequence`. A loop reads one phase of it (a residue class): `crates/church-bv/src/search.rs#residue`.
 2. The driver cuts a window of laws and writes it as a lawfile for a worker task: `crates/church-bv/src/driver.rs#write_laws`.
-3. A sweep builds three loops (phases 1 to 3) and runs each: `crates/church-bv/src/driver.rs#sweep`.
+3. A sweep builds three loops (phases 1 to 3) and runs each: `crates/church-bv/src/driver.rs#run_sweep`.
 4. `run_loop` serves a batch of laws under the rules in force, records the batch's M, then runs the mines scheduled after it: `crates/church-bv/src/driver.rs#run_loop`.
 5. Serving: each law is rewritten, then closed by the prover cascade (flow (d)); the leftover that needed a whole-term machine proof or stayed unproved is M: `crates/church-bv/src/search.rs#rule_set_kernel_check_task`.
 6. A mine may also take extras, more laws from a deeper stream sequence, filtered against served and held-out laws: `crates/church-bv/src/driver.rs#scope_extras`.
@@ -186,14 +187,14 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `crates/church-bv/src/miner.rs#laws_of`
 - **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified; `ctx` keeps the same stragglers but orders them by a fitted context model's score instead of by cost (the weights file named by `CTX_WEIGHTS`, columns without the marginal-coverage group). `crates/church-bv/src/miner.rs#kept_indices`
 - **Stream / salt**: operator-set law streams, interleaved round-robin; the salt reshuffles. `crates/church-bv/src/search.rs#stream_sequence`
-- **Sweep**: three cold loops for one salt and build. `crates/church-bv/src/driver.rs#sweep`
+- **Sweep**: three cold loops for one salt and build. `crates/church-bv/src/driver.rs#run_sweep`
 - **TermStore**: the hash-consing store of terms. `crates/tatic/src/lang/term.rs#TermStore`
 - **Transfer**: whether rules mined on one set of laws help laws they never saw (the held-out bands). `docs/tier-cycle.md#Held-out M and transfer for v0.5`
 - **Twin**: an extra whose normalized key equals a served or held-out law's; the extras filter drops it. `docs/tier-cycle.md#Metrics`
 - **Verdict (kernel to model)**: the per-proposal answer of the cycle's interface: parse error, refuted, trivial, duplicate, known, novel, and cheap or hard. `docs/tier-cycle.md#Interface`
 - **Wasm model**: wasm-like programs as Church-encoded kernel data with laws about append, if and loop; separate from the JIT. `crates/church-bv/src/wasm.rs#Wasm`
 - **Work counts**: deterministic counters at four sites, a load-independent cost signal. `crates/church-bv/src/work.rs#Site`
-- **Worker**: a persistent child process that runs serve and mine tasks. `crates/church-bv/src/driver.rs#worker`
+- **Worker**: a persistent child process that runs serve and mine tasks. `crates/church-bv/src/driver.rs#run_worker`
 
 ## Where facts live
 

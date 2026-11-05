@@ -73,13 +73,13 @@ still need a whole-term machine proof. The measured results are in
   design is in the spec
   [`2026-10-22-class-table-normal-form-design.md`](docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md),
   §9.
-- The driver is the ignored test `driver::loop_stream` (`crates/church-bv/src/driver.rs`):
-  `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> <church_bv test exe> driver::loop_stream --exact --ignored --nocapture`.
+- The driver is `church-bv loop-stream` (`crates/church-bv/src/driver.rs`; also the ignored test `driver::loop_stream`):
+  `LOOP_MODE=none|ref|loop LOOP_OUT=<dir> church-bv loop-stream` (build with `cargo build -p church-bv [--profile sweep]`).
   `none` only serves, `ref` mines once on the whole stream, `loop` mines after
   each batch. It writes `<dir>/m.tsv` (one row per batch: M, laws, rules in
   force, seconds and the join's counts). The module comment documents all
   options (`B`, `K`, `OFFSET`, `SPHASE`, `WARM_RULES=<file>`, ...).
-  `driver::sweep` with `SWEEP=cold:streams` (the only stage) runs three cold
+  `church-bv sweep` with `SWEEP=cold:streams` (the only stage) runs three cold
   loops on phases 1-3 into `SWEEP_OUT=<dir>`; `scripts/streams_ab.sh` is the gate
   built on it (A/B per salt, plus held-out M under each loop's rules).
 - The miner (`search::rule_miner` in `crates/church-bv/src/search.rs`) takes its

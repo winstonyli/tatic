@@ -744,7 +744,7 @@ pub fn q1(mines: &[Mine], ks: &[usize], context: &str) -> String {
     t
 }
 
-/// `Q1_DIRS=<arm folder>;<arm folder>.. <exe> ctx_scorer::q1_report --exact --ignored --nocapture`: the offline answer to Q1 on a
+/// `Q1_DIRS=<arm folder>;<arm folder>.. church-bv q1-report`: the offline answer to Q1 on a
 /// pool dump (`scripts/ctx_dump.sh`): prints the report; a FAIL is a result, not an error.
 #[test]
 #[ignore]
@@ -762,7 +762,7 @@ pub fn run_q1_report() {
     print!("{}", q1(&mines, &[40, 80], &setup.var("Q1_CONTEXT").unwrap_or_else(|| "context".into())));
 }
 
-/// `Q1_DIRS=<arm folder>;.. FIT_SALTS=4-10 FIT_OUT=<new file> <exe> ctx_scorer::ctx_fit --exact --ignored --nocapture`: fits the
+/// `Q1_DIRS=<arm folder>;.. FIT_SALTS=4-10 FIT_OUT=<new file> church-bv ctx-fit`: fits the
 /// Q2 model (`fit_model`) on the dump's labelled stragglers of those salts and writes it (`LAYOUT`). Weights files are write-once:
 /// the arm cache hashes the exe and its env file, not the files they name, so an existing `FIT_OUT` is refused.
 #[test]
@@ -793,8 +793,7 @@ pub fn run_ctx_fit() {
     println!("WROTE {}", out.display());
 }
 
-/// `TRAIN_DIRS=<arm folder>;.. EVAL_DIRS=<arm folder>;.. [TRAIN_SLICE=319] <exe> ctx_scorer::overlap_report --exact --ignored
-/// --nocapture`: how many eval law texts a model fit on the train folders' labelled slices has seen (`overlap`).
+/// `TRAIN_DIRS=<arm folder>;.. EVAL_DIRS=<arm folder>;.. [TRAIN_SLICE=319] church-bv overlap-report`: how many eval law texts a model fit on the train folders' labelled slices has seen (`overlap`).
 #[test]
 #[ignore]
 fn overlap_report() {
