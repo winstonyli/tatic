@@ -1,7 +1,7 @@
 #!/bin/bash
 # streams_ab.sh <exe A> <exe B> <salts...>: the gate on the streams (spec §9). Per salt, the cold sweep (extras
 # on, 2 lanes, 6 scoring workers) with A and B, `JOBS` arms at a time (default 1; `ARM_CACHE` reuses arms), each a `runs run` (job
-# CPU and wall) into $RUN_DIR/s<salt>_<A|B>; a watchdog stops an arm past 8 GB of private commit (its own process tree, `tree_mem.ps1`). Then per loop the held-out M under the
+# CPU and wall) into $RUN_DIR/s<salt>_<A|B>; its job is stopped past 8 GB of commit (`--max-mem-mb`). Then per loop the held-out M under the
 # loop's final rules (every crates/church-bv/data/held_<band>.txt, HELD_BANDS; CHECK_FAST: the laws that still need a
 # whole-term machine proof), and under no mined rules (the table alone, checked once per exe), per band to the arm's held_bands.txt; an arm's bands are checked at once. Per salt, as soon as both its arms are done: M, held-out M and job CPU of each arm, and whether each loop's rules agree; per arm, over its salts that passed, the totals, the
 # lookup memo's peak (CLASS_MEMO), the largest peakproc, and per band the loops' and the table's free share and M per
@@ -116,7 +116,7 @@ tally() {
   [ $n = 0 ]
 }
 arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its held-out M; $o/failed holds 1 if it failed
-  local s=$1 arm=$2 exe o mb h l v= f=0 c= long e hf
+  local s=$1 arm=$2 exe o h l v= f=0 c= long e hf
   [ $arm = A ] && exe=$a || exe=$b
   o="$RUN_DIR/s${s}_$arm"
   # ARM_CACHE=<dir>: an arm that ran without failing is kept under the hash of its exe, the exe's .exe.env, this
@@ -137,12 +137,9 @@ arm() { # <salt> <A|B>: one arm into $RUN_DIR/s<salt>_<arm>, its sweep then its 
   fi
   mkdir -p "$o"; rm -f "$o/exit" "$o/failed" "$o/held_lines.txt" "$o/held_bands.txt"
   mapfile -t e < <(sweep_env $s "$(cygpath -w "$o")")
-  ( "$runs" run "$(cygpath -w "$o")" -- "${e[@]}" "$exe" sweep < /dev/null > "$o/result.txt" 2>&1; echo $? > "$o/exit" ) &
-  while [ ! -f "$o/exit" ]; do
-    mb=$(powershell -NoProfile -File "$(cygpath -w "$root/scripts/gate/tree_mem.ps1")" -Match "$(cygpath -w "$o")" < /dev/null | tr -d '\r')
-    [ "${mb:-0}" -gt 8192 ] && { echo "salt $s $arm: over 8 GB ($mb MB), stopped"; powershell -NoProfile -File "$(cygpath -w "$root/scripts/gate/tree_mem.ps1")" -Match "$(cygpath -w "$o")" -Kill < /dev/null > /dev/null; }
-    ping -n 6 127.0.0.1 > /dev/null
-  done
+  "$runs" run "$(cygpath -w "$o")" --max-mem-mb 8192 -- "${e[@]}" "$exe" sweep < /dev/null > "$o/result.txt" 2>&1
+  echo $? > "$o/exit"
+  grep -q 'memcap=hit' "$o/result.txt" && echo "salt $s $arm: over 8 GB, stopped"
   echo "salt $s $arm: exit $(cat "$o/exit") $(tail -1 "$o/result.txt")"
   [ "$(cat "$o/exit")" = 0 ] && cut -f4 "$o/cold_streams.tsv" 2>/dev/null | grep -qE '^[0-9]+$' || f=1
   h=0

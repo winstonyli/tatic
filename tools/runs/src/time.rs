@@ -516,7 +516,7 @@ mod tests {
             // AB, BA, AB as `order` runs them
             pos: 1 + ((arm == "new") != (round == 2)) as usize,
             start: 0,
-            r: job::RunResult { exit: 0, wall: 1.0, job_cpu: cpu, procs: 1, stragglers: 0, peak_proc_mb: 0.0, peak_job_mb: 0.0, peak_ws_mb: 0.0, other_pct: 0.0, others: 0 },
+            r: job::RunResult { exit: 0, wall: 1.0, job_cpu: cpu, procs: 1, stragglers: 0, peak_proc_mb: 0.0, peak_job_mb: 0.0, peak_ws_mb: 0.0, other_pct: 0.0, others: 0, capped: false },
             rtp: None,
             clean: true,
             greps: vec![],

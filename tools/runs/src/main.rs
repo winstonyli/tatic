@@ -1,4 +1,4 @@
-//! `runs`: measured runs, timings and machine state for church_bv's sweeps, in one tool (README, "Benchmarks"). Build it with
+//! `runs`: measured runs, timings and machine state for church_bv's sweeps, in one tool (docs/benchmarks.md). Build it with
 //! `cargo build --release --manifest-path tools/runs/Cargo.toml` and run `tools/runs/target/release/runs.exe`. Every
 //! command prints progress as it goes and writes its records under the run directory (`runs dir`).
 #[cfg(not(windows))]
@@ -17,8 +17,9 @@ use std::path::{Path, PathBuf};
 const USAGE: &str = "usage:
   runs dir                    the run directory: %RUN_DIR% under run.ps1, else %TEMP%\\tatic-runs\\<checkout folder>
   runs state                  RTP=.. CPU=..% lockpriv=..
-  runs run <dir> [--affinity M] [--priority P] -- [VAR=val]... <exe> <args>...
-                              one measured run; output in <dir>/out.txt and err.txt
+  runs run <dir> [--affinity M] [--priority P] [--max-mem-mb N] -- [VAR=val]... <exe> <args>...
+                              one measured run; output in <dir>/out.txt and err.txt; past N MB of
+                              commit the job is stopped and the result line ends memcap=hit
   runs time <dir> --rounds N [--max-hours 3] [--others pat,...] [--foreign-max 20] [--quiet-secs 60] [--keep-dirty]
             [--max-rounds 4N] [--grep NAME=REGEX]... [--affinity M] [--priority P] -- <arm> [-- <arm>]...
             an arm is <name> [VAR=val]... <exe> <args>... (name: letters, digits, _ . -); {r}, {arm}, {dir} are substituted";
@@ -58,7 +59,7 @@ fn dispatch(args: &[String]) -> Result<i32, String> {
 /// `runs run`: one measured run; exits with its exit code, as `pin.ps1` did.
 fn cmd_run(words: &[String]) -> Result<i32, String> {
     let p = parse(words);
-    p.check(&["affinity", "priority"])?;
+    p.check(&["affinity", "priority", "max-mem-mb"])?;
     let [dir] = &p.pos[..] else { return Err("run takes one directory".into()) };
     let (env, cmd) = split_env(&p.rest);
     let (exe, args) = cmd.split_first().ok_or("run needs an exe after --")?;
@@ -67,6 +68,9 @@ fn cmd_run(words: &[String]) -> Result<i32, String> {
     let mut spec = job::RunSpec::new(exe, args.to_vec(), job::Output(dir.join("out.txt"), dir.join("err.txt")));
     spec.env = env;
     apply_limits(&mut spec, &p)?;
+    if let Some(mb) = p.one("max-mem-mb")? {
+        spec.max_mem_mb = Some(mb.parse().map_err(|e| format!("--max-mem-mb {mb}: {e}"))?);
+    }
     let rtp = state::rtp();
     let r = job::run(&spec)?;
     let label = dir.file_name().map_or("run".to_string(), |n| n.to_string_lossy().into_owned());
@@ -127,7 +131,7 @@ fn apply_limits(spec: &mut job::RunSpec, p: &Parsed) -> Result<(), String> {
 /// The one line per run that `run` prints and `time` logs, with units as `sweep_job.ps1` wrote them.
 fn result_line(label: &str, r: &job::RunResult, rtp: Option<bool>) -> String {
     format!(
-        "{label} wall={:.1}s jobcpu={:.2}s procs={} stragglers={} peakproc={:.0}MB peakjob={:.0}MB peakws={:.0}MB other={:.0}% others={} rtp={} exit={}",
+        "{label} wall={:.1}s jobcpu={:.2}s procs={} stragglers={} peakproc={:.0}MB peakjob={:.0}MB peakws={:.0}MB other={:.0}% others={} rtp={} exit={}{}",
         r.wall,
         r.job_cpu,
         r.procs,
@@ -138,7 +142,8 @@ fn result_line(label: &str, r: &job::RunResult, rtp: Option<bool>) -> String {
         r.other_pct,
         r.others,
         state::rtp_text(rtp),
-        r.exit
+        r.exit,
+        if r.capped { " memcap=hit" } else { "" }
     )
 }
 
@@ -346,11 +351,11 @@ mod tests {
 
     #[test]
     fn the_result_line() {
-        let r = job::RunResult { exit: 0, wall: 12.34, job_cpu: 10.411, procs: 5, stragglers: 0, peak_proc_mb: 279.4, peak_job_mb: 412.6, peak_ws_mb: 221.3, other_pct: 3.2, others: 0 };
-        assert_eq!(
-            result_line("old.1", &r, Some(false)),
-            "old.1 wall=12.3s jobcpu=10.41s procs=5 stragglers=0 peakproc=279MB peakjob=413MB peakws=221MB other=3% others=0 rtp=False exit=0"
-        );
+        let mut r = job::RunResult { exit: 0, wall: 12.34, job_cpu: 10.411, procs: 5, stragglers: 0, peak_proc_mb: 279.4, peak_job_mb: 412.6, peak_ws_mb: 221.3, other_pct: 3.2, others: 0, capped: false };
+        let line = "old.1 wall=12.3s jobcpu=10.41s procs=5 stragglers=0 peakproc=279MB peakjob=413MB peakws=221MB other=3% others=0 rtp=False exit=0";
+        assert_eq!(result_line("old.1", &r, Some(false)), line);
+        r.capped = true;
+        assert_eq!(result_line("old.1", &r, Some(false)), format!("{line} memcap=hit"));
     }
 
     #[test]

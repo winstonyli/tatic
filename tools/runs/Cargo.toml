@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 license = "Apache-2.0"
 publish = false
-description = "Measured runs, timings and machine state for tatic's church_bv sweeps (README, \"Benchmarks\")"
+description = "Measured runs, timings and machine state for tatic's church_bv sweeps (docs/benchmarks.md)"
 
 [[bin]]
 name = "runs"

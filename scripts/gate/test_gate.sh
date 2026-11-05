@@ -12,7 +12,7 @@ ok() { # <case> <got> <want>
 
 # --- the gate: a root with its scripts and a fake runs.exe (any arm that runs fails), two exes and a cache of arms
 mkdir -p "$T/root/scripts/gate" "$T/root/tools/runs/target/release" "$T/root/crates/church-bv/data"
-cp scripts/gate/streams_ab.sh scripts/gate/arm_env.sh scripts/gate/tree_mem.ps1 "$T/root/scripts/gate/"; echo fake > "$T/root/tools/runs/target/release/runs.exe"
+cp scripts/gate/streams_ab.sh scripts/gate/arm_env.sh "$T/root/scripts/gate/"; echo fake > "$T/root/tools/runs/target/release/runs.exe"
 for b in 11 13 15 17; do echo $b > "$T/root/crates/church-bv/data/held_$b.txt"; done
 echo fake > "$T/A.exe"; echo fake > "$T/B.exe"; echo ABLATE=x > "$T/B.exe.env"
 # the key streams_ab.sh gives an exe: its bytes, its .exe.env, the script, arm_env.sh, runs.exe and the held-out laws (in band
@@ -61,6 +61,11 @@ sed 's/^echo "CHECKED/[ -s "$(cygpath -u "$CHECK_RULES")" ] || [ "$b" != 15 ] \&
 for x in F G; do for l in 1 2 3; do mkdir -p "$T/ok$x/s1_B/cold_streams_streams_${l}_none"; echo "rule $l" > "$T/ok$x/s1_B/cold_streams_streams_${l}_none/rules.txt"; done; gate ok$x "$(cygpath -w "$T/$x.exe")" 1 > "$T/ok$x.out"; done
 ok "every band checked: the arm passes" "$(cat "$T/okF/s1_B/failed")" 0
 ok "a band with no CHECKED line fails the arm" "$(cat "$T/okG/s1_B/failed")" 1
+# an arm stopped at the memory cap says so and fails: a runs.exe that reports the cap, then back to the sweep that succeeds
+r="$T/root/tools/runs/target/release/runs.exe"; cp "$r" "$T/runs.ok"; printf '#!/bin/bash\necho "x wall=1s exit=3 memcap=hit"; exit 3\n' > "$r"
+ok "an arm at the memory cap is reported" "$(gate capped "$(cygpath -w "$T/F.exe")" 1 | grep -c '^salt 1 B: over 8 GB, stopped$')" 1
+ok "an arm at the memory cap fails" "$(cat "$T/capped/s1_B/failed")" 1
+cp "$T/runs.ok" "$r"
 # the total and bands lines count only the arms that passed: a failed arm's files would count a salt it never finished
 ok "a passed arm counts" "$(grep -oE '^total B: M [0-9]+; held [0-9]+' "$T/okF.out")" "total B: M 5; held $((3 * (890 + 870 + 850 + 830)))"
 ok "a failed arm counts nowhere" "$(grep -E '^(total|bands) B:' "$T/okG.out" | paste -sd'|')" "total B: no arm passed|bands B: no arm passed"

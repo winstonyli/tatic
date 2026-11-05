@@ -11,7 +11,8 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
-use std::sync::mpsc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, mpsc};
 use std::time::{Duration, Instant};
 use windows_sys::Win32::Foundation::{CloseHandle, HANDLE, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::System::Diagnostics::ToolHelp::{
@@ -20,11 +21,11 @@ use windows_sys::Win32::System::Diagnostics::ToolHelp::{
 };
 use windows_sys::Win32::System::IO::{CreateIoCompletionPort, GetQueuedCompletionStatus, OVERLAPPED, PostQueuedCompletionStatus};
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_AFFINITY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-    JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOBOBJECT_ASSOCIATE_COMPLETION_PORT,
+    AssignProcessToJobObject, CreateJobObjectW, IsProcessInJob, JOB_OBJECT_LIMIT_AFFINITY, JOB_OBJECT_LIMIT_JOB_MEMORY,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PRIORITY_CLASS, JOBOBJECT_ASSOCIATE_COMPLETION_PORT,
     JOBOBJECT_BASIC_ACCOUNTING_INFORMATION, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectAssociateCompletionPortInformation,
     JobObjectBasicAccountingInformation, JobObjectExtendedLimitInformation, QueryInformationJobObject,
-    SetInformationJobObject,
+    SetInformationJobObject, TerminateJobObject,
 };
 use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::{
@@ -73,6 +74,8 @@ pub struct RunSpec {
     pub straggler_wait: Duration,
     /// Other jobs' process name patterns (`matches`).
     pub others: Vec<String>,
+    /// The job's total commit limit in MB: the first allocation past it stops the whole job (`Watcher`).
+    pub max_mem_mb: Option<usize>,
 }
 
 impl RunSpec {
@@ -87,6 +90,7 @@ impl RunSpec {
             affinity: 0xFFF,
             straggler_wait: Duration::from_secs(60),
             others: default_others(),
+            max_mem_mb: None,
         }
     }
 }
@@ -116,6 +120,8 @@ pub struct RunResult {
     pub other_pct: f64,
     /// The most other jobs' processes seen at once.
     pub others: u32,
+    /// The job passed `max_mem_mb` and was stopped.
+    pub capped: bool,
 }
 
 struct Handle(HANDLE);
@@ -135,9 +141,12 @@ const JOB_KEY: usize = 1;
 const STOP_KEY: usize = 2;
 /// winnt.h's notice of a process joining a job (windows-sys has it only under the large `SystemServices` feature).
 const JOB_OBJECT_MSG_NEW_PROCESS: u32 = 6;
+const JOB_OBJECT_MSG_JOB_MEMORY_LIMIT: u32 = 10;
+/// The exit code of a process stopped at the memory cap.
+const CAPPED_EXIT: u32 = 3;
 
 impl Job {
-    fn new(priority: Priority, affinity: usize) -> Result<Job, String> {
+    fn new(priority: Priority, affinity: usize, max_mem_mb: Option<usize>) -> Result<Job, String> {
         let h = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
         if h.is_null() {
             return Err(last_error("CreateJobObjectW"));
@@ -151,6 +160,10 @@ impl Job {
         info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_AFFINITY | JOB_OBJECT_LIMIT_PRIORITY_CLASS;
         info.BasicLimitInformation.Affinity = affinity;
         info.BasicLimitInformation.PriorityClass = priority.class();
+        if let Some(mb) = max_mem_mb {
+            info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_JOB_MEMORY;
+            info.JobMemoryLimit = mb << 20;
+        }
         let ok = unsafe { SetInformationJobObject(h, JobObjectExtendedLimitInformation, (&raw const info).cast(), size_of_val(&info) as u32) };
         if ok == 0 {
             return Err(last_error("SetInformationJobObject"));
@@ -178,21 +191,29 @@ impl Job {
 
 /// Opens each process the job takes in as its notice arrives, so that its peak working set can be read after it exits
 /// (the job's accounting has peak commit, not working set). A process that exits, and whose last handle closes, before
-/// its notice is read is missed; a pid reused by then is refused by `IsProcessInJob`.
+/// its notice is read is missed; a pid reused by then is refused by `IsProcessInJob`. It also stops the job at the
+/// memory limit's notice: the failed allocation alone would leave the run to fail however it fails, or to survive it.
 struct Watcher {
     port: usize,
     thread: Option<std::thread::JoinHandle<Vec<usize>>>,
+    capped: Arc<AtomicBool>,
 }
 
 impl Watcher {
     fn new(job: &Job) -> Watcher {
         let (port, jh) = (job.1.0 as usize, job.0.0 as usize);
+        let capped = Arc::new(AtomicBool::new(false));
+        let hit = capped.clone();
         let thread = std::thread::spawn(move || {
             let mut opened = Vec::new();
             loop {
                 let (mut msg, mut key, mut ov) = (0u32, 0usize, std::ptr::null_mut::<OVERLAPPED>());
                 if unsafe { GetQueuedCompletionStatus(port as HANDLE, &mut msg, &mut key, &mut ov, INFINITE) } == 0 || key == STOP_KEY {
                     return opened;
+                }
+                if key == JOB_KEY && msg == JOB_OBJECT_MSG_JOB_MEMORY_LIMIT {
+                    hit.store(true, Ordering::Relaxed);
+                    unsafe { TerminateJobObject(jh as HANDLE, CAPPED_EXIT) };
                 }
                 if key == JOB_KEY && msg == JOB_OBJECT_MSG_NEW_PROCESS {
                     // the notice's "overlapped" pointer is the new process's id
@@ -206,7 +227,7 @@ impl Watcher {
                 }
             }
         });
-        Watcher { port, thread: Some(thread) }
+        Watcher { port, thread: Some(thread), capped }
     }
 
     /// Stops the watch: the processes it opened, closed when dropped.
@@ -244,7 +265,7 @@ fn create(p: &Path) -> Result<File, String> {
 
 /// A relative path with a directory part, made absolute against this process's directory: with the child's
 /// `current_dir` set, Rust leaves it unspecified which directory a relative program path is resolved against
-/// (`pin.ps1` had this bug, RELATED_WORK §66). A bare name is left for the PATH search.
+/// (`pin.ps1` had this bug, docs/related-work/ §66). A bare name is left for the PATH search.
 fn resolve_exe(exe: &Path) -> Result<PathBuf, String> {
     if exe.components().count() > 1 {
         std::path::absolute(exe).map_err(|e| format!("{}: {e}", exe.display()))
@@ -347,7 +368,7 @@ pub fn run(spec: &RunSpec) -> Result<RunResult, String> {
         cmd.current_dir(d);
     }
     cmd.stdout(create(&spec.output.0)?).stderr(create(&spec.output.1)?);
-    let job = Job::new(spec.priority, spec.affinity)?;
+    let job = Job::new(spec.priority, spec.affinity, spec.max_mem_mb)?;
     // before the child joins the job, so its own notice is seen; stopped on every return path
     let watcher = Watcher::new(&job);
     // The sampler ends when `stop` is dropped, on every return path.
@@ -385,6 +406,7 @@ pub fn run(spec: &RunSpec) -> Result<RunResult, String> {
         basic = job.basic();
     }
     let ext = job.extended();
+    let capped = watcher.capped.clone();
     let peak_ws_mb = watcher.peak_ws_mb();
     let t1 = state::times();
     drop(stop);
@@ -403,6 +425,7 @@ pub fn run(spec: &RunSpec) -> Result<RunResult, String> {
         peak_ws_mb,
         other_pct: other_pct(busy, total, job_cpu),
         others,
+        capped: capped.load(Ordering::Relaxed),
     })
 }
 
@@ -419,6 +442,12 @@ mod tests {
         match mode.as_str() {
             "spin" => spin(Duration::from_millis(500)),
             "env" => println!("OS={}", std::env::var("OS").unwrap_or_else(|_| "unset".into())),
+            // commits 1 GB, then sleeps past the test's patience
+            "commit" => {
+                let v = vec![0u8; 1 << 30];
+                std::thread::sleep(Duration::from_secs(60));
+                drop(v);
+            }
             // brings 128 MB into its working set, then exits
             "touch" => {
                 let mut v = vec![0u8; 128 << 20];
@@ -506,6 +535,24 @@ mod tests {
             assert_eq!(r.exit, 0, "{r:?}");
             assert!(r.peak_ws_mb >= 128.0, "{mode}: {r:?}");
         }
+    }
+
+    /// A job past its limit stops at once, every process of it; one under its limit runs out.
+    #[test]
+    fn the_memory_cap_stops_the_job() {
+        let d = scratch("capped");
+        let (exe, args) = helper_cmd();
+        let words = [vec!["/c".to_string(), exe.display().to_string()], args].concat();
+        let mut s = RunSpec::new("cmd", words, Output(d.join("out.txt"), d.join("err.txt")));
+        s.env.push(("RUNS_HELPER".into(), "commit".into()));
+        s.max_mem_mb = Some(256);
+        let r = run(&s).unwrap();
+        assert!(r.capped && r.exit != 0 && r.stragglers == 0 && r.wall < 30.0, "{r:?}");
+        let d = scratch("under_cap");
+        let mut s = helper_spec("touch", &d);
+        s.max_mem_mb = Some(1024);
+        let r = run(&s).unwrap();
+        assert!(!r.capped && r.exit == 0, "{r:?}");
     }
 
     #[test]
