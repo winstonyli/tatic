@@ -8,7 +8,7 @@ the history (`git tag -n99`).
 - Findings and their measurements: `docs/tier-cycle/`. Parked and deferred work: `PARKED.md`; its evidence cites
   `docs/tier-cycle/` by section name, not line (override of VERSIONING's `file:line`: that file's lines drift). Milestones: `ROADMAP.md`.
 - Specs and plans (`docs/superpowers/`, tracked from 2026-10-17) start with front matter
-  `status: draft | active | done | "superseded-by: <file>"`; it overrides any older "Status:" line in the body.
+  `status: draft | active | done | "superseded-by: <file>"`; it overrides any older "Status:" line in the body. `bash scripts/check/front_matter_check.sh` fails on one without it (no allowlist; `front_matter_check_check.sh` tests it).
 - `docs/TOUR.md` is the map of the codebase and its vocabulary (cites are `path#symbol`). A change that renames, moves,
   adds or removes a module, a stage of the data flow or a glossary term updates the tour in the same commit, and
   `bash scripts/check/tour_check.sh` must pass before committing it. The tour holds concepts and flow only: no measurements,

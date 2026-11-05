@@ -134,6 +134,7 @@ Remaining order: SR1/SR2/TB2/TB3 (grouping), then SR4, TB1, DOC2, then the rest.
 - **DOC5. Cut `README.md` to the front door** (~900 lines to `docs/`). **DOC6.** Move `TYPES.md` and the split-out survey off the root
   (~25 one-token edits; same as RB4).
 - **DOC7. `docs/superpowers` consistency:** front matter on every file, patches in `spikes/`, stale drafts.
+  **Done 2026-11-05**: of 66 specs and plans one had no front matter (the `test-terms-as-source` inventory, now `done`) and one was stale (the context-aware scorer spec, `active` though Q2 closed null, now `done`). The two `draft`s are accurate and stay: `boolean-comparisons` is an unbuilt parked proposal and `belief-cost` was not run, each with a `PARKED.md` entry. Patches: RB6. Guard: `check/front_matter_check.sh` (+ `_check`, no allowlist).
 
 ## Considered and rejected
 

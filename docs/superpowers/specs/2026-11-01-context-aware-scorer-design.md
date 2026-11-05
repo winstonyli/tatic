@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # v0.6 follow-up: does a law's context in the mine carry a signal that a per-law scorer cannot see? (design)

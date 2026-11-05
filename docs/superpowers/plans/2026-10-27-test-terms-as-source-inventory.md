@@ -1,3 +1,7 @@
+---
+status: done
+---
+
 # Hand-built term inventory (eval.rs, jit.rs, compile/tests.rs, proof/tests.rs)
 
 Appendix to `2026-10-27-test-terms-as-source.md`. A read-only survey (Sonnet) wrote this on 2026-10-27 at
