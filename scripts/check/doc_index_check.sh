@@ -10,8 +10,11 @@ for dir in docs/tier-cycle docs/related-work; do
   listed=$(grep -o '](\([^)]*\.md\))' "$dir/README.md" | sed 's/^](//;s/)$//')
   bad=0
   for f in $actual; do [ -s "$dir/$f" ] || { echo "$dir: empty: $f"; bad=1; }; done
-  for f in $actual; do [ "$(wc -l < "$dir/$f")" -le 2000 ] || { echo "$dir: over 2000 lines: $f"; bad=1; }; done
-  for f in $actual; do grep -qxF "$f" <<<"$listed" || { echo "$dir: not in the index: $f"; bad=1; }; done
+  # One process each for the whole directory: a fork per file cost half a minute on Windows.
+  over=$(cd $dir && awk 'FNR == 2001 { print FILENAME; nextfile }' $actual </dev/null)
+  for f in $over; do echo "$dir: over 2000 lines: $f"; bad=1; done
+  unlisted=$(LC_ALL=C comm -23 <(echo "$actual") <(LC_ALL=C sort <<<"$listed"))
+  for f in $unlisted; do echo "$dir: not in the index: $f"; bad=1; done
   for f in $listed; do [ -f "$dir/$f" ] || { echo "$dir: dead link in the index: $f"; bad=1; }; done
   [ "$actual" == "$listed" ] || [ $bad -eq 1 ] || { echo "$dir: index order differs from file order"; bad=1; }
   [ $bad -eq 0 ] && echo "doc_index_check: $dir: $(wc -l <<<"$actual") files indexed" || fail=1
