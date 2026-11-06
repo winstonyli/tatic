@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Checks every `path#symbol` cite in docs/TOUR.md: the path (a file, or a directory searched whole) exists and the symbol appears in it verbatim.
 # Exit 1 listing the broken cites. A renamed or deleted symbol fails here; a changed meaning does not (CLAUDE.md rule).
-cd "$(dirname "$0")/../.." || exit 2
+cd "${1:-$(dirname "$0")/../..}" || exit 2
 tour=docs/TOUR.md
 [ -f "$tour" ] || { echo "no $tour"; exit 2; }
 bad=0
