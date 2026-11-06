@@ -31,6 +31,7 @@ The tier-cycle findings log, one file per section (the two long sections are spl
 - [14-the-kernel/09-a-context-model-over-the-extras-the-offline-veto.md](14-the-kernel/09-a-context-model-over-the-extras-the-offline-veto.md): A context model over the extras: the offline veto (2026-11-01; v0.6 follow-up, Q1), 55 lines
 - [14-the-kernel/10-q2-primary-run-the-context-key-does-not-beat.md](14-the-kernel/10-q2-primary-run-the-context-key-does-not-beat.md): Q2 primary run: the context key does not beat `small` (2026-11-04; v0.6 follow-up), 39 lines
 - [14-the-kernel/11-selecting-the-extras-by-straggler-verdict-better.md](14-the-kernel/11-selecting-the-extras-by-straggler-verdict-better.md): Selecting the extras by straggler verdict: better per n, not per CPU (2026-10-31; v0.6, second try), 165 lines
+- [14-the-kernel/12-why-a-retired-instruction-count-wanders-2026-11-05.md](14-the-kernel/12-why-a-retired-instruction-count-wanders-2026-11-05.md): Why a retired-instruction count wanders (2026-11-05), 82 lines
 - [15-the-jit-and-the-target-machine.md](15-the-jit-and-the-target-machine.md): The JIT and the target machine, 633 lines
 - [16-other-theories.md](16-other-theories.md): Other theories, 30 lines
 - [17-learned-and-fixed-parts.md](17-learned-and-fixed-parts.md): Learned and fixed parts, 5 lines
