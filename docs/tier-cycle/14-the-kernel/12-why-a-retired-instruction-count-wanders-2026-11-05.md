@@ -1,9 +1,9 @@
 ### Why a retired-instruction count wanders (2026-11-05)
 The `church_bv` test exe's count moved about 0.5% run to run, against the 0.002-0.03% of a quiet single-threaded workload. Two
-things drive it. Large OS pages in mimalloc add counted instructions to some processes, probably kernel work. And the miner's
-proof threads overlap the scoring: with large pages off the miner test still wanders 1.6% against 0.07% joined, in alternating batches,
-though the join also changes the work done. With both gone the whole exe repeats to 0.06% in two runs of 12;
-single tests in that arm still have rare high runs.
+things drive it. Large OS pages in mimalloc add counted instructions to some processes, probably kernel work. And stacker learns
+a proof thread's stack limit on a fiber, so where the OS places that fiber decides whether the thread pays 1903 extra stack segments:
+with large pages off the miner test wanders 1.6% unjoined against 0.07% joined, and reading the limit first gives 0.11% unjoined.
+With large pages off and the proofs joined the whole exe repeats to 0.06% in two runs of 12; single tests in that arm still have rare high runs.
 
 Each arm is `548df0e` in a throwaway worktree, sweep profile, `icount.ps1` on CPU 4, `--test-threads=1`, the parent's row only
 (children are separate rows). "Joined" means each proof thread is joined at once. Every arm but the first row carries a small dump
@@ -49,11 +49,23 @@ of its first batch stops at 183.6 G with no child rows after it, so that is a cu
   joined in ABBA batches of 4, 24 runs each (`2026-11-06-e1-g1`): unjoined best 14.937 G, median 15.176 G, 1.6%, max / best 1.020, in
   three count modes, each batch holding at least two (127.1-129.8k faults 14.94-14.98 G, 129.7-131k 15.13-15.16 G, 133.5k and over
   15.19-15.24 G); joined best 14.735 G, median 14.745 G, 0.07%, 124.8-125.9k faults, with 3 runs at 14.82-14.94 G whose faults
-  are ordinary. So the gap is not machine state or run order, and no first-run effect shows here. `Rounds::play` runs a winner's proof while the next rounds are scored, so on one pinned core
-  the time slices fall differently each run. That the overlap itself is the cause, rather than something else the join changes, is
-  an inference: joining removes the wander, which is consistent with a scheduling-dependent cost; the fault count is a symptom, not
-  the cost, and the 1910-fault step is unknown. Through which thread's mimalloc heap gets the pages, or a spin or yield in a wait,
-  would look the same; neither was tested.
+  are ordinary. So the gap is not machine state or run order, and no first-run effect shows here. The next bullet gives the cause; the
+  overlap only moves it, and time slices do not enter into it.
+- **The cause: stacker's limit, learned on a fiber.** Per-thread counts (`2026-11-06-e1-h1`, 24 runs per arm) put the whole gap on two
+  proof threads, candidates 41 and 42: main and workers are flat across arms, and each big proof reads 300 M, about 500 M or about 532 M
+  while its kernel work is identical (`e1-h1b`). A high proof makes exactly 1903 extra 1 MB stack segments, each a fiber, and a low one
+  none (`e1-h1d`, `e1-h1e`). `stacker`'s `STACK_LIMIT` is a lazily initialised thread-local. These proofs' first stack use is a large
+  `check_in`, so its first read is in `fiber_proc`, on the 64 MB fiber: the fiber's limit is computed, saved as the "old" one and
+  restored as the thread's. `remaining_stack` on the thread then measures against a limit on another stack. With the thread's stack
+  below the fiber it saturates to 0: `floor_here` puts `FLOOR` above the stack pointer, and every top-level `grow` on the thread
+  takes a fresh segment. With the stack above the fiber it reads about 512 MB left on a 256 MB stack, so no crossings, but also no
+  protection at the true end of the stack. Placement decides the mode, 24 of 24 proofs without the fix in `e1-h1f`: stack below, 1903 crossings;
+  above, none. Joined, all 8 sat above in that run (why the join favours that placement is an inference: only one proof thread and
+  its fibers are alive at a time), and a joined run that lands below is high, which is the 544 M proof in `e1-h1d`.
+  Reading `remaining_stack` at the top of `on_segment`, before the first fiber, leaves 0 crossings in 16 of 16 proofs under either
+  placement, with 256 MB reported correctly, in the same ABBA run: 14.750-14.766 G over 8 runs, 0.11% end to end, unjoined; joined
+  14.750-14.771 G; unchanged 14.953-15.267 G. The 200 M and 232 M levels differ by the 1910-fault step, about one fault per segment;
+  what picks the level was not found, and both go with the crossings.
 - **The belief test's high runs are unexplained.** `the_sample_holds_no_self_claim` commits 1.4 GB, with faults constant at about 1730.
   Its first two runs after a miner batch read 27.50 and 27.59 G against 27.22-27.25 G, and 12 runs with large pages off stayed within
   0.22% (`e1-arml`), which fits the large-page cost; but one large-on batch of 12 was as calm (`e1-armpm2`, 0.12%), and high runs also
@@ -78,9 +90,8 @@ of its first batch stops at 183.6 G with no child rows after it, so that is a cu
   changed because mimalloc reads the option at load and the Samply task has its own environment; `driver::sweep` children already run
   with them off. A single test in the quiet arm still showed a 1.75% high run. `2026-10-30-p1b`'s 161.96 G then 159.85 G, put down to
   load in `docs/runs/2026-10-30/rows/2026-10-30-p1land.txt`, has the first-run shape (inference; not rerun).
-- **Joining is less work, not only quieter.** `a_false_winner` falls 3% (14.32 G against 14.75 G; 14.74 G against 15.21 G with large pages
-  off, compared across runs and builds), though the unchanged build also read 14.32 and 14.35 G in 2 of 6 runs (`e1-pertest`), so
-  joined may be pinning a low mode the overlap only sometimes reaches. Whole exe with large pages off, 0.45% (best) to 0.9% (median), outside the unjoined range;
-  with large pages on the difference is inside the wander and changes sign between the two runs. Why is open, and it is a count on
-  one pinned core. The comment at `Rounds::play` describes the overlap and gives no reason; that it is there to hide proof time
+- **Joining pins the low mode; it saves no work of its own.** `a_false_winner` falls 3% joined (14.32 G against 14.75 G; 14.74 G against
+  15.21 G with large pages off, compared across runs and builds), and the unchanged build also read 14.32 and 14.35 G in 2 of 6 runs
+  (`e1-pertest`). That gap is the crossings above: with the limit read first, unjoined matches joined to within the spread (`e1-h1f`).
+  The comment at `Rounds::play` describes the overlap and gives no reason; that it is there to hide proof time
   behind scoring is an inference, not measured here.
