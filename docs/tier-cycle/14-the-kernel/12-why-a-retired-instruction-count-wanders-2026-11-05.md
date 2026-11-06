@@ -1,15 +1,15 @@
 ### Why a retired-instruction count wanders (2026-11-05)
 The `church_bv` test exe's count moved about 0.5% run to run, against the 0.002-0.03% of a quiet single-threaded workload. Two
 things drive it. Large OS pages in mimalloc add counted instructions to some processes, probably kernel work. And the miner's
-proof threads overlap the scoring: with large pages off the whole exe still wanders 0.53% (fixed order only), and joining each proof
-at once removes that, though the join also changes the work done. With both gone the whole exe repeats to 0.06% in two runs of 12;
+proof threads overlap the scoring: with large pages off the miner test still wanders 1.6% against 0.07% joined, in alternating batches,
+though the join also changes the work done. With both gone the whole exe repeats to 0.06% in two runs of 12;
 single tests in that arm still have rare high runs.
 
 Each arm is `548df0e` in a throwaway worktree, sweep profile, `icount.ps1` on CPU 4, `--test-threads=1`, the parent's row only
 (children are separate rows). "Joined" means each proof thread is joined at once. Every arm but the first row carries a small dump
 of per-site counts; the rotated unchanged arm shows the dump itself moves nothing. Fixed order, 3 rounds of 4
 (`2026-11-05-e1-armt`), then rotated order, 12 batches of 4 runs, so no arm keeps a place (`2026-11-05-e1-rotate`). Unjoined with
-large pages off was not in the rotated run, so its 0.53% is confounded with run order:
+large pages off was not in the rotated run, so its whole-exe 0.53% is confounded with run order; the miner test settles that below:
 
 | Arm | Run | Best (G) | Median (G) | (median - best) / best | max / best |
 |---|---|---|---|---|---|
@@ -45,7 +45,11 @@ of its first batch stops at 183.6 G with no child rows after it, so that is a cu
 - **Proof overlap: the miner test's page-fault modes.** `a_false_winner_rolls_the_rounds_back` falls in three modes a step of about
   1910 faults apart, and the count rises with them: 9.8k faults 14.71-14.74 G, 11.7k 14.73 G, 13.6k 14.76-14.80 G (`e1-arml`). Large
   pages off keeps the wander (0.50%). Joining each proof thread at once leaves one mode, 5030-5082 faults, and spread 0.10%; with
-  large pages off too, 0.04% (`e1-armt`). `Rounds::play` runs a winner's proof while the next rounds are scored, so on one pinned core
+  large pages off too, 0.04% (`e1-armt`). Those two ran in different sessions, so large pages off, the same test ran unjoined and
+  joined in ABBA batches of 4, 24 runs each (`2026-11-06-e1-g1`): unjoined best 14.937 G, median 15.176 G, 1.6%, max / best 1.020, in
+  three count modes, each batch holding at least two (127.1-129.8k faults 14.94-14.98 G, 129.7-131k 15.13-15.16 G, 133.5k and over
+  15.19-15.24 G); joined best 14.735 G, median 14.745 G, 0.07%, 124.8-125.9k faults, with 3 runs at 14.82-14.94 G whose faults
+  are ordinary. So the gap is not machine state or run order, and no first-run effect shows here. `Rounds::play` runs a winner's proof while the next rounds are scored, so on one pinned core
   the time slices fall differently each run. That the overlap itself is the cause, rather than something else the join changes, is
   an inference: joining removes the wander, which is consistent with a scheduling-dependent cost; the fault count is a symptom, not
   the cost, and the 1910-fault step is unknown. Through which thread's mimalloc heap gets the pages, or a spin or yield in a wait,
