@@ -699,9 +699,12 @@ fn hidden_state_is_classified() {
     ];
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let (mut bad, mut seen) = (vec![], vec![]);
-    let pieces = ["rewrite", "encoding"].into_iter().flat_map(|d| std::fs::read_dir(dir.join(d)).unwrap());
-    for entry in std::fs::read_dir(&dir).unwrap().chain(pieces) {
-        let path = entry.unwrap().path();
+    let mut todo = vec![dir.clone()];
+    while let Some(path) = todo.pop() {
+        if path.is_dir() {
+            todo.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
+            continue;
+        }
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
