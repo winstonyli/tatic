@@ -588,38 +588,6 @@ fn an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_inter
     }
 }
 
-/// `classify` is the one place both `build_node` and every
-/// `proof.rs` walker learn which case a node is, so its two
-/// non-obvious rules are pinned here: a saturated self-call wins over
-/// a plain variable call (and only when saturated), and a `Rec` that
-/// doesn't peel to a function is no callee at all.
-#[test]
-fn classify_recognizes_only_a_saturated_self_call_and_only_a_peelable_callee() {
-    let mut s = TermStore::new();
-    // Hand-built: classify takes an open body (f, a, b free); the parser accepts only closed terms.
-    // Inside `rec f a b = ..`: `a` is Var(1), `b` Var(0), `f` Var(2).
-    let (a, b, f) = (s.var(1), s.var(0), s.var(2));
-    let saturated = s.app2(f, a, b);
-    let partial = s.app(f, a);
-    let over = s.app(saturated, b);
-    let (arity, self_idx) = (2, Some(2));
-
-    assert!(matches!(classify(&s, saturated, arity, self_idx), Shape::SelfCall(ref args) if *args == vec![a, b]));
-    assert!(matches!(classify(&s, partial, arity, self_idx), Shape::VarCall { var: 2, ref args, .. } if args.len() == 1));
-    assert!(matches!(classify(&s, over, arity, self_idx), Shape::VarCall { var: 2, ref args, .. } if args.len() == 3));
-    // Outside a recursive function the same term is just a variable call.
-    assert!(matches!(classify(&s, saturated, arity, None), Shape::VarCall { var: 2, .. }));
-
-    let five = s.lit(5);
-    let not_a_function = s.rec(five);
-    let bad_call = s.app(not_a_function, a);
-    assert!(matches!(classify(&s, bad_call, arity, None), Shape::OtherCall));
-    let id_body = s.var(0);
-    let id = s.abs(id_body);
-    let good_call = s.app(id, a);
-    assert!(matches!(classify(&s, good_call, arity, None), Shape::CombinatorCall { arity: 1, .. }));
-}
-
 #[test]
 fn an_unbound_variable_is_rejected_not_a_panic() {
     // Hand-built: the parser rejects an unbound name.

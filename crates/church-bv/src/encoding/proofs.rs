@@ -312,6 +312,12 @@ pub fn or_disjoint_proof(n: usize, k: usize, stated_sum_with_a_twice: bool) -> (
     (proof, stmt)
 }
 
+// ---- Associativity of `add` (search note section 11). The two sides keep separate carry states, (c, d) for
+// `add (add x y) z` and (e, f) for `add x (add y z)`. Only the *total* matters: c + d = e + f, encoded as the
+// pair (xor c d, and c d). Each side's output bit and next pair is a fixed function of (a, b, z, xor, and)
+// (a 5-variable case analysis with `refl` leaves, no hypotheses), so the two sides agree by `cong_n` on the
+// two equalities carried from the previous bit.
+
 /// `(proof, statement)` of `Pi x y z. GoodBv x -> GoodBv y -> GoodBv z -> Id(Bv_n, add (add x y) z, add x (add y z))`.
 /// `wrong` states `add x (add y y)` on the right instead, which the proof must not check against.
 pub fn add_assoc_proof(n: usize, wrong: bool) -> (Expr, Expr) {

@@ -1,11 +1,5 @@
 use super::*;
 
-// ---- Associativity of `add` (search note section 11). The two sides keep separate carry states, (c, d) for
-// `add (add x y) z` and (e, f) for `add x (add y z)`. Only the *total* matters: c + d = e + f, encoded as the
-// pair (xor c d, and c d). Each side's output bit and next pair is a fixed function of (a, b, z, xor, and)
-// (a 5-variable case analysis with `refl` leaves, no hypotheses), so the two sides agree by `cong_n` on the
-// two equalities carried from the previous bit.
-
 /// Closed `Pi v_0..v_(k-1). GoodBool v_0 -> .. -> GoodBool v_(k-1) -> body(v)`, by case analysis on all `k`
 /// bits; `leaf(values)` proves `body(literal bits)`. Every node's motive applies one closed `P = \v. body(v)`, so the
 /// kernel types `body` once rather than at each of the 2^k - 1 nodes (docs/tier-cycle/, "One motive for a case tree").

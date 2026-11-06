@@ -1,6 +1,6 @@
 use super::*;
 
-pub fn run(n: usize) {
+fn run(n: usize) {
     {
         let ad = add(n);
         let t0 = Instant::now();
