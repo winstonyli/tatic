@@ -29,8 +29,8 @@ use windows_sys::Win32::System::JobObjects::{
 };
 use windows_sys::Win32::System::ProcessStatus::{K32GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
 use windows_sys::Win32::System::Threading::{
-    BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED, INFINITE, NORMAL_PRIORITY_CLASS, OpenProcess, OpenThread,
-    PROCESS_QUERY_LIMITED_INFORMATION, ResumeThread, THREAD_SUSPEND_RESUME,
+    BELOW_NORMAL_PRIORITY_CLASS, CREATE_SUSPENDED, GetCurrentProcess, GetProcessAffinityMask, INFINITE,
+    NORMAL_PRIORITY_CLASS, OpenProcess, OpenThread, PROCESS_QUERY_LIMITED_INFORMATION, ResumeThread, THREAD_SUSPEND_RESUME,
 };
 
 /// Where a run's output goes: its stdout's file, then its stderr's.
@@ -87,12 +87,20 @@ impl RunSpec {
             cwd: None,
             output,
             priority: Priority::BelowNormal,
-            affinity: 0xFFF,
+            affinity: inherited_affinity(),
             straggler_wait: Duration::from_secs(60),
             others: default_others(),
             max_mem_mb: None,
         }
     }
+}
+
+/// This process's own mask, within the 12 CPUs a run may take: the job's affinity replaces what its processes inherit,
+/// so a fixed default would undo a caller's pin (`run.ps1 -Affinity CFF`, which keeps a run off the timing CPUs).
+fn inherited_affinity() -> usize {
+    let (mut own, mut system) = (0, 0);
+    unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut own, &mut system) };
+    own & 0xFFF
 }
 
 /// Other sessions' jobs (`quiet_ab`'s list): self-play training and the League client.
@@ -432,6 +440,7 @@ pub fn run(spec: &RunSpec) -> Result<RunResult, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use windows_sys::Win32::System::Threading::SetProcessAffinityMask;
 
     /// Not a test: the child process the tests below start, doing what `RUNS_HELPER` says.
     #[test]
@@ -459,6 +468,17 @@ mod tests {
             "sleep" => {
                 std::fs::write(std::env::var("RUNS_PID_FILE").unwrap(), std::process::id().to_string()).unwrap();
                 std::thread::sleep(Duration::from_secs(30));
+            }
+            "mask" => {
+                let (mut own, mut system) = (0, 0);
+                assert_ne!(unsafe { GetProcessAffinityMask(GetCurrentProcess(), &mut own, &mut system) }, 0);
+                println!("mask={own:x}");
+            }
+            // pins itself as `run.ps1 -Affinity` pins `runs`, then runs `mask` in a job of its own
+            "pinned" => {
+                assert_ne!(unsafe { SetProcessAffinityMask(GetCurrentProcess(), 3) }, 0);
+                let d = PathBuf::from(std::env::var("RUNS_PIN_DIR").unwrap());
+                assert_eq!(run(&helper_spec("mask", &d)).unwrap().exit, 0);
             }
             // `orphan_<mode>`: start a child doing <mode>, and exit without waiting for it
             m => {
@@ -503,6 +523,17 @@ mod tests {
         let mut s = RunSpec::new(exe, args, Output(d.join("out.txt"), d.join("err.txt")));
         s.env.push(("RUNS_HELPER".into(), mode.into()));
         s
+    }
+
+    /// Started outside any job of `run`'s, so that the pin is the caller's alone.
+    #[test]
+    fn a_callers_pin_holds_inside_the_job() {
+        let d = scratch("pin");
+        let (exe, args) = helper_cmd();
+        let status = Command::new(exe).args(args).env("RUNS_HELPER", "pinned").env("RUNS_PIN_DIR", &*d).stdout(Stdio::null()).status().unwrap();
+        assert!(status.success());
+        let out = std::fs::read_to_string(d.join("out.txt")).unwrap();
+        assert!(out.contains("mask=3\n") || out.contains("mask=3\r"), "{out}");
     }
 
     #[test]
