@@ -10,7 +10,7 @@
 use super::*;
 
 /// Terms larger than this many nodes (counted once per node below the roots) are checked on one big stack segment
-/// (`check_in`). Unit tests take that path for every input.
+/// (`check_in`). This crate's unit tests take that path for every input; other crates' tests see the real limit.
 const LARGE: usize = if cfg!(test) { 0 } else { 3000 };
 
 /// Whether the terms reachable from `roots` have more than `limit` distinct nodes below them.

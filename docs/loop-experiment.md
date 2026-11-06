@@ -38,6 +38,7 @@ and cross-family libraries) were in `docs/loop-result.md`, deleted on 2026-10-26
 (`git show 00a21d9:docs/loop-result.md`); the code that ran them was deleted
 with the families (tag `v0.2.0` has it).
 
-The planning notes and the per-experiment scripts and logs are not part of the
+The planning notes are in `docs/superpowers/` and the dated run scripts in
+`docs/runs/`; only `scripts/experiments/`, with its logs, is not part of the
 repository (`README.md`, "License and development notes").
 

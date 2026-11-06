@@ -1,4 +1,4 @@
-//! `runs`: measured runs, timings and machine state for church_bv's sweeps, in one tool (docs/benchmarks.md). Build it with
+//! `runs`: measured runs, timings and machine state for church_bv's sweeps, in one tool (docs/proven.md, "Validation"). Build it with
 //! `cargo build --release --manifest-path tools/runs/Cargo.toml` and run `tools/runs/target/release/runs.exe`. Every
 //! command prints progress as it goes and writes its records under the run directory (`runs dir`).
 #[cfg(not(windows))]

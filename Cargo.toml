@@ -1,5 +1,5 @@
-# Release with fat LTO, for sweeps, timing and other long runs (`cargo test --profile sweep ...`): about 9% less
-# sweep CPU than `release` with identical outputs, but an incremental rebuild of the church_bv test binary takes
+# Release with fat LTO, for sweeps, timing and other long runs (`cargo build --profile sweep -p church-bv`, giving
+# target/sweep/church-bv.exe): about 9% less sweep CPU than `release` with identical outputs, but an incremental rebuild takes
 # minutes instead of about 27 s, so everyday `--release` builds stay without it. docs/tier-cycle/, "Build flags".
 [profile.sweep]
 inherits = "release"

@@ -4,18 +4,19 @@
   are structurally identical hash to the same value, so the JIT cache and
   the kernel's proof cache are keyed by *content*, not by which piece of
   code happened to construct the term.
-- **`kernel::Expr`'s recursive fields are `Rc`, not `Box`**: `Expr` is built
-  once and then threaded through many `.clone()` calls as it's composed into
+- **`kernel::Expr`'s recursive fields were `Rc`, not `Box`** (history: `Expr` is now a
+  `Copy` handle to an interned node, `docs/tier-cycle/`, "Kernel scaling and the id arena"):
+  `Expr` was built once and then threaded through many `.clone()` calls as it was composed into
   larger proof terms (`proof.rs`'s pre-stage-4 `Anchored` reshifting
   pattern especially, `docs/related-work/` §72, but also plain composition
   like `cong_n`'s per-argument accumulation) —
   with `Box`, every one of those clones was a full deep copy, cost scaling
   with however large the accumulated term had grown by that point, not with
   what actually changed. With `Rc`, `#[derive(Clone)]` clones each field by
-  bumping a refcount, so cloning an `Expr` of any size is O(1) and its
-  children are genuinely shared. This is deliberately *not* full
-  hash-consing — there's no intern table, so two independently-built but
-  equal subterms still get distinct allocations — but it removes the real
+  bumping a refcount, so cloning an `Expr` of any size was O(1) and its
+  children were genuinely shared. This was deliberately *not* full
+  hash-consing — there was no intern table, so two independently-built but
+  equal subterms still got distinct allocations — but it removed the real
   cost this crate was paying, worth ~2x on `fib`'s cold-compile time (see
   Benchmarks). On its own it didn't fix branching-leaf instance proofs
   being slow — that cost turned out to live in `shift` (see the next
@@ -53,11 +54,10 @@
   first half of the installation gate regardless of how far proof
   coverage grows — the proof is what extends coverage beyond the
   battery, not what replaces it.
-- **Why the per-execution fallbacks stay anyway**: `prove_tail_recursive_
-  call` and `prove_closure_expr_instance` certify one concrete execution
-  each, which the gate treats as no better than the battery itself, so it
-  builds them only at arity 0, where one execution is every input. That
-  per-execution limit is a property of *these* checks, not of translation
+- **Why the per-execution fallback stays anyway**: `prove_closure_expr_instance`
+  certifies one concrete execution, which the gate treats as no better than
+  the battery itself, so it builds it only at arity 0, where one execution
+  is every input. That per-execution limit is a property of *this* check, not of translation
   validation as the literature means it — a genuine per-compilation
   validator's success would cover every input, and building one is a
   route tatic hasn't taken (see §28).
@@ -81,7 +81,7 @@
   surfacing as an opaque kernel type-mismatch far from the actual cause.
   Stage 3 made the whole class structurally impossible — `Postulates::get`
   now returns a `Const`, which no push shifts (§69) — so `Anchored` had
-  nothing left to do and was deleted. `proof.rs` still has
+  nothing left to do and was deleted. `proof/denote.rs` still has
   `debug_assert_has_type`
   (debug-only, zero-cost in release), called at the return point of every
   function that composes an `Expr` from more than one recursive sub-call,

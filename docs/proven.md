@@ -188,16 +188,16 @@ This is stated precisely because it would be easy to overclaim here.
   right there, e.g. `f(n-1, (\y. acc+y)(n))` — exactly the shape
   `compile.rs`'s own `self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles`
   test and `capturing_closure_loop` benchmark already exercise, previously
-  compiled but never proven. `denote_closure_typed` (the self-call-argument
-  denotation `new_params_for` uses) mirrors `denote_closure`'s own
-  `Term::Abs`/`Term::Rec` handling almost verbatim, now that the induction
+  compiled but never proven. `denote_closure`'s `SelfCalls::Reject` reading
+  (the self-call-argument denotation `new_params_for` uses) shares its
+  `Term::Abs`/`Term::Rec` handling with the whole-body reading, now that the induction
   pipeline's own postulate-and-combinator bookkeeping is a full
   `ClosureCombinators` (not just `ClosurePostulates`) — registering a
   combinator, calling one directly, or partially applying one (still never
   a *recursive* root, matching `pap_ref`'s own restriction) all reuse the
   exact same methods `prove_closure_expr` does. A leaf's own *top-level*
-  expression gets the identical treatment (`denote_with_placeholders`/
-  `find_self_calls`, widened the same way) — e.g. `(\y. n+y)(5) + f(n-1)`,
+  expression gets the identical treatment (the `SelfCalls::Placeholders`
+  reading and `find_self_calls`, widened the same way) — e.g. `(\y. n+y)(5) + f(n-1)`,
   a closure-call's result combined arithmetically with the recursive call
   directly, not nested inside any self-call's own argument list. Caught
   the *same class* of staleness bug a second time, in a new place:
@@ -271,7 +271,7 @@ This is stated precisely because it would be easy to overclaim here.
   postulate). A captured value that's itself a capture of the *calling*
   scope isn't a deferred restriction at all — it can't arise: a call is
   always postulated opaque (this fragment never enters a registered
-  combinator's own body), and `compile::peel` always folds consecutive
+  combinator's own body), and `shape::peel` always folds consecutive
   `Abs` layers into one combinator before it's ever registered, so there's
   no way to encounter one combinator's own body containing *another*,
   separately-registered one — every capture list is always relative to
@@ -311,7 +311,7 @@ This is stated precisely because it would be easy to overclaim here.
   `register`/`call_ref`/`param_types_for` never look inside a combinator's
   own body regardless of whether it recurses (a call is always postulated
   opaque), so this needed only a wider match pattern, no new proof
-  machinery; `compile::peel`/`compile::free_vars`/`compile::infer_closure_arities`
+  machinery; `shape::peel`/`shape::free_vars`/`shape::infer_closure_arities`
   were already generic over `is_rec` (`prove_tail_recursive_universal`'s own
   fragment already relied on that). `pap_ref` now covers a self-recursive
   root too, the same way: `compile.rs`'s `register_partial_app`/
@@ -328,7 +328,7 @@ This is stated precisely because it would be easy to overclaim here.
   pass and the scope-open panic it guarded against are gone as of stage 4,
   `docs/related-work/` §72), caught by
   `compile_fuzz`'s random-term fuzzing (not by any hand-written test) via
-  a `debug_assert_has_type` panic in `denote_closure_typed`'s own partial
+  a `debug_assert_has_type` panic in `denote_closure`'s own partial
   application case.
 
 Installing a compiled form takes three checks. The term must be simply
@@ -542,9 +542,7 @@ that's itself an application), generated far more broadly than anyone
 would think to hand-pick. Deliberately stays inside `print`'s own
 documented contract — every generated `Var` is genuinely bound (`print`
 isn't written to handle an out-of-scope one; it isn't even a `Result`-
-returning function) and every literal is non-negative (the one
-documented, accepted round-trip gap, since this grammar has no negative-
-literal syntax at all). Passed clean on its first run and stress-tested
+returning function); literals of both signs are generated. Passed clean on its first run and stress-tested
 at 200,000 seeds and, separately, depth 10 (up from the file's own
 default of 6) with zero failures — confirmed real teeth anyway by
 deliberately weakening `print_at`'s own right-hand-side strictness rule

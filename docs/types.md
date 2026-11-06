@@ -1,10 +1,11 @@
 # The closures fragment's type system
 
-`compile.rs` and `proof.rs` together implement a small, informal type
+`compile.rs`, `shape.rs` and the `proof` module (`proof.rs` and the files
+under `proof/`, called `proof.rs` below) together implement a small, informal type
 system for the "first-order arithmetic with self-recursion and closures"
 fragment described in `compile.rs`'s own module docs. It has never been
 written down as one thing — it's assembled from several independently-
-computed pieces, spread across both files, that happen to agree with each
+computed pieces, spread across those modules, that happen to agree with each
 other by construction rather than by being checked against a single
 specification. This document states it as one system: its grammar, its
 types, its typing judgment, where each rule is actually implemented, and
@@ -24,7 +25,7 @@ expressions built from `Var`/`Lit`/`Prim`/`If`, fully-saturated self-calls
 lambda ("combinator"), an under- or over-applied literal lambda, and a
 literal lambda used as a bare value. A term outside this fragment simply
 has no typing derivation below — `None`, propagated with `?` throughout
-both files, not a stuck or ill-typed judgment.
+those modules, not a stuck or ill-typed judgment.
 
 ## 2. Types
 
@@ -71,8 +72,8 @@ judgment in section 4, but its precondition.
 
 ### 3.1 Inferring `Γ`: `infer_closure_arities` / `scan_for_closure_calls`
 
-(`compile.rs`, used identically by `compile.rs`'s own `build_function` and by
-`proof.rs`'s `param_types_for`.)
+(`shape.rs`, used identically by `compile.rs`'s own `build_function` and by
+`proof/closures.rs`'s `param_types_for`.)
 
 This is a **use-site scan**, not unification: walk a combinator's body
 once, and for every `Var(i)`, `i < arity`, that's ever the callee of an
@@ -82,7 +83,7 @@ application, record the argument count `k` at that call site. Two rules:
   `i`'s own classification becomes `ArityUse::Inconsistent` rather than
   `ArityUse::Consistent(k)` (the scan itself no longer aborts on finding
   one — every other `Var`'s own classification in the same body is still
-  reported; see `compile::ArityUse`'s own docs). For `Γ`'s own purposes
+  reported; see `shape::ArityUse`'s own docs). For `Γ`'s own purposes
   (this section, and everything built on it in sections 4-7) the two
   outcomes are equivalent: `param_types_for` maps *both* "absent" and
   `Inconsistent` to `Γ(i) = None`, exactly the "default" rule below —
@@ -114,11 +115,11 @@ ordinary application's own arguments; it does **not** recurse into a
 registered combinator's own body (a literal lambda or self-recursive
 value found as a plain value, or a callee position it doesn't recognize,
 stops the walk without failing it) — one of the two structural reasons
-(with `compile::peel`'s own folding, section 3.2) that "a capture that's
+(with `shape::peel`'s own folding, section 3.2) that "a capture that's
 itself a capture" never arises; see `proof.rs`'s own module docs for the
 full argument.
 
-### 3.2 `compile::peel`
+### 3.2 `shape::peel`
 
 Not itself part of the type system, but a precondition every rule below
 assumes: `peel(h)` strips a leading `Rec` (if any) and then every
@@ -134,13 +135,11 @@ commonly, since a bare nested `Abs` would already have been folded in.
 
 Written `Γ ⊢ e : τ`, read "with parameters (and, where noted, captures)
 typed by `Γ`, `e` denotes a value of type `τ`". This is the judgment
-`proof.rs`'s `denote_closure` / `denote_closure_typed` /
-`denote_with_placeholders` all implement — three separate Rust functions
-for three different call contexts (a standalone main term; a self-call
+`denote_closure` (`proof/denote.rs`) implements — one walker read three
+ways through its `SelfCalls` argument (a whole function body; a self-call
 argument; a leaf's own expression with self-call occurrences replaced by
-induction placeholders), but the *same* rules, checked identically in
-each (each function's own doc comment cross-references the other two for
-exactly this reason). The return value's `Denoted::Int(_)` vs.
+induction placeholders), so the rules are the *same* in each by
+construction. The return value's `Denoted::Int(_)` vs.
 `Denoted::Clo(_)` tag *is* the derived `τ`; there's no separate "type"
 value anywhere, the tag on the elaborated kernel `Expr` doubles as it.
 
@@ -283,7 +282,7 @@ the fragment (`compile.rs` itself has no such check at all, see 6.1).
 `LitLambda-Sat`'s `ρ` isn't looked up in `Γ` (there is no `Γ` for a
 combinator's own *result*, only for its parameters) — it's *derived*, by
 a structurally separate judgment, `combinator_return_type`/
-`return_type_of` (`proof.rs`), over `h`'s own peeled body, in `h`'s own
+`return_type_of` (`proof/closures.rs`), over `h`'s own peeled body, in `h`'s own
 freshly-computed `Γ_h = param_types_for(h)`:
 
 ```
@@ -324,7 +323,7 @@ tradeoff the rest of this fragment already makes everywhere.
 
 A captured free variable's type is **not** looked up against the
 combinator that captures it — it's looked up against the *capturing*
-scope's own `Γ` (`capture_sig(captures, Γ)`, `proof.rs`), since a
+scope's own `Γ` (`capture_sig(captures, Γ)`, `proof/closures.rs`), since a
 captured index is always relative to "the one flat ambient scope
 currently being denoted" (its own module docs) — never, transitively, to
 that scope's *own* captures (architecturally impossible, section 3.1).

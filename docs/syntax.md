@@ -1,7 +1,7 @@
 # Surface syntax
 
 ```rust
-use tatic::{syntax, term::TermStore};
+use tatic::lang::{syntax, term::TermStore};
 
 let mut store = TermStore::new();
 let fact = syntax::parse(&mut store, "rec f n = if n <= 1 then 1 else n * f (n - 1)")?;
@@ -25,10 +25,9 @@ peels its inner lambda standalone — even though nothing about the source
 looks like a capturing closure (see `syntax.rs`'s own tests,
 `higher_order_let_chain_evaluates_like_the_inlined_sample`). Real
 closure conversion (see `compile.rs`'s module docs) compiles this
-correctly now rather than falling back to the interpreter; it still
-doesn't get a *kernel-checked* proof, though, since `proof.rs`'s own
-fragment doesn't cover higher-order terms at all yet (`proven.md`) —
-independent of what `compile.rs` itself can compile.
+correctly now rather than falling back to the interpreter, and the
+arity-0 per-instance certificate proves it, though `denote_closure`'s
+universal proof declines it (`proven.md`).
 
 `syntax::print` is the reverse direction — a precedence-aware
 pretty-printer back to source text `parse` accepts, assigning each binder
