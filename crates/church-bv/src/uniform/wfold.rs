@@ -119,7 +119,7 @@ fn side(t: &Term, x: &[T]) -> Side {
             2 => nat_(or2(at_n(&p), at_n(&q))),
             3 => nat_(xor(at_n(&p), at_n(&q))),
             4 | 5 => {
-                // a subtractor's borrow is the carry of `~a` and `b`
+                // a subtractor's borrow is the carry of `~a` and `b`; an `lt` here is the root (`Machine::streams`)
                 let borrow = nat_(carry(nat_(xor(at_n(&p), tt())), q.clone(), v("$n")));
                 carries.push(borrow.clone());
                 nat_(xor3(at_n(&p), at_n(&q), at_n(&borrow)))
@@ -428,6 +428,40 @@ fn w_fold_the_law_families() {
     proved(1, lt(x, x), lt(Term::ZERO, Term::ZERO));
     proved(2, lt(add(x, y), add(x, y)), lt(x, x));
     proved(2, lt(xor(x, y), xor(y, x)), lt(y, y));
+    proved(2, lt(x, y), lt(xor(y, Term::ONES), xor(x, Term::ONES)));
+    proved(2, lt(x, y), lt(add(x, Term::ZERO), or(y, y)));
+}
+/// A theorem's hypotheses hold of real streams: at constant ones and zeros it gives bit 2 of `(7 + 7) + 0`.
+#[test]
+fn w_fold_a_theorem_applies_to_good_streams() {
+    let (x, y, z, add) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
+    let (proof, _) = Law::new(3, &add(add(x, y), z), &add(x, add(y, z))).unwrap().proof();
+    let good = |b: bool| lm("$i", nw(), Goods.konst(b).g);
+    let at = [ones(), ones(), zw(), good(true), good(true), good(false), num(2)].into_iter().fold(proof, ap);
+    let check = |b: T| tatic_kernel::check(&tatic_kernel::Ctx::new(), &ex(&at), &ex(&eqb(b.clone(), b)));
+    check(tt()).unwrap();
+    assert!(check(ff()).is_err(), "the wrong bit passed");
+}
+/// A comparison that varies: its proof proves only its own law, and swapped operands have no encoding.
+#[test]
+fn w_fold_a_comparison_is_its_own_law() {
+    let (x, y, lt, xor) = (Term::v(0), Term::v(1), op2(LT), op2(XOR));
+    let law = Law::new(2, &lt(x, y), &lt(xor(y, Term::ONES), xor(x, Term::ONES))).unwrap();
+    let (proof, stmt) = law.proof();
+    run("x < y = ~y < ~x", &stmt, &proof).unwrap();
+    let swapped = side(&lt(y, x), &[v("x0"), v("x1")]).root;
+    let wrong = law.over(&|ty, n, t| pi_(n, ty, t), pi_("i", nw(), eqb(ap(law.sides[0].root.clone(), v("i")), ap(swapped, v("i")))));
+    assert!(run("control: x < y = y < x", &wrong, &proof).is_err());
+    assert!(Law::new(2, &lt(x, y), &lt(y, x)).is_none(), "a false comparison has no encoding");
+}
+/// `lt` is a result, not a stream: below the root `Machine::step` would read it as `sub`, and a root `lt` is no word.
+#[test]
+fn w_fold_lt_outside_the_root_has_no_law() {
+    let (x, y, z, add, sub, lt) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD), op2(SUB), op2(LT));
+    assert!(Law::new(3, &add(lt(x, y), z), &add(sub(x, y), z)).is_none(), "lt read as sub");
+    assert!(Law::new(3, &add(lt(x, y), z), &add(z, lt(x, y))).is_none(), "lt below the root");
+    assert!(Law::new(3, &lt(lt(x, y), z), &lt(lt(x, y), z)).is_none(), "lt under a root lt");
+    assert!(Law::new(1, &lt(x, x), &Term::ZERO).is_none(), "a root lt against a word");
 }
 fn eval(t: &Term, x: u128, y: u128, m: u128) -> u128 {
     match *t.node() {
@@ -438,7 +472,7 @@ fn eval(t: &Term, x: u128, y: u128, m: u128) -> u128 {
         Node::Op(o, a, c) => (OP_INFO[o].words.w128)(eval(&a, x, y, m), eval(&c, x, y, m), m),
     }
 }
-/// A law says only what its streams compute: at closed operands they give the words, and a root `lt` the comparison at the top.
+/// A law says only what its streams compute: at closed operands they give the words, and a root `lt` at `p` compares the low `p` bits.
 #[test]
 fn w_fold_streams_compute_the_words() {
     let (nb, mask) = (3, 7u128);
@@ -454,10 +488,14 @@ fn w_fold_streams_compute_the_words() {
             }
         }
         let root = side(&op2(LT)(x, y), &s).root;
-        assert!(tatic_kernel::def_eq(&ex(&ap(root, num(nb))), &ex(&Terms.konst(a < c))), "lt {a} {c}");
+        for p in 0..=nb {
+            let low = (1u128 << p) - 1;
+            assert!(tatic_kernel::def_eq(&ex(&ap(root.clone(), num(p))), &ex(&Terms.konst(a & low < c & low))), "lt {a} {c} at {p}");
+        }
     }
 }
-/// Equal terms over `x`, `y` and two operator levels, sampled by a stride: every pair with an encoding gets an accepted proof.
+/// Equal terms over `x`, `y` and two operator levels, and comparisons of one-level terms, sampled by a stride: every pair
+/// gets an encoding and an accepted proof.
 #[test]
 fn w_fold_every_encoded_pair() {
     let stride: usize = std::env::var("WFOLD_STRIDE").ok().and_then(|s| s.parse().ok()).unwrap_or(4001);
@@ -467,14 +505,20 @@ fn w_fold_every_encoded_pair() {
         let bin = ts.iter().flat_map(|a| ts.iter().flat_map(move |c| [ADD, SUB, AND, OR, XOR].map(|o| Term::op(o, *a, *c))));
         ts.iter().copied().chain(bin).chain(ts.iter().map(|a| shl_t(*a))).collect()
     };
-    let mut first: hashbrown::HashMap<Vec<u128>, Term> = Default::default();
+    let one = level(&atoms);
+    let lts = one.iter().flat_map(|a| one.iter().map(move |c| Term::op(LT, *a, *c)));
+    let mut first: hashbrown::HashMap<(bool, Vec<u128>), Term> = Default::default();
     let (mut pairs, mut tried, mut none) = (0usize, 0usize, 0usize);
-    for t in level(&level(&atoms)) {
-        let sig: Vec<u128> = (0..=mask).flat_map(|x| (0..=mask).map(move |y| (x, y))).map(|(x, y)| eval(&t, x, y, mask)).collect();
+    for t in level(&one).into_iter().chain(lts) {
+        let words = (0..=mask).flat_map(|x| (0..=mask).map(move |y| (x, y))).map(|(x, y)| eval(&t, x, y, mask)).collect();
+        let sig = (matches!(*t.node(), Node::Op(LT, ..)), words);
         let Some(r) = first.get(&sig).copied() else {
             first.insert(sig, t);
             continue;
         };
+        if r == t {
+            continue;
+        }
         pairs += 1;
         if pairs % stride != 0 {
             continue;
@@ -489,5 +533,5 @@ fn w_fold_every_encoded_pair() {
             .unwrap_or_else(|e| panic!("{} = {}: {}", t.show(), r.show(), e.chars().take(500).collect::<String>()));
     }
     println!("pairs={pairs} stride={stride} tried={tried} no-encoding={none}");
-    assert!(tried > 0);
+    assert!(tried > 0 && none == 0);
 }

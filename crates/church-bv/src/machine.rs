@@ -77,6 +77,11 @@ impl Machine {
         matches!(self.root, Src::Node(i) if self.nodes[i].2 == 5)
     }
 
+    /// Whether `step` computes the term: `lt` is a result, not a stream, so below the root it would read as `sub`.
+    pub fn streams(&self) -> bool {
+        self.nodes.iter().rev().skip(self.last() as usize).all(|n| n.2 != 5)
+    }
+
     /// One position: `(output bit, next carries)` from the operand bits `u` and the carries `s`.
     pub fn step<G: Gates>(&self, g: &G, u: &[G::S], s: &[G::S]) -> (G::S, Vec<G::S>) {
         let leaf: Vec<G::S> = self.leaves.iter().map(|l| term_gb(g, l, u)).collect();
@@ -162,8 +167,12 @@ pub fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 
 /// The coarsest consistent encoding, by Moore partition refinement over the carry vectors of both machines: two vectors
 /// share a class iff no input sequence tells them apart (the same outputs, and with a root `lt` the same final bit). The
 /// class number, in binary, is the phi value. `None` when the two start states (all-false) differ, i.e. the terms differ at
-/// some width. Unreachable vectors cost nothing: whether the start states share a class depends only on what they reach.
+/// some width, or when a machine does not compute its term or only one root is an `lt`. Unreachable vectors change no
+/// answer: whether the start states share a class depends only on what they reach.
 pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize) -> Option<Encoding> {
+    if m1.last() != m2.last() || !m1.streams() || !m2.streams() {
+        return None;
+    }
     let raw = [raw_table(m1, k), raw_table(m2, k)];
     let cs = [m1.carries(), m2.carries()];
     let last = m1.last();
@@ -334,9 +343,6 @@ pub fn tree_encoding(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Opt
         return None;
     }
     let (m1, m2) = (Machine::parse(t1)?, Machine::parse(t2)?);
-    if m1.last() != m2.last() {
-        return None;
-    }
     let cs = [m1.carries(), m2.carries()];
     if cs[0].max(cs[1]) > carry_cap(job) || cs[0] + cs[1] == 0 {
         return None;
