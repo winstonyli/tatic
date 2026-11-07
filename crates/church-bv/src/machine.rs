@@ -138,28 +138,8 @@ pub fn raw_table(mach: &Machine, k: usize) -> Vec<Vec<bool>> {
         .collect()
 }
 
-pub type Reach = [Vec<bool>; 2];
-
-/// The carry vectors one machine can reach from all-false by some input sequence (a vector as `index_of` reads it).
-pub fn reachable(raw: &[Vec<bool>]) -> Vec<bool> {
-    let c = raw[0].len() - 1;
-    let mut seen = vec![false; 1 << c];
-    seen[0] = true;
-    let mut stack = vec![0usize];
-    while let Some(s) = stack.pop() {
-        for u in 0..raw.len() >> c {
-            let next = index_of(&raw[u << c | s][1..]);
-            if !seen[next] {
-                seen[next] = true;
-                stack.push(next);
-            }
-        }
-    }
-    seen
-}
-
 /// The functions `g` for which both machines factor through the encodings `phi` (one set per side), if any.
-pub fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 2], reach: Option<&Reach>) -> Option<Vec<Vec<bool>>> {
+pub fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 2]) -> Option<Vec<Vec<bool>>> {
     let m = phi[0].len();
     let mut g: Vec<Vec<Option<bool>>> = vec![vec![None; 1 << (k + m)]; 1 + m];
     for side in 0..2 {
@@ -167,9 +147,6 @@ pub fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 
         let ph = |s: usize| -> Vec<bool> { phi[side].iter().map(|t| t[s]).collect() };
         for (r, row) in raw[side].iter().enumerate() {
             let (u, s) = (r >> c, r & ((1 << c) - 1));
-            if reach.is_some_and(|rc| !rc[side][s]) {
-                continue;
-            }
             let key = u << m | index_of(&ph(s));
             for (j, v) in std::iter::once(row[0]).chain(ph(index_of(&row[1..]))).enumerate() {
                 match g[j][key] {
@@ -182,23 +159,22 @@ pub fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 
     Some(g.into_iter().map(|t| t.into_iter().map(|v| v.unwrap_or(false)).collect()).collect())
 }
 
-/// The coarsest consistent encoding, by Moore partition refinement over the carry vectors of both machines (all of
-/// them, or only the `reach`able ones): two vectors share a class iff no input sequence tells them apart (the same
-/// outputs, and with a root `lt` the same final bit). The class number, in binary, is the phi value. `None` when the
-/// two start states (all-false) differ, i.e. the terms differ at some width.
-pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize, reach: Option<&Reach>) -> Option<Encoding> {
+/// The coarsest consistent encoding, by Moore partition refinement over the carry vectors of both machines: two vectors
+/// share a class iff no input sequence tells them apart (the same outputs, and with a root `lt` the same final bit). The
+/// class number, in binary, is the phi value. `None` when the two start states (all-false) differ, i.e. the terms differ at
+/// some width. Unreachable vectors cost nothing: whether the start states share a class depends only on what they reach.
+pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize) -> Option<Encoding> {
     let raw = [raw_table(m1, k), raw_table(m2, k)];
     let cs = [m1.carries(), m2.carries()];
     let last = m1.last();
-    let live = |side: usize, s: usize| reach.is_none_or(|rc| rc[side][s]);
-    // class[side][s]; unreachable vectors stay in class 0 and are never looked at
-    let mut class: [Vec<usize>; 2] = [0, 1].map(|side| (0..1usize << cs[side]).map(|s| if last && live(side, s) { s & 1 } else { 0 }).collect());
+    // class[side][s]
+    let mut class: [Vec<usize>; 2] = [0, 1].map(|side| (0..1usize << cs[side]).map(|s| if last { s & 1 } else { 0 }).collect());
     let mut count = 0;
     loop {
         let mut ids: hashbrown::HashMap<Vec<(usize, bool, usize)>, usize> = Default::default();
         let mut next: [Vec<usize>; 2] = [vec![0; class[0].len()], vec![0; class[1].len()]];
         for side in 0..2 {
-            for s in (0..1usize << cs[side]).filter(|s| live(side, *s)) {
+            for s in 0..1usize << cs[side] {
                 let sig: Vec<(usize, bool, usize)> = std::iter::once((class[side][s], false, 0))
                     .chain((0..1usize << k).map(|u| {
                         let row = &raw[side][u << cs[side] | s];
@@ -221,15 +197,7 @@ pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize, reach: Option<&Reach
     }
     let m = (count.max(2) - 1).ilog2() as usize + 1;
     let phi: [Vec<Vec<bool>>; 2] = [0, 1].map(|side| (0..m).map(|j| class[side].iter().map(|c| c >> (m - 1 - j) & 1 == 1).collect()).collect());
-    try_encoding(&raw, k, &phi, reach).map(|g| Encoding { phi, g })
-}
-
-/// `Id(Bool0, a, b)` from `h : Id(Bool0, false, true)`, for any Boolean `a`, `b`: congruence of `\c. mux c a b`.
-pub fn absurd_id(h: Expr, a: &Expr, b: &Expr) -> Expr {
-    let bl = bool0();
-    let fmap = lam(bl, mux(var(0), shift(a, 0, 1), shift(b, 0, 1)));
-    let p = cong1(&bl, &bl, &fmap, f(), t(), h);
-    sym(&bl, &app(fmap, f()), &app(fmap, t()), p)
+    try_encoding(&raw, k, &phi).map(|g| Encoding { phi, g })
 }
 
 
@@ -356,17 +324,11 @@ pub fn carry_cap(job: &Job) -> usize {
 /// `tree_encoding` results past its cheap screens, by the same key, shared by a process's threads behind one lock: per thread,
 /// 87.6% of a sweep's searches redid another thread's (docs/tier-cycle/, "Survey: long-lived sweep workers"). Pure in its key;
 /// `carry_cap()` is a screen before the lookup.
-static TREE_ENCS: crate::task::SharedMemo<(usize, usize, Term, Term), Option<std::sync::Arc<TreeEnc>>> = crate::task::SharedMemo::new();
-
-/// What `tree_encoding` found for a pair: the carry encoding, and the reachable carry states it holds over (`None`: all of them).
-pub struct TreeEnc {
-    enc: Encoding,
-    inv: Option<Reach>,
-}
+static TREE_ENCS: crate::task::SharedMemo<(usize, usize, Term, Term), Option<std::sync::Arc<Encoding>>> = crate::task::SharedMemo::new();
 
 /// Whether `t1 = t2` (two sum trees of add-free leaves over `k` good vectors) has a carry encoding, and which: found by
-/// `moore_encoding`, first over all carry states, then over the reachable ones; `None` when there is none. Builds no kernel terms.
-pub fn tree_encoding(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::sync::Arc<TreeEnc>> {
+/// `moore_encoding`; `None` when there is none. Builds no kernel terms.
+pub fn tree_encoding(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Option<std::sync::Arc<Encoding>> {
     // the cheap screens are not cached
     if !t1.plausibly_equals(t2, n, k) {
         return None;
@@ -384,19 +346,7 @@ pub fn tree_encoding(job: &Job, n: usize, k: usize, t1: &Term, t2: &Term) -> Opt
         return hit;
     }
     // the search runs unlocked: two threads may both search a pair, and find the same encoding
-    let attempt = |reach: Option<&Reach>| moore_encoding(&m1, &m2, k, reach);
-    // first over all carry states; failing that, over the reachable ones, with the lemmas conditional on an invariant
-    let found = match attempt(None) {
-        Some(enc) => Some(TreeEnc { enc, inv: None }),
-        // guarded lemmas are still case trees over k + c bits, so they keep the old cap
-        None if cs[0].max(cs[1]) > 6 => None,
-        None => {
-            let r = [reachable(&raw_table(&m1, k)), reachable(&raw_table(&m2, k))];
-            let second = if r.iter().all(|v| v.iter().all(|x| *x)) { None } else { attempt(Some(&r)) };
-            second.map(|enc| TreeEnc { enc, inv: Some(r) })
-        }
-    }
-    .map(std::sync::Arc::new);
+    let found = moore_encoding(&m1, &m2, k).map(std::sync::Arc::new);
     TREE_ENCS.insert(key, found.clone());
     found
 }
@@ -413,20 +363,17 @@ pub fn add_tree_law(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term) -> 
     law
 }
 
-fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &TreeEnc) -> (Expr, Expr) {
+fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, enc: &Encoding) -> (Expr, Expr) {
     let (m1, m2) = (Machine::parse(t1).expect("a machine"), Machine::parse(t2).expect("a machine"));
     let last = m1.last();
     let cs = [m1.carries(), m2.carries()];
-    let (enc, inv) = (&found.enc, &found.inv);
     let gops = GoodOps::new();
     let m = enc.phi[0].len();
     // with a root `lt`: the final result as a function `dec` of the phi values
     let mut dec = vec![false; 1 << m];
     for side in 0..2 {
         for s in 0..1usize << cs[side] {
-            if inv.as_ref().is_none_or(|r| r[side][s]) {
-                dec[index_of(&(0..m).map(|j| enc.phi[side][j][s]).collect::<Vec<_>>())] = s & 1 == 1;
-            }
+            dec[index_of(&(0..m).map(|j| enc.phi[side][j][s]).collect::<Vec<_>>())] = s & 1 == 1;
         }
     }
     let machines = [m1, m2];
@@ -462,30 +409,19 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
         steps.borrow_mut().insert((side, bits.to_vec()), s.clone());
         s
     };
-    let inv_expr = |side: usize, v: &[Expr]| table_app(v, &|b| inv.as_ref().unwrap()[side][index_of(b)]);
-    // `Id(a, b)` for the `nv` bits `v` by case analysis; the carries are `v[off..]`. Over the reachable states only
-    // (with `inv`), the lemma takes `Id(I(carries), true)` and the unreachable cases are absurd.
+    // `Id(a, b)` for the `nv` bits `v` by case analysis
     // decision-diagram proofs lost to the case tree at nv = 9 and 11 (docs/tier-cycle/, "Decision diagrams deleted")
     // `ab` gets the bits too at a leaf (`Some`), the symbolic ones in the statement (`None`)
     type CaseFn<'a> = dyn Fn(&[Expr], Option<&[bool]>) -> (Expr, Expr) + 'a;
-    let mut guarded = |side: usize, nv: usize, off: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {
+    let mut by_cases = |side: usize, nv: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {
         // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
-        let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}|{:?}", machines[side].key(), inv.as_ref().map(|r| &r[side]), enc.phi[side]);
+        let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}", machines[side].key(), enc.phi[side]);
         shared_lemma(job, key, |_| {
-            let hty = |v: &[Expr]| id(bool0(), inv_expr(side, &v[off..]), t());
-            let body = |v: &[Expr]| {
-                let (a, b) = ab(v, None);
-                let inner = id(bool0(), a, b);
-                if inv.is_some() { pi(hty(v), shift(&inner, 0, 1)) } else { inner }
-            };
+            let body = |v: &[Expr]| { let (a, b) = ab(v, None); id(bool0(), a, b) };
             let ty = lemma_n_ty(nv, &body);
             let leaf = |bits: &[bool]| {
                 let lits: Vec<Expr> = bits.iter().map(|b| bit(*b)).collect();
-                let (a, b) = ab(&lits, Some(bits));
-                match &inv {
-                    None => refl(a),
-                    Some(r) => lam(hty(&lits), if r[side][index_of(&bits[off..])] { refl(a) } else { absurd_id(var(0), &a, &b) }),
-                }
+                refl(ab(&lits, Some(bits)).0)
             };
             (lemma_n(nv, &body, &leaf).0, ty)
         })
@@ -499,22 +435,13 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
                     if last && j == 0 {
                         return t();
                     }
-                    guarded(side, k + cs[side], k, &format!("F{j}|{:?}", enc.g[j]), &|v, bits| {
+                    by_cases(side, k + cs[side], &format!("F{j}|{:?}", enc.g[j]), &|v, bits| {
                         let s = step_at(side, v, bits);
                         let key: Vec<Expr> = v[..k].iter().chain(&s.2).cloned().collect();
                         (if j == 0 { s.0 } else { phi_expr(side, j - 1, &s.1) }, g_expr(j, &key))
                     })
                 })
                 .collect()
-        })
-        .collect();
-    // the invariant is preserved by a step
-    let pres: Vec<Expr> = (0..2)
-        .map(|side| {
-            if inv.is_none() {
-                return t();
-            }
-            guarded(side, k + cs[side], k, "P", &|v, bits| (inv_expr(side, &step_at(side, v, bits).1), t()))
         })
         .collect();
     let dec_expr = |v: &[Expr]| table_app(v, &|b| dec[index_of(b)]);
@@ -524,7 +451,7 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
             if !last {
                 return t();
             }
-            guarded(side, cs[side], 0, &format!("D|{dec:?}"), &|v, _| (v[cs[side] - 1], dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
+            by_cases(side, cs[side], &format!("D|{dec:?}"), &|v, _| (v[cs[side] - 1], dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
@@ -534,8 +461,6 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
         let mut st: Vec<Vec<Gb>> = (0..2).map(|side| vec![zero.clone(); cs[side]]).collect();
         // the initial phi values agree by evaluation (both are the constant false)
         let mut ip: Vec<Expr> = (0..m).map(|j| refl(phi_expr(0, j, &vec![f(); cs[0]]))).collect();
-        // the invariant holds at the all-false state (it is reachable)
-        let mut hy: Vec<Expr> = vec![refl(t()), refl(t())];
         let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
         for i in 0..n {
             let ug: Vec<Gb> = (0..k).map(|v| Gb { e: bits(v, i), g: goods(v, i) }).collect();
@@ -550,11 +475,7 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
                 let (gl, gr) = (g_expr(j, &key(&pl)), g_expr(j, &key(&pr)));
                 let inst = |side: usize| {
                     let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g)).chain(st[side].iter().map(|g| g.g));
-                    let mut args: Vec<Expr> = args.collect();
-                    if inv.is_some() {
-                        args.push(hy[side]);
-                    }
-                    apps(lemmas[side][j], args)
+                    apps(lemmas[side][j], args.collect())
                 };
                 let mut fmap = g_expr(j, &ub.iter().map(|e| shift(e, 0, m as i32)).chain((0..m).map(|q| var((m - 1 - q) as u32))).collect::<Vec<_>>());
                 for _ in 0..m {
@@ -573,17 +494,11 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
                 e.push(proofs[0].2);
             }
             ip = proofs[1 - first..].iter().map(|p| p.2).collect();
-            if inv.is_some() {
-                for side in 0..2 {
-                    let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g)).chain(st[side].iter().map(|g| g.g)).chain([hy[side]]);
-                    hy[side] = apps(pres[side], args.collect());
-                }
-            }
             for side in 0..2 {
                 st[side] = machines[side].step(&gops, &ug, &st[side]).1;
             }
         }
-        (s1, s2, e, st, ip, hy)
+        (s1, s2, e, st, ip)
     };
     if !last {
         return k_var_law(n, k, t1, t2, &|bits, goods| {
@@ -592,18 +507,14 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, found: &T
         });
     }
     k_var_law_to(n, k, &bv_ty(1), &|args| (t1.eval(&ops_for(n), n, args), t2.eval(&ops_for(n), n, args)), &|bits, goods| {
-        let (.., st, ip, hy) = core(bits, goods);
+        let (.., st, ip) = core(bits, goods);
         let bl = bool0();
         let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e).collect() };
         let pq = |side: usize| -> Vec<Expr> { (0..m).map(|j| phi_expr(side, j, &sx(side))).collect() };
         let (pl, pr) = (pq(0), pq(1));
         let end = |side: usize| st[side][cs[side] - 1].e;
         let inst = |side: usize| {
-            let mut args: Vec<Expr> = sx(side).into_iter().chain(st[side].iter().map(|g| g.g)).collect();
-            if inv.is_some() {
-                args.push(hy[side]);
-            }
-            apps(dlemmas[side], args)
+            apps(dlemmas[side], sx(side).into_iter().chain(st[side].iter().map(|g| g.g)).collect())
         };
         let (dl, dr) = (dec_expr(&pl), dec_expr(&pr));
         let mut fmap = dec_expr(&(0..m).map(|q| var((m - 1 - q) as u32)).collect::<Vec<_>>());
@@ -632,7 +543,7 @@ pub fn state_encoding_search_proves_three_leaf_sum_laws() {
                 ("add (add x -1) -1 = add x (add -1 -1)", op(op(v(0), Term::ONES), Term::ONES), op(v(0), op(Term::ONES, Term::ONES))),
             ] {
                 if n == 1 {
-                    let e = moore_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2, None).unwrap();
+                    let e = moore_encoding(&Machine::parse(&t1).unwrap(), &Machine::parse(&t2).unwrap(), 2).unwrap();
                     println!("ENCODING {name}: {} phi bits, phi1 {:?}", e.phi[0].len(), e.phi[0]);
                 }
                 let (p, s) = add_tree_law(job, n, 2, &t1, &t2).unwrap_or_else(|| panic!("{name}: no encoding"));
