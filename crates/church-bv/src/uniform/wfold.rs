@@ -1,4 +1,4 @@
-// Spike (2026-11-07, q2): one proof generator for every `shr1`-free stream law, over the W-built index of `wnat.rs`. It reads a
+// Spike (2026-11-07, q2): one proof generator for stream laws (no `shr1` or `mul`, `lt` only at the root), over the W-built index of `wnat.rs`. It reads a
 // pair of terms through `Machine` and `moore_encoding`, as `machine.rs#tree_proof` does at one width, and folds over the position.
 //
 // The levels. `GoodBool` sits in `Sort2` and a tag splits only into `Sort1`, so a fold state carrying its own goodness cannot pass
@@ -495,7 +495,7 @@ fn w_fold_streams_compute_the_words() {
     }
 }
 /// Equal terms over `x`, `y` and two operator levels, and comparisons of one-level terms, sampled by a stride: every pair
-/// gets an encoding and an accepted proof.
+/// gets an accepted proof, or differs at some other width.
 #[test]
 fn w_fold_every_encoded_pair() {
     let stride: usize = std::env::var("WFOLD_STRIDE").ok().and_then(|s| s.parse().ok()).unwrap_or(4001);
@@ -524,6 +524,13 @@ fn w_fold_every_encoded_pair() {
             continue;
         }
         let Some(law) = Law::new(2, &t, &r) else {
+            // the classes are by width 4 only: a pair with no encoding must differ at another width
+            let differ = |n: u32| {
+                let m = (1u128 << n) - 1;
+                (0..=m).flat_map(|x| (0..=m).map(move |y| (x, y))).find(|(x, y)| eval(&t, *x, *y, m) != eval(&r, *x, *y, m)).map(|w| (n, w))
+            };
+            let witness = (1..=6).find_map(differ).unwrap_or_else(|| panic!("{} = {}: no encoding, yet equal at widths 1 to 6", t.show(), r.show()));
+            println!("no encoding: {} = {}, differ at {witness:?}", t.show(), r.show());
             none += 1;
             continue;
         };
@@ -533,5 +540,5 @@ fn w_fold_every_encoded_pair() {
             .unwrap_or_else(|e| panic!("{} = {}: {}", t.show(), r.show(), e.chars().take(500).collect::<String>()));
     }
     println!("pairs={pairs} stride={stride} tried={tried} no-encoding={none}");
-    assert!(tried > 0 && none == 0);
+    assert!(tried > 0);
 }
