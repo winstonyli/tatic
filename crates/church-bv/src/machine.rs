@@ -259,13 +259,6 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, enc: &Enc
     let cs = [m1.carries(), m2.carries()];
     let gops = GoodOps::new();
     let m = enc.phi[0].len();
-    // with a root `lt`: the final result as a function `dec` of the phi values
-    let mut dec = vec![false; 1 << m];
-    for side in 0..2 {
-        for s in 0..1usize << cs[side] {
-            dec[index_of(&(0..m).map(|j| enc.phi[side][j][s]).collect::<Vec<_>>())] = s & 1 == 1;
-        }
-    }
     let machines = [m1, m2];
     let phi_expr = |side: usize, j: usize, s: &[Expr]| table_app(s, &|b| enc.phi[side][j][index_of(b)]);
     let g_expr = |j: usize, v: &[Expr]| table_app(v, &|b| enc.g[j][index_of(b)]);
@@ -322,9 +315,6 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, enc: &Enc
         .map(|side| {
             (0..=m)
                 .map(|j| {
-                    if last && j == 0 {
-                        return t();
-                    }
                     by_cases(side, k + cs[side], &format!("F{j}|{:?}", enc.g[j]), &|v, bits| {
                         let s = step_at(side, v, bits);
                         let key: Vec<Expr> = v[..k].iter().chain(&s.2).cloned().collect();
@@ -332,16 +322,6 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, enc: &Enc
                     })
                 })
                 .collect()
-        })
-        .collect();
-    let dec_expr = |v: &[Expr]| table_app(v, &|b| dec[index_of(b)]);
-    // the last carry is a function of the phi values: Id(carry_last, dec(phi(carries))) by cases
-    let dlemmas: Vec<Expr> = (0..2)
-        .map(|side| {
-            if !last {
-                return t();
-            }
-            by_cases(side, cs[side], &format!("D|{dec:?}"), &|v, _| (v[cs[side] - 1], dec_expr(&(0..m).map(|q| phi_expr(side, q, v)).collect::<Vec<_>>())))
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
@@ -352,8 +332,9 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, enc: &Enc
         // the initial phi values agree by evaluation (both are the constant false)
         let mut ip: Vec<Expr> = (0..m).map(|j| refl(phi_expr(0, j, &vec![f(); cs[0]]))).collect();
         let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
-        for i in 0..n {
-            let ug: Vec<Gb> = (0..k).map(|v| Gb { e: bits(v, i), g: goods(v, i) }).collect();
+        // a root `lt`'s result is its output at position `n`, past the operand bits (any bits: it outputs a carry)
+        for i in 0..n + last as usize {
+            let ug: Vec<Gb> = (0..k).map(|v| if i < n { Gb { e: bits(v, i), g: goods(v, i) } } else { zero.clone() }).collect();
             let ub: Vec<Expr> = ug.iter().map(|g| g.e).collect();
             let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e).collect() };
             let vs = |side: usize| -> Vec<Expr> { ub.iter().cloned().chain(sx(side)).collect() };
@@ -376,47 +357,30 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, enc: &Enc
                 let mid = tr(&gl, &gr, &fr, link, back);
                 (fl, fr, tr(&fl, &gl, &fr, inst(0), mid))
             };
-            let first = last as usize;
-            let proofs: Vec<(Expr, Expr, Expr)> = (first..=m).map(eq).collect();
-            if !last {
-                s1.push(proofs[0].0);
-                s2.push(proofs[0].1);
-                e.push(proofs[0].2);
+            if !last || i == n {
+                let (l, r, p) = eq(0);
+                s1.push(l);
+                s2.push(r);
+                e.push(p);
             }
-            ip = proofs[1 - first..].iter().map(|p| p.2).collect();
+            if i == n {
+                break;
+            }
+            ip = (1..=m).map(|j| eq(j).2).collect();
             for side in 0..2 {
                 st[side] = machines[side].step(&gops, &ug, &st[side]).1;
             }
         }
-        (s1, s2, e, st, ip)
+        (s1, s2, e)
     };
     if !last {
-        return k_var_law(n, k, t1, t2, &|bits, goods| {
-            let (s1, s2, e, ..) = core(bits, goods);
-            (s1, s2, e)
-        });
+        return k_var_law(n, k, t1, t2, &core);
     }
     k_var_law_to(n, k, &bv_ty(1), &|args| (t1.eval(&ops_for(n), n, args), t2.eval(&ops_for(n), n, args)), &|bits, goods| {
-        let (.., st, ip) = core(bits, goods);
+        let (s1, s2, e) = core(bits, goods);
         let bl = bool0();
-        let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e).collect() };
-        let pq = |side: usize| -> Vec<Expr> { (0..m).map(|j| phi_expr(side, j, &sx(side))).collect() };
-        let (pl, pr) = (pq(0), pq(1));
-        let end = |side: usize| st[side][cs[side] - 1].e;
-        let inst = |side: usize| {
-            apps(dlemmas[side], sx(side).into_iter().chain(st[side].iter().map(|g| g.g)).collect())
-        };
-        let (dl, dr) = (dec_expr(&pl), dec_expr(&pr));
-        let mut fmap = dec_expr(&(0..m).map(|q| var((m - 1 - q) as u32)).collect::<Vec<_>>());
-        for _ in 0..m {
-            fmap = lam(bl, fmap);
-        }
-        let link = cong_n(&bl, &bl, &fmap, &pl, &pr, ip);
-        let back = sym(&bl, &end(1), &dr, inst(1));
-        let mid = trans_proof(&bl, &dl, &dr, &end(1), link, back);
-        let whole = trans_proof(&bl, &end(0), &dl, &end(1), inst(0), mid);
         let fbody = lam(bl, lam(sort(1), lam(karrow(1), app(var(0), var(2)))));
-        cong_n(&bl, &bv_ty(1), &fbody, &[end(0)], &[end(1)], vec![whole])
+        cong_n(&bl, &bv_ty(1), &fbody, &s1, &s2, e)
     })
 }
 
