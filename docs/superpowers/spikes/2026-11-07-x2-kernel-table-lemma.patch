@@ -1,0 +1,90 @@
+diff --git a/crates/church-bv/src/encoding/tables.rs b/crates/church-bv/src/encoding/tables.rs
+index d382296..7a12ed0 100644
+--- a/crates/church-bv/src/encoding/tables.rs
++++ b/crates/church-bv/src/encoding/tables.rs
+@@ -82,10 +82,13 @@ pub fn tab_bdd(nv: usize, tab: &dyn Fn(&[bool]) -> bool) -> TabBdd {
+ /// once per row), whose body is the table's reduced decision diagram as nested `mux`es. The closed lambda is built once per
+ /// truth table (`gen_memo`): a case tree states the same tables at every leaf.
+ pub fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
++    apps(table_body(vars.len(), tab), vars.to_vec())
++}
++/// `table_app`'s closed lambda over `k` bits.
++pub fn table_body(k: usize, tab: &dyn Fn(&[bool]) -> bool) -> Expr {
+     thread_local! {
+         static BODIES: GenMemo<Vec<bool>, Expr> = Default::default();
+     }
+-    let k = vars.len();
+     // rows in `index_of` order (first variable most significant)
+     let mut b = vec![false; k];
+     let rows: Vec<bool> = (0..1usize << k)
+@@ -96,7 +99,7 @@ pub fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
+             tab(&b)
+         })
+         .collect();
+-    let body = gen_memo(&BODIES, rows, |rows| {
++    gen_memo(&BODIES, rows, |rows| {
+         let d = tab_bdd(k, &|b| rows[b.iter().fold(0, |a, x| a * 2 + *x as usize)]);
+         let bv: Vec<Expr> = (0..k).map(|i| var((k - 1 - i) as u32)).collect();
+         let mut exprs: Vec<Expr> = vec![f(), t()];
+@@ -108,8 +111,7 @@ pub fn table_app(vars: &[Expr], tab: &dyn Fn(&[bool]) -> bool) -> Expr {
+             body = lam(bool0(), body);
+         }
+         body
+-    });
+-    apps(body, vars.to_vec())
++    })
+ }
+ 
+ /// The Shannon expansion of a truth table over `vars`.
+diff --git a/crates/church-bv/src/uniform/wfold.rs b/crates/church-bv/src/uniform/wfold.rs
+index 761d5f4..688480c 100644
+--- a/crates/church-bv/src/uniform/wfold.rs
++++ b/crates/church-bv/src/uniform/wfold.rs
+@@ -146,20 +146,7 @@ fn mux(c: T, a: T, d: T) -> T {
+ }
+ /// The Boolean function `f` applied to the bits `s`, first most significant.
+ fn table(s: &[T], f: &dyn Fn(&[bool]) -> bool) -> T {
+-    fn go(s: &[T], pre: &mut Vec<bool>, f: &dyn Fn(&[bool]) -> bool) -> T {
+-        if pre.len() == s.len() {
+-            return Terms.konst(f(pre));
+-        }
+-        let c = s[pre.len()].clone();
+-        pre.push(true);
+-        let a = go(s, pre, f);
+-        pre.pop();
+-        pre.push(false);
+-        let d = go(s, pre, f);
+-        pre.pop();
+-        mux(c, a, d)
+-    }
+-    go(s, &mut vec![], f)
++    s.iter().fold(K(crate::encoding::table_body(s.len(), f)), |t, x| ap(t, x.clone()))
+ }
+ /// `Pi bits. Pi goods. l = r`, closed, by a case tree on the `nv` bits; `lr` gives the two sides.
+ fn by_cases(nv: usize, lr: &dyn Fn(&[T]) -> (T, T)) -> T {
+@@ -289,11 +276,20 @@ impl Law {
+     }
+     /// `F_j` of a side equals `G_j` of the operand bits and the side's phi, by cases on `k + c` bits.
+     fn lemma(&self, sd: usize, j: usize) -> T {
+-        by_cases(self.k + self.sides[sd].carries.len(), &|vs| {
+-            let (u, s) = vs.split_at(self.k);
+-            let key: Vec<T> = u.iter().cloned().chain((0..self.m()).map(|q| self.phi(sd, q, s))).collect();
+-            (self.f(sd, j, vs), self.g(j, &key))
+-        })
++        let nv = self.k + self.sides[sd].carries.len();
++        // the statement as one closed lambda over the bits, lowered once
++        let vs: Vec<T> = (0..nv).map(|i| v(CB[i])).collect();
++        let (u, s) = vs.split_at(self.k);
++        let key: Vec<T> = u.iter().cloned().chain((0..self.m()).map(|q| self.phi(sd, q, s))).collect();
++        let stmt = (0..nv).rev().fold(eqb(self.f(sd, j, &vs), self.g(j, &key)), |t, i| lm(CB[i], bool0(), t));
++        let stmt = ex(&stmt);
++        // each leaf is `refl` of the bit `F_j` takes there
++        let leaf = |bits: &[bool]| {
++            let (o, next) = self.sides[sd].m.step(&crate::search::Bools, &bits[..self.k], &bits[self.k..]);
++            let val = if j == 0 { o } else { self.enc.phi[sd][j - 1][index_of(&next)] };
++            tatic_kernel::refl(crate::encoding::bit(val))
++        };
++        K(crate::encoding::lemma_n(nv, &|vs| crate::encoding::apps(stmt, vs.to_vec()), &leaf).0)
+     }
+     fn agree(&self, p: &T) -> Vec<T> {
+         (0..self.m()).map(|q| eqb(self.phi(0, q, &self.at(0, p)), self.phi(1, q, &self.at(1, p)))).collect()
