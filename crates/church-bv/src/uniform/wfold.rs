@@ -473,7 +473,7 @@ fn w_fold_every_encoded_pair() {
     let one = level(&atoms);
     let lts = one.iter().flat_map(|a| one.iter().map(move |c| Term::op(LT, *a, *c)));
     let mut first: hashbrown::HashMap<(bool, Vec<u128>), Term> = Default::default();
-    let (mut pairs, mut tried, mut none) = (0usize, 0usize, 0usize);
+    let (mut pairs, mut sampled) = (0usize, vec![]);
     for t in level(&one).into_iter().chain(lts) {
         let words = (0..=mask).flat_map(|x| (0..=mask).map(move |y| (x, y))).map(|(x, y)| t.interp(n, &[x, y])).collect();
         let sig = (matches!(*t.node(), Node::Op(LT, ..)), words);
@@ -485,9 +485,13 @@ fn w_fold_every_encoded_pair() {
             continue;
         }
         pairs += 1;
-        if pairs % stride != 0 {
-            continue;
+        if pairs % stride == 0 {
+            sampled.push((t, r));
         }
+    }
+    // each sampled pair is built and checked in its own region, round robin over `WFOLD_THREADS` workers (at most 10; terms
+    // are per thread); true when it was proved, false when it has no encoding
+    let prove = |t: Term, r: Term| -> bool {
         let Some(law) = Law::new(2, &t, &r) else {
             // the classes are by width 4 only: a pair with no encoding must differ at another width
             let differ = |n: u32| {
@@ -496,14 +500,22 @@ fn w_fold_every_encoded_pair() {
             };
             let witness = (1..=6).find_map(differ).unwrap_or_else(|| panic!("{} = {}: no encoding, yet equal at widths 1 to 6", t.show(), r.show()));
             println!("no encoding: {} = {}, differ at {witness:?}", t.show(), r.show());
-            none += 1;
-            continue;
+            return false;
         };
-        tried += 1;
         let (proof, stmt) = law.proof();
         tatic_kernel::check(&tatic_kernel::Ctx::new(), &ex(&proof), &ex(&stmt))
             .unwrap_or_else(|e| panic!("{} = {}: {}", t.show(), r.show(), e.chars().take(500).collect::<String>()));
-    }
-    println!("pairs={pairs} stride={stride} tried={tried} no-encoding={none}");
+        true
+    };
+    let threads = crate::Setup::process().or("WFOLD_THREADS", 1usize).clamp(1, 10);
+    let proved: Vec<bool> = std::thread::scope(|sc| {
+        let (sampled, prove) = (&sampled, &prove);
+        let workers: Vec<_> = (0..threads).map(|w| std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || {
+            sampled.iter().skip(w).step_by(threads).map(|&(t, r)| tatic_kernel::scoped(|| prove(t, r))).collect::<Vec<_>>()
+        }).unwrap()).collect();
+        workers.into_iter().flat_map(|h| h.join().unwrap()).collect()
+    });
+    let tried = proved.iter().filter(|p| **p).count();
+    println!("pairs={pairs} stride={stride} threads={threads} tried={tried} no-encoding={}", proved.len() - tried);
     assert!(tried > 0);
 }
