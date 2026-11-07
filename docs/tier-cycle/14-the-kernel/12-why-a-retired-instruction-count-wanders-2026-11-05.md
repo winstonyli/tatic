@@ -52,22 +52,22 @@ The table and the bullets below describe the code before 94ad5f4 unless they say
   contiguity; the next bullet looks at the search itself. The limit read does not touch this cost: children still reach
   1.7 G. With large pages off, unjoined, one of 3 first runs read high, 159.88 G against 158.92-159.01 G, starting on 568 MB free (`e1-h2b`).
   With large pages on the level also moves between batches (`joined`, rotated: 158.4-158.8 G, then 157.5-158.1 G).
-- **The large-page work: searching for contiguous physical pages.** With kernel symbols, nine whole-exe xperf traces, large pages off,
-  on, on three times over (`2026-11-06-e1-j1-trace`): in the exe's own processes, parent and children together,
+- **The large-page work: searching for contiguous physical pages.** With kernel symbols, nine whole-exe xperf traces of the 94ad5f4 build, large pages off,
+  on, on three times over (`2026-11-06-e1-j1-trace`, `recount.txt`): in the exe's own processes, parent and children together, `LONG_E~1.EXE` (a test's copy of the exe under its short name) among them,
   `MiActivePageClaimCandidate`, `MiPfnsWorthTrying` and `MiSafeLockPage` hold 0 ms in
-  all three large-off traces and 878-1739 ms in the six large-on ones; `KeCopyPageNt` holds 0-2 ms and 4-440 ms.
-  Stacks from one more large-on trace (`2026-11-06-e1-j1c-stacks2`) give the path: `NtAllocateVirtualMemory`, `MiAllocateVirtualMemory`, `MiReserveUserMemory`,
+  all three large-off traces and 1051-2108 ms in the six large-on ones; `KeCopyPageNt` holds 0-3 ms and 5-447 ms.
+  Stacks from one more large-on trace (`2026-11-06-e1-j1c-stacks2`) give the path, as a call graph of the whole trace: `NtAllocateVirtualMemory`, `MiAllocateVirtualMemory`, `MiReserveUserMemory`,
   `MiMapUserLargePages`, `MiCreateLargePfnList`, `MiAllocateLargeZeroPages`, `MiFindLargePageMemory`, `MiFindContiguousPagesEx`, then either `MiPfnsWorthTrying`
   and `MiActivePageClaimCandidate`, or `MiTradePage` and `MiCopyPage` down to `KeCopyPageNt`. So mimalloc's reservation runs a search of physical memory, and
-  it can copy pages; what each function does is read from its name. The larger caller of `MiFindContiguousPagesEx` in that trace is
-  `MiRebuildLargePages` on a system worker, about 24 s of 1 ms samples against 3.8 s under `MiFindLargePageMemory`. It runs in the `System`
+  it can copy pages; what each function does is read from its name. The two branches under `MiFindContiguousPagesEx` were not split by caller, so how the exe's share divides between them is not known,
+  though the per-process times above show it pays both. The larger caller of `MiFindContiguousPagesEx` in that trace is
+  `MiRebuildLargePage`, under `MiRebuildLargePages` on a system worker: about 23 s of samples weighted 1 ms each, against 3.8 s from `MiFindLargePageMemory`. It runs in the `System`
   process, in large-off traces too (`k1-wf`: 111 ms in `MiActivePageClaimCandidate`, 378 ms in `KeCopyPageNt`), so the exe's counts leave it out.
   By batch position, three traces of 4 back-to-back runs
   (`2026-11-06-e1-j1b-batch`, machine busy), the parent's three claim functions held 1643, 992, 1267, 584 ms; 909, 461, 423, 788 ms; 1310, 810, 423, 714 ms.
   The first run is highest in all three, and its kernel time too (6.37 s against 3.59-5.41; 3.91 against 2.82-3.89; 5.88 against 3.70-4.99).
-  Its claim plus copy time over that of the batch's lowest-kernel run is 42%, 49% and 56% of its kernel excess over that run, so the rest of
-  the excess is other kernel work. Children's claim time, 110-1623 ms a run, follows no
-  position. These are times from three traced batches, with no instruction count, so the link to the 3.6-5.7 G is by shape, not measured.
+  Against the batch's lowest-kernel run, the first run's extra claim plus copy time is 42%, 49% and 56% of its extra kernel time, so the rest of
+  the excess is other kernel work. Children's claim time, up to 2178 ms a run (`children.txt`), is never highest in a first run. These are times from three traced batches, with no instruction count, so the link to the 3.6-5.7 G is by shape, not measured.
   That later runs search less because the run before freed its 2 MB pages is an inference.
 - **Proof overlap: the miner test's page-fault modes.** `a_false_winner_rolls_the_rounds_back` falls in three modes a step of about
   1910 faults apart, and the count rises with them: 9.8k faults 14.71-14.74 G, 11.7k 14.73 G, 13.6k 14.76-14.80 G (`e1-arml`). Large
@@ -94,7 +94,7 @@ The table and the bullets below describe the code before 94ad5f4 unless they say
   Reading `remaining_stack` at the top of `on_segment`, before the first fiber, leaves 0 crossings in 16 of 16 proofs under either
   placement, with 256 MB reported correctly, in the same ABBA run: 14.750-14.766 G over 8 runs, 0.11% end to end, unjoined; joined
   14.750-14.771 G; unchanged 14.953-15.267 G. The 200 M and 232 M levels differ by the 1910-fault step, about one fault per segment;
-  what picks the level was not found, and both go with the crossings. The fix landed as `learn_floor` at the top of `on_segment` (94ad5f4), whose
+  what picks the level was not found, and both go with the crossings. The fix landed as `learn_floor` on entry to `on_segment` (94ad5f4), whose
   `floor_here` makes the same first `remaining_stack` read; `a_first_segment_leaves_the_thread_its_own_stack_limit` failed before it, with 0 bytes left.
 - **The belief test's high runs are unexplained.** `the_sample_holds_no_self_claim` commits 1.4 GB, with faults constant at about 1730.
   Its first two runs after a miner batch read 27.50 and 27.59 G against 27.22-27.25 G, and 12 runs with large pages off stayed within
