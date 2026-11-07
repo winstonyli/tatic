@@ -24,8 +24,9 @@ pub enum Src {
 /// a bare add-free term (no carries).
 pub struct Machine {
     pub leaves: Vec<Term>,
-    /// `(left, right, op)`, `op` as in `Node::Op`: add (0) and sub (4) nodes carry a bit between positions, the
-    /// bitwise ones (1..=3) combine their operands' bits at the same position.
+    /// `(left, right, op)`, `op` as in `Node::Op`: add (0), sub (4) and lt (5) nodes carry a bit between positions
+    /// (an lt, only at the root, outputs it), the bitwise ones (1..=3) combine their operands' bits at the same position, and
+    /// shl1 (6) delays its operand by one position.
     pub nodes: Vec<(Src, Src, usize)>,
     pub root: Src,
 }
@@ -47,7 +48,7 @@ impl Machine {
                         return None; // a right shift reads a later position: not a left-to-right machine
                     }
                     if o == LT && !root {
-                        return None; // a comparison is a result, not a stream: `step` would compute `sub`
+                        return None; // an `lt`'s stream is its borrow, not a word whose bit `i` is the comparison
                     }
                     let key = *t;
                     if let Some(src) = seen.get(&key) {
@@ -76,9 +77,9 @@ impl Machine {
         self.nodes.iter().filter(|n| OP_INFO[n.2].carries).count()
     }
 
-    /// Whether the root is `lt`: the result is the last carry after the final position, not a vector.
+    /// Whether the root is `lt`: the result is one bit, the output at position `n` (the borrow into it), not a vector.
     pub fn last(&self) -> bool {
-        matches!(self.root, Src::Node(i) if self.nodes[i].2 == 5)
+        matches!(self.root, Src::Node(i) if self.nodes[i].2 == LT)
     }
 
     /// One position: `(output bit, next carries)` from the operand bits `u` and the carries `s`.
@@ -629,7 +630,7 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
         let v = Term::v;
         let lt = |a: Term, b: Term| Term::op(LT, a, b);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
-        // `lt` is a result, not a stream: below the root `step` would compute `sub`
+        // an `lt`'s stream is its borrow, so below the root its parent would read the borrow as a word
         assert!(Machine::parse(&op(ADD, lt(v(0), v(1)), v(2))).is_none(), "an lt under an add");
         assert!(Machine::parse(&lt(lt(v(0), v(1)), v(2))).is_none(), "an lt under an lt");
         assert!(Machine::parse(&op(SHL1, lt(v(0), v(1)), Term::ZERO)).is_none(), "an lt under a shift");

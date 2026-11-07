@@ -428,7 +428,7 @@ fn w_fold_a_comparison_is_its_own_law() {
     assert!(run("control: x < y = y < x", &wrong, &proof).is_err());
     assert!(Law::new(2, &lt(x, y), &lt(y, x)).is_none(), "a false comparison has no encoding");
 }
-/// `lt` is a result, not a stream: below the root `Machine::step` would read it as `sub`, and a root `lt` is no word.
+/// An `lt`'s stream is its borrow: below the root its parent would read the borrow as a word, and a root `lt` is no word.
 #[test]
 fn w_fold_lt_outside_the_root_has_no_law() {
     let (x, y, z, add, sub, lt) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD), op2(SUB), op2(LT));
