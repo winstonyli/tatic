@@ -65,10 +65,10 @@ fn tag_m(t: T) -> T {
         b(lm("m", maybe(v("X")), lm("g", goodmaybe(v("X"), v("m")), v("m")))), b(v("r")));
     SigRec(b(lm("_t", tag_ty(), maybe(tag_x(v("_t"))))), b(lm("X", s(1), lm("r", tag_inner(v("X")), inner))), b(t))
 }
-fn nw() -> T {
+pub(super) fn nw() -> T {
     K(ex(&W("t", b(tag_ty()), b(tag_x(v("t"))))))
 }
-fn bw() -> T {
+pub(super) fn bw() -> T {
     arr(nw(), bool0())
 }
 /// `empty -> N`, by `WRec`: the one child of a tree of `empty` is the recursive answer.
@@ -84,7 +84,7 @@ fn succ_w(n: T) -> T {
     let tag = tag_mk(unit(), just(unit(), star()), good_case(unit(), ap(v("$hj"), star())));
     Sup(b(tag), b(lm("_", unit(), n)))
 }
-fn num(j: usize) -> T {
+pub(super) fn num(j: usize) -> T {
     (0..j).fold(zero_w(), |e, _| succ_w(e))
 }
 
@@ -104,26 +104,26 @@ fn carry_fn() -> T {
         maj(ap(v("x"), p.clone()), ap(v("y"), p), ap(v("$ih"), w))
     }, ff())))))))
 }
-fn carry(a: T, c: T, i: T) -> T {
+pub(super) fn carry(a: T, c: T, i: T) -> T {
     ap3(carry_fn(), a, c, i)
 }
 fn add_fn() -> T {
     K(ex(&lm("x", bw(), lm("y", bw(), lm("i", nw(), xor(xor(ap(v("x"), v("i")), ap(v("y"), v("i"))), carry(v("x"), v("y"), v("i"))))))))
 }
-fn add(a: T, c: T) -> T {
+pub(super) fn add(a: T, c: T) -> T {
     ap2(add_fn(), a, c)
 }
 /// Bit `i` of the shift: `x (i - 1)`, and `fill` at 0 (false for the real shift; true is the mutant).
 fn shl_fn(fill: bool) -> T {
     K(ex(&lm("x", bw(), lm("i", nw(), rec_w(bool0(), v("i"), sel(&|w| ap(v("x"), ap(v("$f"), w)), if fill { tt() } else { ff() }))))))
 }
-fn shl(a: T) -> T {
+pub(super) fn shl(a: T) -> T {
     ap(shl_fn(false), a)
 }
 fn shr(y: T) -> T {
     lm("$i", nw(), ap(y, succ_w(v("$i"))))
 }
-fn zw() -> T {
+pub(super) fn zw() -> T {
     lm("$i", nw(), ff())
 }
 /// The partial product, `j -> and(x j, z)`: the operand first, so `x j = false` makes it false by computation.
@@ -143,7 +143,7 @@ fn mul(m: T, x: T, y: T) -> T {
     ap3(mul_fn(false), m, x, y)
 }
 /// The stream of the low `nb` bits of `val`, as a chain of closed tag cases.
-fn stream_of(val: u128, nb: usize) -> T {
+pub(super) fn stream_of(val: u128, nb: usize) -> T {
     (0..nb).rev().fold(zw(), |tail, j| {
         let tail = K(ex(&tail));
         K(ex(&lm("i", nw(), rec_w(bool0(), v("i"), sel(&|w| ap(tail.clone(), ap(v("$f"), w)), bit_of(val, j))))))
@@ -151,17 +151,17 @@ fn stream_of(val: u128, nb: usize) -> T {
 }
 
 // ---------- proofs ----------
-fn eqb(a: T, c: T) -> T {
+pub(super) fn eqb(a: T, c: T) -> T {
     idt(bool0(), a, c)
 }
 /// Pointwise equality of two streams.
 fn ptw(a: T, c: T) -> T {
     pi_("$i", nw(), eqb(ap(a, v("$i")), ap(c, v("$i"))))
 }
-fn sym(l: T, r: T, p: T) -> T {
+pub(super) fn sym(l: T, r: T, p: T) -> T {
     rew(bool0(), l, r.clone(), p, lm("t", bool0(), eqb(r.clone(), v("t"))), rfl(r))
 }
-fn trans(l: T, m: T, r: T, p: T, q: T) -> T {
+pub(super) fn trans(l: T, m: T, r: T, p: T, q: T) -> T {
     rew(bool0(), l, m, p, lm("t", bool0(), eqb(v("t"), r)), q)
 }
 /// `f l1 l2 l3 = f r1 r2 r3`, from `(l, r, l = r)` for each argument.
@@ -172,19 +172,19 @@ fn cong3(f: &dyn Fn(T, T, T) -> T, e1: (T, T, T), e2: (T, T, T), e3: (T, T, T)) 
     let h2 = rew(bool0(), l2.clone(), r2, p2, lm("t", bool0(), eqb(f(r1.clone(), v("t"), l3.clone()), rhs.clone())), h3);
     rew(bool0(), l1, r1, p1, lm("t", bool0(), eqb(f(v("t"), l2, l3), rhs)), h2)
 }
-fn xor3(a: T, c: T, d: T) -> T {
+pub(super) fn xor3(a: T, c: T, d: T) -> T {
     xor(xor(a, c), d)
 }
 /// The tag case of a reduced statement, at the abstracted `m`.
-fn selm(m: T, k: &dyn Fn(T) -> T, z: T) -> T {
+pub(super) fn selm(m: T, k: &dyn Fn(T) -> T, z: T) -> T {
     ap3(m, bool0(), lm("$w", v("X"), k(v("$w"))), z)
 }
-fn fw(w: &T) -> T {
+pub(super) fn fw(w: &T) -> T {
     ap(v("$f"), w.clone())
 }
 /// Induction on `target` for `motive`. Inside, `X`, `$f` and `$ih` are bound; `pre` wraps the lambdas that bring the statement down
 /// to `Sort1`; `pred m` is that statement reduced at the tag's `m`; `hj w` proves it at `just w`, `hn` at `nothing`.
-fn ind(motive: &dyn Fn(T) -> T, target: T, pre: &dyn Fn(T) -> T, pred: &dyn Fn(T) -> T, hj: &dyn Fn(T) -> T, hn: T) -> T {
+pub(super) fn ind(motive: &dyn Fn(T) -> T, target: T, pre: &dyn Fn(T) -> T, pred: &dyn Fn(T) -> T, hj: &dyn Fn(T) -> T, hn: T) -> T {
     let goal = |tag: T| pi_("$f", arr(tag_x(tag.clone()), nw()),
         pi_("$ih", pi_("$w", tag_x(tag.clone()), motive(ap(v("$f"), v("$w")))), motive(Sup(b(tag), b(v("$f"))))));
     let split = ap3(v("g"), lm("$mm", maybe(v("X")), pred(v("$mm"))), lm("$w", v("X"), hj(v("$w"))), hn);
@@ -288,7 +288,7 @@ fn proof_zero_mul() -> T {
 }
 
 // stage 4a: commutativity of the stream adder, real carries, goodness needed
-fn good_stream(a: T) -> T {
+pub(super) fn good_stream(a: T) -> T {
     pi_("$i", nw(), ap(goodbool(), ap(a, v("$i"))))
 }
 fn stmt_add_comm(rhs: &dyn Fn(T, T) -> T) -> T {

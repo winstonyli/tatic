@@ -254,13 +254,26 @@ reduces to the true bit of `2xy` for 4 products at 9 positions, with the flipped
 What this does not show. Nothing consumes these laws: `mul` is not among the loop's eight operators, so this moves no served rule
 and no mining cost. It moves one decision: a kernel `NatRec` (spec part 2 §53, option 4) is no longer the only way to a law uniform
 in the multiplier's width. The laws are about streams; no bridge to `Bv_n` exists, and `width.rs`'s lookup does not carry over, because its
-`Sigma(b, GoodBool b)` state sits in `Sort2` and `Maybe`'s `C` is `Sort1`. `mul` commutativity is not close (inference, not tried):
+`Sigma(b, GoodBool b)` state sits in `Sort2` and `Maybe`'s `C` is `Sort1` (a limit on a fold's state, not on a law: "One generator proves every machine-parsable law", below). `mul` commutativity is not close (inference, not tried):
 `mul m x y` reads `m` bits of `y` and all of `x`, so the two orders agree in general only below position `m`, which needs an order predicate on trees to state, and `mul` must distribute over `add`.
 
 The tree is not canonical (`nothing` under an inhabited `X` is a second zero, `X` may branch, `succ` is not injective), so `N` has no
 general induction. `GoodMaybe`'s motive sits in `Sort1` and sees `m` but not its witness, so a proof states its goal reduced at the
 tag's `m`. That covers every statement that reads a tree through its tag, which is all a stream function can do; it is why `ind` in
 `wnat.rs` takes the statement in reduced form, and each law writes that form by hand.
+
+**One generator proves every machine-parsable law at all widths, and the `Sort3` limit was never there (spike, 2026-11-07; `crates/church-bv/src/uniform/wfold.rs`; runs `2026-11-07-q2-fold-2`, `-3`, `-4` and `2026-11-07-q2-fold-all-pairs`).** `Law::new` reads two terms through `Machine` and `moore_encoding`, as `tree_proof` does at one width, and `Law::proof` builds the theorem with no per-law code: one goodness induction per carry, the per-side case lemmas, one induction on the phi agreement, then the output. The statement is `Pi x.. good x.. i. l i = r i` over `wnat.rs`'s own `add`, `shl` and a `sub` built from `carry`; a root `lt` is the last borrow as a stream.
+
+The expected limit came from putting goodness in the fold's state: `Sigma(c, GoodBool c)` sits in `Sort2`, and a tag splits only into `Sort1`. Nothing needs that state. A carry's goodness is its own induction with `P` bound by `ind`'s `pre`, so what crosses the tag is `P c`, in `Sort1`, and the phi agreement is a `Sigma` of `Id`s, also in `Sort1`. `GoodMaybe` stays as it was. What the W index does contribute is the nesting: `add (add x y) z` is one level, because an adder's output is a stream of the same type. Whether the Church index could carry this proof is untested. It could not state nested `add`s at one level, so it would need a statement about one machine's tuple of carries (inference).
+
+Results:
+- `(x + y) + z = x + (y + z)`, the first all-width proof of `add` associativity, in 9.0 ms (single reads here and below, untimed runs).
+- 14 more laws in 0.5-24 ms, including `(x+y)+(z+u) = (x+z)+(y+u)`, `sub(x, x) = 0`, `sub(x, y+z) = sub(sub(x, y), z)`, `(x^y) + shl(x&y) = x + y`, `shl(x+y) = shl x + shl y`, distributivity of `and`, and three `lt` pairs.
+- Sweep over terms of two operator levels on `x`, `y`, `0`, `-1` with `add`, `sub`, `and`, `or`, `xor`, `shl1` (no `lt`), each paired with the first term of the same width-4 table: 38227 of 38227 pairs got an encoding and a proof the kernel accepted, in 1053 s, peak commit 2966 MB. This pairs each term with one representative, not every two terms of a class.
+
+Controls: the associativity statement is `def_eq` to one written by hand from `add`; its proof is rejected against `x + (y + y)`; flipping one table bit in the encoding is rejected; `x + y = x` has no encoding; and the streams, read at 5 closed operand pairs, give the 3-bit words of 8 terms by `def_eq`, and `lt` the comparison at the top position.
+
+What this does not show. There is no bridge to `Bv_n`, so no hand-written family can go yet: `bitwise.rs`, `shift.rs` and `symmul.rs` each prove a `Bv_n` statement through theirs. The families' stream theorems are about Church-indexed streams, and nothing outside `uniform/` uses any of them. `shr1` and `mul` are outside: neither is a left-to-right machine, and `lt` below the root has no stream. The generator names at most 4 variables and 12 case bits.
 
 Related systems get width-generality from integers mod 2^w (Lean `BitVec`, Coq bbv, the parametric bit-vector SMT work); none retrieved
 in the 2026-11-07 survey proves it bit-serially, so a bit-level fold on a kernel with no built-in induction looks new (inference; Isabelle

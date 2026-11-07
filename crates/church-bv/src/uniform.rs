@@ -7,4 +7,5 @@ mod shift;
 mod symmul;
 mod symmul_stream;
 mod width;
+mod wfold;
 mod wnat;
