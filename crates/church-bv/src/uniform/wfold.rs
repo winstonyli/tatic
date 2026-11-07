@@ -463,19 +463,10 @@ fn w_fold_lt_outside_the_root_has_no_law() {
     assert!(Law::new(3, &lt(lt(x, y), z), &lt(lt(x, y), z)).is_none(), "lt under a root lt");
     assert!(Law::new(1, &lt(x, x), &Term::ZERO).is_none(), "a root lt against a word");
 }
-fn eval(t: &Term, x: u128, y: u128, m: u128) -> u128 {
-    match *t.node() {
-        Node::V(0) => x,
-        Node::V(_) => y,
-        Node::Zero => 0,
-        Node::Ones => m,
-        Node::Op(o, a, c) => (OP_INFO[o].words.w128)(eval(&a, x, y, m), eval(&c, x, y, m), m),
-    }
-}
 /// A law says only what its streams compute: at closed operands they give the words, and a root `lt` at `p` compares the low `p` bits.
 #[test]
 fn w_fold_streams_compute_the_words() {
-    let (nb, mask) = (3, 7u128);
+    let nb = 3;
     let (x, y, add, sub) = (Term::v(0), Term::v(1), op2(ADD), op2(SUB));
     let terms = [add(x, y), sub(x, y), op2(AND)(x, y), op2(OR)(x, y), op2(XOR)(x, y), shl_t(x), sub(add(x, x), shl_t(y)), Term::ONES];
     for (a, c) in [(5u128, 3u128), (7, 7), (6, 1), (0, 5), (2, 6)] {
@@ -483,7 +474,7 @@ fn w_fold_streams_compute_the_words() {
         for t in &terms {
             let root = side(t, &s).root;
             for p in 0..nb {
-                let want = bit_of(eval(t, a, c, mask), p);
+                let want = bit_of(t.interp(nb, &[a, c]), p);
                 assert!(tatic_kernel::def_eq(&ex(&ap(root.clone(), num(p))), &ex(&want)), "{}: {a} {c} bit {p}", t.show());
             }
         }
@@ -498,8 +489,8 @@ fn w_fold_streams_compute_the_words() {
 /// gets an accepted proof, or differs at some other width.
 #[test]
 fn w_fold_every_encoded_pair() {
-    let stride: usize = std::env::var("WFOLD_STRIDE").ok().and_then(|s| s.parse().ok()).unwrap_or(4001);
-    let mask = 15u128;
+    let stride: usize = crate::Setup::process().or("WFOLD_STRIDE", 4001);
+    let (n, mask) = (4, 15u128);
     let atoms = [Term::v(0), Term::v(1), Term::ZERO, Term::ONES];
     let level = |ts: &[Term]| -> Vec<Term> {
         let bin = ts.iter().flat_map(|a| ts.iter().flat_map(move |c| [ADD, SUB, AND, OR, XOR].map(|o| Term::op(o, *a, *c))));
@@ -510,7 +501,7 @@ fn w_fold_every_encoded_pair() {
     let mut first: hashbrown::HashMap<(bool, Vec<u128>), Term> = Default::default();
     let (mut pairs, mut tried, mut none) = (0usize, 0usize, 0usize);
     for t in level(&one).into_iter().chain(lts) {
-        let words = (0..=mask).flat_map(|x| (0..=mask).map(move |y| (x, y))).map(|(x, y)| eval(&t, x, y, mask)).collect();
+        let words = (0..=mask).flat_map(|x| (0..=mask).map(move |y| (x, y))).map(|(x, y)| t.interp(n, &[x, y])).collect();
         let sig = (matches!(*t.node(), Node::Op(LT, ..)), words);
         let Some(r) = first.get(&sig).copied() else {
             first.insert(sig, t);
@@ -527,7 +518,7 @@ fn w_fold_every_encoded_pair() {
             // the classes are by width 4 only: a pair with no encoding must differ at another width
             let differ = |n: u32| {
                 let m = (1u128 << n) - 1;
-                (0..=m).flat_map(|x| (0..=m).map(move |y| (x, y))).find(|(x, y)| eval(&t, *x, *y, m) != eval(&r, *x, *y, m)).map(|w| (n, w))
+                (0..=m).flat_map(|x| (0..=m).map(move |y| (x, y))).find(|(x, y)| t.interp(n as usize, &[*x, *y]) != r.interp(n as usize, &[*x, *y])).map(|w| (n, w))
             };
             let witness = (1..=6).find_map(differ).unwrap_or_else(|| panic!("{} = {}: no encoding, yet equal at widths 1 to 6", t.show(), r.show()));
             println!("no encoding: {} = {}, differ at {witness:?}", t.show(), r.show());

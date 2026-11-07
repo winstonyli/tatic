@@ -31,8 +31,8 @@ mod work;
 use encoding::*;
 #[allow(unused_imports)]
 use rewrite::*;
-#[allow(unused_imports)]
 use host::*;
+#[allow(unused_imports)]
 use machine::*;
 #[allow(unused_imports)]
 use search::*;

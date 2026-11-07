@@ -124,7 +124,7 @@ The table and the bullets below describe the code before 94ad5f4 unless they say
   max / best 1.001, 12 runs in 3 batches, no first run high (`2026-11-06-e1-i1-count`, whose `-dirty` tree holds the same `stack.rs` code as 94ad5f4, and one batch that opens `e1-j1-trace`,
   same exe; a fourth batch was lost to ETW buffers with `2026-11-06-i1-suite` running beside it). Before the fix, whole-exe max / best was 1.002 joined and 1.006 with the limit read (158.918 G best, 158.976 G median, 0.04%, 12 runs in 3
   batches, not in the table, `e1-h2b`). A large-off count needs a build with the define
-  changed because mimalloc reads the option at load and the Samply task has its own environment, and `--skip machine::mimalloc_defaults_to_large_pages`,
+  changed because mimalloc reads the option at load and the Samply task has its own environment, and `--skip host::mimalloc_defaults_to_large_pages` (`machine::` before 2026-11-07),
   since that test fails on such a build and `icount.ps1` stops on a failing exe; `driver::sweep` children already run with them off. `2026-10-30-p1b`'s 161.96 G then 159.85 G, put down to
   load in `docs/runs/2026-10-30/rows/2026-10-30-p1land.txt`, has the first-run shape (inference; not rerun).
 - **Joining makes the low mode likely; it saves no work of its own.** `a_false_winner` falls 3% joined (14.32 G against 14.75 G; 14.74 G against
