@@ -132,7 +132,7 @@ The table and the bullets below describe the code before 94ad5f4 unless they say
   (`e1-pertest`). That gap is the crossings above: with the limit read first, unjoined matches joined to within the spread (`e1-h1f`).
   The comment at `Rounds::play` describes the overlap and gives no reason; that it is there to hide proof time
   behind scoring is an inference, not measured here.
-- **Large pages on against off, counts only (2026-11-07; time not measured).** Same commit (fcad41c), large pages compiled on or off, batches of 4 on CPU 4 with the arms rotated, other sessions at 44-61% load (`2026-11-07-m2-counts2`).
+- **Large pages on against off, counts only (2026-11-07; time not measured).** Same commit (fcad41c), large pages compiled on or off, batches of 4 on CPU 4 with the arms rotated, total CPU 49% at the start and 61% near the end (`2026-11-07-m2-counts2`).
   `proof-cost-split` (about 12 s): on reads 33.27-33.29 G at its quietest and off 33.93-34.01 G, so on does about 2% less work at its best; but on's first runs read 41.21 and 35.29 G (24% and 6% over its best), and its first batch stayed at 33.66-34.30 G after that, where off stays within 0.2%.
   The whole `church_bv` lib test exe (about 427 G, not the 158 G exe above): on reads 425.2-432.8 G in the 2 batches that survived, off 427.0-428.3 G in 3 (a third on batch was lost to an xperf dump failure), so no clear saving and a wider spread.
   These are counts, so they do not say which arm is faster; the timed A/B was refused on a busy machine (`2026-11-07-m2-times`). Mining runs are unaffected: `driver::sweep` turns large pages off for its children.
