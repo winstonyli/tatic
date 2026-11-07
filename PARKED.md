@@ -213,6 +213,7 @@ A finding is cited by section or paragraph title, never by line (its lines drift
 
 ## Kernel memos, footprint and allocation
 
+- **Whether large OS pages stay on by default (the time half of the A/B)** — what: time `proof-cost-split` and the `church_bv` test exe with large pages on and off, then decide the default in `.cargo/config.toml`. Why parked: by decision 2026-11-07, back to research; counts are done and the timed run needs a quiet machine. Trigger: a slow or unrepeatable first run blamed on the allocator, a count A/B that large pages blur, or a quiet machine with nothing better queued. Evidence: `docs/tier-cycle/`, "Why a retired-instruction count wanders" (its last bullet, 2026-11-07); scripts and inputs in `docs/runs/2026-11-07/` (`m2build.sh` leaves the `tb.exe` copy to be done by hand; `m2time.ps1` is unrun; launch it with `run.ps1 -Timed -Affinity 100 -HoldMin 20`). Status: parked.
 - **Kernel memo, walk and arena levers: each within noise or worth about 1-3.5%** — what: the levers left from the
   kernel speed-up and id-arena work, each measured or bounded small. Why parked: none is worth its code or its trusted
   surface at its size. Trigger: a profile of the kernel check showing the cost the lever removes (each item's own
