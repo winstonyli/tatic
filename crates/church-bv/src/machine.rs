@@ -36,21 +36,25 @@ impl Machine {
         format!("{}|{:?}|{:?}", self.leaves.iter().map(|l| l.show()).collect::<Vec<_>>().join(","), self.nodes, self.root)
     }
 
-    /// Any term over variables and constants: the machine computes it one bit position at a time.
+    /// A term over variables and constants with no `shr1` and `lt` only at the root: the machine computes it one bit
+    /// position at a time.
     pub fn parse(t: &Term) -> Option<Machine> {
         // equal subterms are one node (so a chain of delay cells serves every shift of the same operand)
-        fn go(t: &Term, m: &mut Machine, seen: &mut hashbrown::HashMap<Term, Src>) -> Option<Src> {
+        fn go(t: &Term, m: &mut Machine, seen: &mut hashbrown::HashMap<Term, Src>, root: bool) -> Option<Src> {
             match *t.node() {
                 Node::Op(o, a, b) => {
                     if o == SHR1 {
                         return None; // a right shift reads a later position: not a left-to-right machine
                     }
+                    if o == LT && !root {
+                        return None; // a comparison is a result, not a stream: `step` would compute `sub`
+                    }
                     let key = *t;
                     if let Some(src) = seen.get(&key) {
                         return Some(*src);
                     }
-                    let a = go(&a, m, seen)?;
-                    let b = if o == SHL1 { a } else { go(&b, m, seen)? };
+                    let a = go(&a, m, seen, false)?;
+                    let b = if o == SHL1 { a } else { go(&b, m, seen, false)? };
                     m.nodes.push((a, b, o));
                     let src = Src::Node(m.nodes.len() - 1);
                     seen.insert(key, src);
@@ -63,7 +67,7 @@ impl Machine {
             }
         }
         let mut m = Machine { leaves: vec![], nodes: vec![], root: Src::Leaf(0) };
-        m.root = go(t, &mut m, &mut Default::default())?;
+        m.root = go(t, &mut m, &mut Default::default(), true)?;
         Some(m)
     }
 
@@ -75,11 +79,6 @@ impl Machine {
     /// Whether the root is `lt`: the result is the last carry after the final position, not a vector.
     pub fn last(&self) -> bool {
         matches!(self.root, Src::Node(i) if self.nodes[i].2 == 5)
-    }
-
-    /// Whether `step` computes the term: `lt` is a result, not a stream, so below the root it would read as `sub`.
-    pub fn streams(&self) -> bool {
-        self.nodes.iter().rev().skip(self.last() as usize).all(|n| n.2 != 5)
     }
 
     /// One position: `(output bit, next carries)` from the operand bits `u` and the carries `s`.
@@ -167,10 +166,10 @@ pub fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 
 /// The coarsest consistent encoding, by Moore partition refinement over the carry vectors of both machines: two vectors
 /// share a class iff no input sequence tells them apart (the same outputs, and with a root `lt` the same final bit). The
 /// class number, in binary, is the phi value. `None` when the two start states (all-false) differ, i.e. the terms differ at
-/// some width, or when a machine does not compute its term or only one root is an `lt`. Unreachable vectors change no
-/// answer: whether the start states share a class depends only on what they reach.
+/// some width, or when only one root is an `lt`. Unreachable vectors change no answer: whether the start states share a
+/// class depends only on what they reach.
 pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize) -> Option<Encoding> {
-    if m1.last() != m2.last() || !m1.streams() || !m2.streams() {
+    if m1.last() != m2.last() {
         return None;
     }
     let raw = [raw_table(m1, k), raw_table(m2, k)];
@@ -630,6 +629,10 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
         let v = Term::v;
         let lt = |a: Term, b: Term| Term::op(LT, a, b);
         let op = |o: usize, a: Term, b: Term| Term::op(o, a, b);
+        // `lt` is a result, not a stream: below the root `step` would compute `sub`
+        assert!(Machine::parse(&op(ADD, lt(v(0), v(1)), v(2))).is_none(), "an lt under an add");
+        assert!(Machine::parse(&lt(lt(v(0), v(1)), v(2))).is_none(), "an lt under an lt");
+        assert!(Machine::parse(&op(SHL1, lt(v(0), v(1)), Term::ZERO)).is_none(), "an lt under a shift");
         // lt x x = lt y y; and an operand-order law with a carry on both sides
         let laws = [
             ("lt x x = lt y y", lt(Term::v(0), Term::v(0)), lt(Term::v(1), Term::v(1))),

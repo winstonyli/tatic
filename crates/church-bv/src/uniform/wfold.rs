@@ -95,8 +95,8 @@ struct Side {
     root: T,
     carries: Vec<T>,
 }
-fn side(t: &Term, x: &[T]) -> Side {
-    let m = Machine::parse(t).expect("a machine");
+fn side(t: &Term, x: &[T]) -> Option<Side> {
+    let m = Machine::parse(t)?;
     let leaf: Vec<T> = m.leaves.iter().map(|l| match *l.node() {
         Node::V(i) => x[i].clone(),
         Node::Zero => zw(),
@@ -119,7 +119,7 @@ fn side(t: &Term, x: &[T]) -> Side {
             2 => nat_(or2(at_n(&p), at_n(&q))),
             3 => nat_(xor(at_n(&p), at_n(&q))),
             4 | 5 => {
-                // a subtractor's borrow is the carry of `~a` and `b`; an `lt` here is the root (`Machine::streams`)
+                // a subtractor's borrow is the carry of `~a` and `b`; an `lt` here is the root (`Machine::parse`)
                 let borrow = nat_(carry(nat_(xor(at_n(&p), tt())), q.clone(), v("$n")));
                 carries.push(borrow.clone());
                 nat_(xor3(at_n(&p), at_n(&q), at_n(&borrow)))
@@ -138,7 +138,7 @@ fn side(t: &Term, x: &[T]) -> Side {
         Src::Leaf(j) => leaf[j].clone(),
         Src::Node(j) => val[j].clone(),
     };
-    Side { m, root, carries }
+    Some(Side { m, root, carries })
 }
 
 // ---------- tables, case trees, conjunctions ----------
@@ -223,7 +223,7 @@ struct Law {
 impl Law {
     fn new(k: usize, t1: &Term, t2: &Term) -> Option<Law> {
         let x: Vec<T> = (0..k).map(|i| v(XS[i])).collect();
-        let sides = [side(t1, &x), side(t2, &x)];
+        let sides = [side(t1, &x)?, side(t2, &x)?];
         let enc = moore_encoding(&sides[0].m, &sides[1].m, k)?;
         Some(Law { k, sides, enc })
     }
@@ -449,7 +449,7 @@ fn w_fold_a_comparison_is_its_own_law() {
     let law = Law::new(2, &lt(x, y), &lt(xor(y, Term::ONES), xor(x, Term::ONES))).unwrap();
     let (proof, stmt) = law.proof();
     run("x < y = ~y < ~x", &stmt, &proof).unwrap();
-    let swapped = side(&lt(y, x), &[v("x0"), v("x1")]).root;
+    let swapped = side(&lt(y, x), &[v("x0"), v("x1")]).unwrap().root;
     let wrong = law.over(&|ty, n, t| pi_(n, ty, t), pi_("i", nw(), eqb(ap(law.sides[0].root.clone(), v("i")), ap(swapped, v("i")))));
     assert!(run("control: x < y = y < x", &wrong, &proof).is_err());
     assert!(Law::new(2, &lt(x, y), &lt(y, x)).is_none(), "a false comparison has no encoding");
@@ -472,13 +472,13 @@ fn w_fold_streams_compute_the_words() {
     for (a, c) in [(5u128, 3u128), (7, 7), (6, 1), (0, 5), (2, 6)] {
         let s = [stream_of(a, nb), stream_of(c, nb)];
         for t in &terms {
-            let root = side(t, &s).root;
+            let root = side(t, &s).unwrap().root;
             for p in 0..nb {
                 let want = bit_of(t.interp(nb, &[a, c]), p);
                 assert!(tatic_kernel::def_eq(&ex(&ap(root.clone(), num(p))), &ex(&want)), "{}: {a} {c} bit {p}", t.show());
             }
         }
-        let root = side(&op2(LT)(x, y), &s).root;
+        let root = side(&op2(LT)(x, y), &s).unwrap().root;
         for p in 0..=nb {
             let low = (1u128 << p) - 1;
             assert!(tatic_kernel::def_eq(&ex(&ap(root.clone(), num(p))), &ex(&Terms.konst(a & low < c & low))), "lt {a} {c} at {p}");
