@@ -175,7 +175,7 @@ second real induction (the borrow chain, circuit of `ripple_carry(sub=true)`). T
 laws, so the baseline is a per-bit case split written in the same file: it checks at 2.0 to 3.2 ms at n = 32 against 3.6 to
 4.4 ms for the uniform route, and builds in 8 to 25 ms against 39 to 77 ms (reviewer's run, shared machine). Again no speed win.
 
-*`mul` is only partly reachable (`crates/church-bv/src/uniform/mul.rs`, 2026-11-01).* A single fold over the multiplier's positions
+*`mul` is only partly reachable (`crates/church-bv/src/uniform/mul.rs`, 2026-11-01; over Church numerals, see "The level wall is Church's" below).* A single fold over the multiplier's positions
 is ill-typed: the stream adder raises the index level (`Bits(k) -> Bits(k+1)`) and nothing lowers it (kernel messages "lambda
 domain mismatch: (Pi Type2. ...) vs (Pi Type1. ...)", and "inferred Type3, expected Type1" for a `Nat_k -> Nat_(k+1)` map, both
 pinned by a test). So the shift-and-add loop is unrolled in the meta-language, one level per multiplier bit: the law is
@@ -222,12 +222,47 @@ from n = 8 on, in the check and in build plus check (one contended run, run `202
 timed form was refused, so read ratios, not milliseconds): check 4.8 against 2.3 ms at n = 4, 32 against 9.8 at n = 6, 187 against 16 at n = 8,
 547 against 28 at n = 9, 1357 against 33 at n = 10 (2x growing to 41x); build 8 against 40 ms at n = 4, 139 against 200 at n = 6, 1.5 s against
 0.48 s at n = 8, 15.4 s against 1.1 s at n = 10, so the baseline is cheaper to build and check below n = 6 or 7 and the bridge wins above, the
-gap growing about 2.5x per bit. The first width-uniform route that beats the per-width proof, for this law. Still unbuilt: commutativity, a symbolic multiplicand with a symbolic multiplier, and any law
-uniform in the multiplier's width. Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
+gap growing about 2.5x per bit. The first width-uniform route that beats the per-width proof, for this law. On Church streams commutativity, a symbolic multiplicand with a symbolic multiplier, and any law
+uniform in the multiplier's width stay unbuilt (the W-built index below reaches the last two). Bridge check against the per-width baseline for `mul x 2 = x + x` (one run): 5.6 against
 3.6 ms at n = 4, 14.4 against 14.2 at n = 5, 68 against 55 at n = 6, so roughly even there (build 21 to 232 ms against 0.5 to 48).
 For the older laws, bridge against per-width baseline (one run): `mul x 1 = x` 9.1 against 3.4 ms at n = 4 and 287 against 69 ms at n = 6 (the reviewer's rerun: 1435 against
 375 ms); `mul x 0 = 0` against a baseline that is just `refl`, so no fair comparison. A first accumulator that repeated each operand
 three times grew as 3^j (14.6 s to build at n = 4) and hit the 8 GB cap at n = 5; sharing the accumulator as a closed term made the build linear.
+
+**The level wall is Church's, not the kernel's: a W-built index folds into its own streams (spike, 2026-11-07;
+`crates/church-bv/src/uniform/wnat.rs`; runs `2026-11-07-o1-wnat` and `-2`).** The "single fold is ill-typed" result above holds for
+Church numerals only. A Church `Nat_k` folds only into `Sort k`, and the stream adder raises its output one level, so a stream
+accumulator is a missing fixed point: a step would need `Bits(a+1) = Bits(a)`. `WRec`'s motive has no such cap. The index is
+`N := W(Tag, fst)` with `Tag := Sigma X:Sort1. Sigma m:Maybe X. GoodMaybe m`: a bare Church tag gives a step no way to use its
+child function, so the tag carries the witness and the branch needs no dependent motive. `Empty` and `Unit` are derived (no
+postulate), `N` and `Bits := N -> Bool0` both sit in `Sort2`, and `add : Bits -> Bits -> Bits` raises no level. The multiplier is
+one `WRec` with a stream-function motive, in Horner form: `mul (succ p) x y = (x & y_0) + shl (mul p x (shr y))`. No kernel change.
+
+Every stage passed (times from the two runs at 71-76% CPU, one live GPU lease):
+- Types: `add`, `shl` and `mul : N -> Bits -> Bits -> Bits` typecheck at the stated types.
+- Computation: 8 closed 3-bit products match by `def_eq` at every position through bit 7; the shift's fill-bit mutant gets all 4 tested products wrong.
+- `Pi m y i. mul m 0 y i = false`, in 1.2-1.8 ms.
+- `Pi x y. good x -> good y -> Pi i. add x y i = add y x i`, with real carries, in 0.6-1.0 ms (single reads, no lease).
+- `Pi m x y i. mul m (shl x) y i = shl (mul m x y) i`, in 2.5-3.0 ms: symbolic width, multiplicand and multiplier, no goodness hypothesis at all.
+  The partial product masks with the operand first, `and(x j, y_0)`, so `shl x j = false` makes it false by computation.
+
+Controls: each law's proof is rejected against a false statement, and the shift law's two-sided theorem, read at closed numbers,
+reduces to the true bit of `2xy` for 4 products at 9 positions, with the flipped bit rejected.
+
+What this does not show. Nothing consumes these laws: `mul` is not among the loop's eight operators, so this moves no served rule
+and no mining cost. It moves one decision: a kernel `NatRec` (spec part 2 §53, option 4) is no longer the only way to a law uniform
+in the multiplier's width. The laws are about streams; no bridge to `Bv_n` exists, and `width.rs`'s lookup does not carry over, because its
+`Sigma(b, GoodBool b)` state sits in `Sort2` and `Maybe`'s `C` is `Sort1`. `mul` commutativity is not close (inference, not tried):
+`mul m x y` reads `m` bits of `y` and all of `x`, so the two orders agree in general only below position `m`, which needs an order predicate on trees to state, and `mul` must distribute over `add`.
+
+The tree is not canonical (`nothing` under an inhabited `X` is a second zero, `X` may branch, `succ` is not injective), so `N` has no
+general induction. `GoodMaybe`'s motive sits in `Sort1` and sees `m` but not its witness, so a proof states its goal reduced at the
+tag's `m`. That covers every statement that reads a tree through its tag, which is all a stream function can do; it is why `ind` in
+`wnat.rs` takes the statement in reduced form, and each law writes that form by hand.
+
+Related systems get width-generality from integers mod 2^w (Lean `BitVec`, Coq bbv, the parametric bit-vector SMT work); none retrieved
+in the 2026-11-07 survey proves it bit-serially, so a bit-level fold on a kernel with no built-in induction looks new (inference; Isabelle
+and Hydra's exact check were not verified). The same survey's other two candidates are parked in `PARKED.md`, under the goal D entry.
 
 **Compiling hot transformations, with learnable compilations: two falsifiers (probes, reverted, no patch kept,
 2026-10-14).** The goal: the kernel compiles hot transformations natively, and the compilations are learned, not fixed.
@@ -364,9 +399,10 @@ only in that scope (in a fresh `Postulates` the check fails with "free parameter
 target's width, is cheap, and a mined law transfers to compiled code through one congruence, with per-compile spec
 proofs from the template laws costing well under a second. Not shown here: signed `lt_s` (the miner's `lt` is
 unsigned) and any op outside the loop's eight; the If template is the next paragraph. On deep syntax: a `W` type of
-instructions is costly in this kernel, which has no computing finite tag type; `NatPostulates` gets one only through
-postulated computation axioms (`child_ty_true_eq`, `bool_rec_true_eq`, `crates/tatic-kernel/src/postulates.rs`) and a
-transport per constructor, which would grow the trusted base. Two ways around it: keep the semantics shallow and trust
+instructions is costly in this kernel. `NatPostulates` gets a computing tag through postulated computation axioms
+(`child_ty_true_eq`, `bool_rec_true_eq`, `crates/tatic-kernel/src/postulates.rs`) and a transport per constructor, which would
+grow the trusted base; a tag carrying its own witness computes with no postulate ("The level wall is Church's", above), but
+only two-constructor tags are tested, and a whole instruction set on it is unmeasured. Two ways around it: keep the semantics shallow and trust
 only the printer from the template-built instruction list to WAT text, or Church-encode instruction lists; the second
 is tested two paragraphs down and works.
 

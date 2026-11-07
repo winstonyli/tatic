@@ -11,14 +11,13 @@ use super::*;
 /// is stable regardless of how many more postulates get pushed afterward, or
 /// how many builder scopes open and close around it.
 ///
-/// Used instead of trying to derive base types like Bool/Nat/Int from
-/// nothing. That turns out to be a real dead end, not just tedium: any
-/// "vacuous eliminator" for an empty/base case needs a witness-extractor
-/// shaped like `Pi x : Sort(m). x`, but that type itself only exists at
-/// `Sort(m+1)` — one universe *above* what it can extract into — so it can
-/// never eliminate into its own level. Predicativity is correctly refusing
-/// what would otherwise be a disguised `Type : Type`. Real kernels sidestep
-/// this by taking a small base type as primitive (or, as here, postulated).
+/// Used instead of deriving base types like Bool/Nat/Int. Built from `Pi`
+/// alone a "vacuous eliminator" for an empty case needs a witness-extractor
+/// shaped like `Pi x : Sort(m). x`, which only exists at `Sort(m+1)`, one
+/// universe above what it can extract into. `WRec` has no such limit: `Empty`
+/// is `W(unit, \_. unit)` with no postulate (`tests/church_encoding.rs`), and
+/// a tag carrying its own witness computes (`church-bv`'s `uniform/wnat.rs`).
+/// Real kernels take a small base type as primitive; here it is postulated.
 ///
 /// A postulate is referred to by `Const(level)` and checked as one of the
 /// kernel's `Globals` (`docs/related-work/` §69).
@@ -389,7 +388,7 @@ fn wrap_c_ct_cf(bool_ref: &Expr, true_ref: &Expr, false_ref: &Expr, body_d3: Exp
 
 /// A real, computing `Nat` built from this kernel's own existing four
 /// primitives alone (`Pi`/`Lam`/`Id`/`W`, plus `Postulates` for the base
-/// types a predicative kernel can't derive from nothing) -- the reusable
+/// types, postulated here rather than built from `W`) -- the reusable
 /// form of `tests::worked::nat_via_w_is_a_genuinely_computing_inductive_type`'s
 /// own construction. See that test's doc comment for the full
 /// derivation, including the induction-hypothesis-closure typing gap

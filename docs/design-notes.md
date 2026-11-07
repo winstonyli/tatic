@@ -31,12 +31,13 @@
 - **Why a predicative kernel with exactly these five primitives**: see
   `tatic-kernel`'s module docs for the full argument, but briefly — `W`-types
   are load-bearing (not derivable from `Pi`/`Sort`/`Id` alone with
-  definitional computation, which an interpreter's hot path needs), and
-  bootstrapping finite base types (`Bool`, `Nat`) from nothing hits a real,
-  expected wall in a predicative system (a "vacuous eliminator" always
-  needs a witness-extractor one universe above what it eliminates into).
-  Base types like `Int` are postulated accordingly — the same approach
-  real kernels take, not a shortcut specific to this project. `Sigma` is
+  definitional computation, which an interpreter's hot path needs).
+  Base types like `Int` are postulated, the same approach real kernels
+  take. An earlier version of this note called deriving them a wall (a
+  "vacuous eliminator" needing a witness-extractor one universe up); that
+  holds only for an eliminator built from `Pi`. `W` derives `Empty` with
+  no postulate, and a tag that carries its own witness computes
+  (`docs/tier-cycle/`, "The level wall is Church's"). `Sigma` is
   the fifth, added separately: `W`'s own children function maps back into
   `W` itself, so it can only stand in for a payload that's *another
   instance of the same inductive type*, not an arbitrary, independently-

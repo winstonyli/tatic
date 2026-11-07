@@ -295,8 +295,10 @@ universe is `Sort1`. The first attempt with `unit := Id(Sort1, Sort0, Sort0)` fa
 for that reason (inferred `Type2`, expected `Type0`).
 
 Not yet tested: equality of two `Sigma(Nat, Good)` values (needs equal
-goodness proofs, no proof irrelevance), `WRec` eliminating `empty` into a
-fixed type, `zero`/`succ` of the W-built `Nat`, and a `Bv64` built from
+goodness proofs, no proof irrelevance), `zero`/`succ` of the W-built `Nat`
+with this bare `Bool` tag (a tag carrying its own witness is tested:
+`crates/church-bv/src/uniform/wnat.rs`; `WRec` eliminating `empty` is tested
+in `crates/tatic-kernel/tests/church_encoding.rs`), and a `Bv64` built from
 Church `Bool`s. Section 11's options A and B are therefore feasible as far as
 tested; option (a), a primitive `Bool`, is not needed for concrete computation.
 
