@@ -21,6 +21,8 @@ mod wasm;
 mod lemma_cache;
 mod rewrite;
 mod machine;
+#[cfg(test)]
+mod machine_reach_tests;
 mod miner;
 mod search;
 mod task;

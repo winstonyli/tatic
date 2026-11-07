@@ -838,8 +838,8 @@ pub fn lt_computes_and_its_laws_are_found_by_the_encoding_search() {
             let (p, s) = add_tree_law(job, n, 2, t1, t2).unwrap_or_else(|| panic!("no proof: {name}"));
             job.lemmas.ck(name, &p, &s);
         }
-        // these hold only on the reachable carry states (the borrow of `x - 0` never becomes 1, the borrow of `x + y < x`
-        // equals the add's carry): proved with lemmas conditional on a reachability invariant
+        // laws whose carries have unreachable states (the borrow of `x - 0` never becomes 1, the borrow of `x + y < x` equals
+        // the add's carry): the encoding over all states already finds them, since the start states' classes ignore those states
         for (name, t1, t2) in [
             ("lt x 0 = lt y 0", lt(Term::v(0), Term::ZERO), lt(Term::v(1), Term::ZERO)),
             ("lt (x+y) x = lt (x+y) y", lt(op(0, v(0), v(1)), Term::v(0)), lt(op(0, v(0), v(1)), Term::v(1))),
