@@ -5,5 +5,5 @@
 # reservation size could be, for every arena after the first). Large pages are locked, so the small reservation keeps a
 # short process from locking a full GiB. MIMALLOC_ALLOW_LARGE_OS_PAGES=0 turns them off for a run; `driver::sweep` sets
 # it for its children, which are mostly short. Without the privilege mimalloc falls back to normal pages. Measured in
-# docs/tier-cycle/ ("Allocation schemes against the size cost"); timings log the state (`machine::machine_state`).
+# docs/tier-cycle/ ("Allocation schemes against the size cost"); timings log the state (`host::machine_state`).
 CXXFLAGS_x86_64_pc_windows_msvc = "-DMI_DEFAULT_ALLOW_LARGE_OS_PAGES=1 -DMI_DEFAULT_ARENA_RESERVE=65536"

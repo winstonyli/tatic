@@ -116,7 +116,7 @@ fn task_fn(name: &str) -> Option<fn(&Arc<Setup>)> {
     Some(match name {
         "search::rule_miner" => crate::miner::run,
         "search::rule_set_kernel_check" => crate::search::rule_set_kernel_check_task,
-        "machine::pages_line" => crate::machine::pages_line_task,
+        "host::pages_line" => crate::host::pages_line_task,
         "driver::env_echo" => env_echo_task,
         _ => return None,
     })
@@ -537,16 +537,16 @@ fn append(path: &Path, text: &str) {
 
 /// A machine-state line on stderr (about 2 s), logged pieces in `<out>/machine_state_<when>.log`: `RTP` and `CPU` are
 /// machine-wide, so read here; `lockpriv` and `pages` belong to the children's process and environment, so a worker
-/// task (`machine::pages_line`, with the children's `env`) reports them. `MACHINE_STATE=0` skips it, in a loop or a sweep.
+/// task (`host::pages_line`, with the children's `env`) reports them. `MACHINE_STATE=0` skips it, in a loop or a sweep.
 fn machine_state(when: &str, env: &[(String, String)], worker: &Worker, out: &Path) {
     if !Setup::process().flag("MACHINE_STATE", true) {
         return;
     }
     std::fs::create_dir_all(out).unwrap();
     let log = out.join(format!("machine_state_{when}.log"));
-    let records = worker.run("machine::pages_line", env, &log).unwrap_or_default();
+    let records = worker.run("host::pages_line", env, &log).unwrap_or_default();
     let pages = records.iter().find(|(k, _)| k == "pages").map_or("pages unavailable", |(_, v)| v.as_str());
-    eprintln!("machine at {when}: machine state: {} {pages}", crate::machine::rtp_cpu());
+    eprintln!("machine at {when}: machine state: {} {pages}", crate::host::rtp_cpu());
 }
 
 /// Prints the task's variable `k` for each name in `ECHO` (a comma list), also handing each to the driver as a result record, and a

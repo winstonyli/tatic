@@ -16,6 +16,7 @@ mod corpus;
 mod driver;
 mod encoding;
 pub mod entry;
+mod host;
 mod job;
 mod wasm;
 mod lemma_cache;
@@ -31,6 +32,7 @@ use encoding::*;
 #[allow(unused_imports)]
 use rewrite::*;
 #[allow(unused_imports)]
+use host::*;
 use machine::*;
 #[allow(unused_imports)]
 use search::*;
