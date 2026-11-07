@@ -31,7 +31,7 @@ pub(super) const CHECK_SEGMENT: usize = 64 * 1024 * 1024;
 thread_local! {
     /// The lowest stack address the current segment can reach with
     /// [`RED_ZONE`] still to spare; `usize::MAX` -- "unknown", which
-    /// every check fails -- until [`grow_slow`] first learns it on this
+    /// every check fails -- until [`learn_floor`] first learns it on this
     /// thread. Tracked here rather than asking stacker each
     /// time: `stacker::remaining_stack` measured 8.9 ns a call on Windows
     /// (a lazily-initialized thread-local plus a non-inlined assembly
@@ -68,26 +68,34 @@ pub fn grow<R>(f: impl FnOnce() -> R) -> R {
 /// or a segment genuinely running low. Keeps `FLOOR` describing whichever
 /// segment is current: set on entry to a new one, restored on the way
 /// out -- by a guard, so an unwinding panic restores it too.
-///
+#[cold]
+#[inline(never)]
+fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
+    learn_floor();
+    if stack_ok() { f() } else { on_segment(STACK_PER_RECURSION, f) }
+}
+
+/// The floor of the stack we are on, as stacker measures it.
+fn floor_here() -> Option<usize> {
+    stacker::remaining_stack().map(|left| stack_addr().saturating_sub(left) + RED_ZONE)
+}
+
 /// Outside any segment of ours, `FLOOR` unknown means this is the thread's
 /// own stack, learned once and kept. Where stacker cannot measure that
 /// stack, `FLOOR` stays unknown and every call grows a fresh segment:
 /// slow, but never unprotected.
-#[cold]
-#[inline(never)]
-fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
-    fn floor_here() -> Option<usize> {
-        stacker::remaining_stack().map(|left| stack_addr().saturating_sub(left) + RED_ZONE)
-    }
+///
+/// This must run before a thread's first segment too. Stacker reads a
+/// thread's limit lazily, and on Windows a first read on a segment leaves
+/// the segment's limit as the thread's after it returns: the thread then
+/// has no stack left (a segment for every call past that point) or more
+/// than it has (no segment at its real end), by where the OS put the two.
+fn learn_floor() {
     if FLOOR.with(|f| f.get()) == usize::MAX
         && let Some(floor) = floor_here()
     {
         FLOOR.with(|f| f.set(floor));
-        if stack_ok() {
-            return f();
-        }
     }
-    on_segment(STACK_PER_RECURSION, f)
 }
 
 thread_local! {
@@ -104,9 +112,7 @@ pub fn segment_switches() -> u64 {
 /// Runs `f` on a new stack segment of `size` bytes, with `FLOOR` describing it meanwhile.
 pub(super) fn on_segment<R>(size: usize, f: impl FnOnce() -> R) -> R {
     SEGMENT_SWITCHES.with(|c| c.set(c.get() + 1));
-    fn floor_here() -> Option<usize> {
-        stacker::remaining_stack().map(|left| stack_addr().saturating_sub(left) + RED_ZONE)
-    }
+    learn_floor();
     struct Restore(usize);
     impl Drop for Restore {
         fn drop(&mut self) {
@@ -117,5 +123,29 @@ pub(super) fn on_segment<R>(size: usize, f: impl FnOnce() -> R) -> R {
         let _restore = Restore(FLOOR.with(|f| f.replace(floor_here().unwrap_or(usize::MAX))));
         f()
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A thread's first stack use can be a large `check_in`, whose segment is bigger than the thread's
+    /// stack here, so a limit learned on the segment reads as no stack left or as more than the thread
+    /// has, wherever the OS places the two.
+    #[test]
+    fn a_first_segment_leaves_the_thread_its_own_stack_limit() {
+        const THREAD_STACK: usize = 1024 * 1024;
+        let left = std::thread::Builder::new()
+            .stack_size(THREAD_STACK)
+            .spawn(|| {
+                on_segment(CHECK_SEGMENT, || ());
+                stacker::remaining_stack()
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+            .unwrap();
+        assert!(0 < left && left <= THREAD_STACK, "{left} bytes left on a {THREAD_STACK}-byte stack");
+    }
 }
 
