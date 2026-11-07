@@ -5,8 +5,8 @@
 //   * the stream adder `sumbit(k, ..)` reads its operands at `Nat_k` and is indexed by `Nat_(k+1)` (its count), so
 //     `add : Bits(k) -> Bits(k) -> Bits(k+1)` raises the index level by one. No term lowers a stream's level: that would need
 //     `Nat_k -> Nat_(k+1)` (`embed` goes the other way, `Nat_(k+1) -> Nat_k`; `i C z s` for `i : Nat_k` needs `C : Sort k`).
-//   * so one `Nat` fold cannot carry the accumulator: its state `Bits(k)` would have to be the adder's output `Bits(k+1)`
-//     (test `a_single_nested_fold_is_ill_typed` shows the kernel's message). The outer loop over the multiplier's bit
+//   * so one Church `Nat` fold cannot carry the accumulator: its state `Bits(k)` would have to be the adder's output `Bits(k+1)`
+//     (test `a_single_nested_fold_is_ill_typed` shows the kernel's message; `wnat.rs` lifts this with a W-built index). The outer loop over the multiplier's bit
 //     positions is therefore UNROLLED in the meta-language: m multiplier bits are m adders, `acc_j : Bits(k0 + j)`, and the final
 //     stream is indexed by `Nat_(k0 + m)`. The law is uniform in the OUTPUT POSITION (and in the multiplicand stream), not in the
 //     multiplier's width: the level of the statement grows with m.
@@ -109,7 +109,8 @@ fn stream_multiplier_computes_products() {
 }
 
 /// The single-fold definition one would like (outer fold over the count, state = (position, accumulator stream)) does not
-/// typecheck: the step returns `Bits(k+1)` where the state wants `Bits(k)`. The kernel's message is printed.
+/// typecheck: the step returns `Bits(k+1)` where the state wants `Bits(k)`. The kernel's message is printed. This is a limit of
+/// Church numerals only: `wnat.rs` writes the same fold over a W-built index.
 #[test]
 fn a_single_nested_fold_is_ill_typed() {
     let k = 1u32;

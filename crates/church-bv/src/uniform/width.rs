@@ -36,6 +36,10 @@ pub(crate) enum T {
     Sig(&'static str, Box<T>, Box<T>),
     Pair(&'static str, Box<T>, Box<T>, Box<T>),
     SigRec(Box<T>, Box<T>, Box<T>),
+    W(&'static str, Box<T>, Box<T>),
+    Sup(Box<T>, Box<T>),
+    /// Motive, children family (under the named binder), step, target.
+    WRec(&'static str, Box<T>, Box<T>, Box<T>, Box<T>),
     /// A closed kernel term built elsewhere (`encoding.rs`).
     K(Expr),
 }
@@ -81,7 +85,7 @@ pub(crate) fn comp(t: &T, env: &mut Vec<&'static str>) -> Expr {
             kernel::var((env.len() - 1 - i) as u32)
         }
         S(k) => kernel::sort(*k),
-        Pi(n, a, c) | Lm(n, a, c) | Sig(n, a, c) => {
+        Pi(n, a, c) | Lm(n, a, c) | Sig(n, a, c) | W(n, a, c) => {
             let ea = comp(a, env);
             env.push(n);
             let ec = comp(c, env);
@@ -89,8 +93,21 @@ pub(crate) fn comp(t: &T, env: &mut Vec<&'static str>) -> Expr {
             match t {
                 Pi(..) => kernel::pi(ea, ec),
                 Lm(..) => kernel::lam(ea, ec),
+                W(..) => kernel::wty(ea, ec),
                 _ => kernel::sigma(ea, ec),
             }
+        }
+        Sup(a, f) => {
+            let (ea, ef) = (comp(a, env), comp(f, env));
+            kernel::sup(ea, ef)
+        }
+        WRec(n, m, c, st, tg) => {
+            let em = comp(m, env);
+            env.push(n);
+            let ec = comp(c, env);
+            env.pop();
+            let (es, et) = (comp(st, env), comp(tg, env));
+            kernel::wrec(em, ec, es, et)
         }
         A(f, a) => {
             let (ef, ea) = (comp(f, env), comp(a, env));
