@@ -105,7 +105,8 @@ impl Machine {
                     let c = &s[next.len()];
                     // a subtractor's borrow is maj(~a, b, s)
                     next.push(if *o >= 4 { g.maj(&g.xor(&x, &ones), &y, c) } else { g.maj(&x, &y, c) });
-                    g.sum3(&x, &y, c)
+                    // an `lt`'s value at a position is the borrow into it: at the root, the result once every position is in
+                    if *o == LT { c.clone() } else { g.sum3(&x, &y, c) }
                 }
             };
             val.push(v);
@@ -137,7 +138,7 @@ pub fn raw_table(mach: &Machine, k: usize) -> Vec<Vec<bool>> {
         .map(|r| {
             let bits: Vec<bool> = (0..k + c).map(|pos| r >> (k + c - 1 - pos) & 1 == 1).collect();
             let (o, next) = mach.step(&Bools, &bits[..k], &bits[k..]);
-            std::iter::once(!mach.last() && o).chain(next).collect()
+            std::iter::once(o).chain(next).collect()
         })
         .collect()
 }
@@ -164,7 +165,7 @@ pub fn try_encoding(raw: &[Vec<Vec<bool>>; 2], k: usize, phi: &[Vec<Vec<bool>>; 
 }
 
 /// The coarsest consistent encoding, by Moore partition refinement over the carry vectors of both machines: two vectors
-/// share a class iff no input sequence tells them apart (the same outputs, and with a root `lt` the same final bit). The
+/// share a class iff no input sequence tells them apart (the same outputs; a root `lt` outputs its borrow). The
 /// class number, in binary, is the phi value. `None` when the two start states (all-false) differ, i.e. the terms differ at
 /// some width, or when only one root is an `lt`. Unreachable vectors change no answer: whether the start states share a
 /// class depends only on what they reach.
@@ -174,9 +175,8 @@ pub fn moore_encoding(m1: &Machine, m2: &Machine, k: usize) -> Option<Encoding> 
     }
     let raw = [raw_table(m1, k), raw_table(m2, k)];
     let cs = [m1.carries(), m2.carries()];
-    let last = m1.last();
     // class[side][s]
-    let mut class: [Vec<usize>; 2] = [0, 1].map(|side| (0..1usize << cs[side]).map(|s| if last { s & 1 } else { 0 }).collect());
+    let mut class: [Vec<usize>; 2] = [0, 1].map(|side| vec![0; 1 << cs[side]]);
     let mut count = 0;
     loop {
         let mut ids: hashbrown::HashMap<Vec<(usize, bool, usize)>, usize> = Default::default();

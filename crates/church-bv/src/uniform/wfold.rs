@@ -119,10 +119,11 @@ fn side(t: &Term, x: &[T]) -> Option<Side> {
             2 => nat_(or2(at_n(&p), at_n(&q))),
             3 => nat_(xor(at_n(&p), at_n(&q))),
             4 | 5 => {
-                // a subtractor's borrow is the carry of `~a` and `b`; an `lt` here is the root (`Machine::parse`)
+                // a subtractor's borrow is the carry of `~a` and `b`; an `lt` is the borrow itself, as a stream: its value
+                // at `i` compares the low `i` bits (`Machine::step`)
                 let borrow = nat_(carry(nat_(xor(at_n(&p), tt())), q.clone(), v("$n")));
                 carries.push(borrow.clone());
-                nat_(xor3(at_n(&p), at_n(&q), at_n(&borrow)))
+                if *o == LT { borrow } else { nat_(xor3(at_n(&p), at_n(&q), at_n(&borrow))) }
             }
             6 => {
                 carries.push(shl(p.clone()));
@@ -133,8 +134,6 @@ fn side(t: &Term, x: &[T]) -> Option<Side> {
         val.push(next);
     }
     let root = match m.root {
-        // a root `lt` is the last borrow, as a stream: its value at `i` compares the low `i` bits
-        _ if m.last() => carries.last().expect("a borrow").clone(),
         Src::Leaf(j) => leaf[j].clone(),
         Src::Node(j) => val[j].clone(),
     };
@@ -299,36 +298,11 @@ impl Law {
     fn agree(&self, p: &T) -> Vec<T> {
         (0..self.m()).map(|q| eqb(self.phi(0, q, &self.at(0, p)), self.phi(1, q, &self.at(1, p)))).collect()
     }
-    /// With a root `lt`: the last carries agree at `p`, each being the function `dec` of its side's phi.
-    fn last_carry(&self, goods: &[Vec<T>; 2], p: &T, ip: &[T]) -> T {
-        let m = self.m();
-        let mut dec = vec![false; 1 << m];
-        for sd in 0..2 {
-            for s in 0..1usize << self.sides[sd].carries.len() {
-                dec[index_of(&(0..m).map(|j| self.enc.phi[sd][j][s]).collect::<Vec<_>>())] = s & 1 == 1;
-            }
-        }
-        let d = |ph: &[T]| table(ph, &|bits| dec[index_of(bits)]);
-        let phis = |sd: usize, s: &[T]| -> Vec<T> { (0..m).map(|q| self.phi(sd, q, s)).collect() };
-        let inst = |sd: usize| {
-            let lemma = by_cases(self.sides[sd].carries.len(), &|s| (s.last().expect("a borrow").clone(), d(&phis(sd, s))));
-            let bits = self.at(sd, p).into_iter().fold(lemma, ap);
-            goods[sd].iter().map(|l| ap(self.held(l), p.clone())).fold(bits, ap)
-        };
-        let (s0, s1) = (self.at(0, p), self.at(1, p));
-        let (pl, pr) = (phis(0, &s0), phis(1, &s1));
-        let (cl, cr) = (s0.last().expect("a borrow").clone(), s1.last().expect("a borrow").clone());
-        let (dl, dr) = (d(&pl), d(&pr));
-        let back = sym(cr.clone(), dr.clone(), inst(1));
-        trans(cl, dl.clone(), cr.clone(), inst(0), trans(dl, dr, cr, cong(&d, &pl, &pr, ip), back))
-    }
     /// The proof of the whole law, and its statement.
     fn proof(&self) -> (T, T) {
         let m = self.m();
         let goods = [self.good_carries(0), self.good_carries(1)];
-        let last = self.sides[0].m.last();
-        // with a root `lt`, `F_0` is never read: the law is about the last carry
-        let lemmas: Vec<Vec<T>> = (0..2).map(|sd| (0..=m).map(|j| if last && j == 0 { ff() } else { self.lemma(sd, j) }).collect()).collect();
+        let lemmas: Vec<Vec<T>> = (0..2).map(|sd| (0..=m).map(|j| self.lemma(sd, j)).collect()).collect();
         // `F_j` of the left at `p` equals the right's, from the phi agreement `ip` at `p`
         let eq = |j: usize, p: &T, ip: &[T]| {
             let u = self.ops(p);
@@ -368,7 +342,7 @@ impl Law {
         let inv = self.closed(lm("n", nw(), inv));
         let i = v("i");
         let ip = projections(&self.agree(&i), ap(self.held(&inv), i.clone()));
-        let whole = if last { self.last_carry(&goods, &i, &ip) } else { eq(0, &i, &ip) };
+        let whole = eq(0, &i, &ip);
         let proof = self.over(&|ty, n, t| lm(n, ty, t), lm("i", nw(), whole));
         let stmt = eqb(ap(self.sides[0].root.clone(), i.clone()), ap(self.sides[1].root.clone(), i));
         (proof, self.over(&|ty, n, t| pi_(n, ty, t), pi_("i", nw(), stmt)))
