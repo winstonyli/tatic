@@ -65,9 +65,7 @@ pub fn grow<R>(f: impl FnOnce() -> R) -> R {
 }
 
 /// [`grow`]'s slow path: the first check on a thread (`FLOOR` unknown),
-/// or a segment genuinely running low. Keeps `FLOOR` describing whichever
-/// segment is current: set on entry to a new one, restored on the way
-/// out -- by a guard, so an unwinding panic restores it too.
+/// or a segment genuinely running low.
 #[cold]
 #[inline(never)]
 fn grow_slow<R>(f: impl FnOnce() -> R) -> R {
@@ -80,10 +78,9 @@ fn floor_here() -> Option<usize> {
     stacker::remaining_stack().map(|left| stack_addr().saturating_sub(left) + RED_ZONE)
 }
 
-/// Outside any segment of ours, `FLOOR` unknown means this is the thread's
-/// own stack, learned once and kept. Where stacker cannot measure that
-/// stack, `FLOOR` stays unknown and every call grows a fresh segment:
-/// slow, but never unprotected.
+/// `FLOOR` unknown means the current stack has not been measured: learned
+/// once and kept. Where stacker cannot measure it, `FLOOR` stays unknown
+/// and every call grows a fresh segment: slow, but never unprotected.
 ///
 /// This must run before a thread's first segment too. Stacker reads a
 /// thread's limit lazily, and on Windows a first read on a segment leaves
@@ -109,7 +106,8 @@ pub fn segment_switches() -> u64 {
     SEGMENT_SWITCHES.with(|c| c.get())
 }
 
-/// Runs `f` on a new stack segment of `size` bytes, with `FLOOR` describing it meanwhile.
+/// Runs `f` on a new stack segment of `size` bytes, with `FLOOR` describing it meanwhile: set on entry,
+/// restored on the way out by a guard, so an unwinding panic restores it too.
 pub(super) fn on_segment<R>(size: usize, f: impl FnOnce() -> R) -> R {
     SEGMENT_SWITCHES.with(|c| c.set(c.get() + 1));
     learn_floor();
@@ -135,17 +133,17 @@ mod tests {
     #[test]
     fn a_first_segment_leaves_the_thread_its_own_stack_limit() {
         const THREAD_STACK: usize = 1024 * 1024;
-        let left = std::thread::Builder::new()
+        let (left, floor_known) = std::thread::Builder::new()
             .stack_size(THREAD_STACK)
             .spawn(|| {
                 on_segment(CHECK_SEGMENT, || ());
-                stacker::remaining_stack()
+                (stacker::remaining_stack().unwrap(), stack_ok())
             })
             .unwrap()
             .join()
-            .unwrap()
             .unwrap();
         assert!(0 < left && left <= THREAD_STACK, "{left} bytes left on a {THREAD_STACK}-byte stack");
+        assert!(floor_known, "the thread's own floor is known after its first segment");
     }
 }
 
