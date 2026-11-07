@@ -1,0 +1,73 @@
+busy samples 21298
+-- self --
+ 13.2% core::ptr::write
+  7.0% church_bv::uniform::width::comp (.llvm.5163982323406780649)
+  6.8% mi_free
+  5.3% ::clone (.llvm.13989026557404358747)
+  5.2% core::ptr::drop_glue:: (.llvm.13989026557404358747)
+  3.7% mi_theap_malloc_aligned_at
+  3.4% tatic_kernel::spaces::impl$2::find::closure$0
+  3.2% tatic_kernel::expr::impl$16::eq
+  2.3% _mi_page_malloc_zero(struct mi_theap_s *, struct mi_page_s *, unsigned __int64, bool)
+  2.0% core::core_arch::x86::sse2::_mm_movemask_epi8
+  1.9% hashbrown::raw::RawTableInner::ctrl
+  1.5% core::ptr::drop_glue:: (.llvm.6755101874301049032)
+  1.5% mi_page_free_list_extend
+  1.4% ::interp_in (.llvm.13938440742517556813)
+  1.2% enum2$::map_kids
+  1.1% core::ptr::drop_glue
+  1.1% enum2$::tag_leaf
+  1.0% core::ptr::mut_ptr::impl$0::sub
+  0.9% ::mk
+  0.9% ::find::
+  0.8% ntkrnlmp.pdb!0x219b0f
+  0.8% core::clone::uninit::impl$0::clone_one
+  0.7% mimalloc::impl$0::alloc
+  0.7% mimalloc::impl$0::dealloc
+  0.7% enum2$::for_kids
+-- inclusive (church_bv / tatic) --
+ 91.5% church_bv::uniform::wfold::w_fold_every_encoded_pair
+ 91.5% church_bv::uniform::wfold::w_fold_every_encoded_pair::closure$0
+ 82.6% church_bv::uniform::wfold::Law::proof
+ 45.9% church_bv::uniform::wfold::impl$2::proof::closure$0::closure$0
+ 45.9% church_bv::uniform::wfold::by_cases
+ 45.9% church_bv::uniform::wfold::impl$2::proof::closure$0
+ 31.3% church_bv::uniform::width::ex
+ 31.3% church_bv::uniform::width::comp (.llvm.5163982323406780649)
+ 24.9% tatic_kernel::expr::with_spaces
+ 22.9% tatic_kernel::expr::mk
+ 22.6% church_bv::uniform::wnat::ind
+ 21.7% tatic_kernel::expr::mk::closure$0
+ 20.3% church_bv::uniform::wfold::by_cases::go (.llvm.13989026557404358747)
+ 19.3% tatic_kernel::spaces::Spaces::build
+ 18.9% church_bv::uniform::wfold::impl$2::lemma::closure$0
+ 18.3% church_bv::uniform::wfold::impl$2::proof::closure$5
+ 14.5% tatic_kernel::spaces::Space::find
+ 14.4% church_bv::_::__rust_alloc
+ 12.7% church_bv::uniform::wfold::table
+ 12.7% church_bv::uniform::wfold::table::go (.llvm.13989026557404358747)
+ 11.0% church_bv::uniform::wfold::Law::closed
+ 10.4% tatic_kernel::expr::var
+  9.9% tatic_kernel::check::with_infer_cache::
+  9.9% tatic_kernel::check::check_in::closure$0::closure$0::closure$0::closure$0
+  9.9% tatic_kernel::stack::grow
+  9.9% tatic_kernel::check::check_in::closure$0::closure$0::closure$0
+  9.8% tatic_kernel::check::Checker::check
+  9.8% tatic_kernel::check::Checker::infer_node
+  9.8% tatic_kernel::check::impl$2::check::closure$0::closure$0
+  9.0% church_bv::uniform::wfold::impl$2::proof::closure$1
+  8.9% church_bv::uniform::wfold::pair
+  8.9% tatic_kernel::check::impl$2::infer_node::closure$0::closure$2
+  8.9% church_bv::uniform::wfold::Law::g
+  8.4% church_bv::uniform::wfold::Law::step
+  8.1% tatic_kernel::stack::on_segment::closure$1
+  7.2% tatic_kernel::spaces::impl$2::find::closure$0
+  6.6% church_bv::uniform::wfold::impl$2::proof::closure$5::closure$1
+  5.6% tatic_kernel::expr::app
+  5.2% church_bv::uniform::wfold::cong
+  5.0% tatic_kernel::subst::instantiate_n
+  4.8% tatic_kernel::reduce::whnf_in
+  4.7% church_bv::uniform::wfold::cong::closure$0
+  4.5% tatic_kernel::subst::inst_rec
+  4.5% church_bv::_::__rust_dealloc
+  4.4% tatic_kernel::subst::inst_rec::closure$1
