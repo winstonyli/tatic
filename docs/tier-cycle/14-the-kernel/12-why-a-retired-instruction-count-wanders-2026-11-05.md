@@ -2,8 +2,10 @@
 The `church_bv` test exe's count moved about 0.5% run to run, against the 0.002-0.03% of a quiet single-threaded workload. Two
 things drive it. Large OS pages in mimalloc add counted instructions to some processes, probably kernel work. And stacker learns
 a proof thread's stack limit on a fiber, so where the OS places that fiber decides whether the thread pays 1903 extra stack segments:
-with large pages off the miner test wanders 1.6% unjoined against 0.07% joined, and reading the limit first gives 0.11% unjoined.
-With large pages off and the proofs joined the whole exe repeats to 0.06% in two runs of 12; single tests in that arm still have rare high runs.
+with large pages off the miner test wanders 1.6% unjoined against 0.07% joined, and reading the limit first leaves 8 unjoined runs
+within 0.11% of each other. With large pages off the whole exe repeats to 0.06% with the proofs joined, in two runs of 12, and to 0.04%
+unjoined with the limit read first, in one run of 12 where one first run reads 0.6% high. Joining does not remove the 1903 segments:
+they are the top four of 96 joined `extras_by_first` runs.
 
 Each arm is `548df0e` in a throwaway worktree, sweep profile, `icount.ps1` on CPU 4, `--test-threads=1`, the parent's row only
 (children are separate rows). "Joined" means each proof thread is joined at once. Every arm but the first row carries a small dump
@@ -40,8 +42,14 @@ of its first batch stops at 183.6 G with no child rows after it, so that is a cu
   at once, 340 of 23831, no child over 30 samples. The children tie kernel time to the extra count; a parent's extra 1.5-3 G is tied
   by nothing recorded, and the large-off parent's kernel share sits between the two large-on ones. That the work is assembling
   contiguous physical pages, so that it depends on what the whole machine did to memory (each batch starts after xperf has parsed
-  a trace of a gigabyte or more), is a further inference: kernel symbols, or free and standby page counts logged before each run,
-  would confirm it. With large pages on the level also moves between batches (`joined`, rotated: 158.4-158.8 G, then 157.5-158.1 G).
+  a trace of a gigabyte or more), is a further inference, and page totals give it no support. With large pages on, the limit read first
+  and unjoined, 8 batches of 4 (`2026-11-06-e1-h3h2`, `2026-11-06-e1-h2b`), the first run beat the batch's next highest by 3.6-5.7 G in
+  6, by 0.3 G in one and not at all in one; the second run also read 1.5-2.4 G over its batch's lowest in 3 of the 8. Free memory logged
+  just before those 6 first runs was 1158-5292 MB, and before the other two 4275 and 3967 MB; one later run started on 92 MB and read
+  level with its batch. Standby at each run's start was 22.3-27.1 GB. Eight batches cannot rule a free-memory effect out, and a total says nothing of
+  contiguity, so that stays untested; kernel symbols would settle it. The limit read does not touch this cost: children still reach
+  1.7 G. With large pages off, unjoined, one of 3 first runs read high, 159.88 G against 158.92-159.01 G, starting on 568 MB free (`e1-h2b`).
+  With large pages on the level also moves between batches (`joined`, rotated: 158.4-158.8 G, then 157.5-158.1 G).
 - **Proof overlap: the miner test's page-fault modes.** `a_false_winner_rolls_the_rounds_back` falls in three modes a step of about
   1910 faults apart, and the count rises with them: 9.8k faults 14.71-14.74 G, 11.7k 14.73 G, 13.6k 14.76-14.80 G (`e1-arml`). Large
   pages off keeps the wander (0.50%). Joining each proof thread at once leaves one mode, 5030-5082 faults, and spread 0.10%; with
@@ -56,12 +64,14 @@ of its first batch stops at 183.6 G with no child rows after it, so that is a cu
   while its kernel work is identical (`e1-h1b`). A high proof makes exactly 1903 extra 1 MB stack segments, each a fiber, and a low one
   none (`e1-h1d`, `e1-h1e`). `stacker`'s `STACK_LIMIT` is a lazily initialised thread-local. These proofs' first stack use is a large
   `check_in`, so its first read is in `fiber_proc`, on the 64 MB fiber: the fiber's limit is computed, saved as the "old" one and
-  restored as the thread's. `remaining_stack` on the thread then measures against a limit on another stack. With the thread's stack
+  restored as the thread's, so it stays for the thread's life. `remaining_stack` on the thread then measures against a limit on another stack. With the thread's stack
   below the fiber it saturates to 0: `floor_here` puts `FLOOR` above the stack pointer, and every top-level `grow` on the thread
   takes a fresh segment. With the stack above the fiber it reads about 512 MB left on a 256 MB stack, so no crossings, but also no
   protection at the true end of the stack. Placement decides the mode, 24 of 24 proofs without the fix in `e1-h1f`: stack below, 1903 crossings;
   above, none. Joined, all 8 sat above in that run (why the join favours that placement is an inference: only one proof thread and
-  its fibers are alive at a time), and a joined run that lands below is high, which is the 544 M proof in `e1-h1d`.
+  its fibers are alive at a time), and a joined run that lands below is high, which is the 544 M proof in `e1-h1d`. Counted per run on
+  `extras_by_first`, joined with large pages off, 4 of 96 runs made 1903 segments and they are the four highest, 14.460-14.491 G against
+  a median of 14.238 G (`e1-h2b`).
   Reading `remaining_stack` at the top of `on_segment`, before the first fiber, leaves 0 crossings in 16 of 16 proofs under either
   placement, with 256 MB reported correctly, in the same ABBA run: 14.750-14.766 G over 8 runs, 0.11% end to end, unjoined; joined
   14.750-14.771 G; unchanged 14.953-15.267 G. The 200 M and 232 M levels differ by the 1910-fault step, about one fault per segment;
@@ -74,23 +84,29 @@ of its first batch stops at 183.6 G with no child rows after it, so that is a cu
   200.7-202.3 G, 0.30% (`e1-arml`), as expected with the overlap present. Joined it is at 199.96-202.39 G, 0.13%, with high runs in
   two of three batches, one of them first: up to 2.4 G over best where the joined large-off arm's highest is 0.34 G. Whether that is
   a third source or sampling of 11 runs was not tested, and joining was shown to quiet the count only under mimalloc.
-- **Hashing: not shown to matter.** An address-free `op_hash` left the miner tests at 1.3-1.4% (`e1-armx-count`) and fixed foldhash seeds
+- **Hashing: not shown to matter.** On `extras_by_first`, all four arms joined with large pages off, 24 rotated runs each (`e1-h3h2`): base 14.254 G
+  median, 0.22%; limit read first 14.254 G, 0.27%; address-free `op_hash` 14.305 G, 0.20%; fixed foldhash seeds 14.245 G, 0.23%. The address-free
+  hash moves the level and neither hashing arm moves the spread. Their high runs (14.576 G; 14.487 and 14.759 G) are the size of one and two proofs'
+  segments and the arms lack the limit read, so they are probably crossings (inference: those arms had no counter). Before that, unjoined, an address-free `op_hash` left the miner tests at 1.3-1.4% (`e1-armx-count`) and fixed foldhash seeds
   at 0.8-1.8% (`e1-armhm`, `e1-armpm`; the second's `bvp` is a stale copy of the same arm), with low runs (14.26-14.27 G; 14.50-14.52 G;
   and 9348 faults at 14.554 G in `e1-armpm2`). The unchanged baseline does not settle it, because it differs by series: no dump, 6 runs,
   1.4% with runs at 14.19-14.35 G (`e1-pertest`); with the dump, 12 runs, 0.30% and no low runs (`e1-arml`). Why the two differ was
-  not looked into, and neither hashing arm was tried with the two sources removed. The instrumented `walk` and
+  not looked into. The instrumented `walk` and
   `op` counts of `a_false_winner` are identical every run and `match` moves about 0.02% (`e1-armw`); they cover only the instrumented
   functions, not the proof, the allocator or hashing.
-- **Not explained.** With both sources removed, `extras_by_first_mines_what_the_unpooled_file_mines` still has runs up to 1.75% over
-  best at 0.13%, and `a_false_winner` 0.31% over at 0.04% (`e1-armt`); joined with large pages on, one `a_false_winner` run is 1.6%
-  over. In `e1-armhm` one miner run read 15.53 G, 5.7% over; neither it nor the 34.7 G above recurred, and neither was looked into.
-- **Reading a count.** For a whole-exe A/B with large pages on, expect up to 3.3% on the first run of a batch and about 1% between batch
+- **Not explained.** Joined with large pages off, `extras_by_first_mines_what_the_unpooled_file_mines` had runs 1.75% over best at 0.13%
+  (`e1-armt`); that is the size of the crossing runs above (1.7-2.0% over), so it is probably one (inference). Two of the 92 runs without
+  crossings in `e1-h2b` still read 14.353 and 14.368 G, 1.0-1.1% over best, and no others passed 0.6%. `a_false_winner` read 0.31% over at
+  0.04% (`e1-armt`), and joined with large pages on one run is 1.6% over. In `e1-armhm` one miner run read 15.53 G, 5.7% over; neither it nor the 34.7 G above recurred, and neither was looked into.
+- **Reading a count.** For a whole-exe A/B with large pages on, expect up to 4.7% on the first run of a batch (`e1-h3h2`) and about 1-2% between batch
   levels, and judge by the median over rotated batches: best-of-N picks the lowest batch level, and dropping first runs leaves the level
-  and the children. Large pages off is quiet only with the proofs joined, which is a code change, and it needs a build with the define
-  changed because mimalloc reads the option at load and the Samply task has its own environment; `driver::sweep` children already run
-  with them off. A single test in the quiet arm still showed a 1.75% high run. `2026-10-30-p1b`'s 161.96 G then 159.85 G, put down to
+  and the children. Large pages off is quiet only with the limit read first or the proofs joined, both code changes. Whole exe, max / best is 1.002 joined
+  and 1.006 with the limit read (158.918 G best, 158.976 G median, 0.04%, 12 runs in 3 batches, not in the table, `e1-h2b`); that the limit read also ends the
+  crossings a joined run can still make is from the miner test (`e1-h1f`), not counted on the whole exe. Either arm needs a build with the define
+  changed because mimalloc reads the option at load and the Samply task has its own environment, and `--skip machine::mimalloc_defaults_to_large_pages`,
+  since that test fails on such a build and `icount.ps1` stops on a failing exe; `driver::sweep` children already run with them off. `2026-10-30-p1b`'s 161.96 G then 159.85 G, put down to
   load in `docs/runs/2026-10-30/rows/2026-10-30-p1land.txt`, has the first-run shape (inference; not rerun).
-- **Joining pins the low mode; it saves no work of its own.** `a_false_winner` falls 3% joined (14.32 G against 14.75 G; 14.74 G against
+- **Joining makes the low mode likely; it saves no work of its own.** `a_false_winner` falls 3% joined (14.32 G against 14.75 G; 14.74 G against
   15.21 G with large pages off, compared across runs and builds), and the unchanged build also read 14.32 and 14.35 G in 2 of 6 runs
   (`e1-pertest`). That gap is the crossings above: with the limit read first, unjoined matches joined to within the spread (`e1-h1f`).
   The comment at `Rounds::play` describes the overlap and gives no reason; that it is there to hide proof time
