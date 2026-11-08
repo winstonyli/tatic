@@ -67,7 +67,7 @@ Shifting a closed term is free, because `shift` returns its input when nothing i
 
 - **Home.** `Cx` (with its methods), `At`, `Ty`, `tele`, `law` and the `ty!` macro move from `src/wasm.rs` (lines 13-73, about 60
   lines) to `encoding/cx.rs`. `encoding.rs` re-exports them; the macro goes through `pub(crate) use ty;`, and `tele` becomes
-  `pub(crate)`, since `wasm.rs` also calls it.
+  `pub(crate)`, since `wasm.rs`' `ctors` (and the telescope at its line 514) also call it.
   - A new `statement(tys, stmt)` returns `law`'s statement alone, for tests that build one by hand. `law` is rebuilt on it, so the Pi
     telescope is written once.
   - The reason to move them is dependency direction: they are a generic builder, `wasm.rs` is one consumer, and the fold should not
@@ -122,7 +122,8 @@ StepProof<'a> {
 - **Callers own the lemmas.** `tree_proof` wraps each `lemma(side, j)` in `shared_lemma` with today's key (machine key, `k`, `nv`,
   `F{j}` and `enc.g[j]`, `enc.phi[side]`) and keeps the returned proof, which may be a `Postulates` parameter, as today. wfold calls
   `lemma(side, j).0` directly.
-- **Visibility.** `machines` and `gops` are `pub(crate)`, so `good_carries`' `hj` can run `Machine::step` with real witnesses.
+- **Visibility.** `machines` and `gops` are `pub(crate)`, so `good_carries`' `hj` can run `Machine::step` with real witnesses; `enc`,
+  `k`, `phi` and `step_of` too, for `agree` and the tag-split `pred`.
 - **Lifetime.** A `StepProof` is borrowed and lives only for one `tree_proof` call or one `proof` call. `GoodOps::new` is three `good2`
   calls, so building one per call is cheap. wfold gets the leaf sharing it lacks today through `steps`.
 - **Not shared.** wfold's `agree` (the `m` phi equations at given carries, for the invariant and `hj`) is a two-line map over `phi` that
@@ -144,8 +145,9 @@ StepProof<'a> {
   - This adds no `thread_local`. With one region per pair, each constant is built once per pair. If codegen gives one closure two
     addresses (two codegen units), the constant is built twice, to an equal interned term: a rebuild, not an error. The existing
     once-per-generation test runs at test opt-level, where this does not arise.
-- **Builders over operands** take `&mut Cx` and either `At`s or `Expr`s at the current depth. Examples: `carry`, `add`, `shl`, `eqb`,
-  `maybe`, `just`, `goodmaybe`, `good_stream`, `carry_at`, `succ_w`, `rec_w`, `shr`, `tmask` and `xor3`.
+- **Builders over operands** that bind a variable take `&mut Cx` and either `At`s or `Expr`s at the current depth: `maybe`, `just`,
+  `goodmaybe`, `good_stream`, `carry_at`, `succ_w`, `rec_w`, `shr` and `tmask`. Those that only apply a constant (`carry`, `add`,
+  `shl`, `eqb`, `xor3`) take `Expr`s and no `Cx`.
   - `carry`, `add` and `shl` apply the closed function constants.
   - `good_case` goes. Its two callers, `zero_w` and `succ_w`, build closed tags, so the two tags become constants, `zero_tag` and
     `succ_tag`. Each inlines `good_case`'s `\P hj hn.`, with `hn` or `hj star` as the body. `zero_w` and `succ_w(cx, n)` add only the
@@ -369,7 +371,8 @@ Context:
 ## Checks
 
 - **Tests.** `cargo test -p church-bv --lib` passes, including every control under Goals and `tree_proof`'s tests after the b1
-  extraction.
+  extraction. A pin test records `tree_proof`'s outer and discharged proof sizes before the extraction and must match after it (the
+  gate's counts cannot see a term change), and the size test bounds the inferred type at twice the statement's distinct nodes.
 - **The statement's layout.** `w_fold_a_theorem_applies_to_good_streams` runs over three pairs whose operands are not symmetric:
   - `sub(x, add(y, z)) = sub(sub(x, y), z)`, which has carries;
   - `lt(x, y) = lt(not(y), not(x))`, a root `lt`;
@@ -397,8 +400,9 @@ Context:
   - The arms' test paths differ (`uniform::wfold::..` and `wfold::..`), so the filter matches by substring, without `--exact`.
   - Run an A/A first. The exe uses mimalloc with large pages, so rotate the arms across batches of 4 or more, and compare medians with
     max/best beside them.
-  - Report the build span. Subtract each arm's count at the largest stride that still samples one pair with an encoding: the test asserts
-    `tried > 0`, and `icount.ps1` stops on a failure. That count is the enumeration's fixed cost plus one pair.
+  - Report the build span. Subtract each arm's count at one stride, found on the base arm and shared by both so they sample the same
+    pair: the largest that still samples one pair with an encoding (the test asserts `tried > 0`, and `icount.ps1` stops on a
+    failure). That count is the enumeration's fixed cost plus one pair.
   - Confirm the verdicts (469 tried, 1 with no encoding, pass) from a separate untimed `--nocapture` run, since the counted run drops its
     output.
 - **Full sweep.** `WFOLD_STRIDE=1` and `WFOLD_THREADS=10` through `run.ps1` give 45621 proved and 56 without an encoding.
@@ -414,7 +418,7 @@ Context:
 - **`encoding/division.rs`, `good.rs`:** their slot numbers (6, 7 and 8) go.
 - **`job.rs`:** the `CONSTANTS` line of `THREAD_LOCAL` reads "by build function".
 - **`machine.rs`:** `StepProof` (b1) and the module-level `Step` replace `tree_proof`'s `phi_expr`, `g_expr`, `step_of`, `side_f`,
-  `steps`, `step_at`, the side-lemma body, `lemmas` and `eq`.
+  `steps`, `step_at`, the side-lemma body and `eq`; `lemmas` stays as `tree_proof`'s vec of `shared_lemma` wrappers.
 - **`src/wnat.rs`**, moved from `uniform/` (c1), is on `Expr`.
   - It deletes its `T` builders, the `K(ex(..))` wrappers, `sym`, `trans`, `cong3`, `sel`, `selm`, `fw`, `good_case`, `noop` (today's
     `pre` identity), the `rew` uses and the reserved names. `stream_of`, `num`, `zw`, `ptw` and the `tag_*` builders are ported.
