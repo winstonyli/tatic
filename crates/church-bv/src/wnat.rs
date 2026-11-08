@@ -678,34 +678,42 @@ fn w_index_stage2_the_fill_bit_mutant_computes_wrong_products() {
 // ---------- stages 3 and 4: laws at a symbolic position, count and operands ----------
 #[test]
 fn w_index_stage3_zero_times_y() {
-    checked("zero mul y = 0, m symbolic", check(&Ctx::new(), &proof_zero_mul(), &stmt_zero_mul(f())));
-    assert!(check(&Ctx::new(), &proof_zero_mul(), &stmt_zero_mul(t())).is_err(), "control: mul m zs y i = true");
+    tatic_kernel::scoped(|| {
+        checked("zero mul y = 0, m symbolic", check(&Ctx::new(), &proof_zero_mul(), &stmt_zero_mul(f())));
+        assert!(check(&Ctx::new(), &proof_zero_mul(), &stmt_zero_mul(t())).is_err(), "control: mul m zs y i = true");
+    })
 }
 #[test]
 fn w_index_stage4a_add_commutes() {
-    checked("add x y = add y x", check(&Ctx::new(), &proof_add_comm(), &stmt_add_comm(&|x, y| add(y, x))));
-    assert!(check(&Ctx::new(), &proof_add_comm(), &stmt_add_comm(&|_, y| add(y, y))).is_err(), "control: add x y = add y y");
+    tatic_kernel::scoped(|| {
+        checked("add x y = add y x", check(&Ctx::new(), &proof_add_comm(), &stmt_add_comm(&|x, y| add(y, x))));
+        assert!(check(&Ctx::new(), &proof_add_comm(), &stmt_add_comm(&|_, y| add(y, y))).is_err(), "control: add x y = add y y");
+    })
 }
 #[test]
 fn w_index_stage4b_the_shift_law() {
-    let pf = proof_mul_shl();
-    checked("mul m (shl x) y = shl (mul m x y)", check(&Ctx::new(), &pf, &stmt_mul_shl(false, &|_cx, t| shl(t))));
-    assert!(check(&Ctx::new(), &pf, &stmt_mul_shl(false, &|_cx, t| t)).is_err(), "control: mul m (shl x) y = mul m x y");
-    let filled = |_cx: &mut Cx, t: Expr| app(shl_fn(true), t);
-    assert!(check(&Ctx::new(), &pf, &stmt_mul_shl(true, &filled)).is_err(), "control: the fill-bit mutant");
+    tatic_kernel::scoped(|| {
+        let pf = proof_mul_shl();
+        checked("mul m (shl x) y = shl (mul m x y)", check(&Ctx::new(), &pf, &stmt_mul_shl(false, &|_cx, t| shl(t))));
+        assert!(check(&Ctx::new(), &pf, &stmt_mul_shl(false, &|_cx, t| t)).is_err(), "control: mul m (shl x) y = mul m x y");
+        let filled = |_cx: &mut Cx, t: Expr| app(shl_fn(true), t);
+        assert!(check(&Ctx::new(), &pf, &stmt_mul_shl(true, &filled)).is_err(), "control: the fill-bit mutant");
+    })
 }
 /// The symbolic theorem, read at closed numbers, says what the product says: its two sides reduce to bit `p` of `2xy`.
 #[test]
 fn w_index_stage4b_instantiates_to_true_products() {
     let nb = 3;
-    let pf = proof_mul_shl();
-    for (x, y) in [(5u128, 3u128), (7, 7), (6, 5), (3, 0)] {
-        for p in 0..2 * nb + 3 {
-            let at = app(app3(pf, num(nb), stream_of(x, nb), stream_of(y, nb)), num(p));
-            let want = bit((2 * x * y >> p) & 1 == 1);
-            checked(&format!("{x} {y} bit {p}"), check(&Ctx::new(), &at, &eqb(want, want)));
-            let flip = bit((2 * x * y >> p) & 1 == 0);
-            assert!(check(&Ctx::new(), &at, &eqb(flip, flip)).is_err(), "{x} {y} bit {p}: the wrong bit passed");
+    tatic_kernel::scoped(|| {
+        let pf = proof_mul_shl();
+        for (x, y) in [(5u128, 3u128), (7, 7), (6, 5), (3, 0)] {
+            for p in 0..2 * nb + 3 {
+                let at = app(app3(pf, num(nb), stream_of(x, nb), stream_of(y, nb)), num(p));
+                let want = bit((2 * x * y >> p) & 1 == 1);
+                checked(&format!("{x} {y} bit {p}"), check(&Ctx::new(), &at, &eqb(want, want)));
+                let flip = bit((2 * x * y >> p) & 1 == 0);
+                assert!(check(&Ctx::new(), &at, &eqb(flip, flip)).is_err(), "{x} {y} bit {p}: the wrong bit passed");
+            }
         }
-    }
+    })
 }

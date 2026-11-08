@@ -251,8 +251,9 @@ fn invariant(cx: &mut Cx, r: &Root, goods: &[Vec<At>; 2]) -> (Expr, Expr) {
     let proof = cx.lam(nw(), |cx, n| ind(cx, &[], &body, cx.at(n), &pred, &hj, &hn));
     (proof, ty)
 }
-/// The proof of the law two machines compute, and its statement.
+/// The proof of the law two machines compute, and its statement. Its caller builds and checks it in one `scoped` region.
 fn proof(k: usize, machines: &[Machine; 2], enc: &Encoding) -> (Expr, Expr) {
+    assert!(intern_generation() != 0, "wfold::proof outside a scoped region: build and check it in one tatic_kernel::scoped call");
     let sp = StepProof::new(machines, enc, k);
     let lemmas: Vec<Vec<Expr>> = (0..2).map(|sd| (0..=enc.phi[0].len()).map(|j| sp.lemma(sd, j).0).collect()).collect();
     let stmt = |cx: &mut Cx, xs: &[At]| {
@@ -287,8 +288,10 @@ fn shl_t(a: Term) -> Term {
 fn proved(k: usize, l: Term, r: Term) {
     let name = format!("{} = {}", l.show(), r.show());
     let (machines, enc) = encode(k, &l, &r).unwrap_or_else(|| panic!("{name}: no encoding"));
-    let (proof, stmt) = proof(k, &machines, &enc);
-    checked(&name, check(&Ctx::new(), &proof, &stmt));
+    tatic_kernel::scoped(|| {
+        let (proof, stmt) = proof(k, &machines, &enc);
+        checked(&name, check(&Ctx::new(), &proof, &stmt));
+    })
 }
 /// `ty`'s first `args.len()` Pis turned back into lambdas around the rest, applied to `args` (`def_eq` does the beta steps).
 fn instance(ty: &Expr, args: &[Expr]) -> Expr {
@@ -307,22 +310,26 @@ fn instance(ty: &Expr, args: &[Expr]) -> Expr {
 fn w_fold_add_associates() {
     let (x, y, z, plus) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
     let (machines, enc) = encode(3, &plus(plus(x, y), z), &plus(x, plus(y, z))).unwrap();
-    let (proof, stmt) = proof(3, &machines, &enc);
-    checked("(x + y) + z = x + (y + z)", check(&Ctx::new(), &proof, &stmt));
-    let by_hand = |r: &dyn Fn(Expr, Expr, Expr) -> Expr| statement(&operands(3), |cx, xs| {
-        let [a, c, d] = [0, 1, 2].map(|i| cx.at(xs[i]));
-        ptw(cx, add(add(a, c), d), r(a, c, d))
-    });
-    assert!(def_eq(&stmt, &by_hand(&|a, c, d| add(a, add(c, d)))), "not the law as written");
-    assert!(check(&Ctx::new(), &proof, &by_hand(&|a, c, _| add(a, add(c, c)))).is_err(), "control: (x + y) + z = x + (y + y)");
+    tatic_kernel::scoped(|| {
+        let (proof, stmt) = proof(3, &machines, &enc);
+        checked("(x + y) + z = x + (y + z)", check(&Ctx::new(), &proof, &stmt));
+        let by_hand = |r: &dyn Fn(Expr, Expr, Expr) -> Expr| statement(&operands(3), |cx, xs| {
+            let [a, c, d] = [0, 1, 2].map(|i| cx.at(xs[i]));
+            ptw(cx, add(add(a, c), d), r(a, c, d))
+        });
+        assert!(def_eq(&stmt, &by_hand(&|a, c, d| add(a, add(c, d)))), "not the law as written");
+        assert!(check(&Ctx::new(), &proof, &by_hand(&|a, c, _| add(a, add(c, c)))).is_err(), "control: (x + y) + z = x + (y + y)");
+    })
 }
 #[test]
 fn w_fold_a_false_table_is_rejected() {
     let (x, y, z, plus) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
     let (machines, mut enc) = encode(3, &plus(plus(x, y), z), &plus(x, plus(y, z))).unwrap();
     enc.g[1][0] = !enc.g[1][0];
-    let (proof, stmt) = proof(3, &machines, &enc);
-    assert!(check(&Ctx::new(), &proof, &stmt).is_err(), "control: a flipped table bit");
+    tatic_kernel::scoped(|| {
+        let (proof, stmt) = proof(3, &machines, &enc);
+        assert!(check(&Ctx::new(), &proof, &stmt).is_err(), "control: a flipped table bit");
+    });
     assert!(encode(2, &plus(x, y), &x).is_none(), "a false law has no encoding");
 }
 #[test]
@@ -404,26 +411,30 @@ fn w_fold_a_theorem_applies_to_good_streams() {
 fn w_fold_proof_type_is_the_statement() {
     let (x, y, z, plus) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
     let (machines, enc) = encode(3, &plus(plus(x, y), z), &plus(x, plus(y, z))).unwrap();
-    let (proof, stmt) = proof(3, &machines, &enc);
-    let ty = infer(&Ctx::new(), &proof).unwrap();
-    assert!(def_eq(&ty, &stmt), "the inferred type is not the statement");
-    let (p, t, s) = (term_sizes(&proof), term_sizes(&ty), term_sizes(&stmt));
-    println!("term_sizes (distinct, tree): proof {p:?} type {t:?} statement {s:?}");
-    assert!(t.0 <= 2 * s.0, "the inferred type has {} nodes against the statement's {}", t.0, s.0);
+    tatic_kernel::scoped(|| {
+        let (proof, stmt) = proof(3, &machines, &enc);
+        let ty = infer(&Ctx::new(), &proof).unwrap();
+        assert!(def_eq(&ty, &stmt), "the inferred type is not the statement");
+        let (p, t, s) = (term_sizes(&proof), term_sizes(&ty), term_sizes(&stmt));
+        println!("term_sizes (distinct, tree): proof {p:?} type {t:?} statement {s:?}");
+        assert!(t.0 <= 2 * s.0, "the inferred type has {} nodes against the statement's {}", t.0, s.0);
+    })
 }
 /// A comparison that varies: its proof proves only its own law, and swapped operands have no encoding.
 #[test]
 fn w_fold_a_comparison_is_its_own_law() {
     let (x, y, lt, xor) = (Term::v(0), Term::v(1), op2(LT), op2(XOR));
     let (machines, enc) = encode(2, &lt(x, y), &lt(xor(y, Term::ONES), xor(x, Term::ONES))).unwrap();
-    let (proof, stmt) = proof(2, &machines, &enc);
-    checked("x < y = ~y < ~x", check(&Ctx::new(), &proof, &stmt));
-    let (left, swapped) = (Machine::parse(&lt(x, y)).unwrap(), Machine::parse(&lt(y, x)).unwrap());
-    let wrong = statement(&operands(2), |cx, xs| {
-        let (l, r) = (side(cx, &left, &xs[..2]).0, side(cx, &swapped, &xs[..2]).0);
-        ptw(cx, l, r)
+    tatic_kernel::scoped(|| {
+        let (proof, stmt) = proof(2, &machines, &enc);
+        checked("x < y = ~y < ~x", check(&Ctx::new(), &proof, &stmt));
+        let (left, swapped) = (Machine::parse(&lt(x, y)).unwrap(), Machine::parse(&lt(y, x)).unwrap());
+        let wrong = statement(&operands(2), |cx, xs| {
+            let (l, r) = (side(cx, &left, &xs[..2]).0, side(cx, &swapped, &xs[..2]).0);
+            ptw(cx, l, r)
+        });
+        assert!(check(&Ctx::new(), &proof, &wrong).is_err(), "control: x < y = y < x");
     });
-    assert!(check(&Ctx::new(), &proof, &wrong).is_err(), "control: x < y = y < x");
     assert!(encode(2, &lt(x, y), &lt(y, x)).is_none(), "a false comparison has no encoding");
 }
 /// An `lt`'s stream is its borrow: below the root its parent would read the borrow as a word, and a root `lt` is no word.
