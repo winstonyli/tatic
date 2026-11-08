@@ -1,6 +1,7 @@
 use super::*;
 
 
+mod cx;
 mod gates;
 mod good;
 mod division;
@@ -9,6 +10,7 @@ mod tables;
 #[cfg(test)]
 mod tests;
 
+pub use cx::*;
 pub use gates::*;
 pub use good::*;
 pub use division::*;

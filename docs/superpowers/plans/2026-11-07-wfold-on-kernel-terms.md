@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # The width-free fold on kernel terms (w1) Implementation Plan

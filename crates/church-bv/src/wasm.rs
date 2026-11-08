@@ -10,68 +10,6 @@
 //! timeout `z`. Nothing is postulated.
 use super::*;
 
-/// A term together with the binder depth it was built at, so it can be used under more binders (`Cx::at` shifts it).
-#[derive(Clone, Copy)]
-pub struct At(Expr, u32);
-
-/// The binder depth while a term is built. Binders give their variable as an `At`, so terms are written with names,
-/// not indices.
-#[derive(Default)]
-pub struct Cx(u32);
-
-impl Cx {
-    pub fn at(&self, a: At) -> Expr {
-        shift(&a.0, 0, (self.0 - a.1) as i32)
-    }
-    /// `e`, built at the current depth.
-    pub fn mark(&self, e: Expr) -> At {
-        At(e, self.0)
-    }
-    fn bind(&mut self, body: impl FnOnce(&mut Cx, At) -> Expr) -> Expr {
-        self.0 += 1;
-        let x = At(var(0), self.0);
-        let b = body(self, x);
-        self.0 -= 1;
-        b
-    }
-    pub fn lam(&mut self, ty: Expr, body: impl FnOnce(&mut Cx, At) -> Expr) -> Expr {
-        lam(ty, self.bind(body))
-    }
-    pub fn pi(&mut self, ty: Expr, body: impl FnOnce(&mut Cx, At) -> Expr) -> Expr {
-        pi(ty, self.bind(body))
-    }
-}
-
-/// A telescope entry: a binder's type from the variables bound before it.
-pub type Ty<'a> = Box<dyn Fn(&mut Cx, &[At]) -> Expr + 'a>;
-
-fn tele(c: &mut Cx, lambda: bool, tys: &[Ty], xs: &mut Vec<At>, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
-    if xs.len() == tys.len() {
-        return body(c, xs);
-    }
-    let ty = tys[xs.len()](c, xs);
-    let rest = |c: &mut Cx, x| {
-        xs.push(x);
-        let b = tele(c, lambda, tys, xs, body);
-        xs.pop();
-        b
-    };
-    if lambda { c.lam(ty, rest) } else { c.pi(ty, rest) }
-}
-
-/// `(proof, statement)`: the proof's lambdas and the statement's Pis over the same telescope.
-pub fn law(tys: &[Ty], mut stmt: impl FnMut(&mut Cx, &[At]) -> Expr, mut proof: impl FnMut(&mut Cx, &[At]) -> Expr) -> (Expr, Expr) {
-    let p = tele(&mut Cx::default(), true, tys, &mut vec![], &mut proof);
-    let s = tele(&mut Cx::default(), false, tys, &mut vec![], &mut stmt);
-    (p, s)
-}
-
-macro_rules! ty {
-    (|$c:ident, $x:ident| $e:expr) => {
-        Box::new(move |$c: &mut Cx, $x: &[At]| $e) as Ty
-    };
-}
-
 /// `choose w x y = w (Lift R) (\c Y g. g (c R x y)) R id`, with `Lift R = Pi Y:Sort0. (R -> Y) -> Y`: a one-bit word
 /// opens only at Sort1, and `Lift R` carries the Sort0 answer through it.
 pub fn choose(r: Expr, w: Expr, x: Expr, y: Expr) -> Expr {
