@@ -760,3 +760,19 @@ fn join_search(job: &mut Job, a: &Term, b: &Term, examined: &mut Option<hashbrow
     found
 }
 
+
+/// Counting and proving agree on the whole-term fallback for an `lt` below the root: `Machine::parse` builds no machine for
+/// it, so the score-only screen counts no proof the proving path could not find (before r1 it counted this equal pair).
+#[test]
+fn fallback_counts_no_nested_lt_pair() {
+    let job = &mut Job::new(Setup::process());
+    let lt = parse_term("lt(x, y)");
+    let a = Term::op(XOR, lt, Term::ZERO);
+    assert!(!a.differs_in(&lt, 4, 2, 16), "the pair is equal on the screen's tuples");
+    let found = [false, true].map(|counting| {
+        let rules = job.rules().counting(counting);
+        job.with_rules(rules, |job| machine_fallback(job, 4, 2, &a, &lt)).is_some()
+    });
+    assert_eq!(found, [false, false], "proving, counting");
+    assert_eq!(job.rw.fallbacks, 0);
+}
