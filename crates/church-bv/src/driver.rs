@@ -724,12 +724,18 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     let shuffle = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0);
     let salt = shuffle + 1000 * setup.or("GEN_DRAW", 0usize);
     let deep_levels = held_levels(HELD_BANDS.into_iter().max().unwrap());
+    let plan = crate::miner::ExtrasPlan::from_vars(setup, EXTRAS_N)?;
     // built once per process, salt and growth count (its `STREAMS` lines give the time); where the served laws' salt is
-    // the extras', one build gives both sequences
-    let deep = if salt == shuffle { stream_sequences(salt, &[deep_levels, STREAM_LEVELS]).swap_remove(0) } else { stream_sequence(salt, deep_levels) };
+    // the extras', one build gives both sequences; a mine that takes no law (`EXTRAS_N=0`) needs none
+    let deep = if plan.per_mine() == 0 {
+        Default::default()
+    } else if salt == shuffle {
+        stream_sequences(salt, &[deep_levels, STREAM_LEVELS]).swap_remove(0)
+    } else {
+        stream_sequence(salt, deep_levels)
+    };
     let served: Vec<(Term, Term)> = scope.iter().flat_map(served_laws).collect();
     let held: Vec<(Term, Term)> = HELD_BANDS.into_iter().flat_map(held_laws).collect();
-    let plan = crate::miner::ExtrasPlan::from_vars(setup, EXTRAS_N)?;
     let (n, pool, mines) = (plan.n, plan.pool, c.mines.len());
     let keep = filter(&served, &held);
     // with `EXTRAS_SELECT` each mine gets its whole pool and the miner keeps n (`ExtrasPlan::child_env`, `run_loop`)

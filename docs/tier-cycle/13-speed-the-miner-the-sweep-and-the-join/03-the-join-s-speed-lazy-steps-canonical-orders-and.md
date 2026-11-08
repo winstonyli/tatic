@@ -1039,8 +1039,8 @@ pins hold, and the pin test's parent now logs one build per salt (63.2 s and 30.
 `2026-11-07-o2-pins2`). The pin test's retired instructions fell 19.9%, 1075.0 G to 861.1 G best of 2 (medians 1075.6 G
 and 862.7 G; each arm's two runs within 0.4%; one batch per arm, since each arm's first batch hit icount's 900 s limit
 while another session's gate loaded the machine; run `2026-11-07-o2-count`), close to the bound above (6.5 of 22.8 s,
-69% saved outright, about 20%). Found on the way: `scope_extras` builds the 4-growth sequence even with
-`EXTRAS_N=0`, where it takes no law from it.
+69% saved outright, about 20%). Found on the way: `scope_extras` built the 4-growth sequence even with
+`EXTRAS_N=0`, where it takes no law from it; since 2026-11-08 it skips the build when a mine takes none.
 
 *Survey: the open-law filter, `Term::show` and mimalloc's purge (2026-10-29, profile `2026-10-29-zerofill3-prof` of the
 pin test at `c8c2e68`; read-only, each finding re-checked by a second agent told to refute it; nothing built for it,
