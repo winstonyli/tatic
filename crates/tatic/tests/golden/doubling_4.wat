@@ -1,0 +1,43 @@
+(module
+  (func $f (param $p0 i64) (result i64)
+    (local $t0 i64)
+    (local $envtmp i32)
+    (local $papenv i64)
+    (local $diva i64)
+    (local $divb i64)
+    (loop $L (result i64)
+      local.get $p0
+      local.get $p0
+      i64.add
+      local.get $p0
+      local.get $p0
+      i64.add
+      i64.add
+      local.get $p0
+      local.get $p0
+      i64.add
+      local.get $p0
+      local.get $p0
+      i64.add
+      i64.add
+      i64.add
+      local.get $p0
+      local.get $p0
+      i64.add
+      local.get $p0
+      local.get $p0
+      i64.add
+      i64.add
+      local.get $p0
+      local.get $p0
+      i64.add
+      local.get $p0
+      local.get $p0
+      i64.add
+      i64.add
+      i64.add
+      i64.add
+    )
+  )
+  (export "f" (func $f))
+)

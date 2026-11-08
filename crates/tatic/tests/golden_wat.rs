@@ -89,6 +89,36 @@ fn specialised_benchmark_terms_lower_to_their_golden_wat() {
     assert!(changed.is_empty(), "emitted WAT changed for {changed:?}; if intended, rerun with UPDATE_GOLDEN=1 and review the diff");
 }
 
+/// The straight-line gate's fragment modules (v0.7): `doubling_4`, built
+/// inline as `\x. t_4` with `t_{i+1} = t_i + t_i`, and the two specialised
+/// closure terms whose entry is straight-line once specialised. Recorded
+/// from the text emitter before the lowering emitted `Ins`, so the printer
+/// is checked against it.
+#[test]
+fn fragment_modules_lower_to_their_golden_wat() {
+    let update = std::env::var_os("UPDATE_GOLDEN").is_some();
+    let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests").join("golden");
+    let mut changed = Vec::new();
+    let mut s = TermStore::new();
+    let mut t = s.var(0);
+    for _ in 0..4 {
+        t = s.prim(tatic::lang::term::PrimOp::Add, t, t);
+    }
+    let h = s.abs(t);
+    let frag = try_compile(&s, h).expect("doubling_4 should compile");
+    check_golden(&dir, "doubling_4", &frag.wat, update, &mut changed);
+    let terms: [(&str, fn(&mut TermStore) -> Hash); 2] =
+        [("a_capturing_closure_call", samples::a_capturing_closure_call), ("a_pap_capturing", samples::a_pap_capturing)];
+    for (name, build) in terms {
+        let mut s = TermStore::new();
+        let h = build(&mut s);
+        let c = tatic::jit::compile::compile_specialised(&s, h).unwrap_or_else(|| panic!("{name} should compile"));
+        assert!(c.specialised.is_some(), "{name} should be specialised");
+        check_golden(&dir, &format!("{name}_specialised"), &c.frag.wat, update, &mut changed);
+    }
+    assert!(changed.is_empty(), "emitted WAT changed for {changed:?}; if intended, rerun with UPDATE_GOLDEN=1 and review the diff");
+}
+
 #[test]
 fn the_redundant_arithmetic_benchmark_still_evaluates() {
     let mut s = TermStore::new();
