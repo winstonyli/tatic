@@ -234,6 +234,8 @@ Each decision's options carry its group letter: D1 is z, D2 is a, D3 is b, D4 is
 the recommended option of each (z1, a1, b1, c1, d1, e1). Answers flow in this order: D1 first, then D2 and D3, then D4, D5 and D6.
 A group's "Removed" line names what the search took out of the recommended design; rejected options stay listed with their reasons.
 
+Decided 2026-11-07: as recommended (z1, a1, b1, c1, d1, e1).
+
 ### D1 Representation
 
 **Searched:**
