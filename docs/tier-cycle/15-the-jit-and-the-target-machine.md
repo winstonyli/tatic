@@ -748,3 +748,16 @@ instruction list computes the source's expression tree over these operator terms
 `mul` is 64-bit multiplication, and that both agree with eval's i64 semantics and wasm's i64 ops, needs separate
 operator lemmas (or a trusted operator table). The design choices this left (where the code lives, how it meets
 `proof.rs`'s `Int`, where the list comes from, operators) are decided in ROADMAP v0.7.
+
+### v0.7's build: measurements and checks (2026-11-08)
+
+The checks and measurements the v0.7 plan (`docs/superpowers/plans/2026-11-08-v07-straight-line-gate.md`) takes on
+the way to the gate.
+
+**The closure prover covers what `prove_pure_expr` accepted.** Before `prove_pure_expr` is deleted, terms outside the
+fragment must still install through `prove_closure_expr`. A temporary probe in `kernel_verify` and in `ir_fuzz`'s
+reference run printed, for every term `prove_pure_expr` accepted, whether `prove_closure_expr` accepted it too, over
+the whole tatic suite (run `2026-11-08-v07-c1-closure-covers`): 932 lines, 170 distinct terms, all covered, no miss.
+A temporary test also checked the three terms the plan relies on to install through the chain:
+`\a b. 1 + (if a < b then a else b)`, `\a b. if (if a < b then a else b) < 1 then 1 else 0` and `\a b. a / b`, all
+accepted. The probe was reverted.
