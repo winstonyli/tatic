@@ -133,8 +133,14 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   so A runs once per build (plan `docs/superpowers/plans/2026-10-23-class-table-ablations.md`, D3).
 - **`peakproc` moves in steps between runs of one exe** (2026-11-07). It took three levels, 3334-3336, 3591-3593 and
   4104-4106 MB, in an A/A over salts 2-3 (`w1-aa-salt23`: 3592 against 4105 MB at salt 2) and a B/B over salts 1-2
-  (`w1-bb-salt12`: 4104 against 3593 MB at salt 1). The steps are about 256 and 512 MB, which looks like a buffer doubling
-  (inference, not traced). A gap of one step between arms is noise, not a change. The same runs bound the counts: match
+  (`w1-bb-salt12`: 4104 against 3593 MB at salt 1). The peak process is the sweep parent, the one process that keeps
+  large OS pages (`driver::run_sweep` turns them off for its workers), and its peak is mimalloc's arena reservation, not
+  its data: large pages are committed whole, so its reserved and committed peaks are equal. Three runs of one exe at salt
+  2 (`peakproc-steps`, `MIMALLOC_SHOW_STATS=1`) gave 23, 25 and 24 arenas, which is 3.2, 4.0 and 3.5 GiB reserved,
+  matching peakproc 3335, 4104 and 3591 MB. Each later arena is larger (the 24th is 256 MB, the 25th 512 MB), and whether a
+  run needs it depends on its threads' timing. The parent's peak rss was 2.2-2.4 GiB throughout, and its workers' peak
+  commit 0.57-0.79 GiB, flat. Purge on (`MIMALLOC_PURGE_DELAY=0`) kept the steps (3332 against 3585 MB). A gap of one step
+  between arms is noise, not a change. The same runs bound the counts: match
   spreads 0.3-2.3 ppm and op 0.02-1.05 ppm per salt, walk exact. The w1 extraction's A/B (`w1-stepproof-gate`, salts
   1-3) differed by at most 0.78 ppm (match), with M, held-out M and rules equal.
 - **A cached arm is reused only where its inputs are unchanged** (2026-10-24). The key also hashes `runs.exe` and the
