@@ -707,18 +707,22 @@ denote)` over a postulated `Int` with eight bare operators and no axioms. Both s
 instruction list or WAT is consulted, and `verify()` (wasmtime against eval on samples) is the only check that touches
 emitted code. There is no instruction list in tatic: `lower_wat` writes WAT text from the IR tree (`ir.rs#Node`).
 
-**Census (38 terms: 23 in `samples::corpus`, 15 in `test_corpus.rs`).** Against the machine as it stands (Push, Bin,
-Cmp, Dup, If, Loop, Br, Store, Load; closed `add`, `sub`, `lt_u`; no locals, no calls, no signed compare, `eq_bv` a
-`Bool0` rather than a one-bit word):
+**Census (38 terms: 23 in `samples::corpus`, 15 in `test_corpus.rs`).** Measured by running each term through the real
+pipeline (`compile_specialised`, the three provers on the compiled term, `JitEngine::apply` at all arguments 3) and
+bucketing the instruction kinds of the WAT it emits (patch `docs/superpowers/spikes/2026-11-08-b1-corpus-census.patch`,
+run `2026-11-08-b1-census`), against the machine as it stands (Push, Bin, Cmp, Dup, If, Loop, Br, Store, Load; closed
+`add`, `sub`, `lt_u`; no locals, no calls, no signed compare, `eq_bv` a `Bool0` rather than a one-bit word):
 
-| class | terms | needs |
-|---|---|---|
-| A, fits now | 5 loose (inc, doubling, and three partial applications after specialisation, inferred, not run); 1-2 strict | nothing, or params via `Push i; Load` |
-| B, straight-line or loop with new operators | 6 | locals or Pick; `lt_s`, `le_s`, `eq` as a one-bit word; `mul`; `rem_s`; gcd and the specialised loops need fuelled loops |
-| C, closures or calls | 27 | calls, closure records |
+| class | WAT kinds | terms | needs |
+|---|---|---|---|
+| A | `local.get`, `i64.const`, add, sub | 5: inc `v0 + 1`, doubling, and three after specialisation: `\v0. v0 + 5`, `3 + 4`, `\v0. 3 + 4 + v0` | parameter reads (`Push i; Load` or a new instruction); `3 + 4` needs nothing |
+| B | A plus compares, mul, rem, `if`, `local.set`, `br` | 6: `straight_line`, `5 * 10 + 3` (specialised), gcd, gcd with two base cases, and two loops that specialise to `rec v0 v1 v2 = if v1 <= 0 then v2 else v0 (v1 - 1) (v2 + v1)` | `lt_s`, `le_s`, `eq` as a one-bit word, `mul`, `rem_s`; the four loops also locals and fuelled loops |
+| C | calls, `call_indirect`, memory, globals | 26, plus `open_redex_probe`, which does not compile | calls, closure records |
 
-Mul appears in 7 terms, Mod only in gcd, Div in none. The prove_pure_expr fragment itself is `straight_line`, inc and
-doubling, plus the partial applications once specialised (inferred).
+All but 8 of the 37 compiled terms install today; every A and B term installs. The prove_pure_expr fragment is exactly the
+five with `pure`: inc, doubling, `straight_line`, `\v0. v0 + 5` and `\v0. 3 + 4 + v0` (the arity-0 constants are
+proved by `prove_closure_expr`). So the one straight-line term with a branch or a multiply and a parameter is
+`straight_line`; the others are an add chain or a constant. Mul appears in 7 terms, Mod only in gcd, Div in none.
 
 **Spike: the continuation form proves by refl at n = 64; the value form does not.** Patch
 `docs/superpowers/spikes/2026-11-08-j1-emit-spike.patch` (a test module in church-bv), runs `2026-11-08-j1-spike-head2`

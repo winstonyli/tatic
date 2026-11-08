@@ -1,0 +1,111 @@
+diff --git a/crates/tatic/src/jit.rs b/crates/tatic/src/jit.rs
+index f54be99..3fe9ef0 100644
+--- a/crates/tatic/src/jit.rs
++++ b/crates/tatic/src/jit.rs
+@@ -463,5 +463,7 @@ fn sample_arg_vectors(arity: usize) -> Vec<Vec<i64>> {
+     out
+ }
+ 
++#[cfg(test)]
++mod census_probe;
+ #[cfg(test)]
+ mod tests;
+diff --git a/crates/tatic/src/jit/census_probe.rs b/crates/tatic/src/jit/census_probe.rs
+new file mode 100644
+index 0000000..bb344ac
+--- /dev/null
++++ b/crates/tatic/src/jit/census_probe.rs
+@@ -0,0 +1,93 @@
++//! Throwaway (b1, 2026-11-08): for every corpus term, the specialised form, the compile and install outcome, which
++//! prover accepts, and the WAT instruction kinds, bucketed against church-bv's wasm machine.
++use crate::jit::{compile, shape, JitEngine};
++use crate::lang::syntax::print;
++use crate::lang::term::{Hash, TermStore};
++use crate::proof;
++use crate::testing::test_corpus as tc;
++use std::collections::BTreeSet;
++
++fn terms() -> Vec<(String, TermStore, Hash)> {
++    let mut v: Vec<(String, TermStore, Hash)> = crate::support::samples::corpus().into_iter().map(|(n, s, h)| (n.to_string(), s, h)).collect();
++    let builders: [(&str, fn(&mut TermStore) -> Hash); 15] = [
++        ("open_redex_probe", tc::open_redex_probe),
++        ("oversized_source_with_a_shrinking_step", tc::oversized_source_with_a_shrinking_step),
++        ("doubling_d4", |s| tc::doubling(s, 4)),
++        ("inconsistent_arity_parameter", tc::inconsistent_arity_parameter),
++        ("inconsistent_arity_saturating_instance", tc::inconsistent_arity_saturating_instance),
++        ("inconsistent_arity_under_applying_instance", tc::inconsistent_arity_under_applying_instance),
++        ("inconsistent_arity_capturing_instance", tc::inconsistent_arity_capturing_instance),
++        ("inconsistent_arity_runtime_chosen_instance", tc::inconsistent_arity_runtime_chosen_instance),
++        ("inconsistent_arity_iterate", tc::inconsistent_arity_iterate),
++        ("iterate_creating_a_closure_over_g", tc::iterate_creating_a_closure_over_g),
++        ("let_bound_factorial_10", tc::let_bound_factorial_10),
++        ("calls_a_capturing_closure_picked_by_if", tc::calls_a_capturing_closure_picked_by_if),
++        ("a_pap_of_a_self_recursive_combinator", tc::a_pap_of_a_self_recursive_combinator),
++        ("a_pap_of_a_capturing_self_recursive_combinator", tc::a_pap_of_a_capturing_self_recursive_combinator),
++        ("over_application_if_between_closures_of_params", tc::over_application_if_between_closures_of_params),
++    ];
++    for (n, b) in builders {
++        let mut s = TermStore::new();
++        let h = b(&mut s);
++        v.push((n.to_string(), s, h));
++    }
++    v
++}
++
++/// WAT instruction kinds, without names or immediates.
++fn ops(wat: &str) -> BTreeSet<String> {
++    let mut out = BTreeSet::new();
++    for tok in wat.split(|c: char| c.is_whitespace() || c == '(' || c == ')') {
++        let known = tok.starts_with("i64.") || tok.starts_with("i32.") || tok.starts_with("local.") || tok.starts_with("global.")
++            || matches!(tok, "if" | "else" | "loop" | "block" | "br" | "br_if" | "call" | "call_indirect" | "return" | "select" | "unreachable" | "drop");
++        if known {
++            out.insert(tok.to_string());
++        }
++    }
++    out
++}
++
++/// A: only parameter reads, constants, add and sub. B: also compares, mul, rem, if, locals, a loop back-edge. C: the rest.
++fn bucket(ops: &BTreeSet<String>) -> &'static str {
++    let a = ["local.get", "i64.const", "i64.add", "i64.sub", "loop"];
++    let b = ["i64.lt_s", "i64.le_s", "i64.eq", "i64.mul", "i64.rem_s", "i64.div_s", "if", "else", "local.set", "local.tee", "br", "br_if", "i64.eqz", "select", "i32.wrap_i64", "i64.extend_i32_u", "i64.extend_i32_s", "block"];
++    if ops.iter().all(|o| a.contains(&o.as_str())) {
++        "A"
++    } else if ops.iter().all(|o| a.contains(&o.as_str()) || b.contains(&o.as_str())) {
++        "B"
++    } else {
++        "C"
++    }
++}
++
++#[test]
++#[ignore]
++fn census() {
++    for (i, (name, s, h)) in terms().into_iter().enumerate() {
++        let arity = shape::peel(&s, h).map(|p| p.0).unwrap_or(0);
++        let compiled = compile::compile_specialised(&s, h);
++        let (spec, wat_ops, bkt) = match &compiled {
++            Some(c) => {
++                let spec = c.specialised.as_ref().map(|(ss, t)| print(ss, *t));
++                let o = ops(&c.frag.wat);
++                let b = bucket(&o);
++                (spec, Some(o), b)
++            }
++            None => (None, None, "-"),
++        };
++        let (ps, pt) = compiled.as_ref().and_then(|c| c.specialised.as_ref().map(|(ss, t)| (ss, *t))).unwrap_or((&s, h));
++        let pure = proof::prove_pure_expr(ps, pt).is_some();
++        let clo = proof::prove_closure_expr(ps, pt).is_some();
++        let tail = proof::prove_tail_recursive_universal(ps, pt).is_some();
++        let mut jit = JitEngine::new();
++        let _ = jit.apply(&s, h, &vec![3; arity]);
++        let installed = jit.is_kernel_verified(h);
++        println!("CENSUS\t{}\t{name}\tarity {arity}\tcompiled {}\tspecialised {}\tbucket {bkt}\tpure {pure}\tclosure {clo}\ttail {tail}\tinstalled {installed}\tops {:?}",
++            i + 1, compiled.is_some(), spec.is_some(), wat_ops.map(|o| o.into_iter().collect::<Vec<_>>().join(" ")).unwrap_or_default());
++        let src = print(&s, h);
++        println!("SRC\t{name}\t{}", if src.len() > 300 { format!("{}... ({} chars)", &src[..300], src.len()) } else { src });
++        if let Some(sp) = spec {
++            println!("SPEC\t{name}\t{}", if sp.len() > 300 { format!("{}... ({} chars)", &sp[..300], sp.len()) } else { sp });
++        }
++    }
++}
