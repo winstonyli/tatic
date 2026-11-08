@@ -456,14 +456,16 @@ fn tree_proof_terms_are_pinned() {
             bound.sort();
             let whole = tatic_kernel::term_sizes(&discharge(job, p));
             println!("PIN outer {:?} whole {whole:?} statements {bound:?}", tatic_kernel::term_sizes(&p));
-            pin.push((tatic_kernel::term_sizes(&p), whole, bound.len()));
+            // FNV-1a over the sorted keys and their statements' sizes: a stable digest, unlike std's DefaultHasher
+            let digest = format!("{bound:?}").bytes().fold(0xcbf29ce484222325u64, |h, b| (h ^ b as u64).wrapping_mul(0x100000001b3));
+            pin.push((tatic_kernel::term_sizes(&p), whole, bound.len(), digest));
         })
     }
-    // recorded at 05f2ea6, before the extraction
+    // sizes recorded at 05f2ea6, before the extraction; digests at its key format, which the extraction kept byte for byte
     assert_eq!(pin, vec![
-        ((2396, 1447648), (3640, 1642684), 6),
-        ((2362, 1349132), (3418, 1522472), 6),
-        ((2312, 1410596), (3345, 1591424), 6),
+        ((2396, 1447648), (3640, 1642684), 6, 11236109484798696133),
+        ((2362, 1349132), (3418, 1522472), 6, 13125981487344984836),
+        ((2312, 1410596), (3345, 1591424), 6, 5829766498591714046),
     ]);
 }
 
