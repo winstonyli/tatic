@@ -428,6 +428,7 @@ pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
 }
 
 
+pub mod gate;
 mod universal;
 #[allow(unused_imports)]
 pub use universal::*;

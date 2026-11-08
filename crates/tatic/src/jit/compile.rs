@@ -435,7 +435,7 @@ const MAX_TREE_NODES: u64 = 16_384;
 
 /// `h`'s size as a tree (every shared subterm counted once per use), or
 /// `MAX_TREE_NODES + 1` if that is larger. Linear in the DAG.
-fn tree_size(store: &TermStore, h: Hash) -> u64 {
+pub(crate) fn tree_size(store: &TermStore, h: Hash) -> u64 {
     let cap = MAX_TREE_NODES + 1;
     let mut size: HashMap<Hash, u64> = HashMap::new();
     // Post-order without recursion: a node is sized once its children are.

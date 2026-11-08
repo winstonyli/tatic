@@ -772,3 +772,31 @@ Each check was shown to fail on its own: mapping `Lt` to `LtU` in `shape::op_of`
 1.6 s (`mul` 1.5 s), still over the plan's 1 s, and kept as the only always-on guard on the table (debug build, one test
 thread of a parallel suite). The ignored n = 8 test runs all 65,536 pairs per row and passed in 47 s, `mul` 26 s of it
 (run `2026-11-08-v07-op-table-n8`).
+
+**The gate's costs, and the rules they triggered.** `proof/gate.rs` proves the emitted body of a fragment term equal to
+the source at n = 64 (`gate`); its tests accept the 5 Goal 1 terms and 4 more, and reject every Goal 2 mutation and a
+`Raw` line. Spec section 8's measurements ran on the production statement builder and check (`measure_gate_costs`,
+run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized with debug info), build ms + check ms:
+
+| term | build | check |
+|---|---|---|
+| `inc`, fuel 1 on the `loop` wrapper | 7.2 | 1.4 |
+| `inc`, bare body, fuel 0 | 7.3 | 1.4 |
+| `doubling(4)` (32 nodes) | 28 | 2.7 |
+| `doubling(7)` (256 nodes) | 250 | 21 |
+| `doubling(8)` (512 nodes) | 606 | 51 |
+| `doubling(10)` (2048 nodes) | 2520 | 531 |
+| `doubling(13)` (16,384 nodes, the JIT's tree cap) | 26,126 | 67,580 |
+| `\a b. a * b` | 12.7 | 12.3 |
+| `\a b. if a < b then a * b else a` | 16.3 | 17.3 |
+
+- **Fuel 1:** the wrapper costs nothing measurable, so the gate proves `[Loop(body)]` as printed; no fallback and no
+  trusted "a `loop` with no `br` is its body" fact.
+- **Tree size:** the build doubles with the tree (linear) and the check grows faster (5.8x from d = 12 to 13), so the
+  gate alone passes the JIT path's 0.4 s at 512 nodes, far below the 16,384-node cap. `in_fragment` takes trees of at
+  most 256 nodes (`MAX_GATE_TREE`, `doubling(7)`); a larger straight-line term installs through the existing chain.
+- **`Mul`:** 25-34 ms with two parameters as operands, so `Mul` stays in the fragment unrestricted.
+- **Stack:** building and proving `doubling(13)` on a 2 MB thread overflowed (run `2026-11-08-v07-gate-measure_stack_2mb`),
+  so `Wasm::seq` and the gate's `cps` now run each step under `tatic_kernel::grow`; the same run then passed in 105 s
+  (run `2026-11-08-v07-gate-measure_stack_2mb-grow`). It stays an ignored test: the bound keeps such trees from the
+  gate, and 105 s is no default test.

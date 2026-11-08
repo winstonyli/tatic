@@ -212,6 +212,13 @@ impl Wasm {
     #[allow(clippy::too_many_arguments)]
     fn seq(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, k: &dyn Fn(&mut Cx, Vec<K>) -> Expr,
         labels: &[(At, Vec<K>)]) -> Expr {
+        // one frame per instruction through `cont`: run on the kernel's growable stack (a 2 MB thread overflowed at
+        // the JIT's tree cap)
+        tatic_kernel::grow(|| self.seq_step(c, f, ct, base, code, st, k, labels))
+    }
+    #[allow(clippy::too_many_arguments)]
+    fn seq_step(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, k: &dyn Fn(&mut Cx, Vec<K>) -> Expr,
+        labels: &[(At, Vec<K>)]) -> Expr {
         let Some((ins, rest)) = code.split_first() else { return k(c, st) };
         let cont = |c: &mut Cx, st: Vec<K>| self.seq(c, f, ct, base, rest, st, k, labels);
         let ty = |c: &Cx, ks: &[K]| self.sty(c, ks, base);

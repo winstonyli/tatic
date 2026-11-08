@@ -27,6 +27,7 @@ fn check_instance_proof(proof: &EquivalenceProof) {
 
 
 mod basics;
+mod gate;
 mod per_instance;
 mod universal;
 mod closures;
