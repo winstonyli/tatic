@@ -11,7 +11,7 @@
 // through a tag. None is needed. A carry's goodness is an induction whose telescope binds `GoodBool`'s `P`, `ht` and `hf`, so what
 // reaches the tag is `P c`, in `Sort1`; the phi agreement is a `Sigma` of `Id`s, also in `Sort1`. Carries are streams, so each
 // one's goodness may use the earlier ones'.
-use super::wnat::{add, *};
+use super::wnat::{add, bw, carry, eqb, good_stream, ind, nw, num, ptw, shl, stream_of, tag_case, xor3, zw, Tag};
 use crate::encoding::*;
 use crate::machine::{moore_encoding, Encoding, Machine, Src, StepProof};
 use crate::rewrite::{Node, Term, ADD, AND, LT, OP_INFO, OR, SHL1, SUB, XOR};
