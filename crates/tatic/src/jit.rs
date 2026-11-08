@@ -57,6 +57,8 @@
 pub mod compile;
 pub(crate) mod ir;
 pub(crate) mod lower_wat;
+#[cfg(test)]
+mod op_table_tests;
 pub(crate) mod shape;
 pub mod specialise;
 
