@@ -29,62 +29,87 @@ pub enum K {
     B,
 }
 
-/// An instruction. Words and operators are closed terms; `Br(j)` jumps to the `j`-th enclosing loop's start.
-#[derive(Clone)]
+/// An instruction of a function body (spec 2026-11-08-v07-straight-line-gate-design.md, section 2). `Br(j)` jumps to
+/// the `j`-th enclosing loop's start. `Dup`, `Store` and `Load` serve the machine's own laws and are never emitted;
+/// `Raw` is a line the lowering emits that the machine does not model, so a body holding one is not well formed.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ins {
-    Push(Expr),
-    Bin(Expr),
-    Cmp(Expr),
+    Push(i64),
+    /// `local.get $p{i}`: slot `i` of the frame, at address `i`.
+    LocalGet(u32),
+    Op(Op),
     Dup,
     If(Vec<Ins>, Vec<Ins>),
     Loop(Vec<Ins>),
     Br(usize),
     Store,
     Load,
+    Raw(String),
 }
 
-/// The stack after `code` from `st` (top first), or `None` if every path jumps.
-pub fn out_stack(code: &[Ins], mut st: Vec<K>) -> Option<Vec<K>> {
+/// The one stack analysis: the stack after `code` from `st` (top first), `None` if every path jumps, or why the
+/// code is ill formed. `loops` holds the entry stacks of the enclosing loops, innermost first.
+fn shape(code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Result<Option<Vec<K>>, String> {
+    let pop = |st: &mut Vec<K>, want: &[K]| {
+        if !st.starts_with(want) {
+            return Err(format!("stack {st:?} lacks {want:?}"));
+        }
+        st.drain(..want.len());
+        Ok(())
+    };
     for ins in code {
-        let pop = |st: &mut Vec<K>, want: &[K]| {
-            assert!(st.starts_with(want), "stack {st:?} lacks {want:?}");
-            st.drain(..want.len());
-        };
         match ins {
-            Ins::Push(_) => st.insert(0, K::W),
-            Ins::Bin(_) => {
-                pop(&mut st, &[K::W, K::W]);
-                st.insert(0, K::W)
-            }
-            Ins::Cmp(_) => {
-                pop(&mut st, &[K::W, K::W]);
-                st.insert(0, K::B)
+            Ins::Push(_) | Ins::LocalGet(_) => st.insert(0, K::W),
+            Ins::Op(o) => {
+                pop(&mut st, &[K::W, K::W])?;
+                st.insert(0, o.kind())
             }
             Ins::Dup => {
-                pop(&mut st, &[K::W]);
+                pop(&mut st, &[K::W])?;
                 st.splice(0..0, [K::W, K::W]);
             }
             Ins::If(t, e) => {
-                pop(&mut st, &[K::B]);
-                st = match (out_stack(t, st.clone()), out_stack(e, st)) {
-                    (Some(a), Some(b)) => {
-                        assert_eq!(a, b, "if arms end on different stacks");
-                        a
-                    }
-                    (Some(a), None) | (None, Some(a)) => a,
-                    (None, None) => return None,
+                pop(&mut st, &[K::B])?;
+                st = match (shape(t, st.clone(), loops)?, shape(e, st, loops)?) {
+                    (Some(a), Some(b)) if a != b => return Err(format!("if arms end on different stacks: {a:?}, {b:?}")),
+                    (Some(a), _) | (None, Some(a)) => a,
+                    (None, None) => return Ok(None),
                 }
             }
-            Ins::Loop(body) => st = out_stack(body, st)?,
-            Ins::Br(_) => return None,
-            Ins::Store => pop(&mut st, &[K::W, K::W]),
+            Ins::Loop(body) => {
+                let ls = [std::slice::from_ref(&st), loops].concat();
+                match shape(body, st.clone(), &ls)? {
+                    Some(s) => st = s,
+                    None => return Ok(None),
+                }
+            }
+            Ins::Br(j) => {
+                let Some(want) = loops.get(*j) else { return Err(format!("br {j} with {} enclosing loops", loops.len())) };
+                if want != &st {
+                    return Err(format!("br {j} with stack {st:?}, the loop's is {want:?}"));
+                }
+                return Ok(None);
+            }
+            Ins::Store => pop(&mut st, &[K::W, K::W])?,
             Ins::Load => {
-                pop(&mut st, &[K::W]);
+                pop(&mut st, &[K::W])?;
                 st.insert(0, K::W)
             }
+            Ins::Raw(s) => return Err(format!("raw line {s:?}")),
         }
     }
-    Some(st)
+    Ok(Some(st))
+}
+
+/// The stack after `code` from `st` (top first), or `None` if every path jumps; panics on ill-formed code.
+pub fn out_stack(code: &[Ins], st: Vec<K>) -> Option<Vec<K>> {
+    shape(code, st, &[]).unwrap_or_else(|e| panic!("{e}"))
+}
+
+/// Whether `code` from `st` is something the machine runs and falls through: no `Raw`, no underflow, matching `if`
+/// arms and `br`s to an enclosing loop with its entry stack.
+pub fn well_formed(code: &[Ins], st: &[K]) -> bool {
+    matches!(shape(code, st.to_vec(), &[]), Ok(Some(_)))
 }
 
 /// `A x B` as a `Sigma`, both at the same depth.
@@ -194,18 +219,25 @@ impl Wasm {
         let below = |n: usize| st[n..].to_vec();
         let with = |top: &[K], n: usize| [top, &st[n..]].concat();
         match ins {
-            Ins::Push(w) => {
+            Ins::Push(v) => {
                 let r = cont(c, with(&[K::W], 0));
-                cons(c, 0, vec![ty(c, &st), *w, r])
+                cons(c, 0, vec![ty(c, &st), lit(self.n, (*v as u64 as u128) & low_bits(self.n)), r])
             }
-            Ins::Bin(op) => {
-                let r = cont(c, with(&[K::W], 2));
-                cons(c, 1, vec![ty(c, &below(2)), *op, r])
+            // push the slot's address, then load it
+            Ins::LocalGet(i) => {
+                let r = cont(c, with(&[K::W], 0));
+                let load = cons(c, 7, vec![ty(c, &st), r]);
+                cons(c, 0, vec![ty(c, &st), lit(self.n, *i as u128), load])
             }
-            Ins::Cmp(op) => {
-                let r = cont(c, with(&[K::B], 2));
-                cons(c, 2, vec![ty(c, &below(2)), *op, r])
+            Ins::Op(o) => {
+                let (i, top) = match o.kind() {
+                    K::W => (1, K::W),
+                    K::B => (2, K::B),
+                };
+                let r = cont(c, with(&[top], 2));
+                cons(c, i, vec![ty(c, &below(2)), o.term(self.n), r])
             }
+            Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
             Ins::Dup => {
                 let r = cont(c, with(&[K::W, K::W], 1));
                 cons(c, 3, vec![ty(c, &below(1)), r])
@@ -439,3 +471,69 @@ impl Wasm {
 }
 
 pub mod laws;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn well_formed_rejects_raw_underflow_bad_br_and_mismatched_arms() {
+        let cmp_if = |e: Vec<Ins>| vec![Ins::Push(1), Ins::Push(2), Ins::Op(Op::LtS), Ins::If(vec![Ins::Push(1)], e)];
+        assert!(!well_formed(&[Ins::Raw("x".into())], &[]));
+        assert!(!well_formed(&[Ins::Op(Op::Add)], &[]));
+        assert!(!well_formed(&[Ins::Loop(vec![Ins::Br(1)])], &[]));
+        assert!(!well_formed(&cmp_if(vec![]), &[]));
+        assert!(well_formed(&cmp_if(vec![Ins::Push(2)]), &[]));
+        assert!(well_formed(&[Ins::Loop(vec![Ins::LocalGet(0)])], &[]));
+    }
+
+    /// `[local.get 1, local.get 0, sub]` over the frame `upd 0 a (upd 1 b mu)` answers `sub b a` by `refl`, and not
+    /// `sub a b`: the slots and the operand order are observable.
+    #[test]
+    fn local_get_reads_the_frame() {
+        let w = Wasm { n: 8 };
+        let n = w.n;
+        let code = [Ins::LocalGet(1), Ins::LocalGet(0), Ins::Op(Op::Sub)];
+        // S R k z a b s mu
+        let law_for = |b_minus_a: bool| {
+            let tys: Vec<Ty> = vec![
+                ty!(|_c, _x| sort(2)),
+                ty!(|_c, _x| sort(0)),
+                ty!(|c, x| { let t = w.sty(c, &[K::W], x[0]); w.g(c, x[1], t) }),
+                ty!(|c, x| c.at(x[1])),
+                ty!(|_c, _x| bv_ty(n)),
+                ty!(|_c, _x| bv_ty(n)),
+                ty!(|c, x| c.at(x[0])),
+                ty!(|c, x| w.mem(c, x[1])),
+            ];
+            let frame = |c: &mut Cx, x: &[At]| {
+                let inner = w.upd(c, x[1], lit(n, 1), c.at(x[5]), c.at(x[7]));
+                w.upd(c, x[1], lit(n, 0), c.at(x[4]), inner)
+            };
+            let lhs = |c: &mut Cx, x: &[At]| {
+                let p = w.prog(c, &code, &[], x[0]);
+                let p = c.mark(p);
+                let fuel = c.mark(nat2_lit(0));
+                let m = frame(c, x);
+                app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[6]), m)
+            };
+            law(
+                &tys,
+                |c, x| {
+                    let l = lhs(c, x);
+                    let m = frame(c, x);
+                    let (p, q) = if b_minus_a { (x[5], x[4]) } else { (x[4], x[5]) };
+                    let val = app2(sub(n), c.at(p), c.at(q));
+                    id(c.at(x[1]), l, app2(c.at(x[2]), mkpair(c.at(x[0]), val, c.at(x[6])), m))
+                },
+                |c, x| refl(lhs(c, x)),
+            )
+        };
+        tatic_kernel::scoped(|| {
+            let (p, s) = law_for(true);
+            ck("local.get 1, local.get 0, sub = sub b a", &p, &s);
+            let (p, s) = law_for(false);
+            assert!(holds(&p, &s).is_err(), "sub a b must be rejected");
+        })
+    }
+}

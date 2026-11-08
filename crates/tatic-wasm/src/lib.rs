@@ -6,9 +6,11 @@ use std::time::Instant;
 use tatic_kernel::*;
 
 pub mod encoding;
+pub mod ops;
 pub mod wasm;
 
 use encoding::*;
+use ops::Op;
 
 // The unit-test exe's allocator, so its timings run on what ships.
 #[cfg(test)]

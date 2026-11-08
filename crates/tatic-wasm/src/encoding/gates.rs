@@ -150,6 +150,28 @@ pub fn lt_u(n: usize) -> Expr {
     let outer = app2(var(3), var(1), inner);
     lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), outer))))
 }
+/// Signed `a < b`: `lt_u` on the operands with bit n-1 flipped, `\x y. lt_u (x ^ m) (y ^ m)` for `m` the sign bit.
+pub fn lt_s(n: usize) -> Expr {
+    let xorv = bitwise(n, &xor);
+    let m = lit(n, 1u128 << (n - 1));
+    lam(bv_ty(n), lam(bv_ty(n), app2(lt_u(n), app2(xorv, var(1), m), app2(xorv, var(0), m))))
+}
+/// Signed `a <= b` as `not (b < a)`: `\x y C k. lt_s y x C (\b. k (not b))`.
+pub fn le_s(n: usize) -> Expr {
+    // ctx [x, y, C, k]
+    let k_not = lam(bool0(), app(var(1), not_(var(0))));
+    let body = apps(lt_s(n), vec![var(2), var(3), var(1), k_not]);
+    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
+}
+/// `a == b` as a one-bit word: `\x y C k. k (eq_bv x y)`.
+pub fn eq_bit(n: usize) -> Expr {
+    let body = app(var(0), app2(eq_bv(n), var(3), var(2)));
+    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
+}
+/// Wrapping `a * b` (mod 2^n): the shift-and-add rows of `mul_bits` as a `V -> V -> V` circuit.
+pub fn mul(n: usize) -> Expr {
+    bits_circuit(n, &move |x, y| mul_bits(n, x, y))
+}
 /// The next carry (or borrow) of one position, given its operand bits, the incoming carry and `x = a ^ b`.
 pub fn ripple_carry(sub: bool, a: Expr, b: Expr, c: Expr, x: Expr) -> Expr {
     if sub {

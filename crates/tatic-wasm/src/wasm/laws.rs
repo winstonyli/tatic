@@ -293,9 +293,8 @@ fn timeout(w: Wasm, c: &mut Cx, a: At, r: At, z: At) -> Expr {
 }
 
 /// `loop L { dup; push 1; lt; if {} {push 1; <dec>; br L} }`: count the top word down to 0 (`dec` = `sub`).
-pub fn countdown(w: Wasm, dec: Expr) -> Vec<Ins> {
-    let one = lit(w.n, 1);
-    vec![Ins::Loop(vec![Ins::Dup, Ins::Push(one), Ins::Cmp(lt_u(w.n)), Ins::If(vec![], vec![Ins::Push(one), Ins::Bin(dec), Ins::Br(0)])])]
+pub fn countdown(dec: Op) -> Vec<Ins> {
+    vec![Ins::Loop(vec![Ins::Dup, Ins::Push(1), Ins::Op(Op::LtU), Ins::If(vec![], vec![Ins::Push(1), Ins::Op(dec), Ins::Br(0)])])]
 }
 
 /// An `if` inside a loop: for every fuel with `GoodNat` and every start word with `GoodBv`, the countdown answers
@@ -303,9 +302,9 @@ pub fn countdown(w: Wasm, dec: Expr) -> Vec<Ins> {
 /// `Pi S N. GoodNat N -> Pi R Q k z. Q z -> (Pi x s mu. GoodBv x -> Q (k (x,s) mu)) -> Pi x s mu. GoodBv x -> Q (M cd ..)`.
 /// The invariant carries `GoodBv` of the counter, which the `if` needs and `good_sub` keeps. `dec` replaces the
 /// decrement in the program only (a control).
-pub fn countdown_law(w: Wasm, dec: Expr) -> (Expr, Expr) {
+pub fn countdown_law(w: Wasm, dec: Op) -> (Expr, Expr) {
     let n = w.n;
-    let code = countdown(w, dec);
+    let code = countdown(dec);
     // S N gn R Q k z hz hk x s mu gx
     let tys: Vec<Ty> = vec![
         ty!(|_c, _x| sort(2)),
@@ -439,7 +438,7 @@ pub fn wasm_programs_as_kernel_data() {
 pub fn countdown_invariant_is_not_exponential() {
     let n = 24;
     tatic_kernel::scoped(|| {
-        let (p, s) = countdown_law(Wasm { n }, sub(n));
+        let (p, s) = countdown_law(Wasm { n }, Op::Sub);
         let t0 = Instant::now();
         ck("countdown invariant n=24", &p, &s);
         assert!(t0.elapsed().as_secs_f64() < 2.0, "countdown invariant took {:?}", t0.elapsed());
@@ -465,12 +464,12 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
     timed("if law", if_law(w, false));
     timed("if invariant", if_good(w, false));
     timed("loop law", loop_law(w));
-    timed("countdown invariant", countdown_law(w, sub(n)));
+    timed("countdown invariant", countdown_law(w, Op::Sub));
     // concrete runs: the countdown from 3 exits at 0 with fuel 4 and times out with fuel 3; store then load
     let at = |v: u128| move |c: &mut Cx, x: &[At]| app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, v), c.at(x[4])), c.at(x[5]));
-    timed("countdown 3, fuel 4", run_by_refl(w, &countdown(w, sub(n)), &[3], 4, &at(0)));
-    timed("countdown 3, fuel 3", run_by_refl(w, &countdown(w, sub(n)), &[3], 3, &|c, x| c.at(x[3])));
-    let mem_prog = [Ins::Push(lit(n, 3)), Ins::Push(lit(n, 5)), Ins::Store, Ins::Push(lit(n, 3)), Ins::Load];
+    timed("countdown 3, fuel 4", run_by_refl(w, &countdown(Op::Sub), &[3], 4, &at(0)));
+    timed("countdown 3, fuel 3", run_by_refl(w, &countdown(Op::Sub), &[3], 3, &|c, x| c.at(x[3])));
+    let mem_prog = [Ins::Push(3), Ins::Push(5), Ins::Store, Ins::Push(3), Ins::Load];
     let stored = |c: &mut Cx, x: &[At]| {
         let mu = w.upd(c, x[1], lit(n, 3), lit(n, 5), c.at(x[5]));
         app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, 5), c.at(x[4])), mu)
@@ -482,9 +481,9 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
         rejected("if_inv, claims Q x", if_inv(Ctl::ClaimsX));
         rejected("if law, arms swapped", if_law(w, true));
         rejected("if invariant, arms swapped", if_good(w, true));
-        rejected("countdown with add for sub", countdown_law(w, add(n)));
-        rejected("countdown 3, fuel 4, answers 1", run_by_refl(w, &countdown(w, sub(n)), &[3], 4, &at(1)));
-        rejected("countdown 3, fuel 3, exits", run_by_refl(w, &countdown(w, sub(n)), &[3], 3, &at(0)));
+        rejected("countdown with add for sub", countdown_law(w, Op::Add));
+        rejected("countdown 3, fuel 4, answers 1", run_by_refl(w, &countdown(Op::Sub), &[3], 4, &at(1)));
+        rejected("countdown 3, fuel 3, exits", run_by_refl(w, &countdown(Op::Sub), &[3], 3, &at(0)));
     }
 }
 
