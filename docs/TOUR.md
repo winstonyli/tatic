@@ -26,7 +26,7 @@ The JIT (`crates/tatic/src/`):
 - `crates/tatic/src/jit/shape.rs`: term-shape analysis the builder and the prover share (`peel`, `classify`, `free_vars`, closure-arity inference); it emits nothing.
 - `crates/tatic/src/jit/specialise.rs` and `crates/tatic/src/verify/spec_check.rs`: the untrusted specialiser and its trusted replay checker.
 - `crates/tatic/src/verify/typing.rs`: the type check that keeps closures out of the entry point.
-- `crates/tatic/src/jit/ir.rs`, `crates/tatic/src/verify/decompile.rs`, `crates/tatic/src/jit/lower_wat.rs`: the IR, its validation, its WAT. "How is a closure represented?" (`crates/tatic/src/jit/lower_wat.rs#Lowering`)
+- `crates/tatic/src/jit/ir.rs`, `crates/tatic/src/verify/decompile.rs`, `crates/tatic/src/jit/lower_wat.rs`: the IR, its validation, its WAT (the module-level templates, allocator, partial-application wrapper and curried stages, in `crates/tatic/src/jit/lower_wat/templates.rs`). "How is a closure represented?" (`crates/tatic/src/jit/lower_wat.rs#Lowering`)
 - `crates/tatic/src/lang/term.rs`, `crates/tatic/src/lang/eval.rs`, `crates/tatic/src/lang/syntax.rs`: terms, the interpreter that defines correct behavior (`crates/tatic/src/lang/eval.rs#eval`), and the parser.
 - `crates/tatic/src/support/samples.rs`, `crates/tatic-rng/src/lib.rs`, `crates/tatic/src/testing/test_corpus.rs`, `crates/tatic/src/testing/ir_fuzz.rs`: the sample inputs, a seeded generator, shared test terms and a fuzzer for the IR. `crates/tatic/src/bin/repl.rs`: an interactive REPL. `crates/tatic/src/bin/demo.rs#main`: the demo.
 
