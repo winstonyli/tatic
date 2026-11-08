@@ -16,9 +16,9 @@ Goal 1 (a JIT on proved equivalence). Facts were read from the tree on 2026-11-0
 - **z1 Parameters:** a new `LocalGet` instruction, defined as a load from a frame in memory.
 - **a1 Operators:** a trusted table (`lt_s`, `le_s`, `mul`, `eq` as a one-bit word, beside the existing `add`, `sub`), each checked against eval and wasmtime exhaustively at n = 8 and on samples at n = 64.
 
-## Open: three decisions this spec needs (D1-D3, in the cover message)
+## D1-D3 (decided 2026-11-08: the user took (a) for each, as recommended; recorded in ROADMAP v0.7)
 
-They change interfaces, so they are the user's. The spec is written for the recommended option of each and says what changes under the others.
+The options are kept below as the record of what was weighed.
 
 - **D1 How far the lowering emits `Ins`.** (a) *Every function body, with `Raw` lines* (recommended): every function body the lowering emits (today's `node()` output) becomes a `Vec<Ins>`. The instructions the machine interprets are structured variants; every other line is `Ins::Raw(String)`, printed verbatim. The fixed module-level templates (`emit_allocator`, the pap wrapper, the curried stages) stay text. One lowering path; the machine rejects any list containing `Raw`. (b) *A variant per opcode*: the same, with typed variants for every instruction (`LocalSet`, `Call`, `CallIndirect`, i32 ops, ...): more types the machine does not use until v0.8. (c) *Fragment only*: straight-line bodies go through `Ins`, everything else keeps text emission: two lowerings that can drift, which x1 was chosen to avoid.
 - **D2 What `Ins` carries.** (a) *Data* (recommended): `Push(i64)` and `Op(Op)`, where the enum `Op` names a row of the operator table (its kernel term at width n, its WAT mnemonic, its result kind). (b) *Terms* as today (`Push(Expr)`, `Bin(Expr)`, `Cmp(Expr)`): the printer would have to recognise which closed term is which operator and decode Church words, a reverse mapping inside trusted code.

@@ -59,3 +59,6 @@ milestone serves goal 1 or 2.
       would make the printer special-case a pair).
     - Operators: a trusted table (`lt_s`, `le_s`, `mul`, `eq` as a one-bit word), each checked against eval and
       wasmtime exhaustively at n = 8 and on samples at n = 64; kernel lemmas wait for a spec of signed integers.
+  - Spec: `docs/superpowers/specs/2026-11-08-v07-straight-line-gate-design.md`. Its decisions D1-D3, taken
+    2026-11-08 (the user, as recommended): every function body becomes `Ins` with `Raw` lines; `Ins` carries data
+    (`Push(i64)`, `Op(Op)`); `try_install` routes fragment terms to the gate alone, whose verdict is final.
