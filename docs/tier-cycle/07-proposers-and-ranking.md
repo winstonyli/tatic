@@ -234,3 +234,33 @@ every extra whose class appears anywhere in phases 1-3. That leaves, at salt 1, 
 
 Rows: `salts_t_<1000|all>_s<salt>.tsv`, `salts_r_s<salt>.tsv` (renamings); `rows/floor/canon.awk` counts twins.
 
+
+### No claim source with room for a model (survey, 2026-11-07)
+
+Is there a claim source reachable from this repo where the kernel's label is expensive (seconds or more) or uncertain
+(cheap checks do not decide truth or provability), so that a model ranking or budgeting claims would save work? A
+read-only survey of five sources, each finding re-checked by a second reader against the cited docs (workflow
+`hard-claims-survey`, no runs), found little room in all five:
+- **The current loop.** Every costly tail is small, deterministic and already separated by a trivial feature: `shr1`
+  presence (2652 of the 2693 screen-pass claims `verdict` leaves unproved contain `shr1`, and `prove_rule` proves all
+  2693; `PARKED.md`, "Belief layer stage 2"), term size, `n` and `k`, straggler or not. The one budget a ranker could still
+  spend better is the mines' (v0.6's question, "A learned scorer over the extras"), where every learned key was null.
+- **`mul`.** No claim stream exists: `mul` is outside the loop's operators and is not a left-to-right machine. At a
+  fixed width every variable-`mul` law is finite and decided by exhaustive evaluation, and its proof costs are smooth
+  in the multiplier width and the law's arity (search-execution blend spec part 2, §58-59; "The level wall is Church's").
+  The one real uncertainty, whether a width-uniform proof exists (commutativity), is a handful of theorems, not a stream.
+- **Rings** (`PARKED.md`, "Port the loop to rings"; "Other theories"): a completed axiom base normalizes every law and
+  a 4-point value screen decides truth; the only expensive part is an artificial node budget.
+- **Vocabulary growth** (checked definitions, boolean combinations of comparisons): the one expensive and uncertain
+  label is a definition's usefulness (a mine per candidate), on about 5 candidates per loop; its abbreviation form was
+  decided against on a measured null (`PARKED.md`, "Definitions as an enumerator vocabulary"), and boolean combinations are capped
+  at about 17% of head-start M (`PARKED.md`, "Boolean combinations of comparisons").
+- **External corpora.** Souper's `test/Infer` gives 14 cases in the term language, at most two variables, which cost
+  milliseconds by the loop's per-law costs (inference, not run); its other 25 files have no encoding here, and the
+  InstCombine corpus is unread (`PARKED.md`, "LLVM InstCombine tests as a corpus").
+
+Reading: in this kernel's reach, a claim's label is either cheap and decided or out of reach, and what separates the
+two is syntax, so goal 3's model has nothing to learn that a lookup does not already know (inference across the five
+sources; no model was tried). The cheapest falsifiers named: prove the 14 Souper cases and log each route (minutes); time
+a generated pool of variable-`mul` laws by the case-split prover at widths 2-3 and look for spread within an
+(n, arity) cell that size does not predict (minutes to tens of minutes).

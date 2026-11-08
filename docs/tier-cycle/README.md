@@ -9,7 +9,7 @@ The tier-cycle findings log, one file per section (the two long sections are spl
 - [04-interface-to-settle.md](04-interface-to-settle.md): Interface (to settle), 8 lines
 - [05-experiments.md](05-experiments.md): Experiments, 59 lines
 - [06-risks.md](06-risks.md): Risks, 9 lines
-- [07-proposers-and-ranking.md](07-proposers-and-ranking.md): Proposers and ranking, 236 lines
+- [07-proposers-and-ranking.md](07-proposers-and-ranking.md): Proposers and ranking, 266 lines
 - [08-the-floor-the-join-and-the-law-generator.md](08-the-floor-the-join-and-the-law-generator.md): The floor, the join and the law generator, 877 lines
 - [09-the-class-table.md](09-the-class-table.md): The class table, 500 lines
 - [10-the-streams-and-the-gate.md](10-the-streams-and-the-gate.md): The streams and the gate, 154 lines
