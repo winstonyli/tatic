@@ -316,9 +316,9 @@ fn no_truth(_: bool, _: bool) -> bool {
 /// are bitwise or shift).
 pub const OP_INFO: [OpInfo; 8] = [
     info("add", true, false, false, 6, no_truth, words!(|x, y, m| x.wrapping_add(y) & m)),
-    info("and", false, true, false, 3, |a, b| a && b, words!(|x, y, _| x & y)),
-    info("or", false, true, false, 2, |a, b| a || b, words!(|x, y, _| x | y)),
-    info("xor", false, true, false, 4, |a, b| a != b, words!(|x, y, _| x ^ y)),
+    info("and", false, true, false, 3, and_truth, words!(|x, y, _| x & y)),
+    info("or", false, true, false, 2, or_truth, words!(|x, y, _| x | y)),
+    info("xor", false, true, false, 4, xor_truth, words!(|x, y, _| x ^ y)),
     info("sub", true, false, false, 5, no_truth, words!(|x, y, m| x.wrapping_sub(y) & m)),
     info("lt", true, false, false, 1, no_truth, words!(|x, y, _| (x < y) as _)),
     info("shl1", true, false, true, 0, no_truth, words!(|x, _, m| (x << 1) & m)),

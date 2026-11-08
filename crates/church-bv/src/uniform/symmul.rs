@@ -39,7 +39,7 @@
 // direct Bv-level add of two explicit tuples, ~1 ms to check at n = 4.
 // Not built: the second route of the task (the stage's add through the stream adder at numerals); the direct one is cheap, so
 // there is nothing to compare it against here.
-use crate::encoding;
+use tatic_wasm::encoding;
 use super::mul::{band, mul_bv_fill, proj_bit, rep, shl_bv};
 use super::symmul_stream::{apn, hyps_c, hyps_x, yv};
 use super::width::T::*;

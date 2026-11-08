@@ -41,7 +41,7 @@ pub fn gen_memo<K: std::hash::Hash + Eq, V: Clone>(memo: &'static std::thread::L
 
 /// The closed constant `build` makes, built once per generation and keyed by the function's address: the machine proofs
 /// use the gates millions of times. A function with two addresses (two codegen units) only builds an equal term twice.
-pub(crate) fn constant(build: fn() -> Expr) -> Expr {
+pub fn constant(build: fn() -> Expr) -> Expr {
     thread_local! {
         static CONSTANTS: GenMemo<usize, Expr> = Default::default();
     }
@@ -221,3 +221,52 @@ pub fn is_ok(r: Result<Expr, String>) -> bool {
     }
 }
 
+
+// ---- Circuits over operand bits: `bits_circuit` closes an output-bit function into a word operator (multiplication's
+// shift-and-add partial products, `mul_bits`, summed by ripple adders, `add_rows`).
+
+/// `\a b. \C k. a C (\a_i.. b C (\b_i.. k out_0 .. out_(n-1)))` where `outs(a_bits, b_bits)` gives the output bits.
+pub fn bits_circuit(n: usize, outs: BitsFn) -> Expr {
+    let d = 4 + 2 * n;
+    let v = |pos: usize| var((d - 1 - pos) as u32);
+    let a: Vec<Expr> = (0..n).map(|i| v(4 + i)).collect();
+    let b: Vec<Expr> = (0..n).map(|i| v(4 + n + i)).collect();
+    let mut body = apps(v(3), outs(&a, &b));
+    for _ in 0..n {
+        body = lam(bool0(), body);
+    }
+    let mut inner = app2(var(n as u32 + 2), var(n as u32 + 1), body);
+    for _ in 0..n {
+        inner = lam(bool0(), inner);
+    }
+    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(n), app2(var(3), var(1), inner)))))
+}
+
+pub fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
+    let mut carry = f();
+    let mut sums = vec![];
+    for i in 0..a.len() {
+        let x = xor(a[i], b[i]);
+        sums.push(xor(x, carry));
+        carry = ripple_carry(false, a[i], b[i], carry, x);
+    }
+    sums
+}
+
+pub type BitsFn<'a> = &'a dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
+
+pub fn mul_bits(n: usize, x: &[Expr], y: &[Expr]) -> Vec<Expr> {
+    let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i], x[j - i]) }).collect() };
+    (1..n).fold(row(0), |acc, i| add_rows(&acc, &row(i)))
+}
+
+/// The truth tables of the bitwise gates `and`, `or` and `xor`, beside the gates (church-bv's `OP_INFO` rows use them too).
+pub fn and_truth(a: bool, b: bool) -> bool {
+    a && b
+}
+pub fn or_truth(a: bool, b: bool) -> bool {
+    a || b
+}
+pub fn xor_truth(a: bool, b: bool) -> bool {
+    a != b
+}

@@ -182,9 +182,9 @@ pub struct GoodOps {
 impl GoodOps {
     pub fn new() -> GoodOps {
         GoodOps {
-            and: good2(&|a, b| and(a, b), &OP_INFO[1].truth).0,
-            or: good2(&|a, b| or(a, b), &OP_INFO[2].truth).0,
-            xor: good2(&|a, b| xor(a, b), &OP_INFO[3].truth).0,
+            and: good2(&|a, b| and(a, b), &and_truth).0,
+            or: good2(&|a, b| or(a, b), &or_truth).0,
+            xor: good2(&|a, b| xor(a, b), &xor_truth).0,
         }
     }
     pub fn go(&self, w: &Expr, e: Expr, x: &Gb, y: &Gb) -> Gb {

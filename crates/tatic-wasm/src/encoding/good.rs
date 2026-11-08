@@ -156,9 +156,9 @@ pub fn good_sub(n: usize) -> (Expr, Expr) {
     good_ripple(n, true)
 }
 pub fn good_ripple(n: usize, sub: bool) -> (Expr, Expr) {
-    let (g_and, _) = good2(&|a, b| and(a, b), &OP_INFO[1].truth);
-    let (g_or, _) = good2(&|a, b| or(a, b), &OP_INFO[2].truth);
-    let (g_xor, _) = good2(&|a, b| xor(a, b), &OP_INFO[3].truth);
+    let (g_and, _) = good2(&|a, b| and(a, b), &and_truth);
+    let (g_or, _) = good2(&|a, b| or(a, b), &or_truth);
+    let (g_xor, _) = good2(&|a, b| xor(a, b), &xor_truth);
     good_vec(n, if sub { self::sub(n) } else { add(n) }, &move |a, b, ga, gb| {
         let mut c = f();
         let mut gc = good_bit(false);
@@ -187,6 +187,11 @@ pub fn good_ripple(n: usize, sub: bool) -> (Expr, Expr) {
         (s, gs)
     })
 }
+
+/// Two bit lists: the result bits and their `GoodBool` witnesses.
+pub type BitPair = (Vec<Expr>, Vec<Expr>);
+/// The result bits and witnesses from both operands' bits and witnesses.
+pub type Bits4<'a> = &'a dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> BitPair;
 
 /// `(proof, type)` of `Pi x y. GoodBv x -> GoodBv y -> GoodBv (vec x y)` for a binary vector operation
 /// whose result bits and their `GoodBool` witnesses `bits(a, b, ga, gb)` are built from the operands'.
@@ -227,9 +232,9 @@ pub fn good_vec(n: usize, vec: Expr, bits: Bits4) -> (Expr, Expr) {
 
 /// `Pi a b. GoodBv a -> GoodBv b -> GoodBv_1 (lt_u a b)`: `good_sub`'s borrow chain, keeping only the last borrow.
 pub fn good_lt(n: usize) -> (Expr, Expr) {
-    let (g_and, _) = good2(&|a, b| and(a, b), &OP_INFO[1].truth);
-    let (g_or, _) = good2(&|a, b| or(a, b), &OP_INFO[2].truth);
-    let (g_xor, _) = good2(&|a, b| xor(a, b), &OP_INFO[3].truth);
+    let (g_and, _) = good2(&|a, b| and(a, b), &and_truth);
+    let (g_or, _) = good2(&|a, b| or(a, b), &or_truth);
+    let (g_xor, _) = good2(&|a, b| xor(a, b), &xor_truth);
     good_vec(n, lt_u(n), &move |a, b, ga, gb| {
         let (mut c, mut gc) = (f(), good_bit(false));
         for i in 0..n {

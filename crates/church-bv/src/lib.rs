@@ -14,11 +14,11 @@ mod classes;
 mod ctx_scorer;
 mod corpus;
 mod driver;
-mod encoding;
+#[cfg(test)]
+mod encoding_scaling;
 pub mod entry;
 mod host;
 mod job;
-mod wasm;
 mod lemma_cache;
 mod rewrite;
 mod machine;
@@ -31,7 +31,7 @@ mod task;
 mod uniform;
 mod work;
 #[allow(unused_imports)]
-use encoding::*;
+use tatic_wasm::encoding::*;
 #[allow(unused_imports)]
 use rewrite::*;
 use host::*;
@@ -42,11 +42,9 @@ use search::*;
 #[allow(unused_imports)]
 use streams::*;
 
-type BitPair = (Vec<Expr>, Vec<Expr>);
 type BitTriple = (Vec<Expr>, Vec<Expr>, Vec<Expr>);
 /// Output bits of a circuit from the two operands' bits.
 type BitsDyn = dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
-type Bits4<'a> = &'a dyn Fn(&[Expr], &[Expr], &[Expr], &[Expr]) -> BitPair;
 
 // The unit-test exe's allocator, so its timings run on what ships; the binary (`main.rs`) carries its own.
 #[cfg(test)]

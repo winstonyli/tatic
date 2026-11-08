@@ -14,7 +14,7 @@
 //     `shl` applied j times, `Bits(k0 + j)`, which is exactly the level `acc_j` and the adder at step j expect.
 //   * the partial product is `y_j & x_shifted`, the mask FIRST (`and(y_j, bit)`), so `y_j = false` makes it the zero stream by
 //     computation (`and ff b` reduces to `ff` for any `b`), with no goodness hypothesis on the shifted stream.
-use crate::encoding;
+use tatic_wasm::encoding;
 use super::width::T::*;
 use super::width::*;
 use std::time::Instant;

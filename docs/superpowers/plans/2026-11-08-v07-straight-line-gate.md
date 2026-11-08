@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # v0.7 straight-line gate: implementation plan

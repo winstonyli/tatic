@@ -173,6 +173,7 @@ dependencies = [
  "mimalloc",
  "tatic-kernel",
  "tatic-rng",
+ "tatic-wasm",
 ]
 
 [[package]]
@@ -1481,6 +1482,15 @@ dependencies = [
 [[package]]
 name = "tatic-rng"
 version = "0.6.0"
+
+[[package]]
+name = "tatic-wasm"
+version = "0.6.0"
+dependencies = [
+ "hashbrown 0.16.1",
+ "mimalloc",
+ "tatic-kernel",
+]
 
 [[package]]
 name = "tempfile"

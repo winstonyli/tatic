@@ -16,7 +16,7 @@
 //     `GoodBool` of its bits at good positions only (Y's hypothesis `gw` was made conditional on `Good_k i` for this).
 // The fill bit of the shift is a parameter (`fill = false` is the real shift) so the mutation tests can flip it in the stream
 // construction and in the fixed-width `shl_bv`.
-use crate::encoding;
+use tatic_wasm::encoding;
 use super::mul::*;
 use super::width::T::*;
 use super::width::*;

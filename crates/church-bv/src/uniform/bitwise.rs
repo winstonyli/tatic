@@ -8,7 +8,7 @@
 // `lt` is a borrow chain (a fold like the adder, `encoding::ripple_carry`'s borrow) and needs the `Good1` induction.
 // No per-width `Id` proof of any of these laws exists in `encoding.rs`; the statements are built from its definitions, and the
 // `direct` baseline here (the same chain with the per-bit case split at the variables) is built in this file, not the encoding's.
-use crate::encoding;
+use tatic_wasm::encoding;
 use super::width::T::*;
 use super::width::*;
 use std::time::Instant;

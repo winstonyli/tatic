@@ -12,12 +12,12 @@ codegen-units = 1
 [profile.test]
 opt-level = 1
 
-# `tatic`, `tatic-kernel`, `tatic-rng` and `church-bv` are the members; `tools/runs` is its own standalone crate (own lockfile and target).
+# `tatic`, `tatic-kernel`, `tatic-rng`, `tatic-wasm` and `church-bv` are the members; `tools/runs` is its own standalone crate (own lockfile and target).
 # The profiles live here because Cargo ignores them in a member manifest. A virtual root has no edition, so the resolver is
 # set explicitly (the root package's edition 2024 used to imply it).
 [workspace]
 resolver = "3"
-members = ["crates/tatic", "crates/tatic-kernel", "crates/tatic-rng", "crates/church-bv"]
+members = ["crates/tatic", "crates/tatic-kernel", "crates/tatic-rng", "crates/tatic-wasm", "crates/church-bv"]
 exclude = ["tools/runs"]
 
 # One version, edition and license for every member (`version` is the project version: VERSIONING.md), and one line per
@@ -32,3 +32,4 @@ hashbrown = "0.16.1"
 mimalloc = "0.1.52"
 tatic-kernel = { path = "crates/tatic-kernel" }
 tatic-rng = { path = "crates/tatic-rng" }
+tatic-wasm = { path = "crates/tatic-wasm" }

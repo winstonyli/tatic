@@ -38,7 +38,7 @@ impl Cx {
 /// A telescope entry: a binder's type from the variables bound before it.
 pub type Ty<'a> = Box<dyn Fn(&mut Cx, &[At]) -> Expr + 'a>;
 
-pub(crate) fn tele(c: &mut Cx, lambda: bool, tys: &[Ty], xs: &mut Vec<At>, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+pub fn tele(c: &mut Cx, lambda: bool, tys: &[Ty], xs: &mut Vec<At>, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
     if xs.len() == tys.len() {
         return body(c, xs);
     }
@@ -63,12 +63,13 @@ pub fn law(tys: &[Ty], stmt: impl FnMut(&mut Cx, &[At]) -> Expr, mut proof: impl
     (p, statement(tys, stmt))
 }
 
+#[macro_export]
 macro_rules! ty {
     (|$c:ident, $x:ident| $e:expr) => {
-        Box::new(move |$c: &mut Cx, $x: &[At]| $e) as Ty
+        Box::new(move |$c: &mut $crate::encoding::Cx, $x: &[$crate::encoding::At]| $e) as $crate::encoding::Ty
     };
 }
-pub(crate) use ty;
+pub use crate::ty;
 
 #[cfg(test)]
 mod tests {

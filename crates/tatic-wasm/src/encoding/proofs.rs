@@ -266,7 +266,7 @@ pub fn or_bv(n: usize) -> Expr {
     bitwise(n, &|a, b| or(a, b))
 }
 pub fn good_or_bv(n: usize) -> (Expr, Expr) {
-    let (g_or, _) = good2(&|a, b| or(a, b), &OP_INFO[2].truth);
+    let (g_or, _) = good2(&|a, b| or(a, b), &or_truth);
     good_vec(n, or_bv(n), &move |a, b, ga, gb| {
         let s = (0..n).map(|i| or(a[i], b[i])).collect();
         let gs = (0..n).map(|i| apps(g_or, vec![a[i], b[i], ga[i], gb[i]])).collect();

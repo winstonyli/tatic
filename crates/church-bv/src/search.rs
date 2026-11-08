@@ -341,35 +341,6 @@ pub fn encoding_search_rediscovers_library_lemmas_from_statements() {
 // partial products over bits, `row_i[j] = y_i & x_(j-i)`, summed by ripple adders. Laws are proved per width by case
 // analysis on all 2n input bits with `refl` leaves, so they are finite and compare circuits only (no numeric meaning).
 
-/// `\a b. \C k. a C (\a_i.. b C (\b_i.. k out_0 .. out_(n-1)))` where `outs(a_bits, b_bits)` gives the output bits.
-pub fn bits_circuit(n: usize, outs: BitsFn) -> Expr {
-    let d = 4 + 2 * n;
-    let v = |pos: usize| var((d - 1 - pos) as u32);
-    let a: Vec<Expr> = (0..n).map(|i| v(4 + i)).collect();
-    let b: Vec<Expr> = (0..n).map(|i| v(4 + n + i)).collect();
-    let mut body = apps(v(3), outs(&a, &b));
-    for _ in 0..n {
-        body = lam(bool0(), body);
-    }
-    let mut inner = app2(var(n as u32 + 2), var(n as u32 + 1), body);
-    for _ in 0..n {
-        inner = lam(bool0(), inner);
-    }
-    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(n), app2(var(3), var(1), inner)))))
-}
-
-pub fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
-    let mut carry = f();
-    let mut sums = vec![];
-    for i in 0..a.len() {
-        let x = xor(a[i], b[i]);
-        sums.push(xor(x, carry));
-        carry = ripple_carry(false, a[i], b[i], carry, x);
-    }
-    sums
-}
-
-pub type BitsFn<'a> = &'a dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
 pub type KBitsFn<'a> = &'a dyn Fn(&[Vec<Expr>]) -> Vec<Expr>;
 
 /// `Pi x y. GoodBv x -> GoodBv y -> Id(Bv_n, L x y, R x y)` where `L`, `R` are the circuits of the output-bit
@@ -404,10 +375,6 @@ pub fn circuit_law_k(n: usize, k: usize, sides: &dyn Fn(&[Expr]) -> (Expr, Expr)
     })
 }
 
-pub fn mul_bits(n: usize, x: &[Expr], y: &[Expr]) -> Vec<Expr> {
-    let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i], x[j - i]) }).collect() };
-    (1..n).fold(row(0), |acc, i| add_rows(&acc, &row(i)))
-}
 pub fn const_bits(n: usize, c: u128) -> Vec<Expr> {
     (0..n).map(|i| bit((c >> i) & 1 == 1)).collect()
 }

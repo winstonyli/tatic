@@ -13,7 +13,7 @@ cargo clippy --workspace --all-targets
 cargo test --release --test compile_fuzz --test syntax_fuzz
 cargo test --release -p tatic-kernel --test kernel_fuzz --test kernel_soundness_fuzz
 cargo test --release --lib ir_fuzz -- --ignored
-cargo test --release -p church-bv --lib a_large_check -- --ignored
+cargo test --release -p tatic-wasm --lib a_large_check -- --ignored
 cargo bench
 cargo run --release
 ```

@@ -287,12 +287,12 @@ impl Lemmas {
     pub fn holds(&self, e: &Expr, ty: &Expr) -> Result<(), String> {
         match &self.params {
             Some((ps, ..)) => ps.check_open(e, ty),
-            None => crate::encoding::holds(e, ty),
+            None => tatic_wasm::encoding::holds(e, ty),
         }
     }
     /// `holds`, panicking with `name` when it fails.
     pub fn ck(&self, name: &str, e: &Expr, ty: &Expr) {
-        crate::encoding::checked(name, self.holds(e, ty))
+        tatic_wasm::encoding::checked(name, self.holds(e, ty))
     }
 }
 
@@ -682,8 +682,8 @@ fn hidden_state_is_classified() {
         ("rewrite/term.rs", "OP_CACHE", "op results by operator and operand values"),
         ("rewrite/plan.rs", "CLOSED", "memo's closed library terms by key"),
         ("rewrite/plan.rs", "COUNTING", "the one Counting plan, shared"),
-        ("encoding/gates.rs", "CONSTANTS", "gen_memo: closed constants by build function"),
-        ("encoding/tables.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
+        ("../tatic-wasm/src/encoding/gates.rs", "CONSTANTS", "gen_memo: closed constants by build function"),
+        ("../tatic-wasm/src/encoding/tables.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
         ("work.rs", "SLOT", "this thread's work counts: no task reads them, the worker prints them after it"),
     ];
     const PROCESS_WIDE: [(&str, &str, &str); 9] = [
@@ -697,9 +697,11 @@ fn hidden_state_is_classified() {
         ("job.rs", "NEXT_JOB", "job ids, unique per process on purpose"),
         ("driver.rs", "REENTRY", "how this exe is started as a worker: set once by the binary's main, before any task"),
     ];
+    // the encodings' memos live in tatic-wasm, which church-bv runs on: its files are keyed `../tatic-wasm/src/<file>`
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let wasm_dir = dir.join("../../tatic-wasm/src");
     let (mut bad, mut seen) = (vec![], vec![]);
-    let mut todo = vec![dir.clone()];
+    let mut todo = vec![dir.clone(), wasm_dir.clone()];
     while let Some(path) = todo.pop() {
         if path.is_dir() {
             todo.extend(std::fs::read_dir(&path).unwrap().map(|e| e.unwrap().path()));
@@ -708,7 +710,11 @@ fn hidden_state_is_classified() {
         if path.extension().is_none_or(|e| e != "rs") {
             continue;
         }
-        let file = path.strip_prefix(&dir).unwrap().to_str().unwrap().replace('\\', "/");
+        let file = match path.strip_prefix(&wasm_dir) {
+            Ok(rel) => format!("../tatic-wasm/src/{}", rel.to_str().unwrap()),
+            Err(_) => path.strip_prefix(&dir).unwrap().to_str().unwrap().to_string(),
+        }
+        .replace('\\', "/");
         let listed = |list: &[(&str, &str, &str)], name: &str| list.iter().any(|p| p.0 == file && p.1 == name);
         for (line, h) in hidden(&std::fs::read_to_string(&path).unwrap()) {
             let ok = match h {

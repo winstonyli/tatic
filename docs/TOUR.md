@@ -30,15 +30,19 @@ The JIT (`crates/tatic/src/`):
 - `crates/tatic/src/lang/term.rs`, `crates/tatic/src/lang/eval.rs`, `crates/tatic/src/lang/syntax.rs`: terms, the interpreter that defines correct behavior (`crates/tatic/src/lang/eval.rs#eval`), and the parser.
 - `crates/tatic/src/support/samples.rs`, `crates/tatic-rng/src/lib.rs`, `crates/tatic/src/testing/test_corpus.rs`, `crates/tatic/src/testing/ir_fuzz.rs`: the sample inputs, a seeded generator, shared test terms and a fuzzer for the IR. `crates/tatic/src/bin/repl.rs`: an interactive REPL. `crates/tatic/src/bin/demo.rs#main`: the demo.
 
-The kernel and proofs. The kernel (`tatic-kernel`), the seeded generator (`tatic-rng`) and `church-bv` (below) are workspace crates under `crates/`; `crates/tatic` is the `tatic` package that depends on the kernel, so the kernel importing anything from `tatic` is a compile error:
+The kernel and proofs. The kernel (`tatic-kernel`), the seeded generator (`tatic-rng`), `tatic-wasm` and `church-bv` (below) are workspace crates under `crates/`; `crates/tatic` is the `tatic` package that depends on the kernel, so the kernel importing anything from `tatic` is a compile error:
 - `crates/tatic-kernel/src/lib.rs` declares the trusted checker's pieces: `expr.rs` (terms and builders), `stack.rs` (stack growth), `show.rs` (printers), `subst.rs` and `hc.rs` (substitution and its memos), `reduce.rs` (`whnf`, `def_eq`, `normalize`), `check.rs` (`infer`, `check`, `Ctx`, `Globals`). `crates/tatic-kernel/src/postulates.rs`: the proof-term builder. `crates/tatic-kernel/src/spaces.rs`, `crates/tatic-kernel/src/bin.rs`: storage and serialization. `crates/tatic/src/testing/independence.rs`: the test that keeps trusted files from importing untrusted ones.
 - `crates/tatic/src/proof.rs`: what is and is not established, plus the pure prover `crates/tatic/src/proof.rs#prove_pure_expr`. "What does the theorem actually say?" (it is about `denote`: `crates/tatic/src/proof.rs#denote`, not about the emitted WAT)
 - `crates/tatic/src/proof/closures.rs`, `crates/tatic/src/proof/per_instance.rs`, `crates/tatic/src/proof/universal.rs`, `crates/tatic/src/proof/denote.rs`: the closure, per-instance and universal provers, the closure denotation they share (`denote.rs`), and its debug self-check `crates/tatic/src/proof/denote.rs#debug_assert_has_type`.
 
-The bit-vector library and target machine (`crates/church-bv/src/`; `lib.rs` holds the `mod` lines, shared aliases and the test allocator; `main.rs` is the `church-bv` binary):
-- `encoding/` (parent `encoding.rs` re-exports the pieces): `cx` (the binder-depth builder `Cx`/`At`, telescopes `law`/`statement`), `gates` (Church Bool and vector terms, gate builders), `good` (the "good" witnesses), `division` (equality, wrapping division), `proofs` (add identity, commutativity, associativity), `tables` (truth-table and BDD builders), `tests`. `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
+The encodings and target machine (`crates/tatic-wasm/src/`, a crate on the kernel alone that `church-bv` and `tatic` both build on; `lib.rs` holds the `mod` lines, the prelude and the test allocator):
+- `encoding/` (parent `encoding.rs` re-exports the pieces): `cx` (the binder-depth builder `Cx`/`At`, telescopes `law`/`statement`), `gates` (Church Bool and vector terms, gate builders), `good` (the "good" witnesses), `division` (equality, wrapping division), `proofs` (add identity, commutativity, associativity), `tables` (truth-table and BDD builders), `tests`.
+- `wasm.rs`: the formal target machine (`Ins`, the stack check `out_stack`, the program encoding `prog` and its meaning); `wasm/laws.rs`: its laws and concrete runs, with controls.
+
+The bit-vector library (`crates/church-bv/src/`; `lib.rs` holds the `mod` lines, shared aliases and the test allocator; `main.rs` is the `church-bv` binary; `encoding_scaling.rs`: the encoding's scaling tests that need a `Setup`):
+- `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
 - `classes.rs`, and `class_key.txt` and `held_*.txt` in `crates/church-bv/data/`: the class table, its key and the held-out laws.
-- `wasm.rs`: the formal target machine. `lemma_cache.rs`, `work.rs`, `task.rs`: caching, counters, shared memo (`crates/church-bv/src/task.rs#SharedMemo`). `host.rs`: the state of the computer a timing ran on.
+- `lemma_cache.rs`, `work.rs`, `task.rs`: caching, counters, shared memo (`crates/church-bv/src/task.rs#SharedMemo`). `host.rs`: the state of the computer a timing ran on.
 - `wnat.rs`, `wfold.rs`: laws uniform in the width over a W-built index, which folds where Church numerals cannot, built as kernel terms through `Cx` (induction on the index: `crates/church-bv/src/wnat.rs#ind`); `wfold` proves stream laws over that index from the machine's encoding, one position's step through `StepProof` (`crates/church-bv/src/wfold.rs#proof`).
 - `uniform/`: laws proved uniformly in the bit width over the unchanged kernel, on the named tree `T` (`width.rs` is the shared vocabulary; `bitwise`, `mul`, `shift`, `symmul`, `symmul_stream` are the law families).
 - `entry.rs`: the `church-bv <subcommand>` table (`sweep`, `worker`, `loop-stream`, `proof-cost-split`, `rule-set-kernel-check`, `ctx-fit`, `overlap-report`, `q1-report`) and `main` (`crates/church-bv/src/entry.rs#main`); each subcommand runs on a default-stack thread, as a test would, and the binary tells `Worker` to re-enter itself as `church-bv worker` (`crates/church-bv/src/driver.rs#declare_reentry`).
@@ -129,8 +133,8 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **CacheEntry**: the per-hash JIT outcome; every variant but `Compiled` is served by the interpreter. `crates/tatic/src/jit.rs#CacheEntry`
 - **Carry cap**: the most carries per side the machine proof takes on. `crates/church-bv/src/machine.rs#carry_cap`
 - **Carry vector**: a machine's state between bit positions, one bit per carrying node. `crates/church-bv/src/machine.rs#carries`
-- **Church Bool**: the kernel type `Pi C. C -> C -> C`; true picks the first branch. `crates/church-bv/src/encoding/gates.rs#bool0`
-- **Church bit-vector**: a continuation over n Bools, least significant bit first. `crates/church-bv/src/encoding/gates.rs#bv_ty`
+- **Church Bool**: the kernel type `Pi C. C -> C -> C`; true picks the first branch. `crates/tatic-wasm/src/encoding/gates.rs#bool0`
+- **Church bit-vector**: a continuation over n Bools, least significant bit first. `crates/tatic-wasm/src/encoding/gates.rs#bv_ty`
 - **Class table**: a learned map from the value signature of a term to its smallest representative, used as a rewriting step; a replacement is used only if it is provable. `crates/church-bv/src/classes.rs#Classes`
 - **Classify / Shape**: the one case analysis of a body node shared by the IR builder and the proof walkers. `crates/tatic/src/jit/shape.rs#classify`
 - **Combinator**: a lambda or `Rec` lifted out as its own function (or a partial-application wrapper) in the IR. `crates/tatic/src/jit/ir.rs#Combinator`
@@ -155,7 +159,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **GEN_DRAW**: integer that re-draws the extras from a different sample. `crates/church-bv/src/driver.rs#scope_extras`
 - **Redraw spread (sigma)**: the difference between two arms that differ only in `GEN_DRAW`; the gate is deterministic, so this A/A spread is the noise floor a win must beat. A doc measure, not computed in code. `docs/tier-cycle/#The streams and the gate`
 - **Globals / Ctx**: the trusted list of constant types and the local binder types. `crates/tatic-kernel/src/check.rs#Globals`
-- **Good witness (GoodBool, GoodBv)**: hypotheses that let a proof split a symbolic bit. `crates/church-bv/src/encoding/gates.rs#binders`
+- **Good witness (GoodBool, GoodBv)**: hypotheses that let a proof split a symbolic bit. `crates/tatic-wasm/src/encoding/gates.rs#binders`
 - **Guard laws**: machine-free laws scored along with stragglers so a regressing candidate is visible. `crates/church-bv/src/miner/laws.rs#Laws`
 - **Held-out bands**: committed law files of sizes 11, 13, 15, 17 that no loop serves. `crates/church-bv/src/classes.rs#HELD_BANDS`
 - **Held-out M**: M of a loop's final rules on the held-out bands. `docs/tier-cycle/#Metrics`
@@ -195,7 +199,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Transfer**: whether rules mined on one set of laws help laws they never saw (the held-out bands). `docs/tier-cycle/#Held-out M and transfer for v0.5`
 - **Twin**: an extra whose normalized key equals a served or held-out law's; the extras filter drops it. `docs/tier-cycle/#Metrics`
 - **Verdict (kernel to model)**: the per-proposal answer of the cycle's interface: parse error, refuted, trivial, duplicate, known, novel, and cheap or hard. `docs/tier-cycle/#Interface`
-- **Wasm model**: wasm-like programs as Church-encoded kernel data with laws about append, if and loop; separate from the JIT. `crates/church-bv/src/wasm.rs#Wasm`
+- **Wasm model**: wasm-like programs as Church-encoded kernel data with laws about append, if and loop; separate from the JIT. `crates/tatic-wasm/src/wasm.rs#Wasm`
 - **Work counts**: deterministic counters at four sites, a load-independent cost signal. `crates/church-bv/src/work.rs#Site`
 - **Worker**: a persistent child process that runs serve and mine tasks. `crates/church-bv/src/driver.rs#run_worker`
 

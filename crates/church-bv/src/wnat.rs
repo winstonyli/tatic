@@ -17,7 +17,7 @@
 // abstracted. That covers exactly the statements that read a tree through its tag, which is all a stream function can do.
 //
 // Terms are kernel terms built through `Cx`: a binder hands its variable to the body as an `At`, and no index is written by hand.
-use crate::encoding::*;
+use tatic_wasm::encoding::*;
 use tatic_kernel::*;
 
 // ---------- the index ----------
