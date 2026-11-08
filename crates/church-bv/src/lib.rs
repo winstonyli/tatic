@@ -22,6 +22,8 @@ mod wasm;
 mod lemma_cache;
 mod rewrite;
 mod machine;
+mod wfold;
+mod wnat;
 mod miner;
 mod search;
 mod task;

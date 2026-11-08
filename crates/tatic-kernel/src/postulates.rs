@@ -16,7 +16,7 @@ use super::*;
 /// shaped like `Pi x : Sort(m). x`, which only exists at `Sort(m+1)`, one
 /// universe above what it can extract into. `WRec` has no such limit: `Empty`
 /// is `W(unit, \_. unit)` with no postulate (`tests/church_encoding.rs`), and
-/// a tag carrying its own witness computes (`church-bv`'s `uniform/wnat.rs`).
+/// a tag carrying its own witness computes (`church-bv`'s `src/wnat.rs`).
 /// Real kernels take a small base type as primitive; here it is postulated.
 ///
 /// A postulate is referred to by `Const(level)` and checked as one of the
