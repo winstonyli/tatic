@@ -253,110 +253,136 @@ pub fn add_tree_law(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term) -> 
     law
 }
 
+// at a leaf's literal bits, once for the side's m + 1 F lemmas: (output, next carries, phi of the carries)
+type Step = std::rc::Rc<(Expr, Vec<Expr>, Vec<Expr>)>;
+
+/// One bit position's step proof over two machines and an encoding: the lemmas `Id(F_j, G_j(operand bits, phi(carries)))`
+/// and the position's equations from them. Shared by `tree_proof` and the width-free fold.
+pub(crate) struct StepProof<'a> {
+    pub(crate) machines: &'a [Machine; 2],
+    pub(crate) enc: &'a Encoding,
+    pub(crate) k: usize,
+    pub(crate) gops: GoodOps,
+    steps: std::cell::RefCell<hashbrown::HashMap<(usize, Vec<bool>), Step>>,
+}
+
+impl<'a> StepProof<'a> {
+    pub(crate) fn new(machines: &'a [Machine; 2], enc: &'a Encoding, k: usize) -> Self {
+        StepProof { machines, enc, k, gops: GoodOps::new(), steps: Default::default() }
+    }
+    pub(crate) fn phi(&self, side: usize, j: usize, s: &[Expr]) -> Expr {
+        table_app(s, &|b| self.enc.phi[side][j][index_of(b)])
+    }
+    fn g(&self, j: usize, v: &[Expr]) -> Expr {
+        table_app(v, &|b| self.enc.g[j][index_of(b)])
+    }
+    /// A side's step at (operand bits, carries): (output, next carries).
+    pub(crate) fn step_of(&self, side: usize, v: &[Expr]) -> (Expr, Vec<Expr>) {
+        let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: *e, g: f() }).collect();
+        let (o, next) = self.machines[side].step(&self.gops, &dummy[..self.k], &dummy[self.k..]);
+        (o.e, next.into_iter().map(|g| g.e).collect())
+    }
+    // F_j of a side at symbolic (operand bits, carries): j = 0 output, 1..=m the next phi values
+    fn side_f(&self, side: usize, j: usize, v: &[Expr]) -> Expr {
+        let (o, next) = self.step_of(side, v);
+        match j {
+            0 => o,
+            _ => self.phi(side, j - 1, &next),
+        }
+    }
+    fn step_at(&self, side: usize, v: &[Expr], bits: Option<&[bool]>) -> Step {
+        let build = || {
+            let (o, next) = self.step_of(side, v);
+            std::rc::Rc::new((o, next, (0..self.enc.phi[0].len()).map(|q| self.phi(side, q, &v[self.k..])).collect()))
+        };
+        let Some(bits) = bits else { return build() };
+        if let Some(hit) = self.steps.borrow().get(&(side, bits.to_vec())) {
+            return hit.clone();
+        }
+        let s = build();
+        self.steps.borrow_mut().insert((side, bits.to_vec()), s.clone());
+        s
+    }
+    /// `Id(F_j, G_j(operand bits, phi(carries)))` for a side's `k + carries` bits by case analysis, closed, and its type.
+    /// Decision-diagram proofs lost to the case tree at nv = 9 and 11 (docs/tier-cycle/, "Decision diagrams deleted").
+    pub(crate) fn lemma(&self, side: usize, j: usize) -> (Expr, Expr) {
+        let nv = self.k + self.machines[side].carries();
+        // the leaf's bits too at a leaf (`Some`), the symbolic ones in the statement (`None`)
+        let ab = |v: &[Expr], bits: Option<&[bool]>| {
+            let s = self.step_at(side, v, bits);
+            let key: Vec<Expr> = v[..self.k].iter().chain(&s.2).cloned().collect();
+            (if j == 0 { s.0 } else { self.phi(side, j - 1, &s.1) }, self.g(j, &key))
+        };
+        let body = |v: &[Expr]| {
+            let (a, b) = ab(v, None);
+            id(bool0(), a, b)
+        };
+        let ty = lemma_n_ty(nv, &body);
+        let leaf = |bits: &[bool]| {
+            let lits: Vec<Expr> = bits.iter().map(|b| bit(*b)).collect();
+            refl(ab(&lits, Some(bits)).0)
+        };
+        (lemma_n(nv, &body, &leaf).0, ty)
+    }
+    /// `(F_j left, F_j right, their equality)` at one position, from the sides' lemmas `lem`, the operand bits and goods
+    /// `ug`, the sides' carries `st` and the proofs `ip` that the sides' phi values agree.
+    pub(crate) fn eq(&self, j: usize, lem: [&Expr; 2], ug: &[Gb], st: [&[Gb]; 2], ip: &[Expr]) -> (Expr, Expr, Expr) {
+        let m = self.enc.phi[0].len();
+        let bl = bool0();
+        let tr = |x: &Expr, y: &Expr, w: &Expr, p: Expr, q: Expr| trans_proof(&bl, x, y, w, p, q);
+        let ub: Vec<Expr> = ug.iter().map(|g| g.e).collect();
+        let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e).collect() };
+        let vs = |side: usize| -> Vec<Expr> { ub.iter().cloned().chain(sx(side)).collect() };
+        let pq = |side: usize| -> Vec<Expr> { (0..m).map(|q| self.phi(side, q, &sx(side))).collect() };
+        let key = |p: &[Expr]| -> Vec<Expr> { ub.iter().cloned().chain(p.iter().cloned()).collect() };
+        let (fl, fr) = (self.side_f(0, j, &vs(0)), self.side_f(1, j, &vs(1)));
+        let (pl, pr) = (pq(0), pq(1));
+        let (gl, gr) = (self.g(j, &key(&pl)), self.g(j, &key(&pr)));
+        let inst = |side: usize| {
+            let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g)).chain(st[side].iter().map(|g| g.g));
+            apps(*lem[side], args.collect())
+        };
+        let mut fmap = self.g(j, &ub.iter().map(|e| shift(e, 0, m as i32)).chain((0..m).map(|q| var((m - 1 - q) as u32))).collect::<Vec<_>>());
+        for _ in 0..m {
+            fmap = lam(bl, fmap);
+        }
+        let link = cong_n(&bl, &bl, &fmap, &pl, &pr, ip.to_vec());
+        let back = sym(&bl, &fr, &gr, inst(1));
+        let mid = tr(&gl, &gr, &fr, link, back);
+        (fl, fr, tr(&fl, &gl, &fr, inst(0), mid))
+    }
+}
+
 fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, enc: &Encoding) -> (Expr, Expr) {
     let (m1, m2) = (Machine::parse(t1).expect("a machine"), Machine::parse(t2).expect("a machine"));
     let last = m1.last();
     let cs = [m1.carries(), m2.carries()];
-    let gops = GoodOps::new();
     let m = enc.phi[0].len();
     let machines = [m1, m2];
-    let phi_expr = |side: usize, j: usize, s: &[Expr]| table_app(s, &|b| enc.phi[side][j][index_of(b)]);
-    let g_expr = |j: usize, v: &[Expr]| table_app(v, &|b| enc.g[j][index_of(b)]);
-    // a side's step at (operand bits, carries): (output, next carries)
-    let step_of = |side: usize, v: &[Expr]| -> (Expr, Vec<Expr>) {
-        let dummy: Vec<Gb> = v.iter().map(|e| Gb { e: *e, g: f() }).collect();
-        let (o, next) = machines[side].step(&gops, &dummy[..k], &dummy[k..]);
-        (o.e, next.into_iter().map(|g| g.e).collect())
-    };
-    // F_j of a side at symbolic (operand bits, carries): j = 0 output, 1..=m the next phi values
-    let side_f = |side: usize, j: usize, v: &[Expr]| -> Expr {
-        let (o, next) = step_of(side, v);
-        match j {
-            0 => o,
-            _ => phi_expr(side, j - 1, &next),
-        }
-    };
-    // at a leaf's literal bits, once for the side's m + 1 F lemmas and its P lemma: (output, next carries, phi of the carries)
-    type Step = std::rc::Rc<(Expr, Vec<Expr>, Vec<Expr>)>;
-    let steps: std::cell::RefCell<hashbrown::HashMap<(usize, Vec<bool>), Step>> = Default::default();
-    let step_at = |side: usize, v: &[Expr], bits: Option<&[bool]>| -> Step {
-        let build = || {
-            let (o, next) = step_of(side, v);
-            std::rc::Rc::new((o, next, (0..m).map(|q| phi_expr(side, q, &v[k..])).collect()))
-        };
-        let Some(bits) = bits else { return build() };
-        if let Some(hit) = steps.borrow().get(&(side, bits.to_vec())) {
-            return hit.clone();
-        }
-        let s = build();
-        steps.borrow_mut().insert((side, bits.to_vec()), s.clone());
-        s
-    };
-    // `Id(a, b)` for the `nv` bits `v` by case analysis
-    // decision-diagram proofs lost to the case tree at nv = 9 and 11 (docs/tier-cycle/, "Decision diagrams deleted")
-    // `ab` gets the bits too at a leaf (`Some`), the symbolic ones in the statement (`None`)
-    type CaseFn<'a> = dyn Fn(&[Expr], Option<&[bool]>) -> (Expr, Expr) + 'a;
-    let mut by_cases = |side: usize, nv: usize, tag: &str, ab: &CaseFn<'_>| -> Expr {
-        // shared across conjectures: keyed on the side machine, the encoding tables and the lemma tag
-        let key = format!("tree|{}|{k}|{nv}|{tag}|{:?}", machines[side].key(), enc.phi[side]);
-        shared_lemma(job, key, |_| {
-            let body = |v: &[Expr]| { let (a, b) = ab(v, None); id(bool0(), a, b) };
-            let ty = lemma_n_ty(nv, &body);
-            let leaf = |bits: &[bool]| {
-                let lits: Vec<Expr> = bits.iter().map(|b| bit(*b)).collect();
-                refl(ab(&lits, Some(bits)).0)
-            };
-            (lemma_n(nv, &body, &leaf).0, ty)
-        })
-        .0
-    };
-    // lemmas Id(F_j, G_j(operand bits, phi(carries))) by case analysis on the k + c bits
+    let sp = StepProof::new(&machines, enc, k);
+    // lemmas Id(F_j, G_j(operand bits, phi(carries))), shared across conjectures: keyed on the side machine, the
+    // encoding tables and the lemma
     let lemmas: Vec<Vec<Expr>> = (0..2)
         .map(|side| {
             (0..=m)
                 .map(|j| {
-                    by_cases(side, k + cs[side], &format!("F{j}|{:?}", enc.g[j]), &|v, bits| {
-                        let s = step_at(side, v, bits);
-                        let key: Vec<Expr> = v[..k].iter().chain(&s.2).cloned().collect();
-                        (if j == 0 { s.0 } else { phi_expr(side, j - 1, &s.1) }, g_expr(j, &key))
-                    })
+                    let nv = k + cs[side];
+                    let key = format!("tree|{}|{k}|{nv}|F{j}|{:?}|{:?}", machines[side].key(), enc.g[j], enc.phi[side]);
+                    shared_lemma(job, key, |_| sp.lemma(side, j)).0
                 })
                 .collect()
         })
         .collect();
     let core = |bits: VarBitFn, goods: VarBitFn| {
-        let bl = bool0();
-        let tr = |x: &Expr, y: &Expr, w: &Expr, p: Expr, q: Expr| trans_proof(&bl, x, y, w, p, q);
         let zero = Gb { e: f(), g: good_bit(false) };
         let mut st: Vec<Vec<Gb>> = (0..2).map(|side| vec![zero.clone(); cs[side]]).collect();
         // the initial phi values agree by evaluation (both are the constant false)
-        let mut ip: Vec<Expr> = (0..m).map(|j| refl(phi_expr(0, j, &vec![f(); cs[0]]))).collect();
+        let mut ip: Vec<Expr> = (0..m).map(|j| refl(sp.phi(0, j, &vec![f(); cs[0]]))).collect();
         let (mut s1, mut s2, mut e) = (vec![], vec![], vec![]);
         // a root `lt`'s result is its output at position `n`, past the operand bits (any bits: it outputs a carry)
         for i in 0..n + last as usize {
             let ug: Vec<Gb> = (0..k).map(|v| if i < n { Gb { e: bits(v, i), g: goods(v, i) } } else { zero.clone() }).collect();
-            let ub: Vec<Expr> = ug.iter().map(|g| g.e).collect();
-            let sx = |side: usize| -> Vec<Expr> { st[side].iter().map(|g| g.e).collect() };
-            let vs = |side: usize| -> Vec<Expr> { ub.iter().cloned().chain(sx(side)).collect() };
-            let pq = |side: usize| -> Vec<Expr> { (0..m).map(|j| phi_expr(side, j, &sx(side))).collect() };
-            let key = |p: &[Expr]| -> Vec<Expr> { ub.iter().cloned().chain(p.iter().cloned()).collect() };
-            let eq = |j: usize| {
-                let (fl, fr) = (side_f(0, j, &vs(0)), side_f(1, j, &vs(1)));
-                let (pl, pr) = (pq(0), pq(1));
-                let (gl, gr) = (g_expr(j, &key(&pl)), g_expr(j, &key(&pr)));
-                let inst = |side: usize| {
-                    let args = vs(side).into_iter().chain(ug.iter().map(|g| g.g)).chain(st[side].iter().map(|g| g.g));
-                    apps(lemmas[side][j], args.collect())
-                };
-                let mut fmap = g_expr(j, &ub.iter().map(|e| shift(e, 0, m as i32)).chain((0..m).map(|q| var((m - 1 - q) as u32))).collect::<Vec<_>>());
-                for _ in 0..m {
-                    fmap = lam(bl, fmap);
-                }
-                let link = cong_n(&bl, &bl, &fmap, &pl, &pr, ip.clone());
-                let back = sym(&bl, &fr, &gr, inst(1));
-                let mid = tr(&gl, &gr, &fr, link, back);
-                (fl, fr, tr(&fl, &gl, &fr, inst(0), mid))
-            };
+            let eq = |j: usize| sp.eq(j, [&lemmas[0][j], &lemmas[1][j]], &ug, [&st[0], &st[1]], &ip);
             if !last || i == n {
                 let (l, r, p) = eq(0);
                 s1.push(l);
@@ -368,7 +394,7 @@ fn tree_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, enc: &Enc
             }
             ip = (1..=m).map(|j| eq(j).2).collect();
             for side in 0..2 {
-                st[side] = machines[side].step(&gops, &ug, &st[side]).1;
+                st[side] = machines[side].step(&sp.gops, &ug, &st[side]).1;
             }
         }
         (s1, s2, e)
@@ -407,6 +433,38 @@ pub fn state_encoding_search_proves_three_leaf_sum_laws() {
             assert!(add_tree_law(job, n, 2, &op(op(v(0), v(1)), v(1)), &op(v(0), op(v(0), v(0)))).is_none());
         }
     })
+}
+
+/// tree_proof's terms, its lemmas' statements and bodies, and its shared_lemma keys, pinned across the StepProof extraction
+/// (w1 step 3). Each law gets a fresh Job, since discharge empties job.lemmas.
+#[test]
+fn tree_proof_terms_are_pinned() {
+    let v = |i: usize| Term::v(i);
+    let op = |a: Term, b: Term| Term::op(ADD, a, b);
+    let laws = [ // the three of state_encoding_search_proves_three_leaf_sum_laws
+        (op(op(v(0), v(1)), v(1)), op(v(0), op(v(1), v(1)))),
+        (op(op(v(1), v(1)), Term::ONES), op(v(1), op(v(1), Term::ONES))),
+        (op(op(v(0), Term::ONES), Term::ONES), op(v(0), op(Term::ONES, Term::ONES))),
+    ];
+    let mut pin = vec![];
+    for (t1, t2) in laws {
+        let job = &mut Job::new(Setup::process());
+        tatic_kernel::scoped(|| {
+            let (p, _) = add_tree_law(job, 4, 2, &t1, &t2).unwrap();
+            let mut bound: Vec<(String, (usize, u128))> =
+                job.lemmas.bound.iter().map(|(k, (_, s))| (k.clone(), tatic_kernel::term_sizes(&s.get()))).collect();
+            bound.sort();
+            let whole = tatic_kernel::term_sizes(&discharge(job, p));
+            println!("PIN outer {:?} whole {whole:?} statements {bound:?}", tatic_kernel::term_sizes(&p));
+            pin.push((tatic_kernel::term_sizes(&p), whole, bound.len()));
+        })
+    }
+    // recorded at 05f2ea6, before the extraction
+    assert_eq!(pin, vec![
+        ((2396, 1447648), (3640, 1642684), 6),
+        ((2362, 1349132), (3418, 1522472), 6),
+        ((2312, 1410596), (3345, 1591424), 6),
+    ]);
 }
 
 #[test]

@@ -184,6 +184,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Sample battery**: the fixed inputs on which compiled code and interpreter must agree. `crates/tatic/src/jit.rs#sample_arg_vectors`
 - **Screen**: a random-input test that refutes a claimed law before proving it. `crates/church-bv/src/rewrite/values.rs#SCREEN_INPUTS`
 - **Specialisation trace**: the list of beta-v steps replayed by the independent checker. `crates/tatic/src/verify/spec_check.rs#Step`
+- **StepProof**: one bit position's step proof over two machines and an encoding, shared by `tree_proof` and the width-free fold. `crates/church-bv/src/machine.rs#StepProof`
 - **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `crates/church-bv/src/miner/laws.rs#laws_of`
 - **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified; `ctx` keeps the same stragglers but orders them by a fitted context model's score instead of by cost (the weights file named by `CTX_WEIGHTS`, columns without the marginal-coverage group). `crates/church-bv/src/miner/laws.rs#kept_indices`
 - **Stream / salt**: operator-set law streams, interleaved round-robin; the salt reshuffles. `crates/church-bv/src/search.rs#stream_sequence`
