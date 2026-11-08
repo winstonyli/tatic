@@ -1,352 +1,281 @@
-// Spike (2026-11-07, q2): one proof generator for stream laws (no `shr1` or `mul`, `lt` only at the root), over the W-built index of `wnat.rs`. It reads a
-// pair of terms through `Machine` and `moore_encoding`, as `machine.rs#tree_proof` does at one width, and folds over the position.
+// One proof generator for stream laws over the W-built index of `wnat.rs`: no `shr1` or `mul`, and `lt` only at the root. A pair
+// of terms is read through `Machine` and `moore_encoding`, as `machine.rs#tree_proof` reads it at one width, and the proof folds
+// over the bit position with `wnat.rs#ind`.
+//
+// Each pair builds two roots: the proof, lambdas over `operands`, and the statement, `Pi operands. Pi i. root_l i = root_r i`. Both
+// build the sides' streams with `side`, and open terms stay inside the root that made them. Inside the proof, each carry's goodness
+// and the phi agreement are inductions, each built once and bound as a hypothesis; one position's step goes through `StepProof`,
+// shared with `tree_proof`.
 //
 // The levels. `GoodBool` sits in `Sort2` and a tag splits only into `Sort1`, so a fold state carrying its own goodness cannot pass
-// through a tag. None is needed. Goodness of a carry is its own induction with `P` bound by `ind`'s `pre`, so what reaches the tag
-// is `P c`, in `Sort1`; the phi agreement is a `Sigma` of `Id`s, also in `Sort1`. Carries are streams, so each one's goodness may
-// use the earlier ones'.
-use super::mul::bit_of;
-use super::width::T::*;
-use super::width::*;
-use super::wnat::{add as add_w, *};
-use crate::machine::{index_of, moore_encoding, Encoding, Machine, Src};
+// through a tag. None is needed. A carry's goodness is an induction whose telescope binds `GoodBool`'s `P`, `ht` and `hf`, so what
+// reaches the tag is `P c`, in `Sort1`; the phi agreement is a `Sigma` of `Id`s, also in `Sort1`. Carries are streams, so each
+// one's goodness may use the earlier ones'.
+use super::wnat::{add, *};
+use crate::encoding::*;
+use crate::machine::{moore_encoding, Encoding, Machine, Src, StepProof};
 use crate::rewrite::{Node, Term, ADD, AND, LT, OP_INFO, OR, SHL1, SUB, XOR};
-use crate::search::Gates;
-
-const XS: [&str; 4] = ["x0", "x1", "x2", "x3"];
-const GS: [&str; 4] = ["g0", "g1", "g2", "g3"];
-const CB: [&str; 12] = ["$b0", "$b1", "$b2", "$b3", "$b4", "$b5", "$b6", "$b7", "$b8", "$b9", "$b10", "$b11"];
-const CG: [&str; 12] = ["$g0", "$g1", "$g2", "$g3", "$g4", "$g5", "$g6", "$g7", "$g8", "$g9", "$g10", "$g11"];
-
-/// `Machine::step` on terms.
-struct Terms;
-impl Gates for Terms {
-    type S = T;
-    fn and(&self, x: &T, y: &T) -> T {
-        and2(x.clone(), y.clone())
-    }
-    fn or(&self, x: &T, y: &T) -> T {
-        or2(x.clone(), y.clone())
-    }
-    fn xor(&self, x: &T, y: &T) -> T {
-        xor(x.clone(), y.clone())
-    }
-    fn konst(&self, b: bool) -> T {
-        if b { tt() } else { ff() }
-    }
-}
-
-/// A bit and its `GoodBool` witness.
-#[derive(Clone)]
-struct Good {
-    e: T,
-    g: T,
-}
-fn p_of(e: T) -> T {
-    ap(v("$P"), e)
-}
-fn pick(b: bool) -> T {
-    v(if b { "$ht" } else { "$hf" })
-}
-/// The lambdas of a `GoodBool` proof: `$P`, `$ht`, `$hf` are in scope in `t`.
-fn good_lams(t: T) -> T {
-    lm("$P", arr(bool0(), s(1)), lm("$ht", p_of(tt()), lm("$hf", p_of(ff()), t)))
-}
-fn gate(op: usize, f: fn(T, T) -> T, x: &Good, y: &Good) -> Good {
-    let truth = OP_INFO[op].truth;
-    let arm = |a: bool| {
-        let av = Terms.konst(a);
-        ap3(y.g.clone(), lm("$b", bool0(), p_of(f(av, v("$b")))), pick(truth(a, true)), pick(truth(a, false)))
-    };
-    let body = ap3(x.g.clone(), lm("$a", bool0(), p_of(f(v("$a"), y.e.clone()))), arm(true), arm(false));
-    Good { e: f(x.e.clone(), y.e.clone()), g: good_lams(body) }
-}
-/// `Machine::step` on bits with their witnesses.
-struct Goods;
-impl Gates for Goods {
-    type S = Good;
-    fn and(&self, x: &Good, y: &Good) -> Good {
-        gate(1, and2, x, y)
-    }
-    fn or(&self, x: &Good, y: &Good) -> Good {
-        gate(2, or2, x, y)
-    }
-    fn xor(&self, x: &Good, y: &Good) -> Good {
-        gate(3, xor, x, y)
-    }
-    fn konst(&self, b: bool) -> Good {
-        Good { e: Terms.konst(b), g: good_lams(pick(b)) }
-    }
-}
+use tatic_kernel::*;
 
 // ---------- a term as streams ----------
-fn ones() -> T {
-    lm("$i", nw(), tt())
+fn ones() -> Expr {
+    constant(|| Cx::default().lam(nw(), |_, _| t()))
 }
-fn nat_(e: T) -> T {
-    lm("$n", nw(), e)
+/// The stream `\n. body n`.
+fn nat_(cx: &mut Cx, body: impl FnOnce(&mut Cx, Expr) -> Expr) -> Expr {
+    cx.lam(nw(), |cx, n| {
+        let n = cx.at(n);
+        body(cx, n)
+    })
 }
-fn at_n(s: &T) -> T {
-    ap(s.clone(), v("$n"))
+fn at_n(cx: &Cx, s: At, n: Expr) -> Expr {
+    app(cx.at(s), n)
 }
-/// One machine's streams: the root, and each carry as a stream (a delay cell's carry is the shifted operand).
-struct Side {
-    m: Machine,
-    root: T,
-    carries: Vec<T>,
-}
-fn side(t: &Term, x: &[T]) -> Option<Side> {
-    let m = Machine::parse(t)?;
-    let leaf: Vec<T> = m.leaves.iter().map(|l| match *l.node() {
-        Node::V(i) => x[i].clone(),
-        Node::Zero => zw(),
-        Node::Ones => ones(),
+/// One machine's streams over the operand streams `xs`: the root, and each carry as a stream (a delay cell's carry is the shifted
+/// operand).
+fn side(cx: &mut Cx, machine: &Machine, xs: &[At]) -> (Expr, Vec<Expr>) {
+    let leaf: Vec<At> = machine.leaves.iter().map(|l| match *l.node() {
+        Node::V(i) => xs[i],
+        Node::Zero => cx.mark(zw()),
+        Node::Ones => cx.mark(ones()),
         Node::Op(..) => panic!("an operator as a leaf"),
     }).collect();
-    let (mut val, mut carries): (Vec<T>, Vec<T>) = (vec![], vec![]);
-    for (a, c, o) in m.nodes.iter() {
+    let (mut val, mut carries): (Vec<At>, Vec<Expr>) = (vec![], vec![]);
+    for (a, c, o) in machine.nodes.iter() {
         let src = |s: &Src| match s {
-            Src::Leaf(j) => leaf[*j].clone(),
-            Src::Node(j) => val[*j].clone(),
+            Src::Leaf(j) => leaf[*j],
+            Src::Node(j) => val[*j],
         };
         let (p, q) = (src(a), src(c));
-        let next = match o {
-            0 => {
-                carries.push(nat_(carry(p.clone(), q.clone(), v("$n"))));
-                add_w(p, q)
+        let next = match *o {
+            ADD => {
+                carries.push(nat_(cx, |cx, n| carry(cx.at(p), cx.at(q), n)));
+                add(cx.at(p), cx.at(q))
             }
-            1 => nat_(and2(at_n(&p), at_n(&q))),
-            2 => nat_(or2(at_n(&p), at_n(&q))),
-            3 => nat_(xor(at_n(&p), at_n(&q))),
-            4 | 5 => {
-                // a subtractor's borrow is the carry of `~a` and `b`; an `lt` is the borrow itself, as a stream: its value
-                // at `i` compares the low `i` bits (`Machine::step`)
-                let borrow = nat_(carry(nat_(xor(at_n(&p), tt())), q.clone(), v("$n")));
-                carries.push(borrow.clone());
-                if *o == LT { borrow } else { nat_(xor3(at_n(&p), at_n(&q), at_n(&borrow))) }
+            AND => nat_(cx, |cx, n| and(at_n(cx, p, n), at_n(cx, q, n))),
+            OR => nat_(cx, |cx, n| or(at_n(cx, p, n), at_n(cx, q, n))),
+            XOR => nat_(cx, |cx, n| xor(at_n(cx, p, n), at_n(cx, q, n))),
+            SUB | LT => {
+                // a subtractor's borrow is the carry of `~a` and `b`; an `lt` is the borrow itself, as a stream: its value at `i`
+                // compares the low `i` bits (`Machine::step`)
+                let not_p = nat_(cx, |cx, n| xor(at_n(cx, p, n), t()));
+                let not_p = cx.mark(not_p);
+                let borrow = nat_(cx, |cx, n| carry(cx.at(not_p), cx.at(q), n));
+                carries.push(borrow);
+                let b = cx.mark(borrow);
+                if *o == LT { borrow } else { nat_(cx, |cx, n| xor3(at_n(cx, p, n), at_n(cx, q, n), at_n(cx, b, n))) }
             }
-            6 => {
-                carries.push(shl(p.clone()));
-                shl(p)
+            SHL1 => {
+                carries.push(shl(cx.at(p)));
+                shl(cx.at(p))
             }
             _ => panic!("no stream for {}", OP_INFO[*o].name),
         };
-        val.push(next);
+        val.push(cx.mark(next));
     }
-    let root = match m.root {
-        Src::Leaf(j) => leaf[j].clone(),
-        Src::Node(j) => val[j].clone(),
+    let root = match machine.root {
+        Src::Leaf(j) => leaf[j],
+        Src::Node(j) => val[j],
     };
-    Some(Side { m, root, carries })
+    (cx.at(root), carries)
 }
 
-// ---------- tables, case trees, conjunctions ----------
-fn mux(c: T, a: T, d: T) -> T {
-    lm("$C", s(0), lm("$t", v("$C"), lm("$e", v("$C"), ap3(c, v("$C"), ap3(a, v("$C"), v("$t"), v("$e")), ap3(d, v("$C"), v("$t"), v("$e"))))))
+// ---------- conjunctions ----------
+/// `body` one binder deeper, given `ts` there: a `Sigma` family whose second component does not depend on the first.
+fn fam(cx: &mut Cx, ts: &[Expr], body: impl FnOnce(&mut Cx, &[Expr]) -> Expr) -> Expr {
+    let ts: Vec<At> = ts.iter().map(|t| cx.mark(*t)).collect();
+    cx.under(|cx, _| {
+        let ts: Vec<Expr> = ts.iter().map(|t| cx.at(*t)).collect();
+        body(cx, &ts)
+    })
 }
-/// The Boolean function `f` applied to the bits `s`, first most significant.
-fn table(s: &[T], f: &dyn Fn(&[bool]) -> bool) -> T {
-    fn go(s: &[T], pre: &mut Vec<bool>, f: &dyn Fn(&[bool]) -> bool) -> T {
-        if pre.len() == s.len() {
-            return Terms.konst(f(pre));
-        }
-        let c = s[pre.len()].clone();
-        pre.push(true);
-        let a = go(s, pre, f);
-        pre.pop();
-        pre.push(false);
-        let d = go(s, pre, f);
-        pre.pop();
-        mux(c, a, d)
+/// The conjunction of `ts`, a right-nested `Sigma`.
+fn sigmas(cx: &mut Cx, ts: &[Expr]) -> Expr {
+    let [a, rest @ ..] = ts else { panic!("an empty conjunction") };
+    if rest.is_empty() {
+        return *a;
     }
-    go(s, &mut vec![], f)
+    let tail = fam(cx, rest, sigmas);
+    sigma(*a, tail)
 }
-/// `Pi bits. Pi goods. l = r`, closed, by a case tree on the `nv` bits; `lr` gives the two sides.
-fn by_cases(nv: usize, lr: &dyn Fn(&[T]) -> (T, T)) -> T {
-    fn go(i: usize, nv: usize, lits: &[T], lr: &dyn Fn(&[T]) -> (T, T)) -> T {
-        if i == nv {
-            return rfl(lr(lits).0);
-        }
-        let with = |c: T, rest: bool| -> Vec<T> {
-            let tail = (i + 1..nv).filter(|_| rest).map(|j| v(CB[j]));
-            lits.iter().cloned().chain([c]).chain(tail).collect()
-        };
-        let (a, c) = lr(&with(v("$c"), true));
-        let motive = lm("$c", bool0(), eqb(a, c));
-        ap3(v(CG[i]), motive, go(i + 1, nv, &with(tt(), false), lr), go(i + 1, nv, &with(ff(), false), lr))
-    }
-    let goods = (0..nv).rev().fold(go(0, nv, &[], lr), |t, i| lm(CG[i], ap(goodbool(), v(CB[i])), t));
-    K(ex(&(0..nv).rev().fold(goods, |t, i| lm(CB[i], bool0(), t))))
-}
-fn conj(ts: &[T]) -> T {
-    match ts {
-        [a] => a.clone(),
-        [a, rest @ ..] => Sig("_c", b(a.clone()), b(conj(rest))),
-        [] => panic!("an empty conjunction"),
-    }
-}
-fn pair(ts: &[T], ps: &[T]) -> T {
+/// A proof of `sigmas(ts)` from a proof `ps[q]` of each `ts[q]`.
+fn pack(cx: &mut Cx, ts: &[Expr], ps: &[Expr]) -> Expr {
     match ps {
-        [p] => p.clone(),
-        [p, rest @ ..] => Pair("_c", b(conj(&ts[1..])), b(p.clone()), b(pair(&ts[1..], rest))),
+        [p] => *p,
+        [p, rest @ ..] => {
+            let tail = fam(cx, &ts[1..], sigmas);
+            let r = pack(cx, &ts[1..], rest);
+            pair(tail, *p, r)
+        }
         [] => panic!("an empty conjunction"),
     }
 }
-/// Every component of a proof of `conj(ts)`.
-fn projections(ts: &[T], t: T) -> Vec<T> {
+/// Every component of a proof `t` of `sigmas(ts)`.
+fn unpack(cx: &mut Cx, ts: &[Expr], t: Expr) -> Vec<Expr> {
     let [a, rest @ ..] = ts else { panic!("an empty conjunction") };
     if rest.is_empty() {
         return vec![t];
     }
-    let (whole, tail) = (conj(ts), conj(rest));
-    let take = |res: T, pick: &'static str| SigRec(b(lm("_r", whole.clone(), res)), b(lm("$l", a.clone(), lm("$r", tail.clone(), v(pick)))), b(t.clone()));
-    let mut out = vec![take(a.clone(), "$l")];
-    out.extend(projections(rest, take(tail.clone(), "$r")));
+    let (a, whole, tail) = (*a, sigmas(cx, ts), sigmas(cx, rest));
+    let tail_at = cx.mark(tail);
+    let take = |cx: &mut Cx, left: bool| {
+        let motive = lam(whole, fam(cx, &[if left { a } else { tail }], |_, r| r[0]));
+        let step = cx.lam(a, |cx, l| {
+            let tail = cx.at(tail_at);
+            cx.lam(tail, |cx, r| cx.at(if left { l } else { r }))
+        });
+        sigrec(motive, step, t)
+    };
+    let mut out = vec![take(cx, true)];
+    let right = take(cx, false);
+    out.extend(unpack(cx, rest, right));
     out
-}
-/// `f ls = f rs` from `ls[q] = rs[q]`.
-fn cong(f: &dyn Fn(&[T]) -> T, ls: &[T], rs: &[T], ps: &[T]) -> T {
-    let rhs = f(rs);
-    (0..ls.len()).fold(rfl(rhs.clone()), |h, q| {
-        let at = |c: T| -> Vec<T> { ls[..q].iter().cloned().chain([c]).chain(rs[q + 1..].iter().cloned()).collect() };
-        rew(bool0(), ls[q].clone(), rs[q].clone(), ps[q].clone(), lm("t", bool0(), eqb(f(&at(v("t"))), rhs.clone())), h)
-    })
 }
 
 // ---------- the law ----------
-struct Law {
-    k: usize,
-    sides: [Side; 2],
-    enc: Encoding,
+/// The two terms' machines and their encoding, if the law has one.
+fn encode(k: usize, t1: &Term, t2: &Term) -> Option<([Machine; 2], Encoding)> {
+    let machines = [Machine::parse(t1)?, Machine::parse(t2)?];
+    let enc = moore_encoding(&machines[0], &machines[1], k)?;
+    Some((machines, enc))
 }
-impl Law {
-    fn new(k: usize, t1: &Term, t2: &Term) -> Option<Law> {
-        let x: Vec<T> = (0..k).map(|i| v(XS[i])).collect();
-        let sides = [side(t1, &x)?, side(t2, &x)?];
-        let enc = moore_encoding(&sides[0].m, &sides[1].m, k)?;
-        Some(Law { k, sides, enc })
+/// A law's telescope: the operand streams `x_i`, then their goodness `g_i : good_stream x_i`.
+fn operands(k: usize) -> Vec<Ty<'static>> {
+    let xs = (0..k).map(|_| ty!(|_c, _x| bw()));
+    let gs = (0..k).map(|i| ty!(|c, x| good_stream(c, c.at(x[i]))));
+    xs.chain(gs).collect()
+}
+/// The phi agreement of two sides' carries `l` and `r`: `phi_q l = phi_q r` for each `q`.
+fn agree(sp: &StepProof, l: &[Expr], r: &[Expr]) -> Vec<Expr> {
+    (0..sp.enc.phi[0].len()).map(|q| eqb(sp.phi(0, q, l), sp.phi(1, q, r))).collect()
+}
+/// The proof root's streams, at the depth of `operands`: the operands and their witnesses, each side's carries, and the side lemmas.
+struct Root<'r, 'a> {
+    sp: &'r StepProof<'a>,
+    xs: &'r [At],
+    carries: [Vec<At>; 2],
+    lemmas: &'r [Vec<Expr>],
+}
+impl Root<'_, '_> {
+    fn carries_at(&self, cx: &Cx, sd: usize, p: Expr) -> Vec<Expr> {
+        self.carries[sd].iter().map(|c| app(cx.at(*c), p)).collect()
     }
-    fn m(&self) -> usize {
-        self.enc.phi[0].len()
+    /// A side's next carries from position `p`.
+    fn next(&self, cx: &Cx, sd: usize, p: Expr) -> Vec<Expr> {
+        let ops = self.xs[..self.sp.k].iter().map(|x| app(cx.at(*x), p));
+        self.sp.step_of(sd, &ops.chain(self.carries_at(cx, sd, p)).collect::<Vec<_>>()).1
     }
-    /// `Pi x.. Pi goods. body`
-    fn over(&self, wrap: &dyn Fn(T, &'static str, T) -> T, body: T) -> T {
-        let goods = (0..self.k).rev().fold(body, |t, i| wrap(good_stream(v(XS[i])), GS[i], t));
-        (0..self.k).rev().fold(goods, |t, i| wrap(bw(), XS[i], t))
+    /// The operand bits at `p` with their witnesses.
+    fn ug(&self, cx: &Cx, p: Expr) -> Vec<Gb> {
+        let k = self.sp.k;
+        (0..k).map(|i| Gb { e: app(cx.at(self.xs[i]), p), g: app(cx.at(self.xs[k + i]), p) }).collect()
     }
-    fn closed(&self, body: T) -> T {
-        K(ex(&self.over(&|ty, n, t| lm(n, ty, t), body)))
+    /// A side's carries at `p`, carry `d` with the witness `good(d)`.
+    fn st(&self, cx: &Cx, sd: usize, p: Expr, good: &dyn Fn(usize) -> Expr) -> Vec<Gb> {
+        self.carries_at(cx, sd, p).into_iter().enumerate().map(|(d, e)| Gb { e, g: good(d) }).collect()
     }
-    fn held(&self, lemma: &T) -> T {
-        let with_x = (0..self.k).fold(lemma.clone(), |t, i| ap(t, v(XS[i])));
-        (0..self.k).fold(with_x, |t, i| ap(t, v(GS[i])))
+    /// `F_j` of the left at `p` equals the right's, from the carries' goodness `goods` and the phi agreement `ip` at `p`.
+    fn eq(&self, cx: &Cx, goods: &[Vec<At>; 2], j: usize, p: Expr, ip: &[Expr]) -> Expr {
+        let st = [0, 1].map(|sd| self.st(cx, sd, p, &|d| app(cx.at(goods[sd][d]), p)));
+        self.sp.eq(j, [&self.lemmas[0][j], &self.lemmas[1][j]], &self.ug(cx, p), [&st[0], &st[1]], ip).2
     }
-    fn ops(&self, p: &T) -> Vec<T> {
-        (0..self.k).map(|i| ap(v(XS[i]), p.clone())).collect()
-    }
-    fn at(&self, sd: usize, p: &T) -> Vec<T> {
-        self.sides[sd].carries.iter().map(|c| ap(c.clone(), p.clone())).collect()
-    }
-    fn phi(&self, sd: usize, j: usize, s: &[T]) -> T {
-        table(s, &|bits| self.enc.phi[sd][j][index_of(bits)])
-    }
-    fn g(&self, j: usize, key: &[T]) -> T {
-        table(key, &|bits| self.enc.g[j][index_of(bits)])
-    }
-    fn step(&self, sd: usize, u: &[T], s: &[T]) -> (T, Vec<T>) {
-        self.sides[sd].m.step(&Terms, u, s)
-    }
-    /// `F_j` at bits `vs`: the output (`j = 0`) or the next `phi_(j - 1)`.
-    fn f(&self, sd: usize, j: usize, vs: &[T]) -> T {
-        let (o, next) = self.step(sd, &vs[..self.k], &vs[self.k..]);
-        if j == 0 { o } else { self.phi(sd, j - 1, &next) }
-    }
-    /// One side's carries are good at every position, each as a closed lemma over the earlier ones.
-    fn good_carries(&self, sd: usize) -> Vec<T> {
-        let sdr = &self.sides[sd];
-        let mut done: Vec<T> = vec![];
-        for c in 0..sdr.carries.len() {
-            let pred = |mm: T| p_of(selm(mm, &|w| self.step(sd, &self.ops(&fw(&w)), &self.at(sd, &fw(&w))).1[c].clone(), ff()));
-            let hj = |w: T| {
-                let p = fw(&w);
-                let ug: Vec<Good> = (0..self.k).map(|i| Good { e: ap(v(XS[i]), p.clone()), g: ap(v(GS[i]), p.clone()) }).collect();
-                let sg: Vec<Good> = self.at(sd, &p).into_iter().enumerate().map(|(d, e)| {
-                    // a carry reads only the earlier ones, so a later one's witness is never used
-                    let g = match d {
-                        _ if d < c => ap(self.held(&done[d]), p.clone()),
-                        _ if d == c => ap(v("$ih"), w.clone()),
-                        _ => ff(),
-                    };
-                    Good { e, g }
-                }).collect();
-                ap3(sdr.m.step(&Goods, &ug, &sg).1[c].g.clone(), v("$P"), v("$ht"), v("$hf"))
-            };
-            let motive = |n: T| ap(goodbool(), ap(sdr.carries[c].clone(), n));
-            let body = lm("n", nw(), ind(&motive, v("n"), &good_lams, &pred, &hj, v("$hf")));
-            done.push(self.closed(body));
-        }
-        done
-    }
-    /// `F_j` of a side equals `G_j` of the operand bits and the side's phi, by cases on `k + c` bits.
-    fn lemma(&self, sd: usize, j: usize) -> T {
-        by_cases(self.k + self.sides[sd].carries.len(), &|vs| {
-            let (u, s) = vs.split_at(self.k);
-            let key: Vec<T> = u.iter().cloned().chain((0..self.m()).map(|q| self.phi(sd, q, s))).collect();
-            (self.f(sd, j, vs), self.g(j, &key))
+}
+/// `Pi n. GoodBool (carry n)` for side `sd`'s carry `c`, by induction on `n` under the earlier carries' goodness `done`, and that
+/// type.
+fn good_carry(cx: &mut Cx, r: &Root, sd: usize, c: usize, done: &[At]) -> (Expr, Expr) {
+    let cc = r.carries[sd][c];
+    let ty = cx.pi(nw(), |cx, n| app(good_bool(), app(cx.at(cc), cx.at(n))));
+    // `GoodBool`'s binders `P`, `ht`, `hf`
+    let tys = [ty!(|_c, _x| arrow(bool0(), sort(1))), ty!(|c, x| app(c.at(x[0]), t())), ty!(|c, x| app(c.at(x[0]), f()))];
+    let body = |cx: &mut Cx, n: Expr, ps: &[At]| app(cx.at(ps[0]), app(cx.at(cc), n));
+    let pred = |cx: &mut Cx, tag: &Tag, ps: &[At]| {
+        let e = tag_case(cx, tag, &|cx, p, _| r.next(cx, sd, p)[c], f());
+        app(cx.at(ps[0]), e)
+    };
+    let hj = |cx: &mut Cx, p: Expr, ih: Expr, ps: &[At]| {
+        // a carry reads only the earlier ones, so a later one's witness is never used
+        let st = r.st(cx, sd, p, &|d| match d {
+            _ if d < c => app(cx.at(done[d]), p),
+            _ if d == c => ih,
+            _ => f(),
+        });
+        let g = r.sp.machines[sd].step(&r.sp.gops, &r.ug(cx, p), &st).1[c].g;
+        app3(g, cx.at(ps[0]), cx.at(ps[1]), cx.at(ps[2]))
+    };
+    let hn = |cx: &mut Cx, ps: &[At]| cx.at(ps[2]);
+    let proof = cx.lam(nw(), |cx, n| ind(cx, &tys, &body, cx.at(n), &pred, &hj, &hn));
+    (proof, ty)
+}
+/// `rest` under every carry's goodness, each proved under the earlier ones of its side and bound once: `(\h:ty. rest) proof`.
+fn with_goods(cx: &mut Cx, r: &Root, goods: &mut [Vec<At>; 2], rest: &mut dyn FnMut(&mut Cx, &[Vec<At>; 2]) -> Expr) -> Expr {
+    let Some(sd) = (0..2).find(|&sd| goods[sd].len() < r.carries[sd].len()) else { return rest(cx, goods) };
+    let (proof, ty) = good_carry(cx, r, sd, goods[sd].len(), &goods[sd]);
+    let body = cx.lam(ty, |cx, h| {
+        goods[sd].push(h);
+        let b = with_goods(cx, r, goods, rest);
+        goods[sd].pop();
+        b
+    });
+    app(body, proof)
+}
+/// `Pi n. sigmas(agree n)`: the sides' phi values agree at every position, by induction on `n`, and that type.
+fn invariant(cx: &mut Cx, r: &Root, goods: &[Vec<At>; 2]) -> (Expr, Expr) {
+    let m = r.sp.enc.phi[0].len();
+    let body = |cx: &mut Cx, n: Expr, _: &[At]| {
+        let ts = agree(r.sp, &r.carries_at(cx, 0, n), &r.carries_at(cx, 1, n));
+        sigmas(cx, &ts)
+    };
+    let ty = cx.pi(nw(), |cx, n| body(cx, cx.at(n), &[]));
+    let pred = |cx: &mut Cx, tag: &Tag, _: &[At]| {
+        let mut reduced = |sd: usize| -> Vec<Expr> {
+            (0..r.carries[sd].len()).map(|d| tag_case(cx, tag, &|cx, p, _| r.next(cx, sd, p)[d], f())).collect()
+        };
+        let (l, rr) = (reduced(0), reduced(1));
+        let ts = agree(r.sp, &l, &rr);
+        sigmas(cx, &ts)
+    };
+    let hj = |cx: &mut Cx, p: Expr, ih: Expr, _: &[At]| {
+        let at_p = agree(r.sp, &r.carries_at(cx, 0, p), &r.carries_at(cx, 1, p));
+        let ip = unpack(cx, &at_p, ih);
+        let ts = agree(r.sp, &r.next(cx, 0, p), &r.next(cx, 1, p));
+        let ps: Vec<Expr> = (1..=m).map(|j| r.eq(cx, goods, j, p, &ip)).collect();
+        pack(cx, &ts, &ps)
+    };
+    let hn = |cx: &mut Cx, _: &[At]| {
+        let start = |sd: usize| vec![f(); r.carries[sd].len()];
+        let ts = agree(r.sp, &start(0), &start(1));
+        // the initial phi values agree by evaluation
+        let ps: Vec<Expr> = (0..m).map(|q| refl(r.sp.phi(0, q, &start(0)))).collect();
+        pack(cx, &ts, &ps)
+    };
+    let proof = cx.lam(nw(), |cx, n| ind(cx, &[], &body, cx.at(n), &pred, &hj, &hn));
+    (proof, ty)
+}
+/// The proof of the law two machines compute, and its statement.
+fn proof(k: usize, machines: &[Machine; 2], enc: &Encoding) -> (Expr, Expr) {
+    let sp = StepProof::new(machines, enc, k);
+    let lemmas: Vec<Vec<Expr>> = (0..2).map(|sd| (0..=enc.phi[0].len()).map(|j| sp.lemma(sd, j).0).collect()).collect();
+    let stmt = |cx: &mut Cx, xs: &[At]| {
+        let (l, r) = (side(cx, &machines[0], &xs[..k]).0, side(cx, &machines[1], &xs[..k]).0);
+        ptw(cx, l, r)
+    };
+    law(&operands(k), stmt, |cx, xs| {
+        let carries = [0, 1].map(|sd| {
+            let cs = side(cx, &machines[sd], &xs[..k]).1;
+            cs.into_iter().map(|c| cx.mark(c)).collect()
+        });
+        let r = Root { sp: &sp, xs, carries, lemmas: &lemmas };
+        with_goods(cx, &r, &mut [vec![], vec![]], &mut |cx, goods| {
+            let (inv, ty) = invariant(cx, &r, goods);
+            let body = cx.lam(ty, |cx, h| cx.lam(nw(), |cx, i| {
+                let i = cx.at(i);
+                let ts = agree(r.sp, &r.carries_at(cx, 0, i), &r.carries_at(cx, 1, i));
+                let ip = unpack(cx, &ts, app(cx.at(h), i));
+                r.eq(cx, goods, 0, i, &ip)
+            }));
+            app(body, inv)
         })
-    }
-    fn agree(&self, p: &T) -> Vec<T> {
-        (0..self.m()).map(|q| eqb(self.phi(0, q, &self.at(0, p)), self.phi(1, q, &self.at(1, p)))).collect()
-    }
-    /// The proof of the whole law, and its statement.
-    fn proof(&self) -> (T, T) {
-        let m = self.m();
-        let goods = [self.good_carries(0), self.good_carries(1)];
-        let lemmas: Vec<Vec<T>> = (0..2).map(|sd| (0..=m).map(|j| self.lemma(sd, j)).collect()).collect();
-        // `F_j` of the left at `p` equals the right's, from the phi agreement `ip` at `p`
-        let eq = |j: usize, p: &T, ip: &[T]| {
-            let u = self.ops(p);
-            let vs = |sd: usize| -> Vec<T> { u.iter().cloned().chain(self.at(sd, p)).collect() };
-            let phis = |sd: usize| -> Vec<T> { (0..m).map(|q| self.phi(sd, q, &self.at(sd, p))).collect() };
-            let key = |ph: &[T]| -> Vec<T> { u.iter().chain(ph).cloned().collect() };
-            let (pl, pr) = (phis(0), phis(1));
-            let (fl, fr, gl, gr) = (self.f(0, j, &vs(0)), self.f(1, j, &vs(1)), self.g(j, &key(&pl)), self.g(j, &key(&pr)));
-            let inst = |sd: usize| {
-                let bits = vs(sd).into_iter().fold(lemmas[sd][j].clone(), ap);
-                let ops = (0..self.k).map(|i| ap(v(GS[i]), p.clone()));
-                let carries = goods[sd].iter().map(|l| ap(self.held(l), p.clone()));
-                ops.chain(carries).fold(bits, ap)
-            };
-            let link = cong(&|ph| self.g(j, &key(ph)), &pl, &pr, ip);
-            let back = sym(fr.clone(), gr.clone(), inst(1));
-            trans(fl, gl.clone(), fr.clone(), inst(0), trans(gl, gr, fr, link, back))
-        };
-        let next = |sd: usize, w: &T| self.step(sd, &self.ops(&fw(w)), &self.at(sd, &fw(w))).1;
-        let reduced = |mm: T, sd: usize| -> Vec<T> {
-            (0..self.sides[sd].carries.len()).map(|d| selm(mm.clone(), &|w| next(sd, &w)[d].clone(), ff())).collect()
-        };
-        let pred = |mm: T| {
-            let (l, r) = (reduced(mm.clone(), 0), reduced(mm, 1));
-            conj(&(0..m).map(|q| eqb(self.phi(0, q, &l), self.phi(1, q, &r))).collect::<Vec<_>>())
-        };
-        let hj = |w: T| {
-            let p = fw(&w);
-            let ip = projections(&self.agree(&p), ap(v("$ih"), w.clone()));
-            let ts: Vec<T> = (0..m).map(|q| eqb(self.phi(0, q, &next(0, &w)), self.phi(1, q, &next(1, &w)))).collect();
-            pair(&ts, &(0..m).map(|q| eq(1 + q, &p, &ip)).collect::<Vec<_>>())
-        };
-        let start = |sd: usize| vec![ff(); self.sides[sd].carries.len()];
-        let ts0: Vec<T> = (0..m).map(|q| eqb(self.phi(0, q, &start(0)), self.phi(1, q, &start(1)))).collect();
-        let hn = pair(&ts0, &(0..m).map(|q| rfl(self.phi(0, q, &start(0)))).collect::<Vec<_>>());
-        let inv = ind(&|n| conj(&self.agree(&n)), v("n"), &|t| t, &pred, &hj, hn);
-        let inv = self.closed(lm("n", nw(), inv));
-        let i = v("i");
-        let ip = projections(&self.agree(&i), ap(self.held(&inv), i.clone()));
-        let whole = eq(0, &i, &ip);
-        let proof = self.over(&|ty, n, t| lm(n, ty, t), lm("i", nw(), whole));
-        let stmt = eqb(ap(self.sides[0].root.clone(), i.clone()), ap(self.sides[1].root.clone(), i));
-        (proof, self.over(&|ty, n, t| pi_(n, ty, t), pi_("i", nw(), stmt)))
-    }
+    })
 }
 
 fn op2(o: usize) -> impl Fn(Term, Term) -> Term {
@@ -357,31 +286,44 @@ fn shl_t(a: Term) -> Term {
 }
 fn proved(k: usize, l: Term, r: Term) {
     let name = format!("{} = {}", l.show(), r.show());
-    let law = Law::new(k, &l, &r).unwrap_or_else(|| panic!("{name}: no encoding"));
-    let (proof, stmt) = law.proof();
-    run(&name, &stmt, &proof).map_err(|e| e.chars().take(900).collect::<String>()).unwrap();
+    let (machines, enc) = encode(k, &l, &r).unwrap_or_else(|| panic!("{name}: no encoding"));
+    let (proof, stmt) = proof(k, &machines, &enc);
+    checked(&name, check(&Ctx::new(), &proof, &stmt));
+}
+/// `ty`'s first `args.len()` Pis turned back into lambdas around the rest, applied to `args` (`def_eq` does the beta steps).
+fn instance(ty: &Expr, args: &[Expr]) -> Expr {
+    fn open(ty: &Expr, n: usize) -> Expr {
+        if n == 0 {
+            return *ty;
+        }
+        let tatic_kernel::Node::Pi(d, b) = ty.node() else { panic!("fewer Pis than arguments") };
+        lam(d, open(&b, n - 1))
+    }
+    apps(open(ty, args.len()), args.to_vec())
 }
 
-/// The statement is about `wnat.rs#add` itself, and a proof proves only its own law.
+/// The statement is about wnat's own `add`, and a proof proves only its own law.
 #[test]
 fn w_fold_add_associates() {
-    let (x, y, z, add) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
-    let law = Law::new(3, &add(add(x, y), z), &add(x, add(y, z))).unwrap();
-    let (proof, stmt) = law.proof();
-    run("(x + y) + z = x + (y + z)", &stmt, &proof).unwrap();
-    let (a, c, d, i) = (v("x0"), v("x1"), v("x2"), v("i"));
-    let by_hand = |r: T| law.over(&|ty, n, t| pi_(n, ty, t), pi_("i", nw(), eqb(ap(add_w(add_w(a.clone(), c.clone()), d.clone()), i.clone()), ap(r, i.clone()))));
-    assert!(tatic_kernel::def_eq(&ex(&stmt), &ex(&by_hand(add_w(a.clone(), add_w(c.clone(), d.clone()))))), "not the law as written");
-    assert!(run("control: (x + y) + z = x + (y + y)", &by_hand(add_w(a.clone(), add_w(c.clone(), c.clone()))), &proof).is_err());
+    let (x, y, z, plus) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
+    let (machines, enc) = encode(3, &plus(plus(x, y), z), &plus(x, plus(y, z))).unwrap();
+    let (proof, stmt) = proof(3, &machines, &enc);
+    checked("(x + y) + z = x + (y + z)", check(&Ctx::new(), &proof, &stmt));
+    let by_hand = |r: &dyn Fn(Expr, Expr, Expr) -> Expr| statement(&operands(3), |cx, xs| {
+        let [a, c, d] = [0, 1, 2].map(|i| cx.at(xs[i]));
+        ptw(cx, add(add(a, c), d), r(a, c, d))
+    });
+    assert!(def_eq(&stmt, &by_hand(&|a, c, d| add(a, add(c, d)))), "not the law as written");
+    assert!(check(&Ctx::new(), &proof, &by_hand(&|a, c, _| add(a, add(c, c)))).is_err(), "control: (x + y) + z = x + (y + y)");
 }
 #[test]
 fn w_fold_a_false_table_is_rejected() {
-    let (x, y, z, add) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
-    let mut law = Law::new(3, &add(add(x, y), z), &add(x, add(y, z))).unwrap();
-    law.enc.g[1][0] = !law.enc.g[1][0];
-    let (proof, stmt) = law.proof();
-    assert!(run("control: a flipped table bit", &stmt, &proof).is_err());
-    assert!(Law::new(2, &add(x, y), &x).is_none(), "a false law has no encoding");
+    let (x, y, z, plus) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
+    let (machines, mut enc) = encode(3, &plus(plus(x, y), z), &plus(x, plus(y, z))).unwrap();
+    enc.g[1][0] = !enc.g[1][0];
+    let (proof, stmt) = proof(3, &machines, &enc);
+    assert!(check(&Ctx::new(), &proof, &stmt).is_err(), "control: a flipped table bit");
+    assert!(encode(2, &plus(x, y), &x).is_none(), "a false law has no encoding");
 }
 #[test]
 fn w_fold_the_law_families() {
@@ -405,37 +347,93 @@ fn w_fold_the_law_families() {
     proved(2, lt(x, y), lt(xor(y, Term::ONES), xor(x, Term::ONES)));
     proved(2, lt(x, y), lt(add(x, Term::ZERO), or(y, y)));
 }
-/// A theorem's hypotheses hold of real streams: at constant ones and zeros it gives bit 2 of `(7 + 7) + 0`.
+/// A theorem's hypotheses hold of real streams: at all-ones and all-zeros operands and a position, it gives that bit of the words
+/// (of the comparison, for a root `lt`), and a witness paired with the wrong stream is rejected.
 #[test]
 fn w_fold_a_theorem_applies_to_good_streams() {
-    let (x, y, z, add) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
-    let (proof, _) = Law::new(3, &add(add(x, y), z), &add(x, add(y, z))).unwrap().proof();
-    let good = |b: bool| lm("$i", nw(), Goods.konst(b).g);
-    let at = [ones(), ones(), zw(), good(true), good(true), good(false), num(2)].into_iter().fold(proof, ap);
-    let check = |b: T| tatic_kernel::check(&tatic_kernel::Ctx::new(), &ex(&at), &ex(&eqb(b.clone(), b)));
-    check(tt()).unwrap();
-    assert!(check(ff()).is_err(), "the wrong bit passed");
+    let (x, y, z) = (Term::v(0), Term::v(1), Term::v(2));
+    let (sub, plus, and, or, xor, lt) = (op2(SUB), op2(ADD), op2(AND), op2(OR), op2(XOR), op2(LT));
+    let not = |a: Term| xor(a, Term::ONES);
+    let n = 3;
+    let start = std::time::Instant::now();
+    for (k, l, r) in [(3, sub(x, plus(y, z)), sub(sub(x, y), z)), (2, lt(x, y), lt(not(y), not(x))), (2, and(x, or(x, y)), x)] {
+        tatic_kernel::scoped(|| {
+            let (machines, enc) = encode(k, &l, &r).unwrap();
+            let (proof, _) = proof(k, &machines, &enc);
+            let ty = infer(&Ctx::new(), &proof).unwrap();
+            let cmp = match *l.node() {
+                Node::Op(LT, a, c) => Some((a, c)),
+                _ => None,
+            };
+            // a word's bit `p` of `l`, or a root `lt`'s comparison of the low `p` bits, operand `i` all-ones iff `ones_at(i)`
+            let e = |ones_at: &dyn Fn(usize) -> bool, p: usize| -> bool {
+                let vals: Vec<u128> = (0..k).map(|i| if ones_at(i) { 7 } else { 0 }).collect();
+                match cmp {
+                    Some((a, c)) => {
+                        let low = (1u128 << p) - 1;
+                        a.interp(n, &vals) & low < c.interp(n, &vals) & low
+                    }
+                    None => (l.interp(n, &vals) >> p) & 1 == 1,
+                }
+            };
+            let args = |ones_at: &dyn Fn(usize) -> bool, p: usize| -> Vec<Expr> {
+                let streams = (0..k).map(|i| if ones_at(i) { ones() } else { zw() });
+                let goods = (0..k).map(|i| Cx::default().lam(nw(), |_, _| good_bit(ones_at(i))));
+                streams.chain(goods).chain([num(p)]).collect()
+            };
+            let last = if cmp.is_some() { n } else { n - 1 };
+            for assign in 0..1usize << k {
+                let ones_at = |i: usize| (assign >> i) & 1 == 1;
+                for p in [0, last] {
+                    let (e, inst) = (e(&ones_at, p), instance(&ty, &args(&ones_at, p)));
+                    assert!(def_eq(&inst, &eqb(bit(e), bit(e))), "{} at {assign:b} bit {p}", l.show());
+                    assert!(!def_eq(&inst, &eqb(bit(!e), bit(!e))), "{} at {assign:b} bit {p}: the wrong bit", l.show());
+                }
+            }
+            let mixed = |i: usize| i % 2 == 0;
+            let (e, mut args) = (e(&mixed, last), args(&mixed, last));
+            checked(&l.show(), check(&Ctx::new(), &apps(proof, args.clone()), &eqb(bit(e), bit(e))));
+            args.swap(k, k + 1);
+            assert!(check(&Ctx::new(), &apps(proof, args), &eqb(bit(e), bit(e))).is_err(), "{}: a mispaired witness", l.show());
+        });
+    }
+    println!("w_fold_a_theorem_applies_to_good_streams: {} ms", start.elapsed().as_millis());
+}
+/// The proof's inferred type is the statement, and no larger than twice its size: a goodness proof leaking into a type would show.
+#[test]
+fn w_fold_proof_type_is_the_statement() {
+    let (x, y, z, plus) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD));
+    let (machines, enc) = encode(3, &plus(plus(x, y), z), &plus(x, plus(y, z))).unwrap();
+    let (proof, stmt) = proof(3, &machines, &enc);
+    let ty = infer(&Ctx::new(), &proof).unwrap();
+    assert!(def_eq(&ty, &stmt), "the inferred type is not the statement");
+    let (p, t, s) = (term_sizes(&proof), term_sizes(&ty), term_sizes(&stmt));
+    println!("term_sizes (distinct, tree): proof {p:?} type {t:?} statement {s:?}");
+    assert!(t.0 <= 2 * s.0, "the inferred type has {} nodes against the statement's {}", t.0, s.0);
 }
 /// A comparison that varies: its proof proves only its own law, and swapped operands have no encoding.
 #[test]
 fn w_fold_a_comparison_is_its_own_law() {
     let (x, y, lt, xor) = (Term::v(0), Term::v(1), op2(LT), op2(XOR));
-    let law = Law::new(2, &lt(x, y), &lt(xor(y, Term::ONES), xor(x, Term::ONES))).unwrap();
-    let (proof, stmt) = law.proof();
-    run("x < y = ~y < ~x", &stmt, &proof).unwrap();
-    let swapped = side(&lt(y, x), &[v("x0"), v("x1")]).unwrap().root;
-    let wrong = law.over(&|ty, n, t| pi_(n, ty, t), pi_("i", nw(), eqb(ap(law.sides[0].root.clone(), v("i")), ap(swapped, v("i")))));
-    assert!(run("control: x < y = y < x", &wrong, &proof).is_err());
-    assert!(Law::new(2, &lt(x, y), &lt(y, x)).is_none(), "a false comparison has no encoding");
+    let (machines, enc) = encode(2, &lt(x, y), &lt(xor(y, Term::ONES), xor(x, Term::ONES))).unwrap();
+    let (proof, stmt) = proof(2, &machines, &enc);
+    checked("x < y = ~y < ~x", check(&Ctx::new(), &proof, &stmt));
+    let (left, swapped) = (Machine::parse(&lt(x, y)).unwrap(), Machine::parse(&lt(y, x)).unwrap());
+    let wrong = statement(&operands(2), |cx, xs| {
+        let (l, r) = (side(cx, &left, &xs[..2]).0, side(cx, &swapped, &xs[..2]).0);
+        ptw(cx, l, r)
+    });
+    assert!(check(&Ctx::new(), &proof, &wrong).is_err(), "control: x < y = y < x");
+    assert!(encode(2, &lt(x, y), &lt(y, x)).is_none(), "a false comparison has no encoding");
 }
 /// An `lt`'s stream is its borrow: below the root its parent would read the borrow as a word, and a root `lt` is no word.
 #[test]
 fn w_fold_lt_outside_the_root_has_no_law() {
     let (x, y, z, add, sub, lt) = (Term::v(0), Term::v(1), Term::v(2), op2(ADD), op2(SUB), op2(LT));
-    assert!(Law::new(3, &add(lt(x, y), z), &add(sub(x, y), z)).is_none(), "lt read as sub");
-    assert!(Law::new(3, &add(lt(x, y), z), &add(z, lt(x, y))).is_none(), "lt below the root");
-    assert!(Law::new(3, &lt(lt(x, y), z), &lt(lt(x, y), z)).is_none(), "lt under a root lt");
-    assert!(Law::new(1, &lt(x, x), &Term::ZERO).is_none(), "a root lt against a word");
+    assert!(encode(3, &add(lt(x, y), z), &add(sub(x, y), z)).is_none(), "lt read as sub");
+    assert!(encode(3, &add(lt(x, y), z), &add(z, lt(x, y))).is_none(), "lt below the root");
+    assert!(encode(3, &lt(lt(x, y), z), &lt(lt(x, y), z)).is_none(), "lt under a root lt");
+    assert!(encode(1, &lt(x, x), &Term::ZERO).is_none(), "a root lt against a word");
 }
 /// A law says only what its streams compute: at closed operands they give the words, and a root `lt` at `p` compares the low `p` bits.
 #[test]
@@ -444,18 +442,19 @@ fn w_fold_streams_compute_the_words() {
     let (x, y, add, sub) = (Term::v(0), Term::v(1), op2(ADD), op2(SUB));
     let terms = [add(x, y), sub(x, y), op2(AND)(x, y), op2(OR)(x, y), op2(XOR)(x, y), shl_t(x), sub(add(x, x), shl_t(y)), Term::ONES];
     for (a, c) in [(5u128, 3u128), (7, 7), (6, 1), (0, 5), (2, 6)] {
-        let s = [stream_of(a, nb), stream_of(c, nb)];
+        let mut cx = Cx::default();
+        let xs = [cx.mark(stream_of(a, nb)), cx.mark(stream_of(c, nb))];
         for t in &terms {
-            let root = side(t, &s).unwrap().root;
+            let root = side(&mut cx, &Machine::parse(t).unwrap(), &xs).0;
             for p in 0..nb {
-                let want = bit_of(t.interp(nb, &[a, c]), p);
-                assert!(tatic_kernel::def_eq(&ex(&ap(root.clone(), num(p))), &ex(&want)), "{}: {a} {c} bit {p}", t.show());
+                let want = bit((t.interp(nb, &[a, c]) >> p) & 1 == 1);
+                assert!(def_eq(&app(root, num(p)), &want), "{}: {a} {c} bit {p}", t.show());
             }
         }
-        let root = side(&op2(LT)(x, y), &s).unwrap().root;
+        let root = side(&mut cx, &Machine::parse(&op2(LT)(x, y)).unwrap(), &xs).0;
         for p in 0..=nb {
             let low = (1u128 << p) - 1;
-            assert!(tatic_kernel::def_eq(&ex(&ap(root.clone(), num(p))), &ex(&Terms.konst(a & low < c & low))), "lt {a} {c} at {p}");
+            assert!(def_eq(&app(root, num(p)), &bit(a & low < c & low)), "lt {a} {c} at {p}");
         }
     }
 }
@@ -492,7 +491,7 @@ fn w_fold_every_encoded_pair() {
     // each sampled pair is built and checked in its own region, round robin over `WFOLD_THREADS` workers (at most 10; terms
     // are per thread); true when it was proved, false when it has no encoding
     let prove = |t: Term, r: Term| -> bool {
-        let Some(law) = Law::new(2, &t, &r) else {
+        let Some((machines, enc)) = encode(2, &t, &r) else {
             // the classes are by width 4 only: a pair with no encoding must differ at another width
             let differ = |n: u32| {
                 let m = (1u128 << n) - 1;
@@ -502,9 +501,8 @@ fn w_fold_every_encoded_pair() {
             println!("no encoding: {} = {}, differ at {witness:?}", t.show(), r.show());
             return false;
         };
-        let (proof, stmt) = law.proof();
-        tatic_kernel::check(&tatic_kernel::Ctx::new(), &ex(&proof), &ex(&stmt))
-            .unwrap_or_else(|e| panic!("{} = {}: {}", t.show(), r.show(), e.chars().take(500).collect::<String>()));
+        let (proof, stmt) = proof(2, &machines, &enc);
+        checked(&format!("{} = {}", t.show(), r.show()), check(&Ctx::new(), &proof, &stmt));
         true
     };
     let threads = crate::Setup::process().or("WFOLD_THREADS", 1usize).clamp(1, 10);
