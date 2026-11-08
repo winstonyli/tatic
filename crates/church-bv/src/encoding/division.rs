@@ -7,13 +7,13 @@ use super::*;
 
 /// `\a C t f. a C f t`: one gate, not `xor a true`.
 pub fn not_(x: Expr) -> Expr {
-    app(constant(6, || lam(bool0(), lam(sort(0), lam(var(0), lam(var(1), app3(var(3), var(2), var(0), var(1))))))), x)
+    app(constant(|| lam(bool0(), lam(sort(0), lam(var(0), lam(var(1), app3(var(3), var(2), var(0), var(1))))))), x)
 }
 /// `\c x y C t f. c C (x C t f) (y C t f)`: one gate, not `or (and c x) (and (not c) y)`.
 pub fn mux(c: Expr, x: Expr, y: Expr) -> Expr {
     // ctx [c, x, y, C, t, f]: f=0 t=1 C=2 y=3 x=4 c=5
     let gate = || lam(bool0(), bool2(app3(var(5), var(2), app3(var(4), var(2), var(1), var(0)), app3(var(3), var(2), var(1), var(0)))));
-    app3(constant(7, gate), c, x, y)
+    app3(constant(gate), c, x, y)
 }
 /// `\a b. a Bool0 (\a_i. b Bool0 (\b_i. and_i xnor(a_i, b_i)))`, closed, of type `Bv_n -> Bv_n -> Bool0`.
 pub fn eq_bv(n: usize) -> Expr {

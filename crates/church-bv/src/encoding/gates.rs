@@ -39,24 +39,25 @@ pub fn gen_memo<K: std::hash::Hash + Eq, V: Clone>(memo: &'static std::thread::L
     })
 }
 
-/// The closed constant `slot`: the machine proofs use the gates millions of times.
-pub(super) fn constant(slot: usize, build: fn() -> Expr) -> Expr {
+/// The closed constant `build` makes, built once per generation and keyed by the function's address: the machine proofs
+/// use the gates millions of times. A function with two addresses (two codegen units) only builds an equal term twice.
+pub(crate) fn constant(build: fn() -> Expr) -> Expr {
     thread_local! {
         static CONSTANTS: GenMemo<usize, Expr> = Default::default();
     }
-    gen_memo(&CONSTANTS, slot, |_| build())
+    gen_memo(&CONSTANTS, build as usize, |_| build())
 }
 
 /// `Pi C. C -> C -> C`, written without `arrow`: its codomain shift ran at every call, and building the motives of the
 /// case-tree lemmas calls this millions of times.
 pub fn bool0() -> Expr {
-    constant(0, || pi(sort(0), pi(var(0), pi(var(1), var(2)))))
+    constant(|| pi(sort(0), pi(var(0), pi(var(1), var(2)))))
 }
 pub fn t() -> Expr {
-    constant(1, || lam(sort(0), lam(var(0), lam(var(1), var(1)))))
+    constant(|| lam(sort(0), lam(var(0), lam(var(1), var(1)))))
 }
 pub fn f() -> Expr {
-    constant(2, || lam(sort(0), lam(var(0), lam(var(1), var(0)))))
+    constant(|| lam(sort(0), lam(var(0), lam(var(1), var(0)))))
 }
 pub fn bit(b: bool) -> Expr {
     if b { t() } else { f() }
@@ -66,13 +67,13 @@ pub fn bool2(body: Expr) -> Expr {
     lam(bool0(), lam(bool0(), lam(sort(0), lam(var(0), lam(var(1), body)))))
 }
 pub fn and_() -> Expr {
-    constant(3, || bool2(app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0))))
+    constant(|| bool2(app3(var(4), var(2), app3(var(3), var(2), var(1), var(0)), var(0))))
 }
 pub fn or_() -> Expr {
-    constant(4, || bool2(app3(var(4), var(2), var(1), app3(var(3), var(2), var(1), var(0)))))
+    constant(|| bool2(app3(var(4), var(2), var(1), app3(var(3), var(2), var(1), var(0)))))
 }
 pub fn xor_() -> Expr {
-    constant(5, || bool2(app3(var(4), var(2), app3(var(3), var(2), var(0), var(1)), app3(var(3), var(2), var(1), var(0)))))
+    constant(|| bool2(app3(var(4), var(2), app3(var(3), var(2), var(0), var(1)), app3(var(3), var(2), var(1), var(0)))))
 }
 pub fn and(a: Expr, b: Expr) -> Expr { app2(and_(), a, b) }
 pub fn or(a: Expr, b: Expr) -> Expr { app2(or_(), a, b) }

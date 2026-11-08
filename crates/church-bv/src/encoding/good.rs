@@ -4,7 +4,7 @@ use super::*;
 
 /// GoodBool a := Pi P:(Bool -> Sort1). P true -> P false -> P a   (ctx [a])
 pub fn good_bool() -> Expr {
-    constant(8, || lam(bool0(), pi(arrow(bool0(), sort(1)), pi(app(var(0), t()), pi(app(var(1), f()), app(var(2), var(3)))))))
+    constant(|| lam(bool0(), pi(arrow(bool0(), sort(1)), pi(app(var(0), t()), pi(app(var(1), f()), app(var(2), var(3)))))))
 }
 /// `\a g. g motive at_true at_false`, with its type; `motive_body` is written at ctx [b].
 pub fn bit_lemma(motive_body: Expr, at_true: Expr, at_false: Expr) -> (Expr, Expr) {

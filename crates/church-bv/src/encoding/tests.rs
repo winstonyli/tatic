@@ -64,6 +64,17 @@ fn constants_are_built_once_per_generation() {
     })
 }
 
+/// Two build functions are two entries; one build function is one entry however often it is called.
+#[test]
+fn constants_are_keyed_by_their_build_function() {
+    tatic_kernel::scoped(|| {
+        let (a, b) = (constant(|| lam(bool0(), var(0))), constant(|| lam(bool0(), lam(bool0(), var(1)))));
+        assert!(a == lam(bool0(), var(0)) && b == lam(bool0(), lam(bool0(), var(1))), "a second build function got the first's term");
+        let k = || lam(sort(0), var(0));
+        assert!(tatic_kernel::node_key(&constant(k)) == tatic_kernel::node_key(&constant(k)));
+    })
+}
+
 #[test]
 pub fn church_bitvector_add_computes_by_conv_at_8_bits() {
     run(8);

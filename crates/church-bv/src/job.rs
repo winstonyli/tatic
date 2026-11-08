@@ -682,7 +682,7 @@ fn hidden_state_is_classified() {
         ("rewrite/term.rs", "OP_CACHE", "op results by operator and operand values"),
         ("rewrite/plan.rs", "CLOSED", "memo's closed library terms by key"),
         ("rewrite/plan.rs", "COUNTING", "the one Counting plan, shared"),
-        ("encoding/gates.rs", "CONSTANTS", "gen_memo: closed constants by slot"),
+        ("encoding/gates.rs", "CONSTANTS", "gen_memo: closed constants by build function"),
         ("encoding/tables.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
         ("work.rs", "SLOT", "this thread's work counts: no task reads them, the worker prints them after it"),
     ];
