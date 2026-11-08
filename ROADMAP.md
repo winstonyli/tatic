@@ -37,5 +37,12 @@ rules find no work in the JIT's programs (`PARKED.md`, "Compile hot transformati
 
 ## Milestones
 
-No milestone is open. v0.6 (`git tag -n99 v0.6.0`; findings in `docs/tier-cycle/`, "A learned scorer over the extras", "Q2 primary run" and "Selecting the extras by straggler verdict") closed with selection by `small` as the answer; what it left is in `PARKED.md`. Goal 3 is held (above), so the next
+v0.6 (`git tag -n99 v0.6.0`; findings in `docs/tier-cycle/`, "A learned scorer over the extras", "Q2 primary run" and "Selecting the extras by straggler verdict") closed with selection by `small` as the answer; what it left is in `PARKED.md`. Goal 3 is held (above), so the next
 milestone serves goal 1 or 2.
+
+- v0.7 **Emitted code in the kernel** - for the straight-line fragment, the JIT installs a compiled form only after
+  the kernel has proved the emitted wasm instruction list, run over 64-bit words, equal to the source term on every
+  input, where today it proves a model of the compiler (`proof.rs`'s `denote`). Picked 2026-11-08 (goal 1).
+  - Done when: a corpus term's install is gated on that proof at n = 64, and a mutated instruction list is rejected.
+  - First steps: a census of which corpus terms the fragment covers, then a spike on one `If (a < b)` term at
+    n = 8, 16 and 64. Design choices (where the code lives, how it meets `proof.rs`'s `Int`) wait on both.
