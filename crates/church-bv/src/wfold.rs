@@ -470,7 +470,10 @@ fn w_fold_streams_compute_the_words() {
     }
 }
 /// Equal terms over `x`, `y` and two operator levels, and comparisons of one-level terms, sampled by a stride: every pair
-/// gets an accepted proof, or differs at some other width.
+/// gets an accepted proof, or differs at some other width. Cadence: the suite runs the default stride (11 pairs); counts
+/// and profiles use `WFOLD_STRIDE=97` (470 pairs); the full sweep (`WFOLD_STRIDE=1 WFOLD_THREADS=10`, all 45677 pairs,
+/// about 36 s) runs through `run.ps1 -Kind sweep` before a tag and after any change to this file, `wnat.rs`, the encoding
+/// search in `machine.rs` or the kernel.
 #[test]
 fn w_fold_every_encoded_pair() {
     let stride: usize = crate::Setup::process().or("WFOLD_STRIDE", 4001);
