@@ -720,14 +720,17 @@ const EXTRAS_N: usize = 319;
 /// for each mine in fresh slices. Sets each loop's `extras` and `extra_at`, or says by how much the sequence is short.
 fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
     use crate::classes::{held_laws, held_levels, HELD_BANDS};
+    let c = scope[0].clone();
+    let shuffle = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0);
+    let salt = shuffle + 1000 * setup.or("GEN_DRAW", 0usize);
+    let deep_levels = held_levels(HELD_BANDS.into_iter().max().unwrap());
+    // built once per process, salt and growth count (its `STREAMS` lines give the time); where the served laws' salt is
+    // the extras', one build gives both sequences
+    let deep = if salt == shuffle { stream_sequences(salt, &[deep_levels, STREAM_LEVELS]).swap_remove(0) } else { stream_sequence(salt, deep_levels) };
     let served: Vec<(Term, Term)> = scope.iter().flat_map(served_laws).collect();
     let held: Vec<(Term, Term)> = HELD_BANDS.into_iter().flat_map(held_laws).collect();
-    let c = scope[0].clone();
-    let salt = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0) + 1000 * setup.or("GEN_DRAW", 0usize);
     let plan = crate::miner::ExtrasPlan::from_vars(setup, EXTRAS_N)?;
     let (n, pool, mines) = (plan.n, plan.pool, c.mines.len());
-    // built once per process and salt (its `STREAMS` lines give the time)
-    let deep = stream_sequence(salt, held_levels(HELD_BANDS.into_iter().max().unwrap()));
     let keep = filter(&served, &held);
     // with `EXTRAS_SELECT` each mine gets its whole pool and the miner keeps n (`ExtrasPlan::child_env`, `run_loop`)
     let per_mine = plan.per_mine();

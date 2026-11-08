@@ -1032,8 +1032,14 @@ saving is bounded by the 2-growth build: 6.5 of the 22.8 s both builds took unde
 (`stream_probe_overhead`), so about 69% of it is saved outright; not counted. It saves nothing where the two salts
 differ (`GEN_DRAW` set), in processes that build only 2 growths (`ABLATE=gen`, `LOOP_MODE=none`, `ROUNDS=0`), or
 when the shallow sequence is asked first; `regenerate_held` would go from four builds to two (salt 1 at 2 growths
-stays). The nesting was probed only at salt 1, on 3662451's copy of the build. Options: `PARKED.md`, "Derive the
-2-growth sequence from the 4-growth build". Found on the way: `scope_extras` builds the 4-growth sequence even with
+stays). The nesting was probed only at salt 1, on 3662451's copy of the build. Landed 2026-11-08 as option (c), one
+call for every depth (`streams::stream_sequences`, used by `scope_extras` and `regenerate_held`): the restricted lists
+equal the shallow ones at salts 0, 1 and the held salt (`a_deeper_stream_restricted_is_the_shallow_one`), the full
+pins hold, and the pin test's parent now logs one build per salt (63.2 s and 30.2 s at 78% machine load, run
+`2026-11-07-o2-pins2`). The pin test's retired instructions fell 19.9%, 1075.0 G to 861.1 G best of 2 (medians 1075.6 G
+and 862.7 G; each arm's two runs within 0.4%; one batch per arm, since each arm's first batch hit icount's 900 s limit
+while another session's gate loaded the machine; run `2026-11-07-o2-count`), close to the bound above (6.5 of 22.8 s,
+69% saved outright, about 20%). Found on the way: `scope_extras` builds the 4-growth sequence even with
 `EXTRAS_N=0`, where it takes no law from it.
 
 *Survey: the open-law filter, `Term::show` and mimalloc's purge (2026-10-29, profile `2026-10-29-zerofill3-prof` of the

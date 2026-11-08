@@ -364,26 +364,10 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   `2026-10-28-mjv-prof` (`PROF_THREAD` by the builds' thread ids); `docs/tier-cycle/`, "One exhaustive check for
   both". A probe split the build and found the loops' 2-growth build inside the extras' 4-growth one
   (`docs/tier-cycle/`, "Grouping the streams' terms, and the 2-growth build inside the 4-growth one", run
-  `2026-10-28-stream-probe`; deriving the first from the second is the entry "Derive the 2-growth sequence from the
-  4-growth build"), and value-class ids for grouping were chosen (2026-10-28). Since F1 the filter is 35.6% of the pin
+  `2026-10-28-stream-probe`; since 2026-11-08 the first is derived from the second, `streams::stream_sequences`), and value-class ids for grouping were chosen (2026-10-28). Since F1 the filter is 35.6% of the pin
   test's busy samples against 43.1 before (runs `2026-10-29-f1-prof`, `-f3-prof`), so a lazy build saves less.
   Status: decided against (2026-10-27), held for the join budget's landing with cheaper grouping the larger lever
   (2026-10-28).
-- **Derive the 2-growth sequence from the 4-growth build** — what: keep each stream's 4-growth list with each law's
-  depth and merge the lists restricted to depth 2, instead of building the 2-growth sequence separately; filtering the
-  merged 4-growth sequence is not exact. Design options (the user's call): (a) one memo per salt holding the
-  depth-tagged lists at the deepest depth asked so far, `stream_sequence(salt, levels)` unchanged as a view, callers
-  asking for the deep sequence first (`scope_extras`, `regenerate_held`, the pin test); (b) the same lists always built
-  at the deepest band's depth, so the memo is keyed by the salt alone and no order matters, while processes that need
-  only 2 growths (and both salts under `GEN_DRAW`) pay a 4-growth build (2.3-2.7 times the 2-growth one); (c) a call
-  that takes every depth at once (`stream_sequences(salt, &[2, 4])`), hoisted into `sweep` and `from_env`; (d) leave
-  the two builds. Related, one line: `scope_extras` builds the 4-growth sequence even with `EXTRAS_N=0`. Why held: a
-  change to `stream_sequence`'s memo and `stream_laws`' return type, and its net saving is not counted (at most the
-  2-growth build, 6.5 of 22.8 s under samply, about 69% of it once the cold-memo fill that moves into the 4-growth
-  build is taken off). Trigger: the user picks a design; the first step is a per-stream test that the restricted
-  4-growth list equals the 2-growth list at several salts, then a count of the pin test before and after. Evidence:
-  `docs/tier-cycle/`, "Deriving the 2-growth sequence from the 4-growth build" and "Grouping the streams' terms, and
-  the 2-growth build inside the 4-growth one" (2026-10-28). Status: held for the user's call (2026-10-28).
 - **Cheaper first asks in the stream builds** — what: the once-per-process work `Classes::normalize` does for a term
   it has not seen (6.78 s, 14.8% of a quiet one-thread 4-growth build before `cd7dacb`; 1.00 s of it was
   `bitwise_holds`' exhaustive inputs, built once per process since F3, `docs/tier-cycle/`, "F3 landed"). Pieces,

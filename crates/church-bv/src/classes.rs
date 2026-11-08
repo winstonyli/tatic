@@ -637,8 +637,8 @@ pub fn held_laws(band: usize) -> Vec<(Term, Term)> {
 fn regenerate_held() {
     let s1 = crate::streams::stream_sequence(1, crate::streams::STREAM_LEVELS);
     let served: hashbrown::HashSet<(Term, Term)> = (1..=3).flat_map(|p| crate::streams::residue(&s1, p, 0, 300)).collect();
-    for band in HELD_BANDS {
-        let seq = crate::streams::stream_sequence(HELD_SALT, held_levels(band));
+    let seqs = crate::streams::stream_sequences(HELD_SALT, &HELD_BANDS.map(held_levels));
+    for (band, seq) in HELD_BANDS.into_iter().zip(seqs) {
         let all: Vec<(Term, Term)> = seq.iter().filter(|(a, b)| a.size().max(b.size()) == band).cloned().collect();
         let overlap = all.iter().filter(|l| served.contains(*l)).count();
         let laws: Vec<(Term, Term)> = all.iter().filter(|l| !served.contains(*l)).take(HELD_PER_BAND).cloned().collect();

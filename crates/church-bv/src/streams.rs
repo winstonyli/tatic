@@ -36,7 +36,7 @@ pub fn stream_laws_are_deterministic_and_open() {
     let mut r8 = width8();
     tatic_kernel::scoped(|| {
         let memo = &mut crate::classes::NormalForms::default();
-        for (x, y) in &a {
+        for ((x, y), _) in &a {
             assert!(within(x, &ops) && within(y, &ops), "{} = {}", x.show(), y.show());
             assert!(c.normalize(job, 4, 3, x, memo) != c.normalize(job, 4, 3, y, memo), "closed: {} = {}", x.show(), y.show());
             assert!(r8.agree(x, y), "{} = {}", x.show(), y.show());
@@ -95,8 +95,12 @@ fn width8() -> ValueMemo<u8> {
 /// one of the seeds' operators over two leaves (`shl1` and `shr1` over one), padding dropped, about `budget` terms per
 /// level drawn by `salt`. Laws are grouped by width-4 values as `pool_conjectures` does, have a grown side, use all three
 /// variables, and are shuffled by `salt`; kept when the table leaves them open (normal forms differ) and they agree on
-/// `width8`'s inputs. Prints the laws kept and refuted.
-pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> Vec<(Term, Term)> {
+/// `width8`'s inputs. Each law comes with its depth, the level of its deeper side. Prints the laws kept and refuted.
+///
+/// The laws of depth at most `d` are the stream grown `d` times, in its order (`at_depth`;
+/// `a_deeper_stream_restricted_is_the_shallow_one`): levels up to `d` draw the same terms, a group's head is its least
+/// member by level so a deeper member never heads a shallower one, and `shuffled` sorts by a key of the law alone.
+pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> Vec<((Term, Term), usize)> {
     let c = crate::classes::Classes::get();
     fn within(t: Term, ops: &[usize]) -> bool {
         match *t.node() {
@@ -190,7 +194,7 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
                 refuted += 1;
                 continue;
             }
-            out.push((a, b));
+            out.push(((a, b), level[&a].max(level[&b])));
         }
     });
     let names: Vec<&str> = ops.iter().map(|o| OP_INFO[*o].name).collect();
@@ -198,25 +202,42 @@ pub fn stream_laws(ops: &[usize], salt: usize, budget: usize, levels: usize) -> 
     out
 }
 
-/// The law sequence for `salt` with the table's representatives grown `levels` times (spec §9; the loops use
-/// `STREAM_LEVELS`): the 56 streams (`stream_sets`, `STREAM_BUDGET`) interleaved round-robin, a law kept at its first
-/// appearance. Built once per process, salt and growth count, on `STREAM_THREADS` threads (default 4, so three gate
-/// processes fill the 12-core cap; clamped to 1..=12; 4 threads: 5.4 s and 2.8 GB against 15.4 s and 1.4 GB serial,
-/// run `2026-10-27-cu18-seqmem-b`).
-pub fn stream_sequence(salt: usize, levels: usize) -> std::sync::Arc<Vec<(Term, Term)>> {
-    static MEMO: crate::task::SharedMemo<(usize, usize), std::sync::Arc<Vec<(Term, Term)>>> = crate::task::SharedMemo::new();
-    let threads = Setup::process().or("STREAM_THREADS", 4).clamp(1, 12);
-    MEMO.with((salt, levels), || std::sync::Arc::new(build_sequence(salt, STREAM_BUDGET, levels, threads)), |s| s.clone())
+/// A stream's laws of depth at most `d`, in its order.
+pub fn at_depth(laws: &[((Term, Term), usize)], d: usize) -> Vec<(Term, Term)> {
+    laws.iter().filter(|(_, l)| *l <= d).map(|(law, _)| *law).collect()
 }
 
-/// `stream_sequence`'s build: the streams on `threads` threads, each taking the next stream when free (their costs differ),
-/// merged by stream index. A stream is a pure function of its operators, salt, budget and growth count, so the sequence
-/// is the same at any thread count (`a_stream_sequence_is_the_same_on_any_thread_count`).
-fn build_sequence(salt: usize, budget: usize, levels: usize, threads: usize) -> Vec<(Term, Term)> {
+/// The law sequence for `salt` with the table's representatives grown `levels` times (spec §9; the loops use
+/// `STREAM_LEVELS`): the 56 streams (`stream_sets`, `STREAM_BUDGET`) interleaved round-robin, a law kept at its first
+/// appearance. One growth count of `stream_sequences`.
+pub fn stream_sequence(salt: usize, levels: usize) -> std::sync::Arc<Vec<(Term, Term)>> {
+    stream_sequences(salt, &[levels]).pop().unwrap()
+}
+
+/// The sequences for `salt` at each of `levels`, from one build of the streams at the deepest of them that is not built
+/// yet: a process that needs several asks for them together, deepest work done once (the shallower are its laws of
+/// lower depth, `at_depth`). Each is built once per process, salt and growth count, on `STREAM_THREADS` threads
+/// (default 4, so three gate processes fill the 12-core cap; clamped to 1..=12; 4 threads: 5.4 s and 2.8 GB against
+/// 15.4 s and 1.4 GB serial, run `2026-10-27-cu18-seqmem-b`).
+pub fn stream_sequences(salt: usize, levels: &[usize]) -> Vec<std::sync::Arc<Vec<(Term, Term)>>> {
+    static MEMO: crate::task::SharedMemo<(usize, usize), std::sync::Arc<Vec<(Term, Term)>>> = crate::task::SharedMemo::new();
+    let threads = Setup::process().or("STREAM_THREADS", 4).clamp(1, 12);
+    let deepest = levels.iter().copied().filter(|&l| MEMO.get(&(salt, l)).is_none()).max();
+    let streams = std::cell::OnceCell::new();
+    levels
+        .iter()
+        .map(|&l| MEMO.with((salt, l), || std::sync::Arc::new(merge_streams(streams.get_or_init(|| build_streams(salt, STREAM_BUDGET, deepest.unwrap(), threads)), salt, l)), |s| s.clone()))
+        .collect()
+}
+
+/// The streams on `threads` threads, each taking the next stream when free (their costs differ), in `stream_sets` order.
+/// A stream is a pure function of its operators, salt, budget and growth count, so the result is the same at any thread
+/// count (`a_stream_sequence_is_the_same_on_any_thread_count`).
+fn build_streams(salt: usize, budget: usize, levels: usize, threads: usize) -> Vec<Vec<((Term, Term), usize)>> {
     let t0 = std::time::Instant::now();
     let sets = stream_sets();
     let next = std::sync::atomic::AtomicUsize::new(0);
-    let mut streams: Vec<Vec<(Term, Term)>> = vec![vec![]; sets.len()];
+    let mut streams: Vec<Vec<((Term, Term), usize)>> = vec![vec![]; sets.len()];
     std::thread::scope(|sc| {
         let worker = || {
             let mut built = vec![];
@@ -233,6 +254,13 @@ fn build_sequence(salt: usize, budget: usize, levels: usize, threads: usize) -> 
             }
         }
     });
+    println!("STREAMS salt {salt}, {levels} growths: {} streams in {:.1}s on {threads} threads", streams.len(), t0.elapsed().as_secs_f64());
+    streams
+}
+
+/// The sequence of `streams`' laws of depth at most `levels`: interleaved round-robin, a law kept at its first appearance.
+fn merge_streams(streams: &[Vec<((Term, Term), usize)>], salt: usize, levels: usize) -> Vec<(Term, Term)> {
+    let streams: Vec<Vec<(Term, Term)>> = streams.iter().map(|s| at_depth(s, levels)).collect();
     let (mut seen, mut seq) = (HashSet::new(), vec![]);
     for i in 0..streams.iter().map(Vec::len).max().unwrap_or(0) {
         for s in &streams {
@@ -243,7 +271,7 @@ fn build_sequence(salt: usize, budget: usize, levels: usize, threads: usize) -> 
             }
         }
     }
-    println!("STREAMS salt {salt}, {levels} growths: {} laws from {} streams in {:.1}s on {threads} threads", seq.len(), streams.len(), t0.elapsed().as_secs_f64());
+    println!("STREAMS salt {salt}, {levels} growths: {} laws", seq.len());
     seq
 }
 
@@ -252,8 +280,24 @@ fn build_sequence(salt: usize, budget: usize, levels: usize, threads: usize) -> 
 /// process allows, and an order-dependent fill would show.
 #[test]
 fn a_stream_sequence_is_the_same_on_any_thread_count() {
-    let parallel = build_sequence(1, 2000, 2, 4);
-    assert!(parallel == build_sequence(1, 2000, 2, 1));
+    let parallel = merge_streams(&build_streams(1, 2000, 2, 4), 1, 2);
+    assert!(parallel == merge_streams(&build_streams(1, 2000, 2, 1), 1, 2));
+}
+
+/// A stream grown deeper and restricted to depth 2 is the stream grown twice, law for law in order (`stream_laws`' note),
+/// at three salts for a pair and a triple; and the merged sequence of the deeper streams at depth 2 is the 2-growth
+/// sequence, so `stream_sequences` may derive one from the other.
+#[test]
+fn a_deeper_stream_restricted_is_the_shallow_one() {
+    for salt in [0, 1, crate::classes::HELD_SALT] {
+        for ops in [&[ADD, SHR1][..], &[ADD, SUB, SHL1]] {
+            let shallow: Vec<(Term, Term)> = stream_laws(ops, salt, 2000, 2).into_iter().map(|(law, _)| law).collect();
+            let deep = stream_laws(ops, salt, 2000, 3);
+            assert!(deep.len() > shallow.len(), "salt {salt}: the third growth added no law");
+            assert!(at_depth(&deep, 2) == shallow, "salt {salt}, {} ops: restricted differs", ops.len());
+        }
+    }
+    assert!(merge_streams(&build_streams(1, 2000, 3, 4), 1, 2) == merge_streams(&build_streams(1, 2000, 2, 4), 1, 2));
 }
 
 /// FNV-1a 64 of the laws' text, one `lhs = rhs` line each: what the pinned sequences are pinned by.
@@ -270,16 +314,18 @@ fn laws_digest(laws: &[(Term, Term)]) -> u64 {
     })
 }
 
-/// The sequences at the loops' and the extras' growth counts (`STREAM_LEVELS`, and the deepest held band's), built at each
-/// pinned salt and checked against the pinned length and digest of their laws' text.
-fn assert_sequences_pinned(pinned: [(usize, usize, usize, u64); 2]) {
-    let got: Vec<(usize, usize, usize, u64)> = pinned
+/// The sequences at the loops' and the extras' growth counts (`STREAM_LEVELS`, and the deepest held band's) at `salt`,
+/// from one build as a sweep's parent asks for them (`stream_sequences`), and checked against the pinned length and
+/// digest of their laws' text.
+fn assert_sequences_pinned(salt: usize, pinned: [(usize, usize, u64); 2]) {
+    let seqs = stream_sequences(salt, &pinned.map(|(levels, ..)| levels));
+    let got: Vec<(usize, usize, u64)> = pinned
         .iter()
-        .map(|&(salt, levels, ..)| {
-            let seq = stream_sequence(salt, levels);
-            let fnv = laws_digest(&seq);
+        .zip(&seqs)
+        .map(|(&(levels, ..), seq)| {
+            let fnv = laws_digest(seq);
             println!("PINNED salt {salt}, {levels} growths: {} laws, digest {fnv:#018x}", seq.len());
-            (salt, levels, seq.len(), fnv)
+            (levels, seq.len(), fnv)
         })
         .collect();
     assert_eq!(got, pinned, "a sequence changed");
@@ -293,7 +339,7 @@ fn assert_sequences_pinned(pinned: [(usize, usize, usize, u64); 2]) {
 #[ignore]
 pub fn stream_sequences_are_pinned() {
     let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
-    assert_sequences_pinned([(1, STREAM_LEVELS, 58125, 0x7703_133d_0c24_dbb2), (1, deep, 230801, 0x4bb4_78c5_da79_675b)]);
+    assert_sequences_pinned(1, [(STREAM_LEVELS, 58125, 0x7703_133d_0c24_dbb2), (deep, 230801, 0x4bb4_78c5_da79_675b)]);
 }
 
 /// The same two sequences at salt 0, the order a bare `loop_stream` or `rule_miner` run (`RULEMINER_SHUFFLE` unset) gets.
@@ -301,7 +347,7 @@ pub fn stream_sequences_are_pinned() {
 #[ignore]
 pub fn stream_sequences_are_pinned_at_salt_0() {
     let deep = crate::classes::held_levels(crate::classes::HELD_BANDS.into_iter().max().unwrap());
-    assert_sequences_pinned([(0, STREAM_LEVELS, 58440, 0x4a7d_c226_0672_672b), (0, deep, 230399, 0x8966_904d_38ac_dd30)]);
+    assert_sequences_pinned(0, [(STREAM_LEVELS, 58440, 0x4a7d_c226_0672_672b), (deep, 230399, 0x8966_904d_38ac_dd30)]);
 }
 
 /// Small streams (a pair, 2000 terms a level over 2 levels; a triple, 4000 over 3) at salts 0, 1 and the held salt, pinned
@@ -323,7 +369,7 @@ pub fn small_streams_are_pinned() {
     let got: Vec<(usize, (&[usize], usize, usize), usize, u64)> = pinned
         .iter()
         .map(|&(salt, (ops, budget, levels), ..)| {
-            let laws = stream_laws(ops, salt, budget, levels);
+            let laws = at_depth(&stream_laws(ops, salt, budget, levels), levels);
             (salt, (ops, budget, levels), laws.len(), laws_digest(&laws))
         })
         .collect();
@@ -336,7 +382,7 @@ pub fn residue(seq: &[(Term, Term)], phase: usize, skip: usize, laws: usize) -> 
 }
 
 /// Builds `stream_sequence(STREAMS_SALT)` (default 1) and prints its size and time: what a sweep pays once for its loops'
-/// laws (spec §9, Risks); the extras' deeper sequence is a second build (`driver::scope_extras`).
+/// laws (spec §9, Risks) when it builds no deeper one (`driver::scope_extras` asks for both at once).
 #[test]
 #[ignore]
 pub fn stream_sequence_cost() {
