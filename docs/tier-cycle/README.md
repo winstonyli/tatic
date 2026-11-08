@@ -4,7 +4,7 @@ The tier-cycle findings log, one file per section (the two long sections are spl
 
 - [00-title.md](00-title.md): The kernel as the KR&R tier of a cyclical system, 6 lines
 - [01-idea.md](01-idea.md): Idea, 11 lines
-- [02-where-things-stand-2026-10-26.md](02-where-things-stand-2026-10-26.md): Where things stand (2026-10-26), 23 lines
+- [02-where-things-stand-2026-11-07.md](02-where-things-stand-2026-11-07.md): Where things stand (2026-11-07), 37 lines
 - [03-metrics.md](03-metrics.md): Metrics, 41 lines
 - [04-interface-to-settle.md](04-interface-to-settle.md): Interface (to settle), 8 lines
 - [05-experiments.md](05-experiments.md): Experiments, 59 lines
