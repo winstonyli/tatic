@@ -1,0 +1,335 @@
+diff --git a/crates/church-bv/src/lib.rs b/crates/church-bv/src/lib.rs
+index 909d9a3..b6d97ec 100644
+--- a/crates/church-bv/src/lib.rs
++++ b/crates/church-bv/src/lib.rs
+@@ -25,6 +25,8 @@ mod machine;
+ mod wfold;
+ mod wnat;
+ mod miner;
++#[cfg(test)]
++mod mul_cost;
+ mod search;
+ mod task;
+ mod uniform;
+diff --git a/crates/church-bv/src/mul_cost.rs b/crates/church-bv/src/mul_cost.rs
+new file mode 100644
+index 0000000..0c7fc8c
+--- /dev/null
++++ b/crates/church-bv/src/mul_cost.rs
+@@ -0,0 +1,316 @@
++//! r1 spike (throwaway): the case-split prover's cost (`circuit_law_k`) over a generated pool of true variable-`mul` laws
++//! at widths 2-3, against the laws' syntax: is cost within an (n, arity) cell predicted by size and cheap features?
++//! Cost is the kernel's `work()` count of checking the proof (deterministic on a fresh thread's memo).
++
++use super::*;
++
++#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
++enum Op {
++    Add,
++    Mul,
++    And,
++    Xor,
++}
++
++#[derive(Clone, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
++enum Mt {
++    V(usize),
++    C(u128),
++    B(Op, Box<Mt>, Box<Mt>),
++}
++
++impl Mt {
++    fn size(&self) -> usize {
++        match self {
++            Mt::B(_, a, b) => 1 + a.size() + b.size(),
++            _ => 1,
++        }
++    }
++    fn show(&self) -> String {
++        match self {
++            Mt::V(i) => ["x", "y", "z"][*i].to_string(),
++            Mt::C(c) => c.to_string(),
++            Mt::B(o, a, b) => format!("{}({}, {})", format!("{o:?}").to_lowercase(), a.show(), b.show()),
++        }
++    }
++    fn eval(&self, n: usize, v: &[u128]) -> u128 {
++        let m = (1u128 << n) - 1;
++        match self {
++            Mt::V(i) => v[*i],
++            Mt::C(c) => c & m,
++            Mt::B(o, a, b) => {
++                let (x, y) = (a.eval(n, v), b.eval(n, v));
++                (match o {
++                    Op::Add => x + y,
++                    Op::Mul => x * y,
++                    Op::And => x & y,
++                    Op::Xor => x ^ y,
++                }) & m
++            }
++        }
++    }
++    /// The output bits over the vectors' bits, by the same circuits the prover's tests use.
++    fn bits(&self, n: usize, v: &[Vec<Expr>]) -> Vec<Expr> {
++        match self {
++            Mt::V(i) => v[*i].clone(),
++            Mt::C(c) => const_bits(n, *c),
++            Mt::B(o, a, b) => {
++                let (x, y) = (a.bits(n, v), b.bits(n, v));
++                match o {
++                    Op::Add => add_rows(&x, &y),
++                    Op::Mul => mul_bits(n, &x, &y),
++                    Op::And => x.iter().zip(&y).map(|(p, q)| and(*p, *q)).collect(),
++                    Op::Xor => x.iter().zip(&y).map(|(p, q)| xor(*p, *q)).collect(),
++                }
++            }
++        }
++    }
++    fn vars(&self, out: &mut [bool; 3]) {
++        match self {
++            Mt::V(i) => out[*i] = true,
++            Mt::C(_) => {}
++            Mt::B(_, a, b) => {
++                a.vars(out);
++                b.vars(out);
++            }
++        }
++    }
++    fn count(&self, f: &dyn Fn(&Mt) -> bool) -> usize {
++        (f(self) as usize) + if let Mt::B(_, a, b) = self { a.count(f) + b.count(f) } else { 0 }
++    }
++    fn mul_depth(&self) -> usize {
++        match self {
++            Mt::B(o, a, b) => (*o == Op::Mul) as usize + a.mul_depth().max(b.mul_depth()),
++            _ => 0,
++        }
++    }
++    fn subterms<'a>(&'a self, out: &mut hashbrown::HashSet<&'a Mt>) {
++        out.insert(self);
++        if let Mt::B(_, a, b) = self {
++            a.subterms(out);
++            b.subterms(out);
++        }
++    }
++}
++
++/// Every term of exactly each size up to `max` over the first `k` variables and the constants 0, 1, 2.
++fn terms(k: usize, max: usize) -> Vec<Vec<Mt>> {
++    let mut by: Vec<Vec<Mt>> = vec![vec![]; max + 1];
++    by[1] = (0..k).map(Mt::V).chain([0, 1, 2].map(Mt::C)).collect();
++    for s in (3..=max).step_by(2) {
++        let mut out = vec![];
++        for ls in (1..s - 1).step_by(2) {
++            let rs = s - 1 - ls;
++            for o in [Op::Add, Op::Mul, Op::And, Op::Xor] {
++                for a in &by[ls] {
++                    for b in &by[rs] {
++                        out.push(Mt::B(o, Box::new(a.clone()), Box::new(b.clone())));
++                    }
++                }
++            }
++        }
++        by[s] = out;
++    }
++    by
++}
++
++/// A `k`-input circuit `\a_1..a_k. \C kont. a_1 C (\bits.. a_2 C (.. kont outs))`, as `bits_circuit` for two.
++fn bits_circuit_k(n: usize, k: usize, outs: &dyn Fn(&[Vec<Expr>]) -> Vec<Expr>) -> Expr {
++    let d = k + 2 + k * n;
++    let at = |depth: usize, pos: usize| var((depth - 1 - pos) as u32);
++    let vb: Vec<Vec<Expr>> = (0..k).map(|v| (0..n).map(|i| at(d, k + 2 + v * n + i)).collect()).collect();
++    let mut body = apps(at(d, k + 1), outs(&vb));
++    for v in (0..k).rev() {
++        for _ in 0..n {
++            body = lam(bool0(), body);
++        }
++        let depth = k + 2 + v * n;
++        body = app2(at(depth, v), at(depth, k), body);
++    }
++    body = lam(karrow(n), body);
++    body = lam(sort(1), body);
++    for _ in 0..k {
++        body = lam(bv_ty(n), body);
++    }
++    body
++}
++
++struct Row {
++    law: String,
++    size: usize,
++    muls: usize,
++    depth: usize,
++    const_muls: usize,
++    adds: usize,
++    bitops: usize,
++    distinct: usize,
++    build_work: u64,
++    work: u64,
++    build_ms: f64,
++    check_ms: f64,
++}
++
++/// The cost of one law on a fresh thread (an empty kernel memo): build work, check work, build and check times.
++fn cost(n: usize, k: usize, l: &Mt, r: &Mt) -> (u64, u64, f64, f64) {
++    let (l, r) = (l.clone(), r.clone());
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            tatic_kernel::scoped(|| {
++                let w0 = tatic_kernel::work();
++                let t0 = Instant::now();
++                let (lc, rc) = (bits_circuit_k(n, k, &|v| l.bits(n, v)), bits_circuit_k(n, k, &|v| r.bits(n, v)));
++                let (p, s) = circuit_law_k(n, k, &|a| (apps(lc, a.to_vec()), apps(rc, a.to_vec())), &|v| l.bits(n, v), &|v| r.bits(n, v));
++                let (w1, t1) = (tatic_kernel::work(), Instant::now());
++                holds(&p, &s).unwrap_or_else(|e| panic!("{} = {}: {e:?}", l.show(), r.show()));
++                let w2 = tatic_kernel::work();
++                (w1 - w0, w2 - w1, (t1 - t0).as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3)
++            })
++        })
++        .unwrap()
++        .join()
++        .unwrap()
++}
++
++/// Ordinary least squares of `y` on the columns of `x` (an intercept is added); returns R² and the leave-one-out
++/// residuals.
++fn ols(x: &[Vec<f64>], y: &[f64]) -> (f64, Vec<f64>) {
++    let fit = |rows: &[usize]| -> Vec<f64> {
++        let p = x[0].len() + 1;
++        let mut a = vec![vec![0.0; p + 1]; p];
++        for &i in rows {
++            let xi: Vec<f64> = std::iter::once(1.0).chain(x[i].iter().copied()).collect();
++            for r in 0..p {
++                for c in 0..p {
++                    a[r][c] += xi[r] * xi[c];
++                }
++                a[r][p] += xi[r] * y[i];
++            }
++        }
++        for r in 0..p {
++            a[r][r] += 1e-9;
++        }
++        for c in 0..p {
++            let piv = (c..p).max_by(|&i, &j| a[i][c].abs().total_cmp(&a[j][c].abs())).unwrap();
++            a.swap(c, piv);
++            for r in 0..p {
++                if r != c {
++                    let f = a[r][c] / a[c][c];
++                    for cc in c..=p {
++                        a[r][cc] -= f * a[c][cc];
++                    }
++                }
++            }
++        }
++        (0..p).map(|r| a[r][p] / a[r][r]).collect()
++    };
++    let pred = |b: &[f64], i: usize| b[0] + x[i].iter().zip(&b[1..]).map(|(u, v)| u * v).sum::<f64>();
++    let all: Vec<usize> = (0..y.len()).collect();
++    let b = fit(&all);
++    let mean = y.iter().sum::<f64>() / y.len() as f64;
++    let (ss_res, ss_tot): (f64, f64) = all.iter().fold((0.0, 0.0), |(r, t), &i| (r + (y[i] - pred(&b, i)).powi(2), t + (y[i] - mean).powi(2)));
++    let loo = all.iter().map(|&i| {
++        let rest: Vec<usize> = all.iter().copied().filter(|&j| j != i).collect();
++        y[i] - pred(&fit(&rest), i)
++    });
++    (1.0 - ss_res / ss_tot.max(1e-12), loo.collect())
++}
++
++#[test]
++#[ignore]
++pub fn mul_case_split_cost_spread() {
++    let per_cell: usize = Setup::process().or("MUL_PER_CELL", 40);
++    let max_size: usize = Setup::process().or("MUL_MAX_SIZE", 7);
++    println!("TSV\tn\tk\tlaw\tsize\tmuls\tdepth\tconst_muls\tadds\tbitops\tdistinct\tbuild_work\twork\tbuild_ms\tcheck_ms");
++    for n in [2usize, 3] {
++        for k in [1usize, 2, 3] {
++            let by = terms(k, max_size);
++            let pool: Vec<&Mt> = by.iter().flatten().collect();
++            let tuples: Vec<Vec<u128>> = (0..1u128 << (n * k)).map(|t| (0..k).map(|i| (t >> (i * n)) & ((1 << n) - 1)).collect()).collect();
++            // groups by values on every input; head = least by (size, text)
++            let mut groups: hashbrown::HashMap<Vec<u8>, Vec<&Mt>> = Default::default();
++            for t in &pool {
++                groups.entry(tuples.iter().map(|v| t.eval(n, v) as u8).collect()).or_default().push(t);
++            }
++            let mut laws: Vec<(u64, &Mt, &Mt)> = vec![];
++            for g in groups.values_mut() {
++                g.sort_by_cached_key(|t| (t.size(), t.show()));
++                let h = g[0];
++                for t in &g[1..] {
++                    let mut used = [false; 3];
++                    h.vars(&mut used);
++                    t.vars(&mut used);
++                    let has_mul = |m: &Mt| m.count(&|s| matches!(s, Mt::B(Op::Mul, ..))) > 0;
++                    if used.iter().filter(|u| **u).count() == k && (has_mul(h) || has_mul(t)) {
++                        let key = Fnv::of(|w| std::fmt::Write::write_str(w, &format!("{n}|{k}|{} = {}", h.show(), t.show())));
++                        laws.push((key, h, t));
++                    }
++                }
++            }
++            laws.sort_unstable_by_key(|(key, ..)| *key);
++            // stratified by total size: the same number from each size present, in hash order
++            let mut sizes: Vec<usize> = laws.iter().map(|(_, a, b)| a.size() + b.size()).collect();
++            sizes.sort_unstable();
++            sizes.dedup();
++            let quota = per_cell.div_ceil(sizes.len());
++            let mut picked = vec![];
++            for s in &sizes {
++                picked.extend(laws.iter().filter(|(_, a, b)| a.size() + b.size() == *s).take(quota));
++            }
++            picked.truncate(per_cell);
++            println!("CELL n {n} k {k}: {} terms, {} laws, sizes {:?}, {} picked", pool.len(), laws.len(), sizes, picked.len());
++            let mut rows = vec![];
++            for (i, (_, a, b)) in picked.iter().enumerate() {
++                let (build_work, work, build_ms, check_ms) = cost(n, k, a, b);
++                // A/A: every fifth law again on a fresh thread
++                if i % 5 == 0 {
++                    let again = cost(n, k, a, b);
++                    assert_eq!((again.0, again.1), (build_work, work), "work not repeatable: {} = {}", a.show(), b.show());
++                }
++                let mut sub = hashbrown::HashSet::new();
++                a.subterms(&mut sub);
++                b.subterms(&mut sub);
++                let cnt = |f: &dyn Fn(&Mt) -> bool| a.count(f) + b.count(f);
++                let row = Row {
++                    law: format!("{} = {}", a.show(), b.show()),
++                    size: a.size() + b.size(),
++                    muls: cnt(&|s| matches!(s, Mt::B(Op::Mul, ..))),
++                    depth: a.mul_depth().max(b.mul_depth()),
++                    const_muls: cnt(&|s| matches!(s, Mt::B(Op::Mul, x, y) if matches!(**x, Mt::C(_)) || matches!(**y, Mt::C(_)))),
++                    adds: cnt(&|s| matches!(s, Mt::B(Op::Add, ..))),
++                    bitops: cnt(&|s| matches!(s, Mt::B(Op::And | Op::Xor, ..))),
++                    distinct: sub.len(),
++                    build_work,
++                    work,
++                    build_ms,
++                    check_ms,
++                };
++                println!(
++                    "TSV\t{n}\t{k}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.1}\t{:.1}",
++                    row.law, row.size, row.muls, row.depth, row.const_muls, row.adds, row.bitops, row.distinct, row.build_work, row.work, row.build_ms, row.check_ms
++                );
++                rows.push(row);
++            }
++            let y: Vec<f64> = rows.iter().map(|r| (r.work as f64).ln()).collect();
++            let size_x: Vec<Vec<f64>> = rows.iter().map(|r| vec![r.size as f64]).collect();
++            let all_x: Vec<Vec<f64>> = rows.iter().map(|r| vec![r.size as f64, r.muls as f64, r.depth as f64, r.const_muls as f64, r.adds as f64, r.bitops as f64, r.distinct as f64]).collect();
++            let worst = |loo: &[f64]| loo.iter().fold(0f64, |m, e| m.max(e.abs())).exp();
++            let (r2s, loos) = ols(&size_x, &y);
++            let (r2a, looa) = ols(&all_x, &y);
++            let over2 = looa.iter().filter(|e| e.abs() > 2f64.ln()).count();
++            let mut eq_size = 1f64;
++            for s in rows.iter().map(|r| r.size).collect::<std::collections::BTreeSet<_>>() {
++                let w: Vec<u64> = rows.iter().filter(|r| r.size == s).map(|r| r.work).collect();
++                eq_size = eq_size.max(*w.iter().max().unwrap() as f64 / *w.iter().min().unwrap() as f64);
++            }
++            let (lo, hi) = (rows.iter().map(|r| r.work).min().unwrap(), rows.iter().map(|r| r.work).max().unwrap());
++            println!(
++                "FIT n {n} k {k}: {} laws; work {lo}..{hi} ({:.1}x); size alone R2 {r2s:.3}, LOO max residual {:.2}x; all features R2 {r2a:.3}, LOO max residual {:.2}x, {over2} over 2x; equal-size max/min {eq_size:.2}x",
++                rows.len(),
++                hi as f64 / lo as f64,
++                worst(&loos),
++                worst(&looa)
++            );
++        }
++    }
++}

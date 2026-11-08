@@ -246,9 +246,9 @@ read-only survey of five sources, each finding re-checked by a second reader aga
   2693; `PARKED.md`, "Belief layer stage 2"), term size, `n` and `k`, straggler or not. The one budget a ranker could still
   spend better is the mines' (v0.6's question, "A learned scorer over the extras"), where every learned key was null.
 - **`mul`.** No claim stream exists: `mul` is outside the loop's operators and is not a left-to-right machine. At a
-  fixed width every variable-`mul` law is finite and decided by exhaustive evaluation, and its proof costs are smooth
-  in the multiplier width and the law's arity (search-execution blend spec part 2, §58-59; "The level wall is Church's").
-  The one real uncertainty, whether a width-uniform proof exists (commutativity), is a handful of theorems, not a stream.
+  fixed width every variable-`mul` law is finite and decided by exhaustive evaluation (search-execution blend spec part
+  2, §58-59; "The level wall is Church's"), each in under a second at widths 2-3; the proof's cost within a width and
+  arity is not smooth in size (the probe below). The one real uncertainty, whether a width-uniform proof exists (commutativity), is a handful of theorems, not a stream.
 - **Rings** (`PARKED.md`, "Port the loop to rings"; "Other theories"): a completed axiom base normalizes every law and
   a 4-point value screen decides truth; the only expensive part is an artificial node budget.
 - **Vocabulary growth** (checked definitions, boolean combinations of comparisons): the one expensive and uncertain
@@ -261,6 +261,32 @@ read-only survey of five sources, each finding re-checked by a second reader aga
 
 Reading: in this kernel's reach, a claim's label is either cheap and decided or out of reach, and what separates the
 two is syntax, so goal 3's model has nothing to learn that a lookup does not already know (inference across the five
-sources; no model was tried). The cheapest falsifiers named: prove the 14 Souper cases and log each route (minutes); time
-a generated pool of variable-`mul` laws by the case-split prover at widths 2-3 and look for spread within an
-(n, arity) cell that size does not predict (minutes to tens of minutes).
+sources; no model was tried). The cheapest falsifiers named: prove the 14 Souper cases and log each route (minutes, not
+run); time a generated pool of variable-`mul` laws by the case-split prover and look for spread that size does not
+predict (run, below).
+
+*The `mul` cost probe (spike, 2026-11-08; run `2026-11-08-r1-mul-cost`, 23 s; patch
+`docs/superpowers/spikes/2026-11-08-r1-mul-cost-spread.patch`, reverted).* Every term up to 7 nodes over `add`, `mul`,
+`and`, `xor`, the first k of x, y, z and the constants 0, 1, 2 was grouped by its values at width n; each group
+member paired with its head (least by size, then text) is a true law, kept if it has a `mul` and uses all k variables;
+54-60 per cell, stratified by total size (4-14 nodes), were proved by `circuit_law_k` with one circuit per side. Cost is
+the kernel's `work()` over checking the proof, on a fresh thread; a fifth of the laws were rerun and gave the same count.
+Thresholds set before the run: "smooth" needed size alone at R² ≥ 0.90 with laws of equal size within 1.5x; size
+alone under 0.80, or equal-size laws over 2x apart, would falsify it.
+
+| n | k | work range | size alone R² | seven features R² | worst LOO residual, all features | equal-size max/min |
+|---|---|---|---|---|---|---|
+| 2 | 1 | 3.7x | 0.66 | 0.84 | 1.59x | 2.19x |
+| 2 | 2 | 4.3x | 0.58 | 0.88 | 1.47x | 2.40x |
+| 2 | 3 | 4.1x | 0.28 | 0.79 | 1.76x | 3.35x |
+| 3 | 1 | 6.1x | 0.55 | 0.71 | 1.96x | 3.46x |
+| 3 | 2 | 7.1x | 0.29 | 0.77 | 1.95x | 6.09x |
+| 3 | 3 | 5.3x | 0.17 | 0.56 | 2.11x | 3.99x |
+
+The features are total size, `mul` count, `mul` nesting depth, `mul`s with a constant operand, `add` count, `and`/`xor`
+count and distinct subterms (R² in sample; residuals leave-one-out). By the set thresholds "smooth" is falsified: size
+predicts little within a cell, and the syntactic features leave up to about 2x, which a learned model might narrow.
+The survey's reading stands for this source anyway: the whole cost is milliseconds (the slowest law at n 3, k 3
+took 0.58 s to build and check, wall time on a loaded machine), every label is decided, and the cost grows mostly
+with the cell (2^(nk) inputs), so a model would rank work that costs nothing. Not covered: `sub`, shifts and `lt`
+around `mul`; widths above 3; refuting false laws.
