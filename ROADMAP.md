@@ -44,5 +44,6 @@ milestone serves goal 1 or 2.
   the kernel has proved the emitted wasm instruction list, run over 64-bit words, equal to the source term on every
   input, where today it proves a model of the compiler (`proof.rs`'s `denote`). Picked 2026-11-08 (goal 1).
   - Done when: a corpus term's install is gated on that proof at n = 64, and a mutated instruction list is rejected.
-  - First steps: a census of which corpus terms the fragment covers, then a spike on one `If (a < b)` term at
-    n = 8, 16 and 64. Design choices (where the code lives, how it meets `proof.rs`'s `Int`) wait on both.
+  - First steps (done 2026-11-08): the census and the emit spike, in `docs/tier-cycle/`
+    ("v0.7's first steps: the census and the emit spike"). The continuation form proves by refl at n = 64; design
+    choices (where the code lives, how it meets `proof.rs`'s `Int`, where the list comes from) are open.

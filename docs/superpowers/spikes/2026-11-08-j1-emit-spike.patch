@@ -1,0 +1,256 @@
+diff --git a/crates/church-bv/src/emit_spike.rs b/crates/church-bv/src/emit_spike.rs
+new file mode 100644
+index 0000000..d32a718
+--- /dev/null
++++ b/crates/church-bv/src/emit_spike.rs
+@@ -0,0 +1,237 @@
++//! THROWAWAY SPIKE (j1, 2026-11-08): can the kernel prove a straight-line wasm instruction list, run on `wasm.rs`'s
++//! machine over symbolic words, equals the source term? Prints `SPIKE n=.. name: ms` lines.
++use super::wasm::*;
++use super::*;
++
++fn t<'a>(f: impl Fn(&mut Cx, &[At]) -> Expr + 'a) -> Ty<'a> {
++    Box::new(f)
++}
++
++/// `\x y. lt_u (x ^ m) (y ^ m)` with `m` the sign bit: signed `<` as a `V -> V -> Bv_1` operator.
++pub fn lt_s(n: usize) -> Expr {
++    let xorv = bitwise(n, &|a, b| xor(a, b));
++    let m = lit(n, 1u128 << (n - 1));
++    lam(bv_ty(n), lam(bv_ty(n), app2(lt_u(n), app2(xorv, var(1), m), app2(xorv, var(0), m))))
++}
++
++/// `V -> V -> V` wrapping multiply from the existing bit-level `mul_bits` circuit.
++pub fn mul_op(n: usize) -> Expr {
++    bits_circuit(n, &move |x, y| mul_bits(n, x, y))
++}
++
++/// `\c x y. ` bitwise select on the one-bit word `c`: `Bv_1 -> V -> V -> V`.
++pub fn ite_w(n: usize) -> Expr {
++    let d = 6 + 2 * n; // c x y C k c0 x_i y_i
++    let v = |pos: usize| var((d - 1 - pos) as u32);
++    let outs = (0..n).map(|i| mux(v(5), v(6 + i), v(6 + n + i))).collect();
++    let mut body = apps(v(4), outs);
++    for _ in 0..n {
++        body = lam(bool0(), body);
++    }
++    // at depth 6 + n: y = var(n+3), C = var(n+2)
++    let mut inner = app2(var(n as u32 + 3), var(n as u32 + 2), body);
++    for _ in 0..n {
++        inner = lam(bool0(), inner);
++    }
++    let x_open = app2(var(4), var(2), inner);
++    let c_open = app2(var(4), var(1), lam(bool0(), x_open));
++    lam(bv_ty(1), lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(n), c_open)))))
++}
++
++/// The tele `S R k z a b s mu`: x[0..8].
++fn tele8<'a>(w: Wasm) -> Vec<Ty<'a>> {
++    let n = w.n;
++    vec![
++        t(|_c, _x| sort(2)),
++        t(|_c, _x| sort(0)),
++        t(move |c, x| {
++            let ty = w.sty(c, &[K::W], x[0]);
++            w.g(c, x[1], ty)
++        }),
++        t(|c, x| c.at(x[1])),
++        t(move |_c, _x| bv_ty(n)),
++        t(move |_c, _x| bv_ty(n)),
++        t(|c, x| c.at(x[0])),
++        t(move |c, x| w.mem(c, x[1])),
++    ]
++}
++
++/// Parameter memory `upd 0 a (upd 1 b mu)`.
++fn mu0(w: Wasm, c: &mut Cx, x: &[At]) -> Expr {
++    let inner = w.upd(c, x[1], lit(w.n, 1), c.at(x[5]), c.at(x[7]));
++    w.upd(c, x[1], lit(w.n, 0), c.at(x[4]), inner)
++}
++
++/// `Pi S R k z a b s mu. Id(R, M code 0 R k z s mu0, want)` by `refl`.
++pub fn sym_law(w: Wasm, code: &[Ins], want: &dyn Fn(&mut Cx, &[At], Expr) -> Expr) -> (Expr, Expr) {
++    let tys = tele8(w);
++    let lhs = |c: &mut Cx, x: &[At]| {
++        let p = w.prog(c, code, &[], x[0]);
++        let p = c.mark(p);
++        let fuel = c.mark(nat2_lit(0));
++        let m = mu0(w, c, x);
++        app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[6]), m)
++    };
++    law(
++        &tys,
++        |c, x| {
++            let l = lhs(c, x);
++            let m = mu0(w, c, x);
++            let r = want(c, x, m);
++            id(c.at(x[1]), l, r)
++        },
++        |c, x| refl(lhs(c, x)),
++    )
++}
++
++/// `k (val, s) mu`.
++fn kont(c: &Cx, x: &[At], val: Expr, mu: Expr) -> Expr {
++    app2(c.at(x[2]), mkpair(c.at(x[0]), val, c.at(x[6])), mu)
++}
++
++fn ld(n: usize, i: u128) -> [Ins; 2] {
++    [Ins::Push(lit(n, i)), Ins::Load]
++}
++
++#[derive(Clone, Copy)]
++pub struct Opt {
++    pub swap: bool,
++    pub else_sub: bool,
++    pub konst: u128,
++    pub unsigned: bool,
++    pub plus: bool, // a + a instead of a * 2
++}
++pub const OK: Opt = Opt { swap: false, else_sub: false, konst: 2, unsigned: false, plus: false };
++
++pub fn straight(n: usize, o: Opt) -> Vec<Ins> {
++    let mul = if o.plus { add(n) } else { mul_op(n) };
++    let cmp = if o.unsigned { lt_u(n) } else { lt_s(n) };
++    let mut then = ld(n, 0).to_vec();
++    if o.plus {
++        then.extend(ld(n, 0));
++    } else {
++        then.push(Ins::Push(lit(n, o.konst)));
++    }
++    then.push(Ins::Bin(mul));
++    let mut els = ld(n, 1).to_vec();
++    els.push(Ins::Push(lit(n, 1)));
++    els.push(Ins::Bin(if o.else_sub { sub(n) } else { add(n) }));
++    let mut code = ld(n, 0).to_vec();
++    code.extend(ld(n, 1));
++    code.push(Ins::Cmp(cmp));
++    code.push(if o.swap { Ins::If(els, then) } else { Ins::If(then, els) });
++    code
++}
++
++fn arm_a(n: usize, plus: bool, c: &Cx, x: &[At]) -> Expr {
++    let a = c.at(x[4]);
++    if plus { app2(add(n), a, a) } else { app2(mul_op(n), a, lit(n, 2)) }
++}
++
++/// B's statement: `choose(R, lt_s a b, k (a*2,s) mu', k (b+1,s) mu')` (`plus`: `a+a`).
++fn want_b(n: usize, plus: bool) -> impl Fn(&mut Cx, &[At], Expr) -> Expr {
++    move |c, x, m| {
++        let (a, b) = (c.at(x[4]), c.at(x[5]));
++        let l = arm_a(n, plus, c, x);
++        choose(c.at(x[1]), app2(lt_s(n), a, b), kont(c, x, l, m), kont(c, x, app2(add(n), b, lit(n, 1)), m))
++    }
++}
++
++/// C's statement: `k (ite_w (lt_s a b) (a*2) (b+1), s) mu'`.
++fn want_c(n: usize, plus: bool) -> impl Fn(&mut Cx, &[At], Expr) -> Expr {
++    move |c, x, m| {
++        let (a, b) = (c.at(x[4]), c.at(x[5]));
++        let l = arm_a(n, plus, c, x);
++        let v = apps(ite_w(n), vec![app2(lt_s(n), a, b), l, app2(add(n), b, lit(n, 1))]);
++        kont(c, x, v, m)
++    }
++}
++
++fn report(n: usize, name: &str, (p, s): (Expr, Expr)) -> bool {
++    let t0 = Instant::now();
++    let r = holds(&p, &s);
++    let ms = t0.elapsed().as_secs_f64() * 1e3;
++    match &r {
++        Ok(()) => println!("SPIKE n={n} {name}: {ms:.1} ms OK"),
++        Err(m) => println!("SPIKE n={n} {name}: {ms:.1} ms FAIL {}", m.lines().next().unwrap_or("").chars().take(300).collect::<String>()),
++    }
++    r.is_ok()
++}
++
++/// A control must be a type and rejected.
++fn rejected(n: usize, name: &str, (p, s): (Expr, Expr)) {
++    let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
++    assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type");
++    let t0 = Instant::now();
++    let r = holds(&p, &s);
++    let ms = t0.elapsed().as_secs_f64() * 1e3;
++    println!("SPIKE n={n} control {name}: {ms:.1} ms {}", if r.is_err() { "REJECTED" } else { "ACCEPTED (BAD)" });
++    assert!(r.is_err(), "{name} must be rejected at n={n}");
++}
++
++fn run(n: usize, plus_only: bool, controls: bool, scaling: bool) {
++    let w = Wasm { n };
++    tatic_kernel::scoped(|| {
++        let t0 = Instant::now();
++        let inc = vec![Ins::Push(lit(n, 0)), Ins::Load, Ins::Push(lit(n, 1)), Ins::Bin(add(n))];
++        let a = sym_law(w, &inc, &|c, x, m| kont(c, x, app2(add(n), c.at(x[4]), lit(n, 1)), m));
++        println!("SPIKE n={n} build A: {:.1} ms", t0.elapsed().as_secs_f64() * 1e3);
++        assert!(report(n, "A inc", a));
++        for plus in if plus_only { vec![true] } else { vec![true, false] } {
++            let tag = if plus { "[a+a]" } else { "[a*2]" };
++            let t0 = Instant::now();
++            let b = sym_law(w, &straight(n, Opt { plus, ..OK }), &want_b(n, plus));
++            println!("SPIKE n={n} build B{tag}: {:.1} ms", t0.elapsed().as_secs_f64() * 1e3);
++            assert!(report(n, &format!("B continuation form {tag}"), b));
++            let c = sym_law(w, &straight(n, Opt { plus, ..OK }), &want_c(n, plus));
++            report(n, &format!("C value form (refl) {tag}"), c);
++        }
++        if controls {
++            for plus in if plus_only { vec![true] } else { vec![true, false] } {
++                let tag = if plus { "[a+a]" } else { "[a*2]" };
++                let want = want_b(n, plus);
++                let ctl = |o: Opt| sym_law(w, &straight(n, Opt { plus, ..o }), &want);
++                rejected(n, &format!("arms swapped {tag}"), ctl(Opt { swap: true, ..OK }));
++                rejected(n, &format!("else add->sub {tag}"), ctl(Opt { else_sub: true, ..OK }));
++                if !plus {
++                    rejected(n, "const 2->3 [a*2]", ctl(Opt { konst: 3, ..OK }));
++                }
++                rejected(n, &format!("lt_s->lt_u {tag}"), ctl(Opt { unsigned: true, ..OK }));
++            }
++        }
++        if scaling {
++            for d in [1usize, 4, 16] {
++                let mut code = ld(n, 0).to_vec();
++                for _ in 0..d {
++                    code.push(Ins::Dup);
++                    code.push(Ins::Bin(add(n)));
++                }
++                let p = sym_law(w, &code, &|c, x, m| {
++                    let mut v = c.at(x[4]);
++                    for _ in 0..d {
++                        v = app2(add(n), v, v);
++                    }
++                    kont(c, x, v, m)
++                });
++                report(n, &format!("E doubling d={d}"), p);
++            }
++        }
++    })
++}
++
++#[test]
++pub fn spike_n8() {
++    run(8, false, true, false)
++}
++#[test]
++pub fn spike_n16() {
++    run(16, false, true, false)
++}
++#[test]
++pub fn spike_n64_plus() {
++    run(64, true, true, true)
++}
++#[test]
++pub fn spike_n64_mul() {
++    run(64, false, true, false)
++}
+diff --git a/crates/church-bv/src/lib.rs b/crates/church-bv/src/lib.rs
+index bececbc..7c30a93 100644
+--- a/crates/church-bv/src/lib.rs
++++ b/crates/church-bv/src/lib.rs
+@@ -25,6 +25,8 @@ mod machine;
+ mod wfold;
+ mod wnat;
+ mod miner;
++#[cfg(test)]
++mod emit_spike;
+ mod search;
+ mod streams;
+ mod task;
