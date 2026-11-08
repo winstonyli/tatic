@@ -719,21 +719,12 @@ const EXTRAS_N: usize = 319;
 /// size, the first laws the filter keeps against the laws `scope`'s loops serve and the held-out laws, n (`EXTRAS_N`)
 /// for each mine in fresh slices. Sets each loop's `extras` and `extra_at`, or says by how much the sequence is short.
 fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
-    use crate::classes::{held_laws, held_levels, HELD_BANDS};
+    use crate::classes::{held_laws, HELD_BANDS};
     let c = scope[0].clone();
     let shuffle = num(&|k| cfg_var(&c, k), "RULEMINER_SHUFFLE", 0);
     let salt = shuffle + 1000 * setup.or("GEN_DRAW", 0usize);
-    let deep_levels = held_levels(HELD_BANDS.into_iter().max().unwrap());
     let plan = crate::miner::ExtrasPlan::from_vars(setup, EXTRAS_N)?;
-    // built once per process, salt and growth count (its `STREAMS` lines give the time); where the served laws' salt is
-    // the extras', one build gives both sequences; a mine that takes no law (`EXTRAS_N=0`) needs none
-    let deep = if plan.per_mine() == 0 {
-        Default::default()
-    } else if salt == shuffle {
-        stream_sequences(salt, &[deep_levels, STREAM_LEVELS]).swap_remove(0)
-    } else {
-        stream_sequence(salt, deep_levels)
-    };
+    let deep = extras_sequence(&plan, salt, shuffle);
     let served: Vec<(Term, Term)> = scope.iter().flat_map(served_laws).collect();
     let held: Vec<(Term, Term)> = HELD_BANDS.into_iter().flat_map(held_laws).collect();
     let (n, pool, mines) = (plan.n, plan.pool, c.mines.len());
@@ -752,6 +743,28 @@ fn scope_extras(setup: &Setup, scope: &mut [LoopCfg]) -> Result<(), String> {
         cfg.plan = plan.clone();
     }
     Ok(())
+}
+
+/// The sequence `scope_extras` draws from: grown as deep as the deepest held-out band at `salt`, built once per process,
+/// salt and growth count (its `STREAMS` lines give the time); where the served laws' salt (`shuffle`) is the extras', one
+/// build gives both sequences. A mine that takes no law (`EXTRAS_N=0`) needs none.
+fn extras_sequence(plan: &crate::miner::ExtrasPlan, salt: usize, shuffle: usize) -> std::sync::Arc<Vec<(Term, Term)>> {
+    use crate::classes::{held_levels, HELD_BANDS};
+    let deep_levels = held_levels(HELD_BANDS.into_iter().max().unwrap());
+    if plan.per_mine() == 0 {
+        Default::default()
+    } else if salt == shuffle {
+        stream_sequences(salt, &[deep_levels, STREAM_LEVELS]).swap_remove(0)
+    } else {
+        stream_sequence(salt, deep_levels)
+    }
+}
+
+/// A mine that takes no law (`EXTRAS_N=0`) builds no sequence: the deep build takes about 30 s.
+#[test]
+fn no_extras_sequence_when_mines_take_none() {
+    let plan = crate::miner::ExtrasPlan::from_vars(&Setup::with_env(vec![("EXTRAS_N".into(), "0".into())]), EXTRAS_N).unwrap();
+    assert!(extras_sequence(&plan, 0, 0).is_empty());
 }
 
 /// One loop; its children share the lemma file `lemmas`, which the caller owns (creates nothing, deletes it when done).
