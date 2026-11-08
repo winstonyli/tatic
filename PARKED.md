@@ -390,11 +390,12 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   each exact: write the `CLASS_UNUSABLE` lines in one batch rather than one `println` each (1.04 s, about 100 µs a
   line); take the `CARRY_CAP` read (`Setup::var`: a string-keyed
   map and a lock) off the path of each of the 4.49 M steps that have a representative (not measured); carry verdicts
-  and lookups across processes (5.73 s, needs a stored format and its invalidation). Why held: found by a probe on
+  and lookups across processes (5.73 s, needs a stored format and its invalidation). Why parked: found by a probe on
   one thread, not yet weighed against the sweep (the two builds were 46% of the busy samples at a join budget of 100,
-  run `2026-10-28-mjv-prof`) or counted. Trigger: the user's call, or a count of the pin test showing normalize's
-  misses still above about 10% of a build after `cd7dacb`. Evidence: `docs/tier-cycle/`, "Why normalize is slow on
-  a cold stream" (runs `2026-10-28-normalize-cold*`, 2026-10-28). Status: held for the user's call (2026-10-28).
+  run `2026-10-28-mjv-prof`) or counted, and no milestone is bound by sweep throughput. Trigger: a count of the pin
+  test showing normalize's misses still above about 10% of a build after `cd7dacb`, or a milestone bound by sweep
+  throughput. Evidence: `docs/tier-cycle/`, "Why normalize is slow on a cold stream" (runs
+  `2026-10-28-normalize-cold*`, 2026-10-28). Status: parked (the user's call, 2026-11-07).
 - **Options held behind the filter, `show` and purge survey** — what: P1, mimalloc's purge off in the harness
   (`mi_option_set(15, -1)`, spiked and reverted: `docs/runs/2026-10-29/patches/purge_spike_on_ab9eeba.patch`);
   P2, `arena_reserve` at 256 MiB; P3, a mimalloc patch that keeps the purge expiry current. Decided against

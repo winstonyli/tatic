@@ -27,6 +27,9 @@ Every milestone serves at least one of these; work that serves none needs a stat
    one input among others. Open: whether a high-belief claim may enter the kernel as a tracked postulate (a `Const`,
    proved later). Its first calibration: `docs/tier-cycle/`, "How much random testing is worth", where a test's worth
    depends on the kind of claim.
+   **Held (2026-11-07):** no claim source in reach has a label costly or uncertain enough for a model to save work
+   (`docs/tier-cycle/`, "No claim source with room for a model"). Trigger: a claim source whose labels cost far more
+   than a model's prediction, or are not decided by cheap checks.
 
 Goals 1 and 2 meet in compiled hot transformations with learned compilations. That is not a milestone yet: the mined
 rules find no work in the JIT's programs (`PARKED.md`, "Compile hot transformations", with its trigger; results in
@@ -34,4 +37,5 @@ rules find no work in the JIT's programs (`PARKED.md`, "Compile hot transformati
 
 ## Milestones
 
-No milestone is open. v0.6 (`git tag -n99 v0.6.0`; findings in `docs/tier-cycle/`, "A learned scorer over the extras", "Q2 primary run" and "Selecting the extras by straggler verdict") closed with selection by `small` as the answer; what it left is in `PARKED.md`.
+No milestone is open. v0.6 (`git tag -n99 v0.6.0`; findings in `docs/tier-cycle/`, "A learned scorer over the extras", "Q2 primary run" and "Selecting the extras by straggler verdict") closed with selection by `small` as the answer; what it left is in `PARKED.md`. Goal 3 is held (above), so the next
+milestone serves goal 1 or 2.

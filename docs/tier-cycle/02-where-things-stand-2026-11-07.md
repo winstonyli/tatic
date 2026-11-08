@@ -19,8 +19,8 @@
   (`EXTRAS_SELECT=small`), which helps at n 80-160 only, below the default 319, so the default draw is unchanged.
 - **The belief layer is not built.** Its calibration milestone stopped at its first gate: no screen-passing claim was
   refuted, so there was nothing to rank ("The belief layer's calibration milestone stops at its first gate"). Its
-  reframing as cost prediction was not run (`PARKED.md`, "Belief layer stage 2"). No GPU model exists (goal 3,
-  `ROADMAP.md`). In this domain the kernel's cheap checks decide almost every claim in milliseconds, which leaves a model
+  reframing as cost prediction was not run (`PARKED.md`, "Belief layer stage 2"). No GPU model exists (goal 3, held
+  since 2026-11-07, `ROADMAP.md`). In this domain the kernel's cheap checks decide almost every claim in milliseconds, which leaves a model
   little to save; a survey of five claim sources found none with room ("No claim source with room for a model").
 - **Laws uniform in the width** (goal D): `wfold.rs` proves stream laws (no `shr1` or `mul`, `lt` only at the root) at
   every width with no per-law code, built as kernel terms since the w1 port ("One generator proves stream laws at all
