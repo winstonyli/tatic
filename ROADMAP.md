@@ -45,5 +45,17 @@ milestone serves goal 1 or 2.
   input, where today it proves a model of the compiler (`proof.rs`'s `denote`). Picked 2026-11-08 (goal 1).
   - Done when: a corpus term's install is gated on that proof at n = 64, and a mutated instruction list is rejected.
   - First steps (done 2026-11-08): the census and the emit spike, in `docs/tier-cycle/`
-    ("v0.7's first steps: the census and the emit spike"). The continuation form proves by refl at n = 64; design
-    choices (where the code lives, how it meets `proof.rs`'s `Int`, where the list comes from) are open.
+    ("v0.7's first steps: the census and the emit spike"). The continuation form proves by refl at n = 64. Target
+    term: `straight_line`, the only straight-line corpus term with a branch or multiply and a parameter.
+  - Decided 2026-11-08 (the user, as recommended):
+    - Home: the encodings and `wasm.rs` move to a new crate that tatic and church-bv both depend on, so the JIT gets
+      the machine without the miner (not tatic on church-bv, nor a gate crate over both).
+    - List source: the lowering emits church-bv's `Ins`, and WAT is printed from it one-to-one; the printer is trusted
+      and must reproduce the golden WAT (not a second walk beside `lower_wat`).
+    - `Int`: the gate replaces `prove_pure_expr` for the straight-line fragment (its 5 terms: inc, doubling,
+      `straight_line`, `\v0. v0+5`, `\v0. 3+4+v0`); `Int` stays for the closure and recursive provers. No bridge
+      axioms, no second proof.
+    - Parameters: a new `LocalGet` instruction, defined as a load from a frame in memory (not `Push i; Load`, which
+      would make the printer special-case a pair).
+    - Operators: a trusted table (`lt_s`, `le_s`, `mul`, `eq` as a one-bit word), each checked against eval and
+      wasmtime exhaustively at n = 8 and on samples at n = 64; kernel lemmas wait for a spec of signed integers.

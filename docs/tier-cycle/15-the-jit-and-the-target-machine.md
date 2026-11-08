@@ -746,5 +746,5 @@ conversion. A gate states its claim in continuation form.
 **What it proves: wiring, not operators.** Both sides use the same `lt_s` and `mul` terms, so the proof says the
 instruction list computes the source's expression tree over these operator terms. That `lt_s` is signed less-than and
 `mul` is 64-bit multiplication, and that both agree with eval's i64 semantics and wasm's i64 ops, needs separate
-operator lemmas (or a trusted operator table). The design choices this leaves (where the code lives, how it meets
-`proof.rs`'s `Int`, where the list comes from) are in ROADMAP v0.7.
+operator lemmas (or a trusted operator table). The design choices this left (where the code lives, how it meets
+`proof.rs`'s `Int`, where the list comes from, operators) are decided in ROADMAP v0.7.
