@@ -26,6 +26,7 @@ mod wfold;
 mod wnat;
 mod miner;
 mod search;
+mod streams;
 mod task;
 mod uniform;
 mod work;
@@ -38,6 +39,8 @@ use host::*;
 use machine::*;
 #[allow(unused_imports)]
 use search::*;
+#[allow(unused_imports)]
+use streams::*;
 
 type BitPair = (Vec<Expr>, Vec<Expr>);
 type BitTriple = (Vec<Expr>, Vec<Expr>, Vec<Expr>);

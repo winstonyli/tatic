@@ -583,7 +583,7 @@ const REGENERATE_HELD: &str = "<exe> classes::regenerate_held --exact --ignored 
 /// The growths of the table's representatives (size `SIZE`, two nodes per growth) a band's laws come from: the fewest
 /// that reach it, and at least the loops' `STREAM_LEVELS` (phase 3 plan, R1).
 pub fn held_levels(band: usize) -> usize {
-    crate::search::STREAM_LEVELS.max(band.saturating_sub(SIZE).div_ceil(2))
+    crate::streams::STREAM_LEVELS.max(band.saturating_sub(SIZE).div_ceil(2))
 }
 
 /// FNV-1a 64 of a text's trimmed lines joined by `\n`: the same for any line endings.
@@ -635,10 +635,10 @@ pub fn held_laws(band: usize) -> Vec<(Term, Term)> {
 #[test]
 #[ignore]
 fn regenerate_held() {
-    let s1 = crate::search::stream_sequence(1, crate::search::STREAM_LEVELS);
-    let served: hashbrown::HashSet<(Term, Term)> = (1..=3).flat_map(|p| crate::search::residue(&s1, p, 0, 300)).collect();
+    let s1 = crate::streams::stream_sequence(1, crate::streams::STREAM_LEVELS);
+    let served: hashbrown::HashSet<(Term, Term)> = (1..=3).flat_map(|p| crate::streams::residue(&s1, p, 0, 300)).collect();
     for band in HELD_BANDS {
-        let seq = crate::search::stream_sequence(HELD_SALT, held_levels(band));
+        let seq = crate::streams::stream_sequence(HELD_SALT, held_levels(band));
         let all: Vec<(Term, Term)> = seq.iter().filter(|(a, b)| a.size().max(b.size()) == band).cloned().collect();
         let overlap = all.iter().filter(|l| served.contains(*l)).count();
         let laws: Vec<(Term, Term)> = all.iter().filter(|l| !served.contains(*l)).take(HELD_PER_BAND).cloned().collect();

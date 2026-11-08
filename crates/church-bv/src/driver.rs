@@ -5,8 +5,8 @@
 //! To share the machine, launch at low priority and pinned (children inherit both): cmd //c start "" //b //belownormal //affinity 3 ...
 //!
 //! The laws come from the streams (spec docs/superpowers/specs/2026-10-22-class-table-normal-form-design.md §9):
-//! `search::stream_sequence(salt, STREAM_LEVELS)`, the operator-set streams round-robin, and a phase is its residue
-//! class mod `STREAM_STRIDE` (`search::residue`). A sweep's loops serve phases 1-3; a single loop serves SPHASE (default
+//! `streams::stream_sequence(salt, STREAM_LEVELS)`, the operator-set streams round-robin, and a phase is its residue
+//! class mod `STREAM_STRIDE` (`streams::residue`). A sweep's loops serve phases 1-3; a single loop serves SPHASE (default
 //! 0). Phase 0 fed the mines' extras until 2026-10-28; they now come from a deeper sequence (`scope_extras`), and the
 //! stride stays, so the loops' laws do.
 //!

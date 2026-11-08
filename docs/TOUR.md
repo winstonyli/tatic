@@ -45,7 +45,8 @@ The bit-vector library and target machine (`crates/church-bv/src/`; `lib.rs` hol
 
 The rewriter and provers (`crates/church-bv/src/`):
 - `rewrite/` (the parent re-exports the pieces): `term` (interned terms), `values` (value memos and screens), `plan` (plans and the proof compiler), `rules` (rule table and admission), `rewriter` (the rewriter and its memo), `join` (bounded join, machine fallback, `prove_eq`), `laws` (`rewrite_plan`, `rewrite_law`); its tests are `rewrite/tests.rs`. `job.rs`: per-task and per-thread state.
-- `search.rs`: the law supply (`crates/church-bv/src/search.rs#stream_sequence`), rule admission (`crates/church-bv/src/search.rs#rule_admissible`) and cost (`crates/church-bv/src/search.rs#law_cost`), and the bodies of the two worker tasks: serving (`crates/church-bv/src/search.rs#rule_set_kernel_check_task`) and mining (`crates/church-bv/src/search.rs#rule_miner`).
+- `streams.rs`: the law supply, operator-set streams merged per salt (`crates/church-bv/src/streams.rs#stream_sequence`) and their phase windows (`crates/church-bv/src/streams.rs#residue`).
+- `search.rs`: rule admission (`crates/church-bv/src/search.rs#rule_admissible`) and cost (`crates/church-bv/src/search.rs#law_cost`), and the bodies of the two worker tasks: serving (`crates/church-bv/src/search.rs#rule_set_kernel_check_task`) and mining (`crates/church-bv/src/search.rs#rule_miner`).
 
 External corpora (`crates/church-bv/src/`):
 - `corpus.rs`: fixed lists of named expressions in the loop's term language, one `docs/corpora/<source>/cases.txt` per source with a `SOURCE.md` (origin, licence, in-scope count). `crates/church-bv/src/corpus.rs#read_cases` loads one; `crates/church-bv/src/corpus.rs#measure` reports what the class table and the rewriter do to each case (operators before, after the table, after the rewrite).
@@ -90,7 +91,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 
 ### (b) The self-improvement loop, from stream to A/B gate
 
-1. A deterministic list of candidate bit-vector laws is built per salt by interleaving operator-set streams: `crates/church-bv/src/search.rs#stream_sequence`. A loop reads one phase of it (a residue class): `crates/church-bv/src/search.rs#residue`.
+1. A deterministic list of candidate bit-vector laws is built per salt by interleaving operator-set streams: `crates/church-bv/src/streams.rs#stream_sequence`. A loop reads one phase of it (a residue class): `crates/church-bv/src/streams.rs#residue`.
 2. The driver cuts a window of laws and writes it as a lawfile for a worker task: `crates/church-bv/src/driver.rs#write_laws`.
 3. A sweep builds three loops (phases 1 to 3) and runs each: `crates/church-bv/src/driver.rs#run_sweep`.
 4. `run_loop` serves a batch of laws under the rules in force, records the batch's M, then runs the mines scheduled after it: `crates/church-bv/src/driver.rs#run_loop`.
@@ -173,7 +174,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Mine**: one run of the rule miner on a lawfile. `crates/church-bv/src/miner.rs#mine`
 - **Per-instance proof**: a proof that follows one concrete execution; allowed only at arity 0. `crates/tatic/src/proof/per_instance.rs#prove_closure_expr_instance`
 - **Peel**: splits a term into parameter count, body and whether it is recursive. `crates/tatic/src/jit/shape.rs#peel`
-- **Phase**: a residue class of the stream sequence. `crates/church-bv/src/search.rs#residue`
+- **Phase**: a residue class of the stream sequence. `crates/church-bv/src/streams.rs#residue`
 - **Plan / LawKind**: the rewriter's proof sketch and the name of the prover of each leaf. `crates/church-bv/src/rewrite/plan.rs#Plan`, `crates/church-bv/src/rewrite/plan.rs#LawKind`
 - **Pool**: `POOL=p` hands each mine p x n extras and `EXTRAS_SELECT` keeps n. `crates/church-bv/src/miner/config.rs#ExtrasPlan`
 - **Postulates**: the untrusted builder that grows `Globals`; each pushed type is checked to be a type, its inhabitation is assumed. `crates/tatic-kernel/src/postulates.rs#Postulates`
@@ -188,7 +189,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **StepProof**: one bit position's step proof over two machines and an encoding, shared by `tree_proof` and the width-free fold. `crates/church-bv/src/machine.rs#StepProof`
 - **Stragglers**: laws still needing a machine proof, or not closing, after the base rules. `crates/church-bv/src/miner/laws.rs#laws_of`
 - **Straggler-first selection**: with `EXTRAS_SELECT=small` the miner classifies a pool of extras under the mine's base rules and keeps the n stragglers with the fewest rewrite steps, ties (and every straggler of a mine with no mined rules, where steps are all 0) by the smaller normal form; `first` keeps the pool's first n unclassified; `ctx` keeps the same stragglers but orders them by a fitted context model's score instead of by cost (the weights file named by `CTX_WEIGHTS`, columns without the marginal-coverage group). `crates/church-bv/src/miner/laws.rs#kept_indices`
-- **Stream / salt**: operator-set law streams, interleaved round-robin; the salt reshuffles. `crates/church-bv/src/search.rs#stream_sequence`
+- **Stream / salt**: operator-set law streams, interleaved round-robin; the salt reshuffles. `crates/church-bv/src/streams.rs#stream_sequence`
 - **Sweep**: three cold loops for one salt and build. `crates/church-bv/src/driver.rs#run_sweep`
 - **TermStore**: the hash-consing store of terms. `crates/tatic/src/lang/term.rs#TermStore`
 - **Transfer**: whether rules mined on one set of laws help laws they never saw (the held-out bands). `docs/tier-cycle/#Held-out M and transfer for v0.5`

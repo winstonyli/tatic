@@ -7,7 +7,7 @@ still need a whole-term machine proof. The measured results are in
 `docs/tier-cycle/README.md`, with raw rows and the scripts that produced them under
 `docs/runs/`.
 
-- The laws come from the streams: `search::stream_sequence(salt)`, the operator-set
+- The laws come from the streams: `streams::stream_sequence(salt)`, the operator-set
   streams round-robin, built once per process and salt; a phase is a residue class
   mod `STREAM_STRIDE`. Held-out laws are in `crates/church-bv/data/held_*.txt`. The
   design is in the spec
