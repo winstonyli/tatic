@@ -39,7 +39,7 @@ fn a_closure_of_the_wrong_arity_off_the_samples_is_not_installed() {
     let c = crate::jit::compile::compile_specialised(&s, h).unwrap();
     assert!(c.specialised.is_none());
     let mut raw = JitEngine::new();
-    let (_module, f, hp) = raw.instantiate(&c.frag.wat).unwrap();
+    let (_module, f, hp) = raw.instantiate(&c.frag.wat()).unwrap();
     assert_eq!(raw.invoke(f, hp, &[777]), Err(EvalError::Trap));
     let mut jit = JitEngine::new();
     for n in [0, 1, 776, 777, 778] {
@@ -493,7 +493,7 @@ fn a_tail_recursive_loop_compiles_and_is_kernel_verified_once_its_own_closure_pa
     let top = inconsistent_arity_loop_carried_parameter_loop(&mut s, 10);
 
     let frag = crate::jit::compile::try_compile(&s, it).expect("should compile via curried dispatch, per compile.rs alone");
-    assert!(frag.wat.contains("call_indirect (type $ty1)"), "the hot, consistent g(x) call should also go through the curried fallback:\n{}", frag.wat);
+    assert!(frag.wat().contains("call_indirect (type $ty1)"), "the hot, consistent g(x) call should also go through the curried fallback:\n{}", frag.wat());
 
     let mut jit = JitEngine::new();
     assert_eq!(jit.apply(&s, top, &[]).unwrap(), 10); // 0 incremented 10 times, same as the baseline shape

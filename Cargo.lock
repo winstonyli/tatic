@@ -1464,6 +1464,7 @@ dependencies = [
  "mimalloc",
  "tatic-kernel",
  "tatic-rng",
+ "tatic-wasm",
  "wasmtime",
  "wat",
 ]

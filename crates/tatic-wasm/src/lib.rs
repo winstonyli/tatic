@@ -7,6 +7,7 @@ use tatic_kernel::*;
 
 pub mod encoding;
 pub mod ops;
+pub mod print;
 pub mod wasm;
 
 use encoding::*;

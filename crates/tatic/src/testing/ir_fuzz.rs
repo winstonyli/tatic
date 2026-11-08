@@ -26,7 +26,7 @@ fn engine() -> &'static wasmtime::Engine {
 /// Runs `m` compiled: `Ok(value)` or `Err(())` for a trap.
 fn run_wasm(m: &Module, args: &[i64]) -> Result<i64, ()> {
     let frag = lower(m);
-    let bytes = wat::parse_str(&frag.wat).expect("lowered WAT parses");
+    let bytes = wat::parse_str(&frag.wat()).expect("lowered WAT parses");
     let module = wasmtime::Module::new(engine(), &bytes).expect("lowered WAT validates");
     let mut store = wasmtime::Store::new(engine(), ());
     let instance = wasmtime::Instance::new(&mut store, &module, &[]).expect("instantiates");

@@ -180,6 +180,14 @@ pub(super) fn emit_curried_stages(idx: usize, arity: usize, env_len: usize, base
     table_indices
 }
 
+fn push_line(w: &mut String, indent: usize, s: &str) {
+    for _ in 0..indent {
+        w.push(' ');
+    }
+    w.push_str(s);
+    w.push('\n');
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1001,7 +1001,7 @@ fn gen_redex_rich(rng: &mut Rng, s: &mut TermStore, scope: u32, fuel: u32) -> Ha
 /// between, the way `jit.rs` calls it: a fresh bump allocator per call
 /// (`hp` reset to 0) and a trap mapped to `Err`.
 fn load_fragment(engine: &wasmtime::Engine, frag: &compile::CompiledFragment) -> wasmtime::Module {
-    let bytes = wat::parse_str(&frag.wat).expect("compile.rs emits valid wat");
+    let bytes = wat::parse_str(&frag.wat()).expect("compile.rs emits valid wat");
     wasmtime::Module::new(engine, &bytes).expect("compile.rs emits a valid module")
 }
 

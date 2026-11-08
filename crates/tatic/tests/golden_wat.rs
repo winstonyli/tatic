@@ -62,7 +62,7 @@ fn every_benchmark_term_lowers_to_its_golden_wat() {
     let mut changed = Vec::new();
     for (name, s, h) in samples::corpus().into_iter().chain(rejects()) {
         let got = match try_compile(&s, h) {
-            Some(frag) => frag.wat,
+            Some(frag) => frag.wat(),
             None => "REJECTED\n".to_string(),
         };
         // So that `UPDATE_GOLDEN=1` cannot quietly record one as accepted.
@@ -84,7 +84,7 @@ fn specialised_benchmark_terms_lower_to_their_golden_wat() {
         let h = build(&mut s);
         let c = tatic::jit::compile::compile_specialised(&s, h).unwrap_or_else(|| panic!("{name} should compile"));
         assert!(c.specialised.is_some(), "{name} should be specialised");
-        check_golden(&dir, &format!("{name}_specialised"), &c.frag.wat, update, &mut changed);
+        check_golden(&dir, &format!("{name}_specialised"), &c.frag.wat(), update, &mut changed);
     }
     assert!(changed.is_empty(), "emitted WAT changed for {changed:?}; if intended, rerun with UPDATE_GOLDEN=1 and review the diff");
 }
@@ -106,7 +106,7 @@ fn fragment_modules_lower_to_their_golden_wat() {
     }
     let h = s.abs(t);
     let frag = try_compile(&s, h).expect("doubling_4 should compile");
-    check_golden(&dir, "doubling_4", &frag.wat, update, &mut changed);
+    check_golden(&dir, "doubling_4", &frag.wat(), update, &mut changed);
     let terms: [(&str, fn(&mut TermStore) -> Hash); 2] =
         [("a_capturing_closure_call", samples::a_capturing_closure_call), ("a_pap_capturing", samples::a_pap_capturing)];
     for (name, build) in terms {
@@ -114,7 +114,7 @@ fn fragment_modules_lower_to_their_golden_wat() {
         let h = build(&mut s);
         let c = tatic::jit::compile::compile_specialised(&s, h).unwrap_or_else(|| panic!("{name} should compile"));
         assert!(c.specialised.is_some(), "{name} should be specialised");
-        check_golden(&dir, &format!("{name}_specialised"), &c.frag.wat, update, &mut changed);
+        check_golden(&dir, &format!("{name}_specialised"), &c.frag.wat(), update, &mut changed);
     }
     assert!(changed.is_empty(), "emitted WAT changed for {changed:?}; if intended, rerun with UPDATE_GOLDEN=1 and review the diff");
 }

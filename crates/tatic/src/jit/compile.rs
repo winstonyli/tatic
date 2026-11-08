@@ -33,10 +33,23 @@ use hashbrown::HashMap;
 use crate::jit::ir;
 use crate::jit::shape::{ArityUse, Shape, classify, free_vars, infer_closure_arities, is_comparison, local_index, peel};
 use crate::lang::term::{Hash, Term, TermStore};
+use tatic_wasm::print::print_body;
+use tatic_wasm::wasm::Ins;
+
+/// One piece of a compiled module, in print order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Item {
+    /// Module scaffolding printed verbatim: templates, `(type ..)`,
+    /// `(table ..)`/`(elem ..)` lines, the export.
+    Text(String),
+    /// A lowered function: its signature and local declarations, then its
+    /// body (a wrapping `Loop`), then the closing paren.
+    Func { name: String, header: String, body: Vec<Ins> },
+}
 
 pub struct CompiledFragment {
     pub arity: usize,
-    pub wat: String,
+    pub module: Vec<Item>,
     /// Whether the module exports a mutable `"hp"` global (the bump
     /// allocator's next-free-byte pointer) that `jit.rs` must reset to 0
     /// before *every* top-level call. `jit.rs` caches and reuses one
@@ -50,6 +63,36 @@ pub struct CompiledFragment {
     /// call, has no such hazard. `false` for a fragment that never
     /// allocates (no allocator, nothing to reset).
     pub needs_hp_reset: bool,
+}
+
+impl CompiledFragment {
+    /// The module's WAT text.
+    pub fn wat(&self) -> String {
+        let mut w = String::new();
+        for item in &self.module {
+            match item {
+                Item::Text(s) => w.push_str(s),
+                Item::Func { header, body, .. } => {
+                    w.push_str(header);
+                    print_body(body, 4, &mut w);
+                    w.push_str("  )\n");
+                }
+            }
+        }
+        w
+    }
+
+    /// The entry function `$f`'s body, the wrapping `Loop` included: what
+    /// the gate proves, so the list proved is the list printed.
+    pub fn entry(&self) -> &[Ins] {
+        self.module
+            .iter()
+            .find_map(|item| match item {
+                Item::Func { name, body, .. } if name == "f" => Some(body.as_slice()),
+                _ => None,
+            })
+            .expect("every module has an entry function $f")
+    }
 }
 
 /// One entry of `Combinators::pending`/`Combinators::kind` -- either an
@@ -244,8 +287,8 @@ fn build_node(ctx: &BuildCtx, reg: &mut Combinators, h: Hash, tail: bool) -> Opt
     use ir::Node;
     Some(match classify(ctx.store, h, ctx.arity, ctx.self_idx) {
         Shape::If(c, t, e) => {
-            // The condition must be a direct comparison, as `cmp_instr`
-            // requires.
+            // The condition must be a direct comparison, a source op that
+            // `shape::op_of` maps to a bit-result row.
             let Term::Prim(cmp, a, b) = ctx.store.resolve(c) else { return None };
             let (cmp, a, b) = (*cmp, *a, *b);
             if !is_comparison(cmp) {

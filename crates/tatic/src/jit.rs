@@ -227,7 +227,7 @@ impl JitEngine {
             return Err(Some(CacheEntry::IllTyped));
         }
 
-        let Some((module, func, hp_global)) = self.instantiate(&frag.wat) else {
+        let Some((module, func, hp_global)) = self.instantiate(&frag.wat()) else {
             return Err(Some(CacheEntry::NotCompilable));
         };
         debug_assert_eq!(hp_global.is_some(), frag.needs_hp_reset, "compile.rs's export and needs_hp_reset flag should always agree");

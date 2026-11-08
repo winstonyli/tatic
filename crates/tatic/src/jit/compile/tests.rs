@@ -25,7 +25,7 @@ fn factorial_compiles_and_matches_interpreter() {
     let frag = try_compile(&s, fact).expect("should be compilable");
     assert_eq!(frag.arity, 1);
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
 
     for n in 0..15 {
@@ -42,7 +42,7 @@ fn gcd_two_arg_tail_recursion_compiles() {
     let frag = try_compile(&s, g).expect("should be compilable");
     assert_eq!(frag.arity, 2);
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance
         .get_typed_func::<(i64, i64), i64>(&mut store, "f")
         .unwrap();
@@ -68,7 +68,7 @@ fn twice_alone_compiles_with_a_closure_parameter() {
     // Can't call it standalone from Rust (there's no way to pass "a
     // closure index" without a concrete table entry) -- covered
     // end-to-end by `applying_twice_to_a_literal_inc_compiles` below.
-    assert!(frag.wat.contains("call_indirect"));
+    assert!(frag.wat().contains("call_indirect"));
 }
 
 #[test]
@@ -84,7 +84,7 @@ fn applying_twice_to_a_literal_inc_compiles_and_matches_interpreter() {
     let frag = try_compile(&s, applied).expect("should be compilable");
     assert_eq!(frag.arity, 0);
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
     let compiled = func.call(&mut store, ()).unwrap();
     let interpreted = apply_term(&s, applied, &[]).unwrap();
@@ -107,9 +107,9 @@ fn a_capturing_closure_compiles_and_matches_interpreter() {
 
     let frag = try_compile(&s, f).expect("a capturing closure should compile");
     assert_eq!(frag.arity, 1);
-    assert!(frag.wat.contains("call $alloc"), "creating the capturing closure should need the allocator");
+    assert!(frag.wat().contains("call $alloc"), "creating the capturing closure should need the allocator");
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
 
     for x in [-7, -1, 0, 1, 3, 100] {
@@ -134,7 +134,7 @@ fn self_recursion_creating_a_fresh_capturing_closure_every_iteration_compiles() 
     let frag = try_compile(&s, term).expect("should compile");
     assert_eq!(frag.arity, 2);
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
 
     for (n, acc) in [(0, 0), (1, 0), (5, 0), (10, 100)] {
@@ -166,12 +166,12 @@ fn resetting_hp_between_calls_keeps_memory_bounded_across_many_calls() {
     let frag = try_compile(&s, term).expect("should compile");
     assert!(frag.needs_hp_reset, "this term creates escaping capturing closures, so it should need a reset");
     for (n, acc) in [(0, 0), (5, 3)] {
-        let (mut store, instance) = instantiate(&frag.wat);
+        let (mut store, instance) = instantiate(&frag.wat());
         let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
         assert_eq!(func.call(&mut store, (n, acc)).unwrap(), apply_term(&s, term, &[n, acc]).unwrap());
     }
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
     let memory = instance.get_memory(&mut store, "memory").unwrap();
     let hp = instance.get_global(&mut store, "hp").unwrap();
@@ -223,7 +223,7 @@ fn a_self_recursive_combinator_can_also_capture_from_an_enclosing_scope() {
     let frag = try_compile(&s, g).expect("a self-recursive capturing combinator should compile");
     assert_eq!(frag.arity, 1);
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
 
     for z in [-10, 0, 1, 7, 100] {
@@ -246,9 +246,9 @@ fn calling_a_closure_reached_through_a_captured_free_variable_compiles() {
 
     let frag = try_compile(&s, top).expect("calling a closure through a capture should compile");
     assert_eq!(frag.arity, 0);
-    assert!(frag.wat.contains("call_indirect"), "cb y should still compile to call_indirect");
+    assert!(frag.wat().contains("call_indirect"), "cb y should still compile to call_indirect");
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
     let compiled = func.call(&mut store, ()).unwrap();
     let interpreted = apply_term(&s, top, &[]).unwrap();
@@ -275,7 +275,7 @@ fn inconsistent_call_arity_for_a_parameter_now_compiles_via_curried_dispatch() {
     let g = inconsistent_arity_parameter(&mut s);
 
     let frag = try_compile(&s, g).expect("an inconsistently-called parameter should now compile");
-    assert!(frag.wat.contains("call_indirect (type $ty1)"), "should dispatch through the curried fallback:\n{}", frag.wat);
+    assert!(frag.wat().contains("call_indirect (type $ty1)"), "should dispatch through the curried fallback:\n{}", frag.wat());
 }
 
 #[test]
@@ -300,18 +300,18 @@ fn a_combinator_never_reached_as_a_bare_value_gets_no_stage_chain_even_when_the_
     let top = source(&mut s, r"(\f. (if 0 < 1 then f 1 2 else f 1) + (\x y. x * y) 3 4) (\a b. a + b)");
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
-    assert!(frag.wat.contains("call_indirect (type $ty1)"), "f should still dispatch through the curried fallback:\n{}", frag.wat);
+    assert!(frag.wat().contains("call_indirect (type $ty1)"), "f should still dispatch through the curried fallback:\n{}", frag.wat());
     // f_lit's own stage chain must exist (it's genuinely used as a
     // bare value) -- sanity check that the pruning isn't just
     // dropping every stage chain wholesale.
-    assert!(frag.wat.contains("(func $s"), "f_lit should still get a stage chain:\n{}", frag.wat);
+    assert!(frag.wat().contains("(func $s"), "f_lit should still get a stage chain:\n{}", frag.wat());
     // helper is only ever called directly and saturated -- its own
     // combinator index must not have a matching `$s{idx}_` stage
     // chain anywhere in the output. Find helper's own `$c{idx}` block
     // (the one whose body contains `i64.mul`, unlike f_lit's `i64.add`)
     // to learn its index directly, rather than inferring it indirectly.
     let mut helper_idx = None;
-    for block in frag.wat.split("  (func $c").skip(1) {
+    for block in frag.wat().split("  (func $c").skip(1) {
         let idx_str: String = block.chars().take_while(|c| c.is_ascii_digit()).collect();
         let end = block.find("\n  )").unwrap_or(block.len());
         if block[..end].contains("i64.mul") {
@@ -321,12 +321,12 @@ fn a_combinator_never_reached_as_a_bare_value_gets_no_stage_chain_even_when_the_
     }
     let helper_idx = helper_idx.expect("helper's own $c{idx} function should exist in the output");
     assert!(
-        !frag.wat.contains(&format!("$s{helper_idx}_")),
+        !frag.wat().contains(&format!("$s{helper_idx}_")),
         "helper is never used as a bare value and should get no stage chain:\n{}",
-        frag.wat
+        frag.wat()
     );
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
     let compiled = func.call(&mut store, ()).unwrap();
     assert_eq!(compiled, apply_term(&s, top, &[]).unwrap());
@@ -355,8 +355,8 @@ fn an_inconsistently_called_parameter_matching_its_own_saturating_arity_agrees_w
     let top = inconsistent_arity_saturating_instance(&mut s);
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
-    assert!(frag.wat.contains("call_indirect (type $ty1)"), "should dispatch through the curried fallback:\n{}", frag.wat);
-    let (mut store, instance) = instantiate(&frag.wat);
+    assert!(frag.wat().contains("call_indirect (type $ty1)"), "should dispatch through the curried fallback:\n{}", frag.wat());
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
     let compiled = func.call(&mut store, ()).unwrap();
     assert_eq!(compiled, 3);
@@ -373,7 +373,7 @@ fn an_inconsistently_called_parameter_matching_its_own_under_applying_arity_agre
     let top = inconsistent_arity_under_applying_instance(&mut s);
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
     let compiled = func.call(&mut store, ()).unwrap();
     assert_eq!(compiled, 101);
@@ -392,8 +392,8 @@ fn a_capturing_closure_reached_through_an_inconsistently_called_parameter_agrees
     let top = inconsistent_arity_capturing_instance(&mut s);
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
-    assert!(frag.wat.contains("call $alloc"), "creating the capturing closure should need the allocator");
-    let (mut store, instance) = instantiate(&frag.wat);
+    assert!(frag.wat().contains("call $alloc"), "creating the capturing closure should need the allocator");
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
     for k_val in [100i64, -7] {
         let compiled = func.call(&mut store, k_val).unwrap();
@@ -416,7 +416,7 @@ fn a_parameters_own_value_arriving_via_an_if_between_two_literals_still_agrees_o
     let top = inconsistent_arity_runtime_chosen_instance(&mut s);
 
     let frag = try_compile(&s, top).expect("should compile via the curried fallback");
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
 
     let compiled_add = func.call(&mut store, 1).unwrap();
@@ -447,7 +447,7 @@ fn partial_application_of_a_literal_lambda_compiles() {
     let frag = try_compile(&s, top).expect("a partially applied literal lambda should compile");
     assert_eq!(frag.arity, 0);
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
     let compiled = func.call(&mut store, ()).unwrap();
     let interpreted = apply_term(&s, top, &[]).unwrap();
@@ -470,7 +470,7 @@ fn partial_application_of_a_capturing_literal_lambda_compiles() {
     let frag = try_compile(&s, g).expect("a partially applied capturing lambda should compile");
     assert_eq!(frag.arity, 1);
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
 
     for z in [-5, 0, 1, 100] {
@@ -524,7 +524,7 @@ fn a_pap_wrappers_own_supplied_argument_creating_more_closures_does_not_corrupt_
     );
 
     let frag = try_compile(&s, h).expect("this term should still compile");
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
     let compiled = func.call(&mut store, (10, -20)).unwrap();
     assert_eq!(compiled, -370, "compiled and interpreted must agree");
@@ -546,7 +546,7 @@ fn curried_application_is_indistinguishable_from_multi_arg_calls() {
     let g = source(&mut s, r"\f x. f x x");
     let frag = try_compile(&s, g).expect("compiles as a 2-ary call to f");
     assert_eq!(frag.arity, 2);
-    assert!(frag.wat.contains("call_indirect (type $ty2)"));
+    assert!(frag.wat().contains("call_indirect (type $ty2)"));
 }
 
 #[test]
@@ -577,9 +577,9 @@ fn an_over_applied_literal_lambda_returning_a_closure_compiles_and_matches_inter
 
         let frag = try_compile(&s, fxyz).expect("an over-applied literal lambda returning a closure should compile");
         assert_eq!(frag.arity, 0);
-        assert!(frag.wat.contains("call_indirect"));
+        assert!(frag.wat().contains("call_indirect"));
 
-        let (mut store, instance) = instantiate(&frag.wat);
+        let (mut store, instance) = instantiate(&frag.wat());
         let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
         let compiled = func.call(&mut store, ()).unwrap();
         let interpreted = apply_term(&s, fxyz, &[]).unwrap();
@@ -618,7 +618,7 @@ fn a_let_bound_self_recursive_function_compiles_and_matches_interpreter() {
         .expect("a let-bound self-recursive function, called through the table, should compile");
     assert_eq!(frag.arity, 0);
 
-    let (mut store, instance) = instantiate(&frag.wat);
+    let (mut store, instance) = instantiate(&frag.wat());
     let func = instance.get_typed_func::<(), i64>(&mut store, "f").unwrap();
     let compiled = func.call(&mut store, ()).unwrap();
     assert_eq!(compiled, 3628800);
@@ -644,9 +644,9 @@ fn compile_specialised_compiles_the_checked_specialisation() {
     let c = compile_specialised(&s, h).unwrap();
     assert!(c.specialised.is_some());
     // No closure is left: no table dispatch and no allocator.
-    assert!(!c.frag.wat.contains("call_indirect"), "{}", c.frag.wat);
-    assert!(!c.frag.wat.contains("$alloc"), "{}", c.frag.wat);
-    let (mut store, instance) = instantiate(&c.frag.wat);
+    assert!(!c.frag.wat().contains("call_indirect"), "{}", c.frag.wat());
+    assert!(!c.frag.wat().contains("$alloc"), "{}", c.frag.wat());
+    let (mut store, instance) = instantiate(&c.frag.wat());
     let f = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
     for (n, acc) in [(0, 0), (1, 0), (5, 3), (100, -7)] {
         assert_eq!(f.call(&mut store, (n, acc)).unwrap(), crate::lang::eval::apply_term(&s, h, &[n, acc]).unwrap(), "n={n} acc={acc}");
@@ -658,7 +658,7 @@ fn a_term_with_nothing_to_specialise_compiles_exactly_as_try_compile_does() {
     let (s, h) = corpus("factorial");
     let c = compile_specialised(&s, h).unwrap();
     assert!(c.specialised.is_none());
-    assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
+    assert_eq!(c.frag.wat(), try_compile(&s, h).unwrap().wat());
 }
 
 #[test]
@@ -673,7 +673,7 @@ fn a_checked_specialisation_that_does_not_compile_falls_back_to_h() {
     assert!(try_compile(&sp.store, sp.term).is_none(), "h' now compiles; this test needs another term");
     let c = compile_specialised(&s, h).expect("h compiles");
     assert!(c.specialised.is_none());
-    assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
+    assert_eq!(c.frag.wat(), try_compile(&s, h).unwrap().wat());
 }
 
 /// A specialisation whose trace is real but whose claim is not what the
@@ -703,7 +703,7 @@ fn a_trace_the_checker_rejects_falls_back_to_h_and_is_counted_in_release() {
     let c = compile_candidate(&s, h, sp).expect("h itself compiles");
     assert_eq!(builder_bugs(BuilderBug::BadTrace), before + 1);
     assert!(c.specialised.is_none());
-    assert_eq!(c.frag.wat, try_compile(&s, h).unwrap().wat);
+    assert_eq!(c.frag.wat(), try_compile(&s, h).unwrap().wat());
 }
 
 #[test]
@@ -729,5 +729,40 @@ fn an_oversized_source_compiles_without_consulting_the_checker() {
     let h = crate::testing::test_corpus::oversized_source_with_a_shrinking_step(&mut s);
     if let Some(c) = compile_specialised(&s, h) {
         assert!(c.specialised.is_none());
+    }
+}
+
+/// No `Ins` at any depth of `code` is `Raw`.
+fn no_raw(code: &[tatic_wasm::wasm::Ins]) -> bool {
+    use tatic_wasm::wasm::Ins;
+    code.iter().all(|i| match i {
+        Ins::Raw(_) => false,
+        Ins::If(t, e) => no_raw(t) && no_raw(e),
+        Ins::Loop(b) => no_raw(b),
+        _ => true,
+    })
+}
+
+/// The straight-line gate's fragment (v0.7): each of these entry bodies is
+/// one wrapping `Loop` the machine models in full, with no `Raw` line.
+#[test]
+fn fragment_bodies_contain_no_raw() {
+    let mut s = TermStore::new();
+    let mut frags = vec![];
+    for build in [crate::support::samples::inc, crate::support::samples::straight_line] {
+        let h = build(&mut s);
+        frags.push(try_compile(&s, h).unwrap());
+    }
+    let h = crate::testing::test_corpus::doubling(&mut s, 4);
+    frags.push(try_compile(&s, h).unwrap());
+    for build in [crate::support::samples::a_capturing_closure_call, a_pap_capturing] {
+        let h = build(&mut s);
+        let c = compile_specialised(&s, h).unwrap();
+        assert!(c.specialised.is_some());
+        frags.push(c.frag);
+    }
+    for frag in &frags {
+        assert!(matches!(frag.entry(), [tatic_wasm::wasm::Ins::Loop(_)]), "{:?}", frag.entry());
+        assert!(no_raw(frag.entry()), "{:?}", frag.entry());
     }
 }

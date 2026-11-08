@@ -7,7 +7,9 @@
 
 use hashbrown::HashMap;
 
-use crate::jit::lower_wat::cmp_instr;
+use tatic_wasm::ops::Op;
+use tatic_wasm::wasm::K;
+
 use crate::lang::term::{Hash, PrimOp, Term, TermStore};
 
 /// Peel a term into `(arity, body, is_recursive)`:
@@ -158,10 +160,27 @@ pub(crate) fn classify(store: &TermStore, h: Hash, arity: usize, self_idx: Optio
 
 /// Whether `op` is one `build_node`'s `If` arm accepts as a condition --
 /// and so one that only ever evaluates to `0` or `1`, which `proof.rs`'s
-/// `classify_tree` relies on for soundness. Defined by `cmp_instr` itself
-/// so the two cannot drift.
+/// `classify_tree` relies on for soundness. Defined by `op_of` itself, as a
+/// source op that maps to a bit-result row, so the two cannot drift.
 pub(crate) fn is_comparison(op: PrimOp) -> bool {
-    cmp_instr(op).is_some()
+    op_of(op).is_some_and(|o| o.kind() == K::B)
+}
+
+/// The one map from a source operator to its machine operator row (the
+/// lowering, the gate's source side and the fragment predicate all read it).
+/// `Div` and `Mod` have none: the lowering emits `i64.div_s` (inside
+/// `emit_wrapping_div`) and `i64.rem_s` as `Raw` lines.
+pub fn op_of(op: PrimOp) -> Option<Op> {
+    use PrimOp::*;
+    Some(match op {
+        Add => Op::Add,
+        Sub => Op::Sub,
+        Mul => Op::Mul,
+        Lt => Op::LtS,
+        Le => Op::LeS,
+        Eq => Op::Eq,
+        Div | Mod => return None,
+    })
 }
 
 /// Finds what a lambda literal (peeled to `own_arity`/`body`/`is_rec`,

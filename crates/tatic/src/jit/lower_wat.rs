@@ -192,8 +192,11 @@
 
 use hashbrown::{HashMap, HashSet};
 
-use crate::jit::compile::CompiledFragment;
+use tatic_wasm::wasm::{Ins, K};
+
+use crate::jit::compile::{CompiledFragment, Item};
 use crate::jit::ir::{Combinator, Dispatch, Func, Module, Node, Read};
+use crate::jit::shape::op_of;
 use crate::lang::term::PrimOp;
 
 mod templates;
@@ -226,19 +229,26 @@ pub(crate) fn lower(m: &Module) -> CompiledFragment {
 
     let direct = direct_only(m, &bare);
     let mut lw = Lowering { m, stage0, direct, call_indirect_arities: Vec::new() };
-    let mut fn_wat = String::new();
-    lw.function("f", &m.entry, EnvAccess::None, &mut fn_wat);
-    let mut combinator_wat = String::new();
+    // `$f` is lowered first (the type lines below depend on what lowering
+    // records) but printed last.
+    let entry = lw.function("f", &m.entry, EnvAccess::None);
+    let mut combinators = Vec::new();
     for (idx, c) in m.combinators.iter().enumerate() {
-        match c {
+        combinators.push(match c {
             Combinator::Lifted(f) => {
                 let env = if lw.direct.contains(&idx) { EnvAccess::Params } else { EnvAccess::Pointer };
-                lw.function(&format!("c{idx}"), f, env, &mut combinator_wat)
+                lw.function(&format!("c{idx}"), f, env)
             }
-            Combinator::Pap { root, supplied } => emit_pap_wrapper(&format!("c{idx}"), *root, comb_arity(m, *root), *supplied, &mut combinator_wat),
-        }
+            Combinator::Pap { root, supplied } => {
+                let mut t = String::new();
+                emit_pap_wrapper(&format!("c{idx}"), *root, comb_arity(m, *root), *supplied, &mut t);
+                Item::Text(t)
+            }
+        });
     }
-    combinator_wat.push_str(&stage_wat);
+    if !stage_wat.is_empty() {
+        combinators.push(Item::Text(stage_wat));
+    }
 
     let mut w = String::new();
     w.push_str("(module\n");
@@ -289,11 +299,12 @@ pub(crate) fn lower(m: &Module) -> CompiledFragment {
         }
         w.push_str(")\n");
     }
-    w.push_str(&combinator_wat);
-    w.push_str(&fn_wat);
-    w.push_str("  (export \"f\" (func $f))\n)\n");
+    let mut module = vec![Item::Text(w)];
+    module.extend(combinators);
+    module.push(entry);
+    module.push(Item::Text("  (export \"f\" (func $f))\n)\n".to_string()));
 
-    CompiledFragment { arity: m.entry.arity, wat: w, needs_hp_reset: needs_alloc }
+    CompiledFragment { arity: m.entry.arity, module, needs_hp_reset: needs_alloc }
 }
 
 /// A combinator's own arity. A wrapper takes whatever its root still needs.
@@ -398,7 +409,10 @@ struct FnCx<'a> {
 }
 
 impl Lowering<'_> {
-    fn function(&mut self, name: &str, f: &Func, env: EnvAccess, w: &mut String) {
+    /// A lowered function: its header (signature and locals) and its body
+    /// wrapped in the `Loop` a tail self-call branches back to.
+    fn function(&mut self, name: &str, f: &Func, env: EnvAccess) -> Item {
+        let mut w = String::new();
         w.push_str(&format!("  (func ${name}"));
         match env {
             EnvAccess::None => {}
@@ -423,10 +437,10 @@ impl Lowering<'_> {
         w.push_str("    (local $papenv i64)\n");
         w.push_str("    (local $diva i64)\n");
         w.push_str("    (local $divb i64)\n");
-        w.push_str("    (loop $L (result i64)\n");
         let cx = FnCx { name, arity: f.arity, env_len: f.env_len, env };
-        self.node(&cx, &f.body, w, 6);
-        w.push_str("    )\n  )\n");
+        let mut body = Vec::new();
+        self.node(&cx, &f.body, &mut body);
+        Item::Func { name: name.to_string(), header: w, body: vec![Ins::Loop(body)] }
     }
 
     /// The table index a closure value of combinator `idx` is packed with.
@@ -437,42 +451,45 @@ impl Lowering<'_> {
         }
     }
 
-    fn node(&mut self, cx: &FnCx, n: &Node, w: &mut String, indent: usize) {
+    fn node(&mut self, cx: &FnCx, n: &Node, w: &mut Vec<Ins>) {
         match n {
-            Node::Lit(v) => push_line(w, indent, &format!("i64.const {v}")),
-            Node::Read(r) => read(cx, *r, w, indent),
+            Node::Lit(v) => w.push(Ins::Push(*v)),
+            Node::Read(r) => read(cx, *r, w),
             Node::Arith(op, a, b) => {
-                self.node(cx, a, w, indent);
-                self.node(cx, b, w, indent);
-                if *op == PrimOp::Div {
-                    emit_wrapping_div(w, indent);
-                } else {
-                    push_line(w, indent, arith_instr(*op).expect("ir::check: Arith carries an arithmetic op"));
+                self.node(cx, a, w);
+                self.node(cx, b, w);
+                match *op {
+                    PrimOp::Div => emit_wrapping_div(w),
+                    PrimOp::Mod => raw(w, "i64.rem_s"),
+                    op => {
+                        let o = op_of(op).filter(|o| o.kind() == K::W);
+                        w.push(Ins::Op(o.expect("ir::check: Arith carries an arithmetic op (shape::op_of)")))
+                    }
                 }
             }
             Node::If { cmp, a, b, then, els } => {
-                self.node(cx, a, w, indent);
-                self.node(cx, b, w, indent);
-                push_line(w, indent, cmp_instr(*cmp).expect("ir::check: If carries a comparison"));
-                push_line(w, indent, "if (result i64)");
-                self.node(cx, then, w, indent + 2);
-                push_line(w, indent, "else");
-                self.node(cx, els, w, indent + 2);
-                push_line(w, indent, "end");
+                self.node(cx, a, w);
+                self.node(cx, b, w);
+                let o = op_of(*cmp).filter(|o| o.kind() == K::B);
+                w.push(Ins::Op(o.expect("ir::check: If carries a comparison (shape::op_of)")));
+                let (mut t, mut e) = (Vec::new(), Vec::new());
+                self.node(cx, then, &mut t);
+                self.node(cx, els, &mut e);
+                w.push(Ins::If(t, e));
             }
             Node::SelfCall { args, tail: true } => {
                 // Stage every new argument in a temporary first, so
                 // `f(b, a mod b)` doesn't overwrite `a` before `a mod b` is
                 // computed. Then loop back.
                 for (i, a) in args.iter().enumerate() {
-                    self.node(cx, a, w, indent);
-                    push_line(w, indent, &format!("local.set $t{i}"));
+                    self.node(cx, a, w);
+                    raw(w, &format!("local.set $t{i}"));
                 }
                 for i in 0..cx.arity {
-                    push_line(w, indent, &format!("local.get $t{i}"));
-                    push_line(w, indent, &format!("local.set $p{i}"));
+                    raw(w, &format!("local.get $t{i}"));
+                    raw(w, &format!("local.set $p{i}"));
                 }
-                push_line(w, indent, "br $L");
+                w.push(Ins::Br(0));
             }
             Node::SelfCall { args, tail: false } => {
                 // A real call back into this function. Recursion stays
@@ -480,30 +497,30 @@ impl Lowering<'_> {
                 // forwarded unchanged.
                 match cx.env {
                     EnvAccess::None => {}
-                    EnvAccess::Pointer => push_line(w, indent, "local.get $env"),
+                    EnvAccess::Pointer => raw(w, "local.get $env"),
                     EnvAccess::Params => {
                         for k in 0..cx.env_len {
-                            push_line(w, indent, &format!("local.get $e{k}"));
+                            raw(w, &format!("local.get $e{k}"));
                         }
                     }
                 }
                 for a in args {
-                    self.node(cx, a, w, indent);
+                    self.node(cx, a, w);
                 }
-                push_line(w, indent, &format!("call ${}", cx.name));
+                raw(w, &format!("call ${}", cx.name));
             }
             Node::CallKnown { f, env, args } => {
                 if self.direct.contains(f) {
                     for r in env {
-                        read(cx, *r, w, indent);
+                        read(cx, *r, w);
                     }
                 } else {
-                    push_closure_env(cx, env, w, indent);
+                    push_closure_env(cx, env, w);
                 }
                 for a in args {
-                    self.node(cx, a, w, indent);
+                    self.node(cx, a, w);
                 }
-                push_line(w, indent, &format!("call $c{f}"));
+                raw(w, &format!("call $c{f}"));
             }
             Node::CallUnknown { callee, args } => match self.m.dispatch {
                 Dispatch::Fast => {
@@ -516,38 +533,38 @@ impl Lowering<'_> {
                     // memory reads. For an over-application's saturated
                     // `CallKnown` it is two pure calls, and the only side
                     // effect is bump-allocator growth.
-                    self.node(cx, callee, w, indent);
-                    push_line(w, indent, "i64.const 32");
-                    push_line(w, indent, "i64.shr_u");
-                    push_line(w, indent, "i32.wrap_i64");
+                    self.node(cx, callee, w);
+                    raw(w, "i64.const 32");
+                    raw(w, "i64.shr_u");
+                    raw(w, "i32.wrap_i64");
                     for a in args {
-                        self.node(cx, a, w, indent);
+                        self.node(cx, a, w);
                     }
-                    self.node(cx, callee, w, indent);
-                    push_line(w, indent, "i32.wrap_i64");
+                    self.node(cx, callee, w);
+                    raw(w, "i32.wrap_i64");
                     self.call_indirect_arities.push(args.len());
-                    push_line(w, indent, &format!("call_indirect (type $ty{})", args.len()));
+                    raw(w, &format!("call_indirect (type $ty{})", args.len()));
                 }
                 Dispatch::Curried => {
-                    self.node(cx, callee, w, indent);
-                    self.dynamic_apply(cx, args, w, indent);
+                    self.node(cx, callee, w);
+                    self.dynamic_apply(cx, args, w);
                 }
             },
             Node::MakeClosure { f, env } => {
-                push_closure_env(cx, env, w, indent);
-                push_line(w, indent, "i64.extend_i32_u");
-                push_line(w, indent, "i64.const 32");
-                push_line(w, indent, "i64.shl");
-                push_line(w, indent, &format!("i64.const {}", self.table_value(*f)));
-                push_line(w, indent, "i64.or");
+                push_closure_env(cx, env, w);
+                raw(w, "i64.extend_i32_u");
+                raw(w, "i64.const 32");
+                raw(w, "i64.shl");
+                raw(w, &format!("i64.const {}", self.table_value(*f)));
+                raw(w, "i64.or");
             }
             Node::MakePap { wrapper, root_env, args } => {
-                self.pap_env(cx, root_env, args, w, indent);
-                push_line(w, indent, "i64.extend_i32_u");
-                push_line(w, indent, "i64.const 32");
-                push_line(w, indent, "i64.shl");
-                push_line(w, indent, &format!("i64.const {}", self.table_value(*wrapper)));
-                push_line(w, indent, "i64.or");
+                self.pap_env(cx, root_env, args, w);
+                raw(w, "i64.extend_i32_u");
+                raw(w, "i64.const 32");
+                raw(w, "i64.shl");
+                raw(w, &format!("i64.const {}", self.table_value(*wrapper)));
+                raw(w, "i64.or");
             }
         }
     }
@@ -559,26 +576,26 @@ impl Lowering<'_> {
     /// which reuse `$envtmp`/`$papenv` as scratch. A value on the stack
     /// survives that; a value held in either local does not. A fuzz-found
     /// regression once came from exactly this.
-    fn pap_env(&mut self, cx: &FnCx, root_env: &[Read], args: &[Node], w: &mut String, indent: usize) {
-        push_closure_env(cx, root_env, w, indent);
-        push_line(w, indent, "i64.extend_i32_u");
+    fn pap_env(&mut self, cx: &FnCx, root_env: &[Read], args: &[Node], w: &mut Vec<Ins>) {
+        push_closure_env(cx, root_env, w);
+        raw(w, "i64.extend_i32_u");
         for a in args {
-            self.node(cx, a, w, indent);
+            self.node(cx, a, w);
         }
         // Nothing below recurses, so the scratch locals are safe again.
-        push_line(w, indent, &format!("i32.const {}", (1 + args.len()) * WORD_BYTES));
-        push_line(w, indent, "call $alloc");
-        push_line(w, indent, "local.set $envtmp");
+        raw(w, &format!("i32.const {}", (1 + args.len()) * WORD_BYTES));
+        raw(w, "call $alloc");
+        raw(w, "local.set $envtmp");
         // `i64.store` wants the address below the value, so each value is
         // popped (last argument first) into `$papenv` and pushed again
         // after a fresh address.
         for slot in (0..=args.len()).rev() {
-            push_line(w, indent, "local.set $papenv");
-            push_line(w, indent, "local.get $envtmp");
-            push_line(w, indent, "local.get $papenv");
-            push_line(w, indent, &format!("i64.store offset={}", slot * WORD_BYTES));
+            raw(w, "local.set $papenv");
+            raw(w, "local.get $envtmp");
+            raw(w, "local.get $papenv");
+            raw(w, &format!("i64.store offset={}", slot * WORD_BYTES));
         }
-        push_line(w, indent, "local.get $envtmp");
+        raw(w, "local.get $envtmp");
     }
 
     /// Applies `args` one at a time, through the curried stage chains, to
@@ -586,76 +603,61 @@ impl Lowering<'_> {
     /// an argument's own lowering are the current step's env-pointer half
     /// and a raw copy of the packed value. Both live on the operand stack,
     /// never in a scratch local (see `pap_env`).
-    fn dynamic_apply(&mut self, cx: &FnCx, args: &[Node], w: &mut String, indent: usize) {
+    fn dynamic_apply(&mut self, cx: &FnCx, args: &[Node], w: &mut Vec<Ins>) {
         for a in args {
-            push_line(w, indent, "local.tee $papenv");
-            push_line(w, indent, "i64.const 32");
-            push_line(w, indent, "i64.shr_u");
-            push_line(w, indent, "i32.wrap_i64");
-            push_line(w, indent, "local.get $papenv");
-            self.node(cx, a, w, indent);
-            push_line(w, indent, "local.set $papenv"); // this argument's value
-            push_line(w, indent, "i32.wrap_i64"); // the raw copy below it becomes the table index
-            push_line(w, indent, "local.set $envtmp");
-            push_line(w, indent, "local.get $papenv");
-            push_line(w, indent, "local.get $envtmp");
+            raw(w, "local.tee $papenv");
+            raw(w, "i64.const 32");
+            raw(w, "i64.shr_u");
+            raw(w, "i32.wrap_i64");
+            raw(w, "local.get $papenv");
+            self.node(cx, a, w);
+            raw(w, "local.set $papenv"); // this argument's value
+            raw(w, "i32.wrap_i64"); // the raw copy below it becomes the table index
+            raw(w, "local.set $envtmp");
+            raw(w, "local.get $papenv");
+            raw(w, "local.get $envtmp");
             self.call_indirect_arities.push(1);
-            push_line(w, indent, "call_indirect (type $ty1)");
+            raw(w, "call_indirect (type $ty1)");
         }
     }
 }
 
-fn read(cx: &FnCx, r: Read, w: &mut String, indent: usize) {
+fn read(cx: &FnCx, r: Read, w: &mut Vec<Ins>) {
     match (r, cx.env) {
-        (Read::Param(li), _) => push_line(w, indent, &format!("local.get $p{li}")),
-        (Read::Env(k), EnvAccess::Params) => push_line(w, indent, &format!("local.get $e{k}")),
+        (Read::Param(li), _) => w.push(Ins::LocalGet(li)),
+        (Read::Env(k), EnvAccess::Params) => raw(w, &format!("local.get $e{k}")),
         (Read::Env(k), _) => {
-            push_line(w, indent, "local.get $env");
-            push_line(w, indent, &format!("i64.load offset={}", k as usize * WORD_BYTES));
+            raw(w, "local.get $env");
+            raw(w, &format!("i64.load offset={}", k as usize * WORD_BYTES));
         }
     }
 }
 
 /// Pushes an `i32` environment pointer holding `env`'s values in slot
 /// order, or `i32.const 0` (no allocation at all) for an empty environment.
-fn push_closure_env(cx: &FnCx, env: &[Read], w: &mut String, indent: usize) {
+fn push_closure_env(cx: &FnCx, env: &[Read], w: &mut Vec<Ins>) {
     if env.is_empty() {
-        push_line(w, indent, "i32.const 0");
+        raw(w, "i32.const 0");
         return;
     }
-    push_line(w, indent, &format!("i32.const {}", env.len() * WORD_BYTES));
-    push_line(w, indent, "call $alloc");
-    push_line(w, indent, "local.set $envtmp");
+    raw(w, &format!("i32.const {}", env.len() * WORD_BYTES));
+    raw(w, "call $alloc");
+    raw(w, "local.set $envtmp");
     for (slot, r) in env.iter().enumerate() {
-        push_line(w, indent, "local.get $envtmp");
-        read(cx, *r, w, indent);
-        push_line(w, indent, &format!("i64.store offset={}", slot * WORD_BYTES));
+        raw(w, "local.get $envtmp");
+        read(cx, *r, w);
+        raw(w, &format!("i64.store offset={}", slot * WORD_BYTES));
     }
-    push_line(w, indent, "local.get $envtmp");
+    raw(w, "local.get $envtmp");
 }
 
-fn push_line(w: &mut String, indent: usize, s: &str) {
-    for _ in 0..indent {
-        w.push(' ');
-    }
-    w.push_str(s);
-    w.push('\n');
+/// A line the machine does not model (`Ins::Raw`), printed as given.
+fn raw(w: &mut Vec<Ins>, s: &str) {
+    w.push(Ins::Raw(s.to_string()));
 }
 
-fn arith_instr(op: PrimOp) -> Option<&'static str> {
-    use PrimOp::*;
-    Some(match op {
-        Add => "i64.add",
-        Sub => "i64.sub",
-        Mul => "i64.mul",
-        Div => "i64.div_s",
-        Mod => "i64.rem_s",
-        Lt | Le | Eq => return None,
-    })
-}
-
-/// Emits `Div`'s own operator, in place of a bare `arith_instr`-driven
-/// `i64.div_s` -- that single instruction traps on exactly one input
+/// Emits `Div`'s own operator, in place of a bare `i64.div_s` (`Div` has
+/// no `shape::op_of` row) -- that single instruction traps on exactly one input
 /// (`i64::MIN / -1`, the one case where the mathematical quotient
 /// overflows `i64`), per the WebAssembly spec, while `eval.rs`'s
 /// reference semantics use `wrapping_div` there, silently wrapping back
@@ -673,32 +675,20 @@ fn arith_instr(op: PrimOp) -> Option<&'static str> {
 /// MVP instruction set has no stack-only "dup" -- `$diva`/`$divb`,
 /// declared unconditionally in `Lowering::function` (harmless if unused,
 /// matching `$envtmp`/`$papenv`'s own convention).
-fn emit_wrapping_div(w: &mut String, indent: usize) {
-    push_line(w, indent, "local.set $divb");
-    push_line(w, indent, "local.tee $diva");
-    push_line(w, indent, &format!("i64.const {}", i64::MIN));
-    push_line(w, indent, "i64.eq");
-    push_line(w, indent, "local.get $divb");
-    push_line(w, indent, "i64.const -1");
-    push_line(w, indent, "i64.eq");
-    push_line(w, indent, "i32.and");
-    push_line(w, indent, "if (result i64)");
-    push_line(w, indent + 2, &format!("i64.const {}", i64::MIN));
-    push_line(w, indent, "else");
-    push_line(w, indent + 2, "local.get $diva");
-    push_line(w, indent + 2, "local.get $divb");
-    push_line(w, indent + 2, "i64.div_s");
-    push_line(w, indent, "end");
-}
-
-pub(crate) fn cmp_instr(op: PrimOp) -> Option<&'static str> {
-    use PrimOp::*;
-    Some(match op {
-        Lt => "i64.lt_s",
-        Le => "i64.le_s",
-        Eq => "i64.eq",
-        Add | Sub | Mul | Div | Mod => return None,
-    })
+fn emit_wrapping_div(w: &mut Vec<Ins>) {
+    raw(w, "local.set $divb");
+    raw(w, "local.tee $diva");
+    w.push(Ins::Push(i64::MIN));
+    raw(w, "i64.eq");
+    raw(w, "local.get $divb");
+    w.push(Ins::Push(-1));
+    raw(w, "i64.eq");
+    raw(w, "i32.and");
+    let mut e = Vec::new();
+    raw(&mut e, "local.get $diva");
+    raw(&mut e, "local.get $divb");
+    raw(&mut e, "i64.div_s");
+    w.push(Ins::If(vec![Ins::Push(i64::MIN)], e));
 }
 
 #[cfg(test)]
@@ -726,7 +716,7 @@ mod tests {
         crate::jit::ir::check(&m).unwrap();
         let built = try_compile(&s, h).expect("the builder accepts every fixture");
         let lowered = lower(&m);
-        assert_eq!(lowered.wat, built.wat);
+        assert_eq!(lowered.wat(), built.wat());
         assert_eq!(lowered.arity, built.arity);
         assert_eq!(lowered.needs_hp_reset, built.needs_hp_reset);
     }
@@ -738,10 +728,10 @@ mod tests {
         // module allocates.
         let (_, s, h) = crate::support::samples::corpus().into_iter().find(|(name, ..)| *name == "capturing_closure_loop").unwrap();
         let frag = crate::jit::compile::try_compile(&s, h).unwrap();
-        assert!(!frag.needs_hp_reset, "{}", frag.wat);
-        assert!(!frag.wat.contains("$alloc"), "{}", frag.wat);
-        assert!(frag.wat.contains("(func $c0 (param $e0 i64) (param $p0 i64)"), "{}", frag.wat);
-        let (mut store, instance) = instantiate(&frag.wat);
+        assert!(!frag.needs_hp_reset, "{}", frag.wat());
+        assert!(!frag.wat().contains("$alloc"), "{}", frag.wat());
+        assert!(frag.wat().contains("(func $c0 (param $e0 i64) (param $p0 i64)"), "{}", frag.wat());
+        let (mut store, instance) = instantiate(&frag.wat());
         let f = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
         for (n, acc) in [(0, 0), (1, 0), (5, 3), (100, -7)] {
             assert_eq!(f.call(&mut store, (n, acc)).unwrap(), crate::lang::eval::apply_term(&s, h, &[n, acc]).unwrap(), "n={n} acc={acc}");

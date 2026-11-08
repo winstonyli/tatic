@@ -10,6 +10,7 @@ default-run = "demo"
 [dependencies]
 blake3 = "1.8.3"
 tatic-kernel.workspace = true
+tatic-wasm.workspace = true
 hashbrown.workspace = true
 mimalloc.workspace = true
 wasmtime = "42.0.1"
