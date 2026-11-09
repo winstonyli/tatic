@@ -223,24 +223,36 @@ fn measure_stack_2mb() {
     println!("doubling_13 on 2 MB {:.2} {:.2} {}", r.0, r.1, r.2);
 }
 
-/// One `doubling(GATE_D)`, built, and checked when `GATE_CHECK=1`: the target of `docs/runs/2026-11-09/scripts/cg.sh`.
-/// cachegrind counts the whole process, so the check's misses are the difference of the two runs.
+/// One `doubling(GATE_D)`, built, and checked `GATE_REPS` times (default 1) when `GATE_CHECK=1`: the target of
+/// `docs/runs/2026-11-09/scripts/cg.sh` and of the profiles in `docs/runs/2026-11-09/scripts/`. cachegrind counts the
+/// whole process, so the check's misses are the difference of the two runs. Each setting comes from the environment or
+/// from a `NAME=value` test filter argument, since the elevated profiler runs the exe without the caller's environment
+/// (an `--exact` filter that names no test is harmless).
 #[test]
 #[ignore]
 fn measure_cachegrind() {
-    let d: u32 = std::env::var("GATE_D").expect("GATE_D").parse().unwrap();
-    let check = std::env::var("GATE_CHECK").as_deref() == Ok("1");
+    let setting = |name: &str| {
+        let arg = |a: String| a.strip_prefix(&format!("{name}=")).map(str::to_string);
+        std::env::var(name).ok().or_else(|| std::env::args().find_map(arg))
+    };
+    let d: u32 = setting("GATE_D").expect("GATE_D").parse().unwrap();
+    let check = setting("GATE_CHECK").as_deref() == Some("1");
+    let reps: u32 = if check { setting("GATE_REPS").map_or(1, |r| r.parse().unwrap()) } else { 1 };
     std::thread::Builder::new()
         .stack_size(256 << 20)
         .spawn(move || {
             let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
-            tatic_kernel::scoped(|| {
-                let (p, st) = statement(&s, h, 1, frag.entry(), 1);
-                if check {
-                    assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
-                }
-                println!("d={d} check={check} work={}", tatic_kernel::work());
-            });
+            for _ in 0..reps {
+                tatic_kernel::scoped(|| {
+                    let (w, t) = (tatic_kernel::work(), std::time::Instant::now());
+                    let (p, st) = statement(&s, h, 1, frag.entry(), 1);
+                    if check {
+                        assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
+                    }
+                    let ms = t.elapsed().as_secs_f64() * 1e3;
+                    println!("d={d} check={check} work={} ms={ms:.1}", tatic_kernel::work() - w);
+                });
+            }
         })
         .unwrap()
         .join()
