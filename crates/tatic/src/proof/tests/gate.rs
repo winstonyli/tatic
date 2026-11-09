@@ -38,8 +38,8 @@ fn gate_accepts_the_fragment_table() {
     let mut table = the_five();
     table.push(("a - b", Box::new(|s: &mut TermStore| source(s, r"\a b. a - b")), 2));
     table.push(("third", Box::new(|s: &mut TermStore| source(s, r"\a b c. c")), 3));
-    // at the tree bound: 2^10 nodes
-    table.push(("doubling_9", Box::new(|s: &mut TermStore| doubling(s, 9)), 1));
+    // at the tree bound: 2^11 nodes
+    table.push(("doubling_10", Box::new(|s: &mut TermStore| doubling(s, 10)), 1));
     table.push((
         "a + MIN",
         Box::new(|s: &mut TermStore| {
@@ -93,6 +93,27 @@ fn gate_rejects_mutations() {
         let Ins::Loop(body) = &code[0] else { panic!("{name}: entry is not a Loop") };
         let with_raw = vec![Ins::Loop([body.clone(), vec![Ins::Raw("nop".into())]].concat())];
         assert!(!gate(&s, h, arity, &with_raw), "{name}: the gate accepted a Raw line");
+    }
+}
+
+/// The check's kernel work (`tatic_kernel::work`) about doubles with the tree: a shift memo that skipped unshared
+/// nodes re-shifted each program suffix at every step, 4x per doubling (doc 15, "Why the check grew 4x per doubling").
+#[test]
+fn gate_check_work_is_linear_in_the_tree() {
+    let work = |d: u32| {
+        let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
+        tatic_kernel::scoped(|| {
+            let (p, st) = statement(&s, h, 1, frag.entry(), 1);
+            let w0 = tatic_kernel::work();
+            assert!(tatic_wasm::encoding::holds(&p, &st).is_ok(), "doubling_{d} should check");
+            tatic_kernel::work() - w0
+        })
+    };
+    let w: Vec<u64> = (7..=9).map(work).collect();
+    println!("check work, doubling_7 to doubling_9: {w:?}");
+    for i in 1..w.len() {
+        let r = w[i] as f64 / w[i - 1] as f64;
+        assert!(r < 2.6, "check work grew {r:.2}x from doubling_{} to doubling_{}: {w:?}", 6 + i, 7 + i);
     }
 }
 
@@ -192,7 +213,7 @@ fn in_fragment_rejects_the_rest() {
             2,
         ),
         ("arity 0", Box::new(|s: &mut TermStore| source(s, "5")), 0),
-        ("doubling_10 (over the tree bound)", Box::new(|s: &mut TermStore| doubling(s, 10)), 1),
+        ("doubling_11 (over the tree bound)", Box::new(|s: &mut TermStore| doubling(s, 11)), 1),
         ("\\f. f 1", Box::new(|s: &mut TermStore| source(s, r"\f. f 1")), 1),
     ];
     for (name, build, arity) in cases {

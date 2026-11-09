@@ -30,13 +30,10 @@ fn shift_unchecked(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
     })
 }
 
-/// `shift` of one child: the child itself when it has nothing to shift, else memoised if shared (see [`hc`]).
+/// `shift` of one child: the child itself when it has nothing to shift, else memoised, shared or not (see [`hc`]).
 fn shift_child(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Expr {
     if s.loose(x) <= cutoff {
         return *x;
-    }
-    if !s.shared(x) {
-        return shift_unchecked(s, x, cutoff, amount);
     }
     if let Some(r) = hc::shift_get(s, x, cutoff, amount) {
         return r;

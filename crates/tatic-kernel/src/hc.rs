@@ -2,11 +2,14 @@
 //! `whnf`, head normal forms and `nf`, keyed by node (`Spaces::key`) and kept in `Spaces::memos` until the region
 //! closes. A node is one term, so a memo entry serves every place the term occurs.
 //!
-//! A walk's memo (`inst`, `shifts`, `InferCache`'s `lows` and `types`, `abstract_frees_in`'s) stores only shared nodes
+//! A walk's memo (`inst`, `InferCache`'s `lows` and `types`, `abstract_frees_in`'s) stores only shared nodes
 //! (`Spaces::shared`, two or more parents). An unshared node is reached only through its one parent, so a repeated walk
 //! stops at the parent's entry first: its own entry would almost never be read (77% of `inst`'s entries took 14 of
 //! 148,047 hits in rule 33's check at n=64; doc section "Why `inst` has many entries per node"). `whnf`, `hnf` and
 //! `nf` serve calls on any term, not one walk, and `uses`' `bounds` is asked again per `m`, so they keep every node.
+//! `shifts` keeps every node too: shifts start from call roots with no entry of their own, and the gate's check
+//! reached the same unshared program suffixes from such roots at every step, 4x the work per doubling of the tree (doc
+//! 15, "Why the check grew 4x per doubling").
 use super::*;
 
 /// Terms larger than this many nodes (counted once per node below the roots) are checked on one big stack segment
