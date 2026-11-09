@@ -2,7 +2,7 @@
 
 ### Ring-theory spikes (2026-10-10; 8a1df7d, parked, not merged)
 Can the loop move from bit-vectors to an axiomatic theory (a commutative ring)? Two throwaway spikes, kept as
-`docs/runs/2026-10-17/patches/ring_spikes.patch` (saved 2026-11-08 so the branch can be deleted); the spec is `docs/superpowers/specs/2026-10-10-ring-theory-prototype-spec.md`.
+`docs/runs/2026-10-17/patches/ring_spikes.patch` (the branch was deleted 2026-11-08); the spec is `docs/superpowers/specs/2026-10-10-ring-theory-prototype-spec.md`.
 - **Kernel side, passed** (`tests/ring_spike.rs`). Postulates `R`, `plus`, `times`, `a`, `b`, `distrib_l`, `distrib_r`
   and a proof of `(a+b)(a+b) = (a*a + a*b) + (b*a + b*b)` from `distrib_r`, two `distrib_l` instances, `cong_n` and
   `trans_proof`. `Postulates::check` accepts it and rejects the same proof against `aa + bb`. So the kernel needs no new
