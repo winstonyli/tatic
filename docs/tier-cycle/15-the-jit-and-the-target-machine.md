@@ -795,7 +795,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   trusted "a `loop` with no `br` is its body" fact.
 - **Tree size:** the build doubles with the tree (linear) and the check grows faster (5.8x from d = 12 to 13), so the
   gate alone passes the JIT path's 0.4 s at 512 nodes, far below the 16,384-node cap. `in_fragment` takes trees of at
-  most 256 nodes (`MAX_GATE_TREE`, `doubling(7)`; 1024 since the build fix below); a larger straight-line term
+  most 256 nodes (`MAX_GATE_TREE`, `doubling(7)`; 1024 since the build fix below, 2048 since the shift memo below); a larger straight-line term
   installs through the existing chain.
 - **`Mul`:** 25-34 ms with two parameters as operands, so `Mul` stays in the fragment unrestricted.
 - **Stack:** building and proving `doubling(13)` on a 2 MB thread overflowed (run `2026-11-08-v07-gate-measure_stack_2mb`),
@@ -822,6 +822,22 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   on the build before the fix (run `2026-11-08-karrow-sweep-profile`, 199,220 busy samples) `karrow` is 0.62%
   inclusive, since the sweep mines at small widths, where the n^2 / 2 shifts are few. That share caps the gain, so no
   sweep A/B was run.
+- **Why the check grew 4x per doubling:** `shift_child` memoised only shared nodes, by the rule for a walk's memo (doc
+  14, "Walk memos store only shared nodes"): a repeated walk stops at the parent's entry first. But shifts start from
+  call roots with no entry, and the check reached the same unshared program suffixes from such roots at every step: at
+  `doubling(9)`, 2.43M shift calls over 11,823 distinct (node, cutoff, amount), 97% of the left side's whnf work (run
+  `2026-11-08-o5-check-growth`, a probe). `shifts` now keeps every node (`hc`'s module doc). The check's kernel work at
+  `doubling(7)`, `(8)`, `(9)` fell from 216k, 715k, 2.60M to 59k, 106k, 201k, and `gate_check_work_is_linear_in_the_tree`
+  fails above 2.6x per doubling (the old memo gave 3.3x and 3.6x; runs `2026-11-08-memo-check-work-a` and `-b`). Rerun (run `2026-11-08-memo-gate-costs`, cpu 44%, one
+  rep per tree): `doubling(10)` 184 + 147 ms, `(11)` 402 + 309 ms, `(12)` 945 + 828 ms, `(13)` 2,265 + 2,495 ms, against
+  102 s of check before; the build now grows 2.2-2.4x per doubling too (not looked into). By the same rule the bound is
+  now 2048 nodes (`doubling(10)`, 0.33 s; `doubling(11)` takes 0.71 s). The church-bv gate is unchanged (run
+  `2026-11-08-memo-gate3`, salts 1-3: M 447 and held-out M 5166 both arms, rules the same in 9 of 9 loops, peak process
+  3,336 MB both). Its pin test (`streams::stream_sequences_are_pinned`, about 863 G instructions) passed on both arms
+  and counts the same (run `2026-11-08-memo-count-rot2`, 2 runs per batch, batches a b b a b a a b on CPU 4, cpu 37%):
+  the two flat batch pairs (max/best 1.0002 or less) differ by -0.001% and -0.010% in B's favour, and the first two pairs
+  (max/best up to 1.004, the large-page wander of doc 14, "Why a retired-instruction count wanders") by +0.15% and
+  +0.30% against it.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The

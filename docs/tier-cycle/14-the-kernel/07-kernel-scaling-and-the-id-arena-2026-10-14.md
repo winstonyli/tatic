@@ -772,6 +772,7 @@ The decision was clear from the law alone, so `proof_cost_split` was not run. `b
 **Walk memos store only shared nodes (2026-10-14, adopted).** The candidate above, built.
 - **Change:** `inst_rec` memoizes a child only if it is shared and not `hc::low`. `shift_child` shifts an unshared node without the memo. `lowest_loose` reads and writes `lows` only for shared nodes.
   - The rule is stated once, in `hc`'s module doc. It is the one `infer_rc` and `abstract_frees_in` already followed, so every walk's memo now follows it.
+  - Since 2026-11-08 `shifts` keeps every node again: the gate's check re-shifted unshared nodes from call roots, 4x the work per doubling (doc 15, "Why the check grew 4x per doubling").
   - `whnf`, `hnf`, `nf` and `bounds` keep every node, as the module doc says why.
 - **Check:** `walk_memos_store_only_shared_nodes`. A shared node gets an `inst` and a `lows` entry and an unshared one neither; the test fails with `inst_rec`'s old gate. Every suite passes with the base's counts plus this test (lib 375).
 - **Timing** against b0404ef (RTP off; load 26-28%, other sessions' `tier_eval_nn` and `manifold` resident):
