@@ -39,6 +39,25 @@ fn a_shared_subterm_is_denoted_once() {
     assert!(kernel::node_key(&f1) == kernel::node_key(&f2), "the two operands were denoted separately");
 }
 
+/// Confirms a `Clo_k`-shaped value can be built as the literal curried
+/// `Int -> .. -> Int` arrow type, reusing `Int` (already postulated by
+/// `ArithPostulates`) instead of an opaque `Sort(0)` postulate family
+/// (`docs/related-work/` section 11):
+///
+/// 1. Such a value can be called directly via ordinary `kernel::app`,
+///    typechecking as `Int` with no separate "how to call this" axiom
+///    needed at all.
+/// 2. `bool_rec` instantiated at a *constant* motive (`\_:Bool. A`) is a
+///    real `ite : Bool -> A -> A -> A` for any `A`, with its
+///    computation-rule axioms (`bool_rec_true_eq`/`bool_rec_false_eq`)
+///    already proving `ite`'s own -- but this does *not* extend to
+///    `ite_clo_ref`, whose condition is `Int`-typed rather than
+///    `Bool`-typed and so has no bridge to `bool_rec`'s own motive.
+/// 3. Two different arities are still genuinely distinct types --
+///    `kernel::check` rejects a `Clo_3`-shaped value where a `Clo_2` is
+///    expected, for free, from ordinary Pi-type structural inequality --
+///    so this doesn't reopen the arity-blind-`Clo` unsoundness
+///    `docs/types.md` section 6.2 documents.
 #[test]
 fn a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates() {
     fn curried_arrow(int_ty: &Expr, k: usize) -> Expr {

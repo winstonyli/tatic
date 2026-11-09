@@ -356,8 +356,21 @@ reported by `JitEngine::is_kernel_verified`):
 - For a term in the straight-line fragment (`proof/gate.rs#in_fragment`),
   the gate's theorem alone (`jit.rs#prove_install`): the emitted
   instruction list, run on `tatic_wasm`'s machine at n = 64, equals the
-  source term for every input. This one is about the code that runs, not a
-  model of the compiler.
+  source term for every input. This one is about the emitted body, not a
+  model of the compiler. It still trusts, unproved:
+  - the operator table: each `Op` row's kernel term against its WAT
+    mnemonic, and the one `PrimOp -> Op` map both sides read, so the gate
+    cannot see a wrong row (guard: `jit/op_table_tests.rs`, against eval
+    and wasmtime; n = 8 exhaustive is an ignored test);
+  - the body printer, `Ins` to WAT one-to-one (guard: the golden WAT);
+  - the function scaffolding outside the body: the header's `$p0..` order,
+    locals, export, and the JIT passing `args` in order (guard: `verify`);
+  - the machine as a model of wasm `if`, `loop`, `local.get` and i64
+    arithmetic; it is more permissive than wasm validation (an arm may pop
+    below its entry stack), so the gate relies on wasmtime having
+    validated the module first, as `try_install` does;
+  - for a specialised term, `h ≡ h'`, certified by `spec_check`, not the
+    kernel (docs/related-work/ §37).
 - `prove_closure_expr` or
   `prove_tail_recursive_universal`: one theorem covering every input. This
   is genuinely stronger than the sample battery. Every input means every
