@@ -899,10 +899,11 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   growth), about 14% table rehashes, 9% `whnf_step`, 5% `beta_spine`, 4% each `hc::uses`, `shift_get` and the node
   table's `find`; `whnf_get` is 0.3%, so the whnf memo stays in cache. At 1 MB the loose-variable and shift machinery
   leads: `hc::uses` 10%, `shift_unchecked` 7%, `Space::push` 6%, `shift_put` 5%, `shift_get` 4%. The misses explain
-  only part of the time, an inference: the excess over d = 6's cost per unit of work is about 386 ms at d = 13, and
-  weighting the random misses by latency (about 0.7-1 M at 16 MB at ~80 ns, 3.9 M at 1 MB at ~10 ns) gives about
-  100-120 ms, while the `memcpy` misses stream and cost a few ms. cachegrind models no TLB and no prefetcher (the TLB was then tested,
-  next bullet). Options, fewest concepts first: check the top
+  only part of the time, an inference: the excess over d = 6's cost per unit of work is about 386 ms at d = 13 (about
+  195 ms on a quieter machine: "Where the excess goes, profiled", below), and weighting the random misses by latency
+  (about 0.7-1 M at 16 MB at ~80 ns, 3.9 M at 1 MB at ~10 ns) gives about 100-120 ms, while the `memcpy` misses stream
+  and cost a few ms. cachegrind models no TLB and no prefetcher (the TLB was then tested, next bullet). Options, fewest
+  concepts first: check the top
   telescope under fresh typed free parameters instead of `Var` binders, so the program is closed and the shifted
   copies of its suffix go (kernel, trusted base); one `u64` loose-variable mask per node in place of the `uses`
   slot, `bounds`, `lowest_loose` and `InferCache::lows`; `inst` as per-call scratch, deleting `arg_sets` and `Aid`;
@@ -913,8 +914,8 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   - *TLB.* mimalloc's large OS pages, on by default here, save only 4-7% of the check at d = 12-13 (best of 3, timed
     lease: d = 13 511 ms with them, 537 ms with `MIMALLOC_ALLOW_LARGE_OS_PAGES=0`; d = 12 246 against 265; runs
     `2026-11-09-lp1-*` and `2026-11-09-lp0-*`, `docs/runs/2026-11-09/scripts/lp.sh`), and the time still grows 2.03-2.07x
-    from d = 12 to 13 either way. So page walks are not the unexplained two-thirds of the excess; what that is stays
-    open.
+    from d = 12 to 13 either way. So large pages remove about 26 ms of the excess at d = 13, not the bulk of it; where
+    the rest goes: "Where the excess goes, profiled", below.
   - *Closed parameters, the falsifier.* Opening the law's 7 binders onto postulated constants (public `whnf` of each
     `Pi` and `Lam` applied to a `Const`, then `Postulates::check`; `docs/runs/2026-11-09/patches/b2-opened-binder-spike.patch`,
     kernel untouched) cuts the memo tables at d = 13 by about two-thirds (shifts 162K to 50K entries, inst 164K to 34K,
@@ -930,6 +931,40 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   - *The whnf fast path,* adopted (`reduce.rs#whnf_in`): non-redex tags skip the memo and a reduced result is stored as
     its own whnf. The check's work falls 1.9% at d = 13 (3039350 to 2981514) and 2.7% at d = 6; the ratio per doubling
     is unchanged (1.992 from d = 12 to 13). Too small to time.
+- **Where the excess goes, profiled (2026-11-09):** xperf traces (sampled stacks and faults, large pages on, untimed,
+  other load 4-12%) of repeated checks at d = 6, 8, 11 and 13, all on one build with 4892e62's kernel (runs
+  `2026-11-09-c1-xperf`, `2026-11-09-c1-xperf-small` and `2026-11-09-c1-xperf-few`;
+  `docs/runs/2026-11-09/scripts/prof.sh`, `prof_report.sh`, `prof_agg.py`). Each d has two traces with different
+  numbers of checks, and a check's cost is their difference over the difference in checks, so the process's one-off
+  costs (start, build, its 256 MB stack, exit) cancel. `measure_cachegrind` now repeats the check `GATE_REPS` times and
+  takes its settings as test filter arguments, since the elevated profiler drops the environment. A traced check runs
+  about 7% slower than an untraced one (523 against about 488 ms at d = 13).
+  - *Size.* A check costs 107 ns per unit of work at d = 6, 126 at 8, 150 at 11 and 171 at 13. The excess at d = 13
+    over d = 6's rate is 195 ms of 523, not the 386 ms above, which came from timings taken while other sessions held
+    about 49% of the CPU.
+  - *Where.* Mostly in the functions that probe a table or memo: interning (`Spaces::mk`, `find`, `Space::push`,
+    `hash`) 44 ms (23%), `inst_rec` with its memo and `args_id` 27 ms (14%), `hc::uses` and `lowest_loose` 26 ms
+    (14%), the shift memo 20 ms (10%), `spine` 9 ms (4%); the checker's own closures 29 ms (15%); Windows' kernel
+    18 ms (9%); mimalloc 7 ms (4%); 15 ms elsewhere. The kernel's part is noisy (8.0 ns per unit of work at d = 11,
+    6.0 at 13) and its cause untested: soft page faults (`KiPageFault`) and working-set trimming (`MiTerminateWsle`,
+    `MiActivePageClaimCandidate`) are both among its frames. From d = 11 to 13 the excess is 64 ms, led by interning
+    (27%), the inst memo (24%) and the shift memo (19%); its top functions, `Space::push` (15%) and `shift_get` (14%),
+    are also among the top 1 MB misses above.
+  - *Against the misses.* cachegrind of a repeat check (`REPS=2` less `REPS=1`, run `2026-11-09-c1-cg-reps`,
+    `scripts/cg.sh`) at d = 13: 3.37 M read misses at 1 MB and 0.81 M at 16 MB, against 3.89 M and 1.56 M for a first
+    check, which also copies and rehashes as its arrays grow. At about 10 ns for an L2 miss that hits L3 and 100 ns
+    for one that goes to memory, these come to about 107 ms, 55% of the 195 (inference: nominal latencies, no
+    overlap); with the kernel's 18 ms, about 64%. The rest is not attributed; write misses (2.7 M at 16 MB per repeat
+    check), TLB walks (large pages are worth about 26 ms, above) and the latency guesses are the candidates. The 100 ns
+    weight may be high: by it, the first check's extra random (rehash) misses at 16 MB, about 0.22 M, would cost it
+    about 20 ms more than a repeat, and the next sub-bullet measured 4.7 ± 5.0. Separating these needs per-function hardware miss counts,
+    which the Samply task does not record.
+  - *Growth costs nothing measurable.* A first check (arrays and tables growing, with the `memcpy` and rehash misses)
+    and a repeat check (`scoped` keeps capacity) take about the same time: medians 490.8 and 487.2 ms at d = 13, 112.2
+    and 114.2 at d = 11, from 10 processes of 3 checks (untimed, other load 17%); first minus the mean of the repeats,
+    paired, +4.7 ± 5.0 ms (standard error) at d = 13 and -0.8 ± 2.0 at d = 11 (run `2026-11-09-c2-reps-b`,
+    `scripts/reps.sh` with `N=10`). So presizing the region would gain at most about 3% at d = 13 (95% interval
+    -6.6 to +16 ms), too little to justify it without a timed A/B: `PARKED.md`, item (i).
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The

@@ -246,7 +246,11 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   (i) *Reserved or presized arena storage, and scattered table growth* (`reserve_rehash`, `Space::push` 2.1%):
   presizing, 4x growth and fixed arrays were neutral, growth is below the benchmark noise of about ±5%, and whether 2%
   is worth having is open ("Arrays that never grow"; "Survey: where the growth comes from"). Trigger: a profile shows
-  growth (`reserve_rehash`, `memcpy` from `Vec` growth) as a visible share of the build. Parked.
+  growth (`reserve_rehash`, `memcpy` from `Vec` growth) as a visible share of the build. Parked. Retested on the gate's
+  check, where growth is about half the first check's 16 MB read misses: a first check and a repeat with the capacity
+  kept differed, paired, by +4.7 ± 5.0 ms of about 490 at d = 13 and -0.8 ± 2.0 of 113 at d = 11 (untimed; doc 15,
+  "Where the excess goes, profiled (2026-11-09)"), so presizing is worth at most about 3% there and a miss share alone
+  no longer meets the trigger; a timed A/B must.
   (j) *The id arena's own parked items*: raw-`Ref` walks for `inst_rec`, `uses`, `conv_whnf`; a bitset for
   `hc::exceeds`; variable-length (12 B) nodes; in-process collection of the persistent space; a shared frozen
   persistent space; compiled code reading ids. The profile at 3407 shows no `resolve` ("Id arena Stage 3";
