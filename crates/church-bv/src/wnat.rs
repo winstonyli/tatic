@@ -282,7 +282,7 @@ pub(super) fn ind(cx: &mut Cx, tys: &[Ty], body: &dyn Fn(&mut Cx, Expr, &[At]) -
                   hn: &dyn Fn(&mut Cx, &[At]) -> Expr) -> Expr {
     let motive = |cx: &mut Cx, n: Expr| -> Expr {
         let n = cx.mark(n);
-        tele(cx, false, tys, &mut vec![], &mut |cx, xs| body(cx, cx.at(n), xs))
+        tele(cx, tys, &mut vec![], &pi, &mut |cx, xs| body(cx, cx.at(n), xs))
     };
     // Pi f:(X -> N). Pi ih:(Pi w:X. motive (f w)). motive (sup tag f)
     let goal = |cx: &mut Cx, tag: Expr| -> Expr {
@@ -307,7 +307,7 @@ pub(super) fn ind(cx: &mut Cx, tys: &[Ty], body: &dyn Fn(&mut Cx, Expr, &[At]) -
                     let gm = goodmaybe(cx, cx.at(x), cx.at(m));
                     cx.lam(gm, |cx, g| cx.lam(arrow(cx.at(x), nw()), |cx, f| {
                         let ih_ty = cx.pi(cx.at(x), |cx, w| motive(cx, app(cx.at(f), cx.at(w))));
-                        cx.lam(ih_ty, |cx, ih| tele(cx, true, tys, &mut vec![], &mut |cx, xs| {
+                        cx.lam(ih_ty, |cx, ih| tele(cx, tys, &mut vec![], &lam, &mut |cx, xs| {
                             let mx = maybe(cx, cx.at(x));
                             let p = cx.lam(mx, |cx, m| pred(cx, &Tag { x_ty: x, m, f, ih }, xs));
                             let hjs = cx.lam(cx.at(x), |cx, w| {

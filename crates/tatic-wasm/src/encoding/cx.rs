@@ -20,7 +20,7 @@ impl Cx {
         At(e, self.0)
     }
     /// `body` one binder deeper, with that binder's variable, and no binder emitted (the caller wraps the result).
-    pub fn under(&mut self, body: impl FnOnce(&mut Cx, At) -> Expr) -> Expr {
+    pub fn under<R>(&mut self, body: impl FnOnce(&mut Cx, At) -> R) -> R {
         self.0 += 1;
         let x = At(var(0), self.0);
         let b = body(self, x);
@@ -38,29 +38,26 @@ impl Cx {
 /// A telescope entry: a binder's type from the variables bound before it.
 pub type Ty<'a> = Box<dyn Fn(&mut Cx, &[At]) -> Expr + 'a>;
 
-pub fn tele(c: &mut Cx, lambda: bool, tys: &[Ty], xs: &mut Vec<At>, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+/// `body` under the telescope `tys`, each binder's type built once and wrapped around the inside by `wrap`: `lam` or `pi`
+/// for one side, both at once for a law (`law`).
+pub fn tele<R>(c: &mut Cx, tys: &[Ty], xs: &mut Vec<At>, wrap: &dyn Fn(Expr, R) -> R, body: &mut dyn FnMut(&mut Cx, &[At]) -> R) -> R {
     if xs.len() == tys.len() {
         return body(c, xs);
     }
     let ty = tys[xs.len()](c, xs);
-    let rest = |c: &mut Cx, x| {
+    let inner = c.under(|c, x| {
         xs.push(x);
-        let b = tele(c, lambda, tys, xs, body);
+        let b = tele(c, tys, xs, wrap, body);
         xs.pop();
         b
-    };
-    if lambda { c.lam(ty, rest) } else { c.pi(ty, rest) }
+    });
+    wrap(ty, inner)
 }
 
-/// The statement's Pis over a telescope.
-pub fn statement(tys: &[Ty], mut stmt: impl FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
-    tele(&mut Cx::default(), false, tys, &mut vec![], &mut stmt)
-}
-
-/// `(proof, statement)`: the proof's lambdas and the statement's Pis over the same telescope.
-pub fn law(tys: &[Ty], stmt: impl FnMut(&mut Cx, &[At]) -> Expr, mut proof: impl FnMut(&mut Cx, &[At]) -> Expr) -> (Expr, Expr) {
-    let p = tele(&mut Cx::default(), true, tys, &mut vec![], &mut proof);
-    (p, statement(tys, stmt))
+/// `(proof, statement)` from one walk of the telescope: `body` gives both at the same depth, so a subterm they share (the
+/// `refl` side of an equation) is built once. The proof gets the lambdas, the statement the Pis.
+pub fn law(tys: &[Ty], mut body: impl FnMut(&mut Cx, &[At]) -> (Expr, Expr)) -> (Expr, Expr) {
+    tele(&mut Cx::default(), tys, &mut vec![], &|ty, (p, s)| (lam(ty, p), pi(ty, s)), &mut body)
 }
 
 #[macro_export]
@@ -91,10 +88,13 @@ mod tests {
         cx.at(leaked.unwrap());
     }
     #[test]
-    fn statement_is_the_laws_statement() {
+    fn a_law_is_its_two_one_sided_telescopes() {
         let tys = [ty!(|_c, _x| bool0()), ty!(|c, x| id(bool0(), c.at(x[0]), c.at(x[0])))];
         let stmt = |c: &mut Cx, x: &[At]| id(bool0(), c.at(x[0]), c.at(x[0]));
-        let (_, s) = law(&tys, stmt, |c, x| refl(c.at(x[0])));
-        assert!(s == statement(&tys, stmt));
+        let proof = |c: &mut Cx, x: &[At]| refl(c.at(x[0]));
+        let (p, s) = law(&tys, |c, x| (proof(c, x), stmt(c, x)));
+        assert!(s == tele(&mut Cx::default(), &tys, &mut vec![], &pi, &mut |c, x| stmt(c, x)));
+        assert!(p == tele(&mut Cx::default(), &tys, &mut vec![], &lam, &mut |c, x| proof(c, x)));
+        assert!(holds(&p, &s).is_ok());
     }
 }

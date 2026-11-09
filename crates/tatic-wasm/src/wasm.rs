@@ -181,17 +181,17 @@ impl Wasm {
             }
         })
     }
-    /// The eight constructor binders, lambdas or Pis, then `body` with their variables.
-    fn ctors(&self, c: &mut Cx, f: At, lambda: bool, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+    /// The eight constructor binders, each wrapped by `wrap` (`lam` or `pi`), then `body` with their variables.
+    fn ctors(&self, c: &mut Cx, f: At, wrap: fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
         let w = *self;
         let tys: Vec<Ty> = (0..8).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
-        tele(c, lambda, &tys, &mut vec![], body)
+        tele(c, &tys, &mut vec![], &wrap, body)
     }
     /// `Prog S T`, with `S` and `T` built at each use.
     pub fn prog_ty(&self, c: &mut Cx, s: &dyn Fn(&Cx) -> Expr, t: &dyn Fn(&Cx) -> Expr) -> Expr {
         c.pi(F_TY(), |c, f| {
             let nil = app(c.at(f), t(c));
-            c.pi(nil, |c, _| self.ctors(c, f, false, &mut |c, _| app(c.at(f), s(c))))
+            c.pi(nil, |c, _| self.ctors(c, f, pi, &mut |c, _| app(c.at(f), s(c))))
         })
     }
     /// `Pi S. Prog S (K, S)`: code that pushes one value of kind `k`.
@@ -204,7 +204,7 @@ impl Wasm {
         c.lam(F_TY(), |c, f| {
             let nil = app(c.at(f), self.sty(c, &out, base));
             c.lam(nil, |c, nil| {
-                self.ctors(c, f, true, &mut |c, ct| {
+                self.ctors(c, f, lam, &mut |c, ct| {
                     let ct = ct.to_vec();
                     self.seq(c, f, &ct, base, code, ks.to_vec(), &|c, _| c.at(nil), &[])
                 })
@@ -412,7 +412,7 @@ impl Wasm {
         c.lam(F_TY(), |c, f| {
             let nil = app(c.at(f), u(c));
             c.lam(nil, |c, nil| {
-                self.ctors(c, f, true, &mut |c, ct| {
+                self.ctors(c, f, lam, &mut |c, ct| {
                     let ctors: Vec<Expr> = ct.iter().map(|x| c.at(*x)).collect();
                     let inner = apps(c.at(p2), [vec![c.at(f), c.at(nil)], ctors.clone()].concat());
                     apps(c.at(p1), [vec![c.at(f), inner], ctors].concat())
@@ -425,7 +425,7 @@ impl Wasm {
         c.lam(F_TY(), |c, f| {
             let nil = app(c.at(f), c.at(t_ty));
             c.lam(nil, |c, nil| {
-                self.ctors(c, f, true, &mut |c, ct| {
+                self.ctors(c, f, lam, &mut |c, ct| {
                     let ctors: Vec<Expr> = ct.iter().map(|x| c.at(*x)).collect();
                     let arm = |c: &Cx, p: At| apps(c.at(p), [vec![c.at(f), c.at(nil)], ctors.clone()].concat());
                     apps(c.at(ct[4]), vec![c.at(s), arm(c, th), arm(c, el)])
@@ -445,7 +445,7 @@ impl Wasm {
             ty!(|c, x| c.at(x[0])),
             ty!(|c, x| w.mem(c, x[2])),
         ];
-        tele(c, false, &tys, &mut vec![], &mut |c, x| {
+        tele(c, &tys, &mut vec![], &pi, &mut |c, x| {
             let p = c.mark(app(c.at(cc), c.at(x[0])));
             let lhs = app2(w.meaning(c, p, x[1], x[2], x[3], x[4]), c.at(x[5]), c.at(x[6]));
             let rhs = app2(c.at(x[3]), mkpair(c.at(x[0]), c.at(m), c.at(x[5])), c.at(x[6]));
@@ -534,24 +534,16 @@ mod tests {
                 let inner = w.upd(c, x[1], lit(n, 1), c.at(x[5]), c.at(x[7]));
                 w.upd(c, x[1], lit(n, 0), c.at(x[4]), inner)
             };
-            let lhs = |c: &mut Cx, x: &[At]| {
+            law(&tys, |c, x| {
                 let p = w.prog(c, &code, &[], x[0]);
                 let p = c.mark(p);
                 let fuel = c.mark(nat2_lit(0));
                 let m = frame(c, x);
-                app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[6]), m)
-            };
-            law(
-                &tys,
-                |c, x| {
-                    let l = lhs(c, x);
-                    let m = frame(c, x);
-                    let (p, q) = if b_minus_a { (x[5], x[4]) } else { (x[4], x[5]) };
-                    let val = app2(sub(n), c.at(p), c.at(q));
-                    id(c.at(x[1]), l, app2(c.at(x[2]), mkpair(c.at(x[0]), val, c.at(x[6])), m))
-                },
-                |c, x| refl(lhs(c, x)),
-            )
+                let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[6]), m);
+                let (p, q) = if b_minus_a { (x[5], x[4]) } else { (x[4], x[5]) };
+                let val = app2(sub(n), c.at(p), c.at(q));
+                (refl(l), id(c.at(x[1]), l, app2(c.at(x[2]), mkpair(c.at(x[0]), val, c.at(x[6])), m)))
+            })
         };
         tatic_kernel::scoped(|| {
             let (p, s) = law_for(true);

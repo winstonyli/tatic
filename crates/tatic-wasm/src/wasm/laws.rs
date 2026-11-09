@@ -28,23 +28,20 @@ pub fn if_inv(ctl: Ctl) -> (Expr, Expr) {
         ty!(|c, x| app(c.at(x[1]), c.at(x[5]))),
     ];
     let q_choose = |c: &Cx, x: &[At], w: Expr| app(c.at(x[1]), choose(c.at(x[0]), w, c.at(x[4]), c.at(x[5])));
-    law(
-        &tys,
-        |c, x| if ctl == Ctl::ClaimsX { app(c.at(x[1]), c.at(x[4])) } else { q_choose(c, x, c.at(x[2])) },
-        |c, x| {
-            let motive = c.lam(bv_ty(1), |c, w| q_choose(c, x, c.at(w)));
-            let leaf_f = if ctl == Ctl::SameLeaf { x[6] } else { x[7] };
-            let good = if ctl == Ctl::NoLower { good_bool() } else { good_bool0() };
-            let step = c.lam(bool0(), |c, a| {
-                c.lam(app(good, c.at(a)), |c, ga| {
-                    let mb = c.lam(bool0(), |c, b| q_choose(c, x, church_tuple(&[c.at(b)])));
-                    app3(c.at(ga), mb, c.at(x[6]), c.at(leaf_f))
-                })
-            });
-            let w = if ctl == Ctl::NoLower { c.at(x[3]) } else { app2(lower_bv(1).0, c.at(x[2]), c.at(x[3])) };
-            app2(w, motive, step)
-        },
-    )
+    law(&tys, |c, x| {
+        let stmt = if ctl == Ctl::ClaimsX { app(c.at(x[1]), c.at(x[4])) } else { q_choose(c, x, c.at(x[2])) };
+        let motive = c.lam(bv_ty(1), |c, w| q_choose(c, x, c.at(w)));
+        let leaf_f = if ctl == Ctl::SameLeaf { x[6] } else { x[7] };
+        let good = if ctl == Ctl::NoLower { good_bool() } else { good_bool0() };
+        let step = c.lam(bool0(), |c, a| {
+            c.lam(app(good, c.at(a)), |c, ga| {
+                let mb = c.lam(bool0(), |c, b| q_choose(c, x, church_tuple(&[c.at(b)])));
+                app3(c.at(ga), mb, c.at(x[6]), c.at(leaf_f))
+            })
+        });
+        let w = if ctl == Ctl::NoLower { c.at(x[3]) } else { app2(lower_bv(1).0, c.at(x[2]), c.at(x[3])) };
+        (app2(w, motive, step), stmt)
+    })
 }
 
 /// `Pi Sa Sb Sc (p1 : Prog Sa Sb) (p2 : Prog Sb Sc) N R k z. Id(G Sa, M (p1 ++ p2) .. k z, M p1 .. (M p2 .. k z) z)`, by `refl`.
@@ -60,23 +57,16 @@ pub fn append_law(w: Wasm) -> (Expr, Expr) {
         ty!(|c, x| w.g(c, x[6], c.at(x[2]))),
         ty!(|c, x| c.at(x[6])),
     ];
-    let lhs = |c: &mut Cx, x: &[At]| {
+    law(&tys, |c, x| {
         let p = w.append(c, &|c| c.at(x[2]), x[3], x[4]);
         let p = c.mark(p);
-        w.meaning(c, p, x[5], x[6], x[7], x[8])
-    };
-    law(
-        &tys,
-        |c, x| {
-            let l = lhs(c, x);
-            let k2 = w.meaning(c, x[4], x[5], x[6], x[7], x[8]);
-            let k2 = c.mark(k2);
-            let r = w.meaning(c, x[3], x[5], x[6], k2, x[8]);
-            let ga = w.g(c, x[6], c.at(x[0]));
-            id(ga, l, r)
-        },
-        |c, x| refl(lhs(c, x)),
-    )
+        let l = w.meaning(c, p, x[5], x[6], x[7], x[8]);
+        let k2 = w.meaning(c, x[4], x[5], x[6], x[7], x[8]);
+        let k2 = c.mark(k2);
+        let r = w.meaning(c, x[3], x[5], x[6], k2, x[8]);
+        let ga = w.g(c, x[6], c.at(x[0]));
+        (refl(l), id(ga, l, r))
+    })
 }
 
 /// The If law and its invariant, over one telescope:
@@ -194,32 +184,23 @@ impl IfX {
 /// `Spec(cc, m) -> M (cc S ++ if t e) N R k z s mu = choose m (M t .. s mu) (M e .. s mu)`; `swap` states the arms swapped.
 pub fn if_law(w: Wasm, swap: bool) -> (Expr, Expr) {
     let tys = if_tele(w, false);
-    law(
-        &tys,
-        |c, x| {
-            let n = if_names(x, false);
-            let (l, r) = (n.lhs(w, c, false), n.rhs(w, c, swap));
-            id(c.at(n.r), l, r)
-        },
-        |c, x| if_names(x, false).law_proof(w, c),
-    )
+    law(&tys, |c, x| {
+        let n = if_names(x, false);
+        let (l, r) = (n.lhs(w, c, false), n.rhs(w, c, swap));
+        (n.law_proof(w, c), id(c.at(n.r), l, r))
+    })
 }
 
 /// `Spec(cc, m) -> GoodBv m -> Q (M t .. s mu) -> Q (M e .. s mu) -> Q (M (cc S ++ if t e) .. s mu)`: the If law,
 /// transported, of `if_inv`. `swap` states it for `if e t`.
 pub fn if_good(w: Wasm, swap: bool) -> (Expr, Expr) {
     let tys = if_tele(w, true);
-    law(
-        &tys,
-        |c, x| {
-            let n = if_names(x, true);
-            let l = n.lhs(w, c, swap);
-            app(c.at(n.q.unwrap()), l)
-        },
-        |c, x| {
-            let n = if_names(x, true);
-            let (q, r) = (n.q.unwrap(), n.r);
-            let (l, rh, p) = (n.lhs(w, c, false), n.rhs(w, c, false), n.law_proof(w, c));
+    law(&tys, |c, x| {
+        let n = if_names(x, true);
+        let (q, r) = (n.q.unwrap(), n.r);
+        let (l, rh, p) = (n.lhs(w, c, false), n.rhs(w, c, false), n.law_proof(w, c));
+        let stmt = app(c.at(q), if swap { n.lhs(w, c, true) } else { l });
+        let proof = {
             // J at `\x y _. Q y -> Q x` takes `Q rhs` to `Q lhs`
             let motive = c.lam(c.at(r), |c, a| {
                 c.lam(c.at(r), |c, b| {
@@ -232,8 +213,9 @@ pub fn if_good(w: Wasm, swap: bool) -> (Expr, Expr) {
             let (t_ans, e_ans) = (n.arm(w, c, n.th), n.arm(w, c, n.el));
             let split = apps(if_inv(Ctl::Ok).0, vec![c.at(r), c.at(q), c.at(n.m), c.at(n.gm.unwrap()), t_ans, e_ans, c.at(qt), c.at(qe)]);
             app(jelim(motive, base, l, rh, p), split)
-        },
-    )
+        };
+        (proof, stmt)
+    })
 }
 
 /// `GoodNat N -> (Pi s mu. I s -> Q z) -> (Pi f. Good f -> Good (B f)) -> Good (N (G A) (\s mu. z) B)`: fixpoint
@@ -265,25 +247,20 @@ pub fn loop_law(w: Wasm) -> (Expr, Expr) {
         let to = timeout(w, c, x[0], x[1], x[4]);
         c.mark(apps(c.at(m), vec![g, to, c.at(x[5])]))
     };
-    law(
-        &tys,
-        |c, x| {
-            let f = unrolled(c, x, x[6]);
+    law(&tys, |c, x| {
+        let f = unrolled(c, x, x[6]);
+        let stmt = w.good(c, x[0], x[1], x[2], x[3], f);
+        let motive = c.lam(nat2(), |c, m| {
+            let f = unrolled(c, x, m);
             w.good(c, x[0], x[1], x[2], x[3], f)
-        },
-        |c, x| {
-            let motive = c.lam(nat2(), |c, m| {
-                let f = unrolled(c, x, m);
-                w.good(c, x[0], x[1], x[2], x[3], f)
-            });
-            let step = c.lam(nat2(), |c, j| {
-                let f = unrolled(c, x, j);
-                let gf = w.good(c, x[0], x[1], x[2], x[3], f);
-                c.lam(gf, |c, ih| apps(c.at(x[9]), vec![c.at(f), c.at(ih)]))
-            });
-            apps(c.at(x[7]), vec![motive, c.at(x[8]), step])
-        },
-    )
+        });
+        let step = c.lam(nat2(), |c, j| {
+            let f = unrolled(c, x, j);
+            let gf = w.good(c, x[0], x[1], x[2], x[3], f);
+            c.lam(gf, |c, ih| apps(c.at(x[9]), vec![c.at(f), c.at(ih)]))
+        });
+        (apps(c.at(x[7]), vec![motive, c.at(x[8]), step]), stmt)
+    })
 }
 fn timeout(w: Wasm, c: &mut Cx, a: At, r: At, z: At) -> Expr {
     c.lam(c.at(a), |c, _| {
@@ -331,21 +308,14 @@ pub fn countdown_law(w: Wasm, dec: Op) -> (Expr, Expr) {
         ty!(|c, x| w.mem(c, x[3])),
         ty!(|c, x| app(good_bv(n), c.at(x[9]))),
     ];
-    let m_cd = |c: &mut Cx, x: &[At]| {
+    law(&tys, |c, x| {
         let p = w.prog(c, &code, &[K::W], x[0]);
         let p = c.mark(p);
-        w.meaning(c, p, x[1], x[3], x[5], x[6])
-    };
-    law(
-        &tys,
-        |c, x| {
-            let m = m_cd(c, x);
-            app(c.at(x[4]), app2(m, mkpair(c.at(x[0]), c.at(x[9]), c.at(x[10])), c.at(x[11])))
-        },
-        |c, x| {
+        let m = w.meaning(c, p, x[1], x[3], x[5], x[6]);
+        let stmt = app(c.at(x[4]), app2(m, mkpair(c.at(x[0]), c.at(x[9]), c.at(x[10])), c.at(x[11])));
+        let proof = {
             let (s_ty, r, q, k) = (x[0], x[3], x[4], x[5]);
             // `M cd` is `N (G A) timeout B`: take `B`
-            let m = m_cd(c, x);
             let body = match whnf(&m).node() {
                 tatic_kernel::Node::App(_, b) => c.mark(b),
                 other => panic!("countdown's meaning is not a fuel application: {other:?}"),
@@ -401,8 +371,9 @@ pub fn countdown_law(w: Wasm, dec: Op) -> (Expr, Expr) {
             let args = vec![c.at(a), c.at(r), c.at(inv), c.at(q), c.at(x[6]), c.at(body), c.at(x[1]), c.at(x[2]), hz, hs,
                 mkpair(c.at(s_ty), c.at(x[9]), c.at(x[10])), c.at(x[11]), c.at(x[12])];
             apps(loop_law(w).0, args)
-        },
-    )
+        };
+        (proof, stmt)
+    })
 }
 
 /// `Pi S R k z s mu. Id(R, M p fuel R k z (start..s) mu, want)`, by `refl`: a concrete run.
@@ -417,14 +388,14 @@ fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn
         ty!(|c, x| c.at(x[0])),
         ty!(|c, x| w.mem(c, x[1])),
     ];
-    let lhs = |c: &mut Cx, x: &[At]| {
+    law(&tys, |c, x| {
         let p = w.prog(c, code, &ks, x[0]);
         let p = c.mark(p);
         let fuel = c.mark(nat2_lit(fuel));
         let st = start.iter().rev().fold(c.at(x[4]), |acc, v| mkpair(c.at(x[0]), lit(w.n, *v), acc));
-        app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), st, c.at(x[5]))
-    };
-    law(&tys, |c, x| { let (l, r) = (lhs(c, x), want(c, x)); id(c.at(x[1]), l, r) }, |c, x| refl(lhs(c, x)))
+        let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), st, c.at(x[5]));
+        (refl(l), id(c.at(x[1]), l, want(c, x)))
+    })
 }
 
 #[test]

@@ -256,17 +256,12 @@ fn proof(k: usize, machines: &[Machine; 2], enc: &Encoding) -> (Expr, Expr) {
     assert!(intern_generation() != 0, "wfold::proof outside a scoped region: build and check it in one tatic_kernel::scoped call");
     let sp = StepProof::new(machines, enc, k);
     let lemmas: Vec<Vec<Expr>> = (0..2).map(|sd| (0..=enc.phi[0].len()).map(|j| sp.lemma(sd, j).0).collect()).collect();
-    let stmt = |cx: &mut Cx, xs: &[At]| {
-        let (l, r) = (side(cx, &machines[0], &xs[..k]).0, side(cx, &machines[1], &xs[..k]).0);
-        ptw(cx, l, r)
-    };
-    law(&operands(k), stmt, |cx, xs| {
-        let carries = [0, 1].map(|sd| {
-            let cs = side(cx, &machines[sd], &xs[..k]).1;
-            cs.into_iter().map(|c| cx.mark(c)).collect()
-        });
+    law(&operands(k), |cx, xs| {
+        let [(lv, cl), (rv, cr)] = [0, 1].map(|sd| side(cx, &machines[sd], &xs[..k]));
+        let stmt = ptw(cx, lv, rv);
+        let carries = [cl, cr].map(|cs| cs.into_iter().map(|c| cx.mark(c)).collect());
         let r = Root { sp: &sp, xs, carries, lemmas: &lemmas };
-        with_goods(cx, &r, &mut [vec![], vec![]], &mut |cx, goods| {
+        let proof = with_goods(cx, &r, &mut [vec![], vec![]], &mut |cx, goods| {
             let (inv, ty) = invariant(cx, &r, goods);
             let body = cx.lam(ty, |cx, h| cx.lam(nw(), |cx, i| {
                 let i = cx.at(i);
@@ -275,7 +270,8 @@ fn proof(k: usize, machines: &[Machine; 2], enc: &Encoding) -> (Expr, Expr) {
                 r.eq(cx, goods, 0, i, &ip)
             }));
             app(body, inv)
-        })
+        });
+        (proof, stmt)
     })
 }
 
@@ -313,7 +309,7 @@ fn w_fold_add_associates() {
     tatic_kernel::scoped(|| {
         let (proof, stmt) = proof(3, &machines, &enc);
         checked("(x + y) + z = x + (y + z)", check(&Ctx::new(), &proof, &stmt));
-        let by_hand = |r: &dyn Fn(Expr, Expr, Expr) -> Expr| statement(&operands(3), |cx, xs| {
+        let by_hand = |r: &dyn Fn(Expr, Expr, Expr) -> Expr| tele(&mut Cx::default(), &operands(3), &mut vec![], &pi, &mut |cx, xs| {
             let [a, c, d] = [0, 1, 2].map(|i| cx.at(xs[i]));
             ptw(cx, add(add(a, c), d), r(a, c, d))
         });
@@ -429,7 +425,7 @@ fn w_fold_a_comparison_is_its_own_law() {
         let (proof, stmt) = proof(2, &machines, &enc);
         checked("x < y = ~y < ~x", check(&Ctx::new(), &proof, &stmt));
         let (left, swapped) = (Machine::parse(&lt(x, y)).unwrap(), Machine::parse(&lt(y, x)).unwrap());
-        let wrong = statement(&operands(2), |cx, xs| {
+        let wrong = tele(&mut Cx::default(), &operands(2), &mut vec![], &pi, &mut |cx, xs| {
             let (l, r) = (side(cx, &left, &xs[..2]).0, side(cx, &swapped, &xs[..2]).0);
             ptw(cx, l, r)
         });

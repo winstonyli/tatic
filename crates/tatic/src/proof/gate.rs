@@ -13,7 +13,7 @@
 
 use hashbrown::HashSet;
 use tatic_kernel::{app2, id, refl, scoped, sort, Expr};
-use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, At, Cx, Ty};
+use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, Ty};
 use tatic_wasm::wasm::{choose, mkpair, nat2_lit, well_formed, Ins, Wasm, K};
 
 use crate::jit::compile::tree_size;
@@ -125,29 +125,18 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
     tys.push(ty!(|c, x| c.at(x[0])));
     tys.push(ty!(|c, x| w.mem(c, x[1])));
     let (s_at, mu_at) = (4 + m, 5 + m);
-    let frame = |c: &mut Cx, x: &[At]| {
-        (0..m).rev().fold(c.at(x[mu_at]), |acc, j| w.upd(c, x[1], lit(N, j as u128), c.at(x[4 + j]), acc))
-    };
-    let lhs = |c: &mut Cx, x: &[At]| {
+    law(&tys, |c, x| {
+        let fr = (0..m).rev().fold(c.at(x[mu_at]), |acc, j| w.upd(c, x[1], lit(N, j as u128), c.at(x[4 + j]), acc));
         let p = w.prog(c, code, &[], x[0]);
         let p = c.mark(p);
         let fuel = c.mark(nat2_lit(fuel));
-        let fr = frame(c, x);
-        app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[s_at]), fr)
-    };
-    law(
-        &tys,
-        |c, x| {
-            let l = lhs(c, x);
-            let fr = frame(c, x);
-            let (r, k, st, s) = (c.at(x[1]), c.at(x[2]), c.at(x[0]), c.at(x[s_at]));
-            let qs: Vec<Expr> = (0..m).map(|j| c.at(x[4 + j])).collect();
-            let src = Source { store, qs, r: r.clone() };
-            let rhs = src.cps(body, &|v| app2(k.clone(), mkpair(st.clone(), v, s.clone()), fr.clone()));
-            id(r, l, rhs)
-        },
-        |c, x| refl(lhs(c, x)),
-    )
+        let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[s_at]), fr);
+        let (r, k, st, s) = (c.at(x[1]), c.at(x[2]), c.at(x[0]), c.at(x[s_at]));
+        let qs: Vec<Expr> = (0..m).map(|j| c.at(x[4 + j])).collect();
+        let src = Source { store, qs, r };
+        let rhs = src.cps(body, &|v| app2(k, mkpair(st, v, s), fr));
+        (refl(l), id(r, l, rhs))
+    })
 }
 
 /// The right side's builder over the source term: parameters `qs` (q_j is `$p{j}`) and the answer type `r`.

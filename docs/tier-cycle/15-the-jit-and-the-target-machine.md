@@ -863,9 +863,12 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   `instantiate_n` 31%, which is mostly the hash-consing it drives (`Spaces::node` 19%, `Spaces::build` 17%) and the
   `hc::uses` test that lets an instantiation skip a subterm (12%). No frame stands out on its own; the largest leaf is
   hashbrown's probe (`_mm_movemask_epi8` 5%, `probe_seq` 4%). Doubling the bound would need the check to be more than
-  twice as fast, so it stays at 8192 until the machine's reduction changes. The gate's build is half its proof's copy of
-  the lhs (build work 37491 against 18792 without it at `doubling(11)`, a one-off probe); building it once cuts the
-  build, not the check, since the kernel interns both copies as one node and the checker memoises shared nodes.
+  twice as fast, so it stays at 8192 until the machine's reduction changes. Half the gate's build was its proof's copy
+  of the lhs (build work 37491 against 18792 without it at `doubling(11)`, a one-off probe). `encoding::law` now walks
+  its telescope once, its body giving the proof and the statement together, so every law builds a subterm the two
+  share once (the gate's lhs and frame, `wfold::proof`'s machine sides, the `refl` laws of `wasm/laws.rs`); the gate's
+  build work at `doubling(11)` went from 37491 to 18774. The check is unchanged by it: the kernel interns both copies as
+  one node and the checker memoises shared nodes.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
