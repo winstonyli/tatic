@@ -830,7 +830,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   `doubling(7)`, `(8)`, `(9)` fell from 216k, 715k, 2.60M to 59k, 106k, 201k, and `gate_check_work_is_linear_in_the_tree`
   fails above 2.6x per doubling (the old memo gave 3.3x and 3.6x; runs `2026-11-08-memo-check-work-a` and `-b`). Rerun (run `2026-11-08-memo-gate-costs`, cpu 44%, one
   rep per tree): `doubling(10)` 184 + 147 ms, `(11)` 402 + 309 ms, `(12)` 945 + 828 ms, `(13)` 2,265 + 2,495 ms, against
-  102 s of check before; the build now grows 2.2-2.4x per doubling too (not looked into). By the same rule the bound is
+  102 s of check before; the build now grows 2.2-2.4x per doubling too (next bullet). By the same rule the bound is
   now 2048 nodes (`doubling(10)`, 0.33 s; `doubling(11)` takes 0.71 s). The church-bv gate is unchanged (run
   `2026-11-08-memo-gate3`, salts 1-3: M 447 and held-out M 5166 both arms, rules the same in 9 of 9 loops, peak process
   3,336 MB both). Its pin test (`streams::stream_sequences_are_pinned`, about 863 G instructions) passed on both arms
@@ -838,6 +838,18 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   the two flat batch pairs (max/best 1.0002 or less) differ by -0.001% and -0.010% in B's favour, and the first two pairs
   (max/best up to 1.004, the large-page wander of doc 14, "Why a retired-instruction count wanders") by +0.15% and
   +0.30% against it.
+- **Why the build grew 2.2x per doubling (spike, held for a decision):** the build rebuilt closed constants. Profiled at
+  `doubling(7)` to `(13)` in release (`2026-11-08-build-growth-profile2`, samply), 80% of its samples sit in
+  hash-consing: `seq_step` rebuilds `bv_ty(64)` for every slot of every instruction's stack type (49% inclusive), and
+  `Op::term` the operator's circuit at every `Op` (15%). A stack slot's type costs `O(depth)` per instruction, the
+  log factor. `statement` also builds the left side twice, once for the statement and once in `refl`. Memoising
+  `bv_ty` and `Op::term` per interning generation (as `gates::constant` does for closed constants) and building `sty`
+  with one shift of the base took the release build at `doubling(13)` from 837 ms to 64 ms, its kernel work from 738k
+  to 148k, 1.98x per doubling. Test profile, one rep each (`2026-11-08-build-memo-gate-costs`, cpu 25%):
+  `doubling(11)` 30 + 166 ms, `(12)` 42 + 317 ms, `(13)` 94 + 738 ms; the check reads faster than before too, not
+  explained, and one rep is not enough to set the bound from. The patch is
+  `docs/superpowers/spikes/2026-11-08-build-memo.patch` (reverted); as written it fails church-bv's
+  `hidden_state_is_classified`, since it adds two thread-locals.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
