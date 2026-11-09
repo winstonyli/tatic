@@ -16,7 +16,8 @@ use crate::jit::ir::{check, Combinator, Dispatch, Func, Module, Node, Read};
 use crate::jit::lower_wat::lower;
 use crate::lang::term::{PrimOp, TermStore};
 
-const EDGES: [i64; 8] = [i64::MIN, i64::MIN + 1, -7, -1, 0, 1, 7, i64::MAX];
+/// The edge values of a 64-bit word, also the operator table's full edge set (`jit/op_table_tests.rs`).
+pub(crate) const EDGES: [i64; 8] =[i64::MIN, i64::MIN + 1, -7, -1, 0, 1, 7, i64::MAX];
 
 fn engine() -> &'static wasmtime::Engine {
     static ENGINE: OnceLock<wasmtime::Engine> = OnceLock::new();

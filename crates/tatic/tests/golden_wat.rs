@@ -107,6 +107,14 @@ fn fragment_modules_lower_to_their_golden_wat() {
     let h = s.abs(t);
     let frag = try_compile(&s, h).expect("doubling_4 should compile");
     check_golden(&dir, "doubling_4", &frag.wat(), update, &mut changed);
+    // negative literals, `MIN` among them: `\x. (x + -5) + MIN`, recorded from the printer
+    let mut s = TermStore::new();
+    let (x, m5, min) = (s.var(0), s.lit(-5), s.lit(i64::MIN));
+    let e = s.prim(tatic::lang::term::PrimOp::Add, x, m5);
+    let e = s.prim(tatic::lang::term::PrimOp::Add, e, min);
+    let h = s.abs(e);
+    let frag = try_compile(&s, h).expect("negative literals should compile");
+    check_golden(&dir, "negative_literals", &frag.wat(), update, &mut changed);
     let terms: [(&str, fn(&mut TermStore) -> Hash); 2] =
         [("a_capturing_closure_call", samples::a_capturing_closure_call), ("a_pap_capturing", samples::a_pap_capturing)];
     for (name, build) in terms {

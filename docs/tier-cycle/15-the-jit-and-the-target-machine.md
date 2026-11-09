@@ -770,7 +770,8 @@ Each check was shown to fail on its own: mapping `Lt` to `LtU` in `shape::op_of`
 `(MIN, 0)`, and giving `Op::LtS` the `lt_u` circuit broke `def_eq` there. The default test (n = 64) first used
 `ir_fuzz.rs`'s 8 edges squared and took 4.0 s, 3.9 s of it in `mul`'s circuit; cut to `{MIN, -1, 0, 1, MAX}` it takes
 1.6 s (`mul` 1.5 s), still over the plan's 1 s, and kept as the only always-on guard on the table (debug build, one test
-thread of a parallel suite). The ignored n = 8 test runs all 65,536 pairs per row and passed in 47 s, `mul` 26 s of it
+thread of a parallel suite); the 8 edges run ignored since (`op_table_agrees_at_n64_on_all_edges`, 5.0-6.1 s after
+the `karrow` fix, `mul` 4.9-6.0 s of it, so that fix did not touch `mul`'s circuit check). The ignored n = 8 test runs all 65,536 pairs per row and passed in 47 s, `mul` 26 s of it
 (run `2026-11-08-v07-op-table-n8`).
 
 **The gate's costs, and the rules they triggered.** `proof/gate.rs` proves the emitted body of a fragment term equal to

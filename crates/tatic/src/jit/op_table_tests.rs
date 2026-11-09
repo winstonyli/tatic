@@ -17,8 +17,9 @@ use crate::jit::shape::op_of;
 use crate::lang::eval::apply_term;
 use crate::lang::term::{PrimOp, TermStore};
 
-/// `ir_fuzz.rs`'s edges less `MIN + 1`, `-7` and `7`: the full set took 4 s
-/// (`mul`'s circuit 3.9 s of it), against the plan's 1 s for a default test.
+/// `ir_fuzz.rs`'s edges less `MIN + 1`, `-7` and `7`: the full set took 4-6 s
+/// (`mul`'s circuit nearly all of it), against the plan's 1 s for a default
+/// test, so it runs ignored (`op_table_agrees_at_n64_on_all_edges`).
 const EDGES: [i64; 5] = [i64::MIN, -1, 0, 1, i64::MAX];
 const SOURCE_OPS: [PrimOp; 8] =
     [PrimOp::Add, PrimOp::Sub, PrimOp::Mul, PrimOp::Div, PrimOp::Mod, PrimOp::Lt, PrimOp::Le, PrimOp::Eq];
@@ -88,6 +89,14 @@ fn agree(n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
 
 #[test]
 fn op_table_agrees_at_n64_on_edges() {
+    agree(64, &|| Box::new(EDGES.iter().flat_map(|&x| EDGES.iter().map(move |&y| (x as u64, y as u64)))));
+}
+
+/// Goal 4's 8 edges, every pair.
+#[test]
+#[ignore]
+fn op_table_agrees_at_n64_on_all_edges() {
+    use crate::testing::ir_fuzz::EDGES;
     agree(64, &|| Box::new(EDGES.iter().flat_map(|&x| EDGES.iter().map(move |&y| (x as u64, y as u64)))));
 }
 
