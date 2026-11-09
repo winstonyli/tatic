@@ -1,0 +1,30 @@
+diff --git a/crates/tatic-kernel/src/subst.rs b/crates/tatic-kernel/src/subst.rs
+index ab3219d..0c14343 100644
+--- a/crates/tatic-kernel/src/subst.rs
++++ b/crates/tatic-kernel/src/subst.rs
+@@ -94,7 +94,7 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
+         if s.loose(&x) != u32::MAX && !hc::uses(s, &x, d, m) {
+             return shift_child(s, &x, d + m, -(m as i32));
+         }
+-        let memo = s.shared(&x) && !hc::low(s, &x);
++        let memo = spike_gate(s, &x);
+         if memo && let Some(r) = hc::inst_get(s, &x, d) {
+             return r;
+         }
+@@ -112,6 +112,16 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
+     })
+ }
+ 
++/// f2 spike: INST_GATE = s<k> (shared and height > k) or a<k> (any node with height > k); k = -1 means no cutoff.
++fn spike_gate(s: &Spaces, x: &Expr) -> bool {
++    static G: std::sync::OnceLock<(bool, i32)> = std::sync::OnceLock::new();
++    let &(sh, cut) = G.get_or_init(|| {
++        let v = std::env::var("INST_GATE").unwrap_or_else(|_| "s2".into());
++        (v.starts_with('s'), v[1..].parse().unwrap())
++    });
++    (!sh || s.shared(x)) && s.height(x) as i32 > cut
++}
++
+ /// Whether `Var(idx)` occurs free in `e`, tracking binder depth through
+ /// every variant exactly as `shift`/`subst` do (one more binder crosses
+ /// under `Pi`/`Lam`/`W`'s second field/`WRec`'s `children_ty`/`Sigma`'s

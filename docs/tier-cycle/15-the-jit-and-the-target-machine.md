@@ -955,7 +955,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     check, which also copies and rehashes as its arrays grow. At about 10 ns for an L2 miss that hits L3 and 100 ns
     for one that goes to memory, these come to about 107 ms, 55% of the 195 (inference: nominal latencies, no
     overlap); with the kernel's 18 ms, about 64%. The rest is not attributed; write misses (2.7 M at 16 MB per repeat
-    check), TLB walks (large pages are worth about 26 ms, above) and the latency guesses are the candidates. The 100 ns
+    check; attributed after the per-call memo, below: "After the per-call memo, the inst gate and the write misses"), TLB walks (large pages are worth about 26 ms, above) and the latency guesses are the candidates. The 100 ns
     weight may be high: by it, the first check's extra random (rehash) misses at 16 MB, about 0.22 M, would cost it
     about 20 ms more than a repeat, and the next sub-bullet measured 4.7 ± 5.0. Separating these needs per-function hardware miss counts,
     which the Samply task does not record.
@@ -984,6 +984,29 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     run `2026-11-09-d1-ab-untimed`): the spike was faster in 10 of 12 rounds at each d, best of 12 573 against 641 ms at
     d = 13 (-11%) and 124 against 143 at d = 11 (-13%); paired means -77 ± 29 and -32 ± 10 ms. A quiet timed run has not
     confirmed it.
+- **After the per-call memo, the inst gate and the write misses (2026-11-09):** at f0e6b09, by cachegrind's instruction
+  count (`I refs`) and misses for the check, one debug-info build with a knob choosing the gate
+  (`patches/f2-inst-gate-spike.patch`, `scripts/f2_cg.sh`; runs `2026-11-09-f2-gate-cg2`, `2026-11-09-f2-gate-s0`).
+  - *Which nodes get an `inst` entry.* The shipped gate (shared and height > 2) against the same gate with height > 0,
+    1 or 3: work equal to within 3 units of 3129184 at d = 13, instructions within 0.09% (5341.0 M; 5345.5 M at
+    height > 0), misses equal to within 0.01%. With no height cutoff, `Var` leaves get entries too: work falls 1.6%
+    (to 3079830) but instructions rise 1.1% (5398.8 M). Without the shared test (any node with height > 2)
+    instructions rise 4.7% (5590.7 M) and D1 misses 2.5%, for 0.3% fewer last-level read misses at 16 MB. The same holds
+    at d = 11. So under the per-call memo the shared test still pays, and the height cutoff only has to keep out
+    `Var` leaves: shared nodes of height 1-3 almost never reach the memo with a used argument. The old cutoff was
+    chosen on church-bv's `proof_cost_split`, which this did not recount.
+  - *Where a repeat check's write misses go.* `REPS=2` less `REPS=1` at d = 13, 16 MB: 2.39 M last-level write misses,
+    attributed per instruction (callgrind with the same caches, totals within 30 of cachegrind's; two reviewers
+    reran the numbers). Machine stack frames of the deep recursions 1.22 M (51%: the shift walk 0.34 M, `Spaces::mk`
+    0.17 M, the wasm lowering's `seq_step` 0.13 M, `lowest_loose` 0.12 M, `hc::uses` 0.11 M, `inst_rec` and `infer`
+    0.13 M); the interning table's bucket writes 0.36 M (15%; 68% of its 525168 inserts miss); the per-node arrays
+    appended by `Space::push` 0.31 M (13%, one miss per 64 bytes of their 38 per node, to within 7); the memos' bucket
+    writes 0.31 M (13%: `bounds` 0.14 M, `shifts` 0.10 M, `spine` 0.05 M, `whnf`/`nf`/`hnf` 0.02 M, `inst` about 0.1 k);
+    mimalloc 0.15 M (6%). So the interning table is not most of them. About 69% are address-sequential (stack,
+    appends, fresh allocator pages), which a hardware prefetcher may hide and cachegrind does not model; the random 28%
+    are all hash-table bucket writes. Stack lines are partly first touches of the check's fresh 64 MB stack segment
+    (`stack.rs`), whose cost on hardware is page faults, not misses; the split is unmeasured. `hc::uses`' per-node
+    slot store does not miss (the slot was just read).
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
