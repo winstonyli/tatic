@@ -1,0 +1,63 @@
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index f3b4726..923a7ee 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -14,6 +14,7 @@
+ 
+ use super::Node;
+ use std::cell::{Cell, RefCell, UnsafeCell};
++use hashbrown::hash_table::Entry;
+ use std::hash::BuildHasherDefault;
+ 
+ /// A node in one of the two spaces: bit 31 set for the region, bits 0-29 the index into that space.
+@@ -347,7 +348,40 @@ impl Spaces {
+         // persistent nodes have no region children. So the lookup, a cache miss, is skipped (a quarter of all builds;
+         // docs/tier-cycle/, "Skipping the lookup that must miss").
+         debug_assert!(!fresh_kid || i.region.find(h, &n).is_none(), "a node over a parentless child already exists");
+-        if in_region && !fresh_kid && let Some(r) = i.region.find(h, &n) {
++        if in_region {
++            // One probe: the vacant slot the lookup finds is held while the arrays are pushed, so the region's fields are
++            // borrowed one by one.
++            let p = &mut i.persistent;
++            let Space { nodes, loose, free, uses, parents, height, table } = &mut i.region;
++            let vacant = if fresh_kid {
++                None
++            } else {
++                match table.entry(spread(h), |&(g, r)| g == h && nodes[r.index()] == n, |&(g, _)| spread(g)) {
++                    Entry::Occupied(e) => return e.get().1,
++                    Entry::Vacant(v) => Some(v),
++                }
++            };
++            let ranges = n.ranges(
++                |c| if c.in_region() { loose[c.index()] } else { p.loose[c.index()] },
++                |c| if c.in_region() { free[c.index()] } else { p.free[c.index()] },
++            );
++            let mut h_n = 0u8;
++            n.for_kids(|c, _| h_n = h_n.max((if c.in_region() { height[c.index()] } else { p.height[c.index()] }).saturating_add(1)));
++            n.for_kids(|c, _| {
++                let q = if c.in_region() { &mut parents[c.index()] } else { &mut p.parents[c.index()] };
++                *q = q.saturating_add(1).min(2);
++            });
++            let r = Ref::new(true, nodes.len());
++            nodes.push(n);
++            loose.push(ranges.0);
++            free.push(ranges.1);
++            uses.push(0);
++            parents.push(0);
++            height.push(h_n);
++            match vacant {
++                Some(v) => drop(v.insert((h, r))),
++                None => drop(table.insert_unique(spread(h), (h, r), |&(g, _)| spread(g))),
++            }
+             return r;
+         }
+         let ranges = {
+@@ -366,7 +400,7 @@ impl Spaces {
+             let p = &mut s.parents[c.index()];
+             *p = p.saturating_add(1).min(2);
+         });
+-        if in_region { i.region.push(true, h, n, ranges, 0, height) } else { i.persistent.push(false, h, n, ranges, 0, height) }
++        i.persistent.push(false, h, n, ranges, 0, height)
+     }
+ 
+     /// `r` (resolved) as a persistent `Ref`. The region nodes reachable from it are copied out bottom-up, each once per

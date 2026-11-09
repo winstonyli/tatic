@@ -1,0 +1,532 @@
+diff --git a/crates/tatic-kernel/src/expr.rs b/crates/tatic-kernel/src/expr.rs
+index 494d5a4..60ac53a 100644
+--- a/crates/tatic-kernel/src/expr.rs
++++ b/crates/tatic-kernel/src/expr.rs
+@@ -316,6 +316,11 @@ impl Spaces {
+         self.parents_at(self.res(e)) > 1
+     }
+ 
++    #[inline(always)]
++    pub(crate) fn parents(&self, e: &Expr) -> u8 {
++        self.parents_at(self.res(e))
++    }
++
+     /// The height of `e` as a tree (a leaf 0), saturating at 255.
+     #[inline(always)]
+     pub(crate) fn height(&self, e: &Expr) -> u8 {
+diff --git a/crates/tatic-kernel/src/hc.rs b/crates/tatic-kernel/src/hc.rs
+index 5c71b19..8d074e2 100644
+--- a/crates/tatic-kernel/src/hc.rs
++++ b/crates/tatic-kernel/src/hc.rs
+@@ -48,27 +48,30 @@ pub fn large(s: &Spaces, e: &Expr, expected: &Expr) -> bool {
+ /// variable from `d`, which one (node, depth) entry answers for every `m` outside them; a walk
+ /// that still stops at its first hit narrows them (doc section "The slot in front of bounds").
+ pub fn uses(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
++    stats::uses_call();
+     let loose = s.loose(x);
+     if loose <= d {
++        stats::uses_loose_out();
+         return false;
+     }
+     let n = s.node(x);
+     if let Node::Var(k) = n {
++        stats::uses_var();
+         return k < d + m;
+     }
+     if let Some(r) = s.uses_slot(x, d, m) {
++        stats::uses_slot_hit();
+         return r;
+     }
++    stats::uses_to_bounds();
+     // `lo <= the lowest loose variable from d <= hi`. `loose` bounds it from above unless it
+     // saturated.
+     let key = (s.key(x), d);
+-    let (lo, hi) = s
+-        .memos
+-        .borrow()
+-        .bounds
+-        .get(&key)
+-        .copied()
+-        .unwrap_or((0, if loose == u32::MAX { u32::MAX } else { loose - 1 - d }));
++    let dhi = if loose == u32::MAX { u32::MAX } else { loose - 1 - d };
++    let got = s.memos.borrow().bounds.get(&key).copied();
++    stats::get(stats::BOUNDS, got.is_some());
++    stats::b_lookup(key, m, got, dhi);
++    let (lo, hi) = got.unwrap_or((0, dhi));
+     let r = if hi < m {
+         true
+     } else if lo >= m {
+@@ -80,7 +83,10 @@ pub fn uses(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
+             found
+         });
+         let b = if r { (lo, m - 1) } else { (m, hi) };
+-        s.memos.borrow_mut().bounds.insert(key, b);
++        if !(stats::skip("bounds_unshared") && !s.shared(x)) {
++            s.memos.borrow_mut().bounds.insert(key, b);
++            stats::b_insert(key, m, r, dhi, b, s.shared(x), low(s, x), s.parents(x));
++        }
+         r
+     };
+     s.set_uses_slot(x, d, m, r);
+@@ -141,53 +147,82 @@ pub fn inst_begin(s: &Spaces) {
+ }
+ 
+ pub fn inst_get(s: &Spaces, x: &Expr, d: u32) -> Option<Expr> {
+-    s.memos.borrow().inst.get(&(s.key(x), d)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().inst.get(&(s.key(x), d)).map(|r| s.expr_of(r));
++    stats::get(stats::INST, r.is_some());
++    r
+ }
+ 
+ pub fn inst_put(s: &Spaces, x: &Expr, d: u32, r: &Expr) {
+-    s.memos.borrow_mut().inst.insert((s.key(x), d), s.key(r));
++    let new = s.memos.borrow_mut().inst.insert((s.key(x), d), s.key(r)).is_none();
++    stats::put(stats::INST, new);
+ }
+ 
+ /// `x`'s weak head normal form, if the memos have it. `whnf` reads no context, so an answer holds for the whole
+ /// region, across `def_eq` calls (doc section "Why the table lookups stay").
+ pub fn whnf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
+-    s.memos.borrow().whnf.get(&s.key(x)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().whnf.get(&s.key(x)).map(|r| s.expr_of(r));
++    stats::get(stats::WHNF, r.is_some());
++    r
+ }
+ 
+ pub fn whnf_put(s: &Spaces, x: &Expr, r: &Expr) {
+-    s.memos.borrow_mut().whnf.insert(s.key(x), s.key(r));
++    let new = s.memos.borrow_mut().whnf.insert(s.key(x), s.key(r)).is_none();
++    stats::put(stats::WHNF, new);
+ }
+ 
+ pub fn nf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
+-    s.memos.borrow().nf.get(&s.key(x)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().nf.get(&s.key(x)).map(|r| s.expr_of(r));
++    stats::get(stats::NF, r.is_some());
++    r
+ }
+ 
+ pub fn nf_put(s: &Spaces, x: &Expr, r: &Expr) {
+-    s.memos.borrow_mut().nf.insert(s.key(x), s.key(r));
++    let new = s.memos.borrow_mut().nf.insert(s.key(x), s.key(r)).is_none();
++    stats::put(stats::NF, new);
+ }
+ 
+ /// Closed node -> its head normal form; see `hnf_rc`.
+ pub fn hnf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
+-    s.memos.borrow().hnf.get(&s.key(x)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().hnf.get(&s.key(x)).map(|r| s.expr_of(r));
++    stats::get(stats::HNF, r.is_some());
++    r
+ }
+ 
+ pub fn hnf_put(s: &Spaces, x: &Expr, r: &Expr) {
+-    s.memos.borrow_mut().hnf.insert(s.key(x), s.key(r));
++    let new = s.memos.borrow_mut().hnf.insert(s.key(x), s.key(r)).is_none();
++    stats::put(stats::HNF, new);
+ }
+ 
+ /// Application -> its spine's head and closed prefix; see `spine`.
+ pub fn spine_get(s: &Spaces, x: &Expr) -> Option<(Expr, Option<Expr>)> {
+-    s.memos.borrow().spine.get(&s.key(x)).map(|&(h, p)| (s.expr_of(&h), p.map(|p| s.expr_of(&p))))
++    let r = s.memos.borrow().spine.get(&s.key(x)).map(|&(h, p)| (s.expr_of(&h), p.map(|p| s.expr_of(&p))));
++    stats::get(stats::SPINE, r.is_some());
++    if r.is_some() {
++        stats::spine_hit(s.key(x), s.parents(x));
++    }
++    r
+ }
+ 
+ pub fn spine_put(s: &Spaces, x: &Expr, (h, p): (Expr, Option<Expr>)) {
+-    s.memos.borrow_mut().spine.insert(s.key(x), (s.key(&h), p.map(|p| s.key(&p))));
++    if (stats::skip("spine_shared") && s.shared(x)) || (stats::skip("spine_unshared") && !s.shared(x)) {
++        return;
++    }
++    let new = s.memos.borrow_mut().spine.insert(s.key(x), (s.key(&h), p.map(|p| s.key(&p)))).is_none();
++    stats::put(stats::SPINE, new);
++    stats::spine_put(s.key(x), new, s.shared(x), low(s, x), s.parents(x));
+ }
+ 
+ pub fn shift_get(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Option<Expr> {
+-    s.memos.borrow().shifts.get(&(s.key(x), cutoff, amount)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().shifts.get(&(s.key(x), cutoff, amount)).map(|r| s.expr_of(r));
++    stats::get(stats::SHIFTS, r.is_some());
++    if r.is_some() {
++        stats::shift_hit((s.key(x), cutoff, amount));
++    }
++    r
+ }
+ 
+ pub fn shift_put(s: &Spaces, x: &Expr, cutoff: u32, amount: i32, r: &Expr) {
+-    s.memos.borrow_mut().shifts.insert((s.key(x), cutoff, amount), s.key(r));
++    let new = s.memos.borrow_mut().shifts.insert((s.key(x), cutoff, amount), s.key(r)).is_none();
++    stats::put(stats::SHIFTS, new);
++    stats::shift_put((s.key(x), cutoff, amount), new, s.shared(x), low(s, x), s.parents(x));
+ }
+diff --git a/crates/tatic-kernel/src/lib.rs b/crates/tatic-kernel/src/lib.rs
+index e1328d2..2625b87 100644
+--- a/crates/tatic-kernel/src/lib.rs
++++ b/crates/tatic-kernel/src/lib.rs
+@@ -47,6 +47,8 @@ mod expr;
+ mod stack;
+ mod show;
+ mod hc;
++mod stats;
++pub use stats::memo_stats_take;
+ mod subst;
+ mod check;
+ mod reduce;
+diff --git a/crates/tatic-kernel/src/reduce.rs b/crates/tatic-kernel/src/reduce.rs
+index 3c92793..e203f14 100644
+--- a/crates/tatic-kernel/src/reduce.rs
++++ b/crates/tatic-kernel/src/reduce.rs
+@@ -11,6 +11,7 @@ pub fn whnf(e: &Expr) -> Expr {
+ /// spine once in all, not once each: that made `nf` and `def_eq` quadratic in a stuck spine's
+ /// length (`docs/related-work/` §79). One argument is answered directly.
+ fn spine(s: &Spaces, e: &Expr) -> (Expr, Option<Expr>) {
++    stats::spine_call();
+     let Node::App(f, _) = s.node(e) else { return (*e, None) };
+     let closed = (s.loose(&f) == 0).then_some(f);
+     if !matches!(s.node(&f), Node::App(..)) {
+diff --git a/crates/tatic-kernel/src/stats.rs b/crates/tatic-kernel/src/stats.rs
+new file mode 100644
+index 0000000..8a797d8
+--- /dev/null
++++ b/crates/tatic-kernel/src/stats.rs
+@@ -0,0 +1,316 @@
++//! TEMPORARY (spike h1): memo hit-rate counters. Not for commit.
++use std::cell::RefCell;
++use std::collections::HashMap;
++
++const N: usize = 7;
++const NAMES: [&str; N] = ["inst", "shifts", "whnf", "hnf", "nf", "spine", "bounds"];
++pub const INST: usize = 0;
++pub const SHIFTS: usize = 1;
++pub const WHNF: usize = 2;
++pub const HNF: usize = 3;
++pub const NF: usize = 4;
++pub const SPINE: usize = 5;
++pub const BOUNDS: usize = 6;
++
++/// Per entry: (reads, shared, low)
++type Ent = (u32, bool, bool, u8);
++
++#[derive(Default)]
++struct St {
++    gets: [u64; N],
++    hits: [u64; N],
++    puts: [u64; N],
++    newputs: [u64; N],
++    spine: HashMap<u32, Ent>,
++    shifts: HashMap<(u32, u32, i32), Ent>,
++    // bounds entry: (reads, answered, first_m, last_m, shared, low)
++    bounds: HashMap<(u32, u32), (u32, u32, u32, u32, bool, bool, u8)>,
++    spine_calls: u64,
++    uses_calls: u64,
++    uses_loose_out: u64,
++    uses_var: u64,
++    uses_slot_hit: u64,
++    uses_to_bounds: u64,
++    // real bounds lookups
++    b_hit_answered: u64,
++    b_hit_answered_m_ne_last: u64,
++    b_hit_answered_m_ne_first: u64,
++    b_hit_unsettled: u64,
++    b_miss_default_answered: u64,
++    b_miss_walk: u64,
++    // simulation: one depth per node
++    sim: HashMap<u32, (u32, u32, u32)>,
++    sim_hit_answered: u64,
++    sim_hit_unsettled: u64,
++    sim_miss_default_answered: u64,
++    sim_miss_walk: u64,
++}
++
++thread_local! { static ST: RefCell<St> = RefCell::new(St::default()); }
++
++fn with<R>(f: impl FnOnce(&mut St) -> R) -> R {
++    ST.with(|s| f(&mut s.borrow_mut()))
++}
++
++pub fn get(kind: usize, hit: bool) {
++    with(|s| {
++        s.gets[kind] += 1;
++        s.hits[kind] += hit as u64;
++    })
++}
++
++pub fn put(kind: usize, new: bool) {
++    with(|s| {
++        s.puts[kind] += 1;
++        s.newputs[kind] += new as u64;
++    })
++}
++
++pub fn spine_hit(k: u32, par: u8) {
++    with(|s| {
++        if let Some(e) = s.spine.get_mut(&k) {
++            e.0 += 1;
++            e.3 = e.3.max(par);
++        }
++    })
++}
++pub fn spine_put(k: u32, new: bool, shared: bool, low: bool, par: u8) {
++    with(|s| {
++        if new {
++            s.spine.insert(k, (0, shared, low, par));
++        }
++    })
++}
++pub fn shift_hit(k: (u32, u32, i32)) {
++    with(|s| {
++        if let Some(e) = s.shifts.get_mut(&k) {
++            e.0 += 1;
++        }
++    })
++}
++pub fn shift_put(k: (u32, u32, i32), new: bool, shared: bool, low: bool, par: u8) {
++    with(|s| {
++        if new {
++            s.shifts.insert(k, (0, shared, low, par));
++        }
++    })
++}
++
++pub fn uses_call() {
++    with(|s| s.uses_calls += 1)
++}
++pub fn uses_loose_out() {
++    with(|s| s.uses_loose_out += 1)
++}
++pub fn uses_var() {
++    with(|s| s.uses_var += 1)
++}
++pub fn uses_slot_hit() {
++    with(|s| s.uses_slot_hit += 1)
++}
++pub fn uses_to_bounds() {
++    with(|s| s.uses_to_bounds += 1)
++}
++
++/// A bounds lookup of `key` for `m`: `got` is the real entry, `dhi` the default upper bound.
++pub fn b_lookup(key: (u32, u32), m: u32, got: Option<(u32, u32)>, dhi: u32) {
++    with(|s| {
++        // real
++        match got {
++            Some((lo, hi)) => {
++                let answered = hi < m || lo >= m;
++                let (f, l) = match s.bounds.get_mut(&key) {
++                    Some(e) => {
++                        e.0 += 1;
++                        e.1 += answered as u32;
++                        (e.2, e.3)
++                    }
++                    None => (u32::MAX, u32::MAX),
++                };
++                if answered {
++                    s.b_hit_answered += 1;
++                    s.b_hit_answered_m_ne_last += (m != l) as u64;
++                    s.b_hit_answered_m_ne_first += (m != f) as u64;
++                } else {
++                    s.b_hit_unsettled += 1;
++                }
++            }
++            None => {
++                if dhi < m {
++                    s.b_miss_default_answered += 1;
++                } else {
++                    s.b_miss_walk += 1;
++                }
++            }
++        }
++        // simulation of one depth per node
++        match s.sim.get(&key.0).copied() {
++            Some((d, lo, hi)) if d == key.1 => {
++                if hi < m || lo >= m {
++                    s.sim_hit_answered += 1;
++                } else {
++                    s.sim_hit_unsettled += 1;
++                }
++            }
++            _ => {
++                if dhi < m {
++                    s.sim_miss_default_answered += 1;
++                } else {
++                    s.sim_miss_walk += 1;
++                }
++            }
++        }
++    })
++}
++
++/// The insert after a walk: `(lo, hi)` is what the real code used, `b` what it stores.
++pub fn b_insert(key: (u32, u32), m: u32, r: bool, dhi: u32, b: (u32, u32), shared: bool, low: bool, par: u8) {
++    with(|s| {
++        s.puts[BOUNDS] += 1;
++        match s.bounds.get_mut(&key) {
++            Some(e) => e.3 = m,
++            None => {
++                s.newputs[BOUNDS] += 1;
++                s.bounds.insert(key, (0, 0, m, m, shared, low, par));
++            }
++        }
++        let (lo, hi) = match s.sim.get(&key.0).copied() {
++            Some((d, lo, hi)) if d == key.1 => (lo, hi),
++            _ => (0, dhi),
++        };
++        let nb = if r { (lo, m - 1) } else { (m, hi) };
++        s.sim.insert(key.0, (key.1, nb.0, nb.1));
++        let _ = b;
++    })
++}
++
++fn pct(a: u64, b: u64) -> String {
++    if b == 0 { "-".into() } else { format!("{:.1}%", 100.0 * a as f64 / b as f64) }
++}
++
++fn class_table(name: &str, it: impl Iterator<Item = Ent>, out: &mut String) {
++    // by shared/low class and by parents bucket: entries, entries read >=1, hot (>=10 reads) entries, total reads
++    let mut t = [[(0u64, 0u64, 0u64); 2]; 2];
++    let mut pb = [(0u64, 0u64, 0u64, 0u64); 5];
++    for (r, sh, lo, par) in it {
++        let c = &mut t[sh as usize][lo as usize];
++        c.0 += 1;
++        c.1 += (r > 0) as u64;
++        c.2 += r as u64;
++        let i = match par { 0 => 0, 1 => 1, 2 => 2, 3..=4 => 3, _ => 4 };
++        pb[i].0 += 1;
++        pb[i].1 += (r > 0) as u64;
++        pb[i].2 += (r >= 10) as u64;
++        pb[i].3 += r as u64;
++    }
++    for sh in 0..2 {
++        for lo in 0..2 {
++            let c = t[sh][lo];
++            out.push_str(&format!(
++                "STAT {name} class shared={sh} low={lo}: entries={} read>=1={} reads={}
++",
++                c.0, c.1, c.2
++            ));
++        }
++    }
++    for (i, n) in ["0", "1", "2", "3-4", "5+"].iter().enumerate() {
++        let c = pb[i];
++        out.push_str(&format!(
++            "STAT {name} parents={n}: entries={} read>=1={} hot(>=10 reads)={} reads={}
++",
++            c.0, c.1, c.2, c.3
++        ));
++    }
++}
++
++/// Which inserts an experiment skips: env H1_SKIP is a comma list of `bounds_unshared`, `spine_shared`, `spine_unshared`.
++pub fn skip(what: &str) -> bool {
++    thread_local! { static S: String = std::env::var("H1_SKIP").unwrap_or_default(); }
++    S.with(|s| s.split(',').any(|w| w == what))
++}
++
++pub fn spine_call() {
++    with(|s| s.spine_calls += 1)
++}
++
++/// Returns the report and resets all counters.
++pub fn memo_stats_take() -> String {
++    let s = ST.with(|s| std::mem::take(&mut *s.borrow_mut()));
++    let mut o = String::new();
++    for k in 0..N {
++        o.push_str(&format!(
++            "STAT memo {:7} gets={} hits={} ({}) puts={} new_keys={}\n",
++            NAMES[k], s.gets[k], s.hits[k], pct(s.hits[k], s.gets[k]), s.puts[k], s.newputs[k]
++        ));
++    }
++    o.push_str(&format!("STAT spine calls={}
++", s.spine_calls));
++    o.push_str(&format!(
++        "STAT uses calls={} loose_le_d={} var={} slot_hit={} to_bounds={}  (slot answered {} of calls past the early outs)\n",
++        s.uses_calls,
++        s.uses_loose_out,
++        s.uses_var,
++        s.uses_slot_hit,
++        s.uses_to_bounds,
++        pct(s.uses_slot_hit, s.uses_slot_hit + s.uses_to_bounds)
++    ));
++    let real_walks = s.b_hit_unsettled + s.b_miss_walk;
++    let sim_walks = s.sim_hit_unsettled + s.sim_miss_walk;
++    o.push_str(&format!(
++        "STAT bounds real: lookups={} hit_answered={} (m!=last_storing_m {}, m!=first_storing_m {}) hit_unsettled={} miss_default_answered={} miss_walk={} walks={}\n",
++        s.uses_to_bounds,
++        s.b_hit_answered,
++        s.b_hit_answered_m_ne_last,
++        s.b_hit_answered_m_ne_first,
++        s.b_hit_unsettled,
++        s.b_miss_default_answered,
++        s.b_miss_walk,
++        real_walks
++    ));
++    o.push_str(&format!(
++        "STAT bounds sim(one depth per node): hit_answered={} hit_unsettled={} miss_default_answered={} miss_walk={} walks={} (extra walks vs real {})\n",
++        s.sim_hit_answered,
++        s.sim_hit_unsettled,
++        s.sim_miss_default_answered,
++        s.sim_miss_walk,
++        sim_walks,
++        sim_walks as i64 - real_walks as i64
++    ));
++    let be = s.bounds.len() as u64;
++    let br = s.bounds.values().filter(|e| e.0 > 0).count() as u64;
++    let ba = s.bounds.values().filter(|e| e.1 > 0).count() as u64;
++    o.push_str(&format!(
++        "STAT bounds entries={} read>=1={} ({}) answered>=1={} ({}) reads={} answered_reads={}\n",
++        be,
++        br,
++        pct(br, be),
++        ba,
++        pct(ba, be),
++        s.bounds.values().map(|e| e.0 as u64).sum::<u64>(),
++        s.bounds.values().map(|e| e.1 as u64).sum::<u64>()
++    ));
++    let distinct_nodes: std::collections::HashSet<u32> = s.bounds.keys().map(|k| k.0).collect();
++    o.push_str(&format!("STAT bounds distinct nodes={} (entries per node {:.2})\n", distinct_nodes.len(), be as f64 / distinct_nodes.len().max(1) as f64));
++    class_table("bounds", s.bounds.values().map(|e| (e.0, e.4, e.5, e.6)), &mut o);
++    let se = s.spine.len() as u64;
++    let sr = s.spine.values().filter(|e| e.0 > 0).count() as u64;
++    o.push_str(&format!(
++        "STAT spine entries={} read>=1={} ({}) reads={}\n",
++        se,
++        sr,
++        pct(sr, se),
++        s.spine.values().map(|e| e.0 as u64).sum::<u64>()
++    ));
++    class_table("spine", s.spine.values().copied(), &mut o);
++    let he = s.shifts.len() as u64;
++    let hr = s.shifts.values().filter(|e| e.0 > 0).count() as u64;
++    o.push_str(&format!(
++        "STAT shifts entries={} read>=1={} ({}) reads={}\n",
++        he,
++        hr,
++        pct(hr, he),
++        s.shifts.values().map(|e| e.0 as u64).sum::<u64>()
++    ));
++    class_table("shifts", s.shifts.values().copied(), &mut o);
++    o
++}
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index 9066dc3..26ddc6f 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -244,6 +244,7 @@ fn measure_cachegrind() {
+             let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
+             for _ in 0..reps {
+                 tatic_kernel::scoped(|| {
++                    let _ = tatic_kernel::memo_stats_take();
+                     let (w, t) = (tatic_kernel::work(), std::time::Instant::now());
+                     let (p, st) = statement(&s, h, 1, frag.entry(), 1);
+                     if check {
+@@ -251,6 +252,7 @@ fn measure_cachegrind() {
+                     }
+                     let ms = t.elapsed().as_secs_f64() * 1e3;
+                     println!("d={d} check={check} work={} ms={ms:.1}", tatic_kernel::work() - w);
++                    print!("{}", tatic_kernel::memo_stats_take());
+                 });
+             }
+         })

@@ -1,0 +1,147 @@
+diff --git a/crates/tatic-kernel/src/check.rs b/crates/tatic-kernel/src/check.rs
+index 3627ee7..3758c65 100644
+--- a/crates/tatic-kernel/src/check.rs
++++ b/crates/tatic-kernel/src/check.rs
+@@ -709,7 +709,7 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
+                     c.check(e, expected)
+                 })
+             };
+-            if large { on_segment(CHECK_SEGMENT, body) } else { body() }
++            if large && !crate::probe_on_big() { on_segment(CHECK_SEGMENT, body) } else { body() }
+         })
+     })
+ }
+diff --git a/crates/tatic-kernel/src/stack.rs b/crates/tatic-kernel/src/stack.rs
+index a8fc7f3..ce65063 100644
+--- a/crates/tatic-kernel/src/stack.rs
++++ b/crates/tatic-kernel/src/stack.rs
+@@ -61,9 +61,33 @@ fn stack_ok() -> bool {
+ /// heap, not native stack.
+ #[inline(always)]
+ pub fn grow<R>(f: impl FnOnce() -> R) -> R {
++    PROBE_MIN.with(|m| {
++        let a = stack_addr();
++        if a < m.get() {
++            m.set(a)
++        }
++    });
+     if stack_ok() { f() } else { grow_slow(f) }
+ }
+ 
++thread_local! {
++    static PROBE_MIN: std::cell::Cell<usize> = const { std::cell::Cell::new(usize::MAX) };
++}
++
++/// PROBE: on_segment, reachable from the tatic crate.
++pub fn probe_on_segment<R>(size: usize, f: impl FnOnce() -> R) -> R {
++    on_segment(size, f)
++}
++
++/// PROBE: whether this thread runs on a large segment.
++pub static PROBE_REUSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++thread_local! {
++    static PROBE_ON_BIG: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++pub fn probe_on_big() -> bool {
++    PROBE_REUSE.load(std::sync::atomic::Ordering::Relaxed) && PROBE_ON_BIG.with(|b| b.get())
++}
++
+ /// [`grow`]'s slow path: the first check on a thread (`FLOOR` unknown),
+ /// or a segment genuinely running low.
+ #[cold]
+@@ -119,7 +143,23 @@ pub(super) fn on_segment<R>(size: usize, f: impl FnOnce() -> R) -> R {
+     }
+     stacker::grow(size, || {
+         let _restore = Restore(FLOOR.with(|f| f.replace(floor_here().unwrap_or(usize::MAX))));
+-        f()
++        let top = stack_addr();
++        let old = PROBE_MIN.with(|m| m.replace(usize::MAX));
++        let was_big = PROBE_ON_BIG.with(|b| b.replace(size >= CHECK_SEGMENT));
++        let sw0 = segment_switches();
++        let r = f();
++        PROBE_ON_BIG.with(|b| b.set(was_big));
++        let min = PROBE_MIN.with(|m| m.replace(old));
++        if size >= CHECK_SEGMENT {
++            let depth = top.saturating_sub(min);
++            eprintln!(
++                "SEG size={size} top={top:#x} depth_bytes={depth} lines={} pages={} nested_switches={}",
++                depth / 64,
++                depth / 4096,
++                segment_switches() - sw0
++            );
++        }
++        r
+     })
+ }
+ 
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index 9066dc3..0212812 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -228,6 +228,28 @@ fn measure_stack_2mb() {
+ /// whole process, so the check's misses are the difference of the two runs. Each setting comes from the environment or
+ /// from a `NAME=value` test filter argument, since the elevated profiler runs the exe without the caller's environment
+ /// (an `--exact` filter that names no test is harmless).
++#[cfg(windows)]
++fn page_faults() -> u64 {
++    #[repr(C)]
++    struct Counters {
++        cb: u32,
++        page_fault_count: u32,
++        rest: [usize; 8],
++    }
++    #[link(name = "kernel32")]
++    unsafe extern "system" {
++        fn GetCurrentProcess() -> isize;
++        fn K32GetProcessMemoryInfo(h: isize, c: *mut Counters, cb: u32) -> i32;
++    }
++    let mut c = Counters { cb: std::mem::size_of::<Counters>() as u32, page_fault_count: 0, rest: [0; 8] };
++    unsafe { K32GetProcessMemoryInfo(GetCurrentProcess(), &mut c, c.cb) };
++    c.page_fault_count as u64
++}
++#[cfg(not(windows))]
++fn page_faults() -> u64 {
++    0
++}
++
+ #[test]
+ #[ignore]
+ fn measure_cachegrind() {
+@@ -242,16 +264,27 @@ fn measure_cachegrind() {
+         .stack_size(256 << 20)
+         .spawn(move || {
+             let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
+-            for _ in 0..reps {
+-                tatic_kernel::scoped(|| {
+-                    let (w, t) = (tatic_kernel::work(), std::time::Instant::now());
+-                    let (p, st) = statement(&s, h, 1, frag.entry(), 1);
+-                    if check {
+-                        assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
+-                    }
+-                    let ms = t.elapsed().as_secs_f64() * 1e3;
+-                    println!("d={d} check={check} work={} ms={ms:.1}", tatic_kernel::work() - w);
+-                });
++            let reuse = setting("GATE_REUSE").as_deref() == Some("1");
++            tatic_kernel::PROBE_REUSE.store(reuse, std::sync::atomic::Ordering::Relaxed);
++            let run = || {
++                for _ in 0..reps {
++                    tatic_kernel::scoped(|| {
++                        let (w, t) = (tatic_kernel::work(), std::time::Instant::now());
++                        let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                        let pf0 = page_faults();
++                        if check {
++                            assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                        }
++                        let pf = page_faults() - pf0;
++                        let ms = t.elapsed().as_secs_f64() * 1e3;
++                        println!("d={d} check={check} work={} ms={ms:.1} check_page_faults={pf}", tatic_kernel::work() - w);
++                    });
++                }
++            };
++            if reuse {
++                tatic_kernel::probe_on_segment(64 << 20, run);
++            } else {
++                run();
+             }
+         })
+         .unwrap()

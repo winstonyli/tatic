@@ -997,7 +997,11 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     instructions rise 4.7% (5590.7 M) and D1 misses 2.5%, for 0.3% fewer last-level read misses at 16 MB. The same holds
     at d = 11. So under the per-call memo the shared test still pays, and the height cutoff only has to keep out
     `Var` leaves: shared nodes of height 1-3 almost never reach the memo with a used argument. The old cutoff was
-    chosen on church-bv's `proof_cost_split`, which this did not recount.
+    chosen on church-bv's `proof_cost_split`, and there it still pays: retired instructions (ICOUNT.md, large pages
+    compiled off, 3 rotated batches of 4 on CPU 4; `scripts/g1_pcs.sh`, run `2026-11-09-g1-pcs-counts2`) with height
+    > 0 against height > 2 were higher in every batch pair, by 0.72%, 0.62% and 0.23% of the median (about 39.85 G),
+    and 0.18% best against best, while each arm's batches wandered up to 0.24% among themselves. So the height field
+    stays: dropping it costs 0.2-0.7% of a proof workload's instructions, and 0.09% on the gate too.
   - *Where a repeat check's write misses go.* `REPS=2` less `REPS=1` at d = 13, 16 MB: 2.39 M last-level write misses,
     attributed per instruction (callgrind with the same caches, totals within 30 of cachegrind's; two reviewers
     reran the numbers). Machine stack frames of the deep recursions 1.22 M (51%: the shift walk 0.34 M, `Spaces::mk`
@@ -1008,8 +1012,35 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     mimalloc 0.15 M (6%). So the interning table is not most of them. About 69% are address-sequential (stack,
     appends, fresh allocator pages), which a hardware prefetcher may hide and cachegrind does not model; the random 28%
     are all hash-table bucket writes. Stack lines are partly first touches of the check's fresh 64 MB stack segment
-    (`stack.rs`), whose cost on hardware is page faults, not misses; the split is unmeasured. `hc::uses`' per-node
-    slot store does not miss (the slot was just read).
+    (`stack.rs`), whose cost on hardware is page faults, not misses (*The check's stack segment*, below). `hc::uses`'
+    per-node slot store does not miss (the slot was just read).
+  - *Which memo entries are read* (counters per memo and per entry, `patches/h1-memo-counters-spike.patch`, run
+    `2026-11-09-h1-memo-parents-skips`; rep 2 of `GATE_REPS=2` counted directly, equal line for line to rep 1 since
+    the memos are cleared at each region close). At d = 13 (d = 11 about a quarter, same rates): `inst` 221 k gets,
+    14.8% hits; `shifts` 777 k, 79%; `whnf` 98.8 k gets, 21 hits, for 197 k inserts; `hnf` 8.5 k, 99%; `nf` none;
+    `spine` 107 k, 46%; `bounds` 233 k, 3.5%. `hc::uses`' per-node slot answers 88.6% of what reaches it, and the rest
+    goes to `bounds`, which inserts 214 k entries of which 31 are ever read (one shared node takes 8191 of the 8233
+    reads), and no answered hit came from an `m` other than the storing call's. Skipping `bounds` inserts for
+    unshared nodes (run, not simulated) leaves 359 inserts for 127 more walks (+0.01% of `uses` calls) and unchanged
+    work (3129184). `spine` is the other way round: its unshared entries are read about once each (74% of them, by
+    the next level of a stuck spine), while 26 of its 24.7 k shared entries take half of all its hits; skipping
+    either class costs 8.6-15% more spine calls. Write-miss savings are inferred from insert counts, not measured.
+  - *The check's stack segment* (`patches/h2-stack-probe-spike.patch`; runs `2026-11-09-h2-cg`, `-h2-winrun`,
+    `-h2-wintime`). stacker makes a new segment per `grow` call (`CreateFiber`/`DeleteFiber` on Windows, `mmap` on
+    Linux), so each large check faults its stack in afresh. Depth at d = 13: 61.7 MB on Windows (5.4 MB under the
+    64 MiB segment), 46.1 MB on Linux; at d = 11 15.4 MB and 11.5 MB. Native page faults per check: 15107 at d = 13 and
+    3804 at d = 11, about the pages touched; 0 with one segment reused across checks (from the second check; the
+    first faulted 22% fewer pages than the depth, unexplained). The reuse arm was faster by 42-52 ms of about 570 ms
+    at d = 13 (8-9%; untimed, at 29% machine load, and it also moves `statement()` onto the segment). Under cachegrind
+    the segment sits at the same simulated addresses every check, so first touches cannot be told from re-touches;
+    the depth bounds them at 0.72 M lines, at most 59% of the 1.22 M stack write misses. Since the segment is 3-4 times
+    the 16 MB last level, reuse would not keep its lines cached; only smaller frames cut those misses.
+  - *One-probe interning* (`patches/h3-one-probe-intern-spike.patch`; runs `2026-11-09-h3-base`,
+    `-h3-onepass-destructure`). `Space::build`'s region path with one `HashTable::entry` instead of `find` and
+    `insert_unique`: instructions -0.44% at d = 13 (5279.96 M to 5256.51 M) and -0.47% at d = 11, -1.4% for building
+    the statement alone; last-level and D1 misses unchanged (the second probe re-reads a group the first just loaded,
+    an inference). Holding the vacant slot across the appends needs the region's fields borrowed one by one, so the
+    spike copies `push`'s body into the region path; swapping the table out instead (`mem::swap`) cost +2.9%.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
