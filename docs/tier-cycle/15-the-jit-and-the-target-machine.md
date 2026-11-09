@@ -857,6 +857,15 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   arms (its kernel work too, within 0.04%), so the faster check of the one-rep run was the 44% load of the run before it;
   after reads 5-15% higher at d = 12 and 13, inside the wall noise here. By the 0.4 s rule the bound is now 8192 nodes
   (`doubling(12)`, 0.35-0.38 s; `doubling(13)` takes 0.74-0.88 s), set by the check.
+- **Where the check's time goes at the bound (profile):** `doubling(13)` in release took 80 ms to build and 641 ms to
+  check (run `2026-11-09-check-profile`, samply, 759 busy samples, one run). The check is weak-head reduction of the
+  machine: `whnf_in` 35% inclusive, of which `whnf_sigrec` / `beta_spine` 28% (stepping the stack records), and
+  `instantiate_n` 31%, which is mostly the hash-consing it drives (`Spaces::node` 19%, `Spaces::build` 17%) and the
+  `hc::uses` test that lets an instantiation skip a subterm (12%). No frame stands out on its own; the largest leaf is
+  hashbrown's probe (`_mm_movemask_epi8` 5%, `probe_seq` 4%). Doubling the bound would need the check to be more than
+  twice as fast, so it stays at 8192 until the machine's reduction changes. The gate's build is half its proof's copy of
+  the lhs (build work 37491 against 18792 without it at `doubling(11)`, a one-off probe); building it once cuts the
+  build, not the check, since the kernel interns both copies as one node and the checker memoises shared nodes.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
