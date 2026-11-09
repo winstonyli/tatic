@@ -1,12 +1,13 @@
 #!/bin/bash
 # cachegrind data-cache misses for doubling(d), built (c=0) and built plus checked (c=1), last level simulated at 1 MB
 # (the 7840U L2) and 16 MB (its L3); the check's misses are c=1 minus c=0. Run in WSL Ubuntu; DS and LLS override the d
-# values and last-level configs. REPS (default 1) checks that many times in one process, so REPS=2 less REPS=1 is a
-# repeat check's misses, on a region whose arrays and tables already have their capacity (run 2026-11-09-c1-cg-reps).
+# values and last-level configs, REPO the checkout (a worktree, for a spike). REPS (default 1) checks that many times in
+# one process, so REPS=2 less REPS=1 is a repeat check's misses, on a region whose arrays and tables already have their
+# capacity (run 2026-11-09-c1-cg-reps).
 # Run 2026-11-09-cachegrind-doubling used the same body as probe_cg (../patches/y1-cache-probes.patch).
 set -e
 export GATE_REPS=${REPS:-1}
-repo="/mnt/c/Users/Winston Li/Documents/GitHub/tatic"
+repo=${REPO:-"/mnt/c/Users/Winston Li/Documents/GitHub/tatic"}
 export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-$HOME/tatic-cg-target}
 exe=$(cd "$repo" && cargo test --release -p tatic --lib -j 10 --no-run --message-format=json 2>/dev/null \
   | grep -o '"executable":"[^"]*"' | tail -1 | cut -d'"' -f4)
