@@ -1,0 +1,92 @@
+diff --git a/crates/tatic-kernel/src/check.rs b/crates/tatic-kernel/src/check.rs
+index 3627ee7..50196c4 100644
+--- a/crates/tatic-kernel/src/check.rs
++++ b/crates/tatic-kernel/src/check.rs
+@@ -705,7 +705,9 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
+             let body = || {
+                 with_infer_cache(|ic| {
+                     let mut c = Checker { s, g: globals, ic, ctx: CtxScope::new(ctx), cid: 0 };
++                    let (n0, w0) = (s.region_len(), s.work());
+                     expect_sort(s, &c.infer(expected)?)?;
++                    crate::PHASES.with(|p| { let mut p = p.borrow_mut(); p[0] += s.region_len() - n0; p[1] += s.work() - w0; });
+                     c.check(e, expected)
+                 })
+             };
+diff --git a/crates/tatic-kernel/src/expr.rs b/crates/tatic-kernel/src/expr.rs
+index 6a3a0be..5338b43 100644
+--- a/crates/tatic-kernel/src/expr.rs
++++ b/crates/tatic-kernel/src/expr.rs
+@@ -532,3 +532,9 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
+     pi(a, shift(&b, 0, 1))
+ }
+ 
++
++thread_local! { pub(crate) static PHASES: std::cell::RefCell<[u64; 4]> = const { std::cell::RefCell::new([0; 4]) }; }
++/// PROBE (a1): [claim nodes, claim work, conv nodes, conv work] so far on this thread.
++pub fn phases() -> [u64; 4] { PHASES.with(|p| *p.borrow()) }
++/// PROBE (a1).
++pub fn region_len() -> u64 { with_spaces(|s| s.region_len()) }
+diff --git a/crates/tatic-kernel/src/reduce.rs b/crates/tatic-kernel/src/reduce.rs
+index ea40592..243fac1 100644
+--- a/crates/tatic-kernel/src/reduce.rs
++++ b/crates/tatic-kernel/src/reduce.rs
+@@ -264,7 +264,10 @@ pub fn def_eq(a: &Expr, b: &Expr) -> bool {
+ /// [`def_eq`] inside the kernel.
+ pub(super) fn def_eq_in(s: &Spaces, a: &Expr, b: &Expr) -> bool {
+     EQUAL.with(|m| m.borrow_mut().clear());
+-    conv(s, a, b)
++    let (n0, w0) = (s.region_len(), s.work());
++    let r = conv(s, a, b);
++    crate::PHASES.with(|p| { let mut p = p.borrow_mut(); p[2] += s.region_len() - n0; p[3] += s.work() - w0; });
++    r
+ }
+ 
+ thread_local! {
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index 63534ee..9eebc00 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -243,6 +243,11 @@ impl Spaces {
+         self.work.set(self.work.get() + 1);
+     }
+ 
++    /// PROBE (a1).
++    pub(crate) fn region_len(&self) -> u64 {
++        self.get().region.nodes.len() as u64
++    }
++
+     /// The count so far on this thread; callers take differences.
+     pub(crate) fn work(&self) -> u64 {
+         self.work.get()
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index e869264..4d65a56 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -269,3 +269,27 @@ fn in_fragment_rejects_the_rest() {
+         assert!(!in_fragment(&s, h, arity), "{name} should be outside the fragment");
+     }
+ }
++
++/// PROBE (a1): region nodes and work of `doubling(GATE_D)`'s check, split into typing the claim, `conv`, and the rest.
++#[test]
++#[ignore]
++fn probe_phases() {
++    let d: u32 = std::env::var("GATE_D").unwrap().parse().unwrap();
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
++            tatic_kernel::scoped(|| {
++                let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                let (n0, w0, p0) = (tatic_kernel::region_len(), tatic_kernel::work(), tatic_kernel::phases());
++                assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                let (n, w, p1) = (tatic_kernel::region_len() - n0, tatic_kernel::work() - w0, tatic_kernel::phases());
++                let q: Vec<u64> = (0..4).map(|i| p1[i] - p0[i]).collect();
++                println!("d={d} total nodes {n} work {w} | claim nodes {} work {} | conv nodes {} work {} | rest nodes {} work {}",
++                    q[0], q[1], q[2], q[3], n - q[0] - q[2], w - q[1] - q[3]);
++            });
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}

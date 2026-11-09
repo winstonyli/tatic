@@ -1,0 +1,272 @@
+diff --git a/crates/tatic-kernel/src/expr.rs b/crates/tatic-kernel/src/expr.rs
+index 6a3a0be..98bf2f1 100644
+--- a/crates/tatic-kernel/src/expr.rs
++++ b/crates/tatic-kernel/src/expr.rs
+@@ -280,6 +280,11 @@ pub fn work() -> u64 {
+     with_spaces(|s| s.work())
+ }
+ 
++/// PROBE (y1, not for commit).
++pub fn footprint() -> [usize; 4] {
++    with_spaces(|s| s.footprint())
++}
++
+ /// A map key naming a node: its resolved `Ref`'s bits.
+ pub(crate) type Key = u32;
+ /// An argument list's id in the instantiation memo ([`hc::args_id`]).
+@@ -532,3 +537,13 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
+     pi(a, shift(&b, 0, 1))
+ }
+ 
++
++/// PROBE (z1 survey).
++pub fn footprint_detail() -> String {
++    with_spaces(|s| s.footprint_detail())
++}
++
++/// PROBE (z1 survey).
++pub fn hits() -> [[u64; 2]; 6] {
++    hc::hits()
++}
+diff --git a/crates/tatic-kernel/src/hc.rs b/crates/tatic-kernel/src/hc.rs
+index f2f1987..0c36828 100644
+--- a/crates/tatic-kernel/src/hc.rs
++++ b/crates/tatic-kernel/src/hc.rs
+@@ -159,7 +159,9 @@ pub fn low(s: &Spaces, x: &Expr) -> bool {
+ }
+ 
+ pub fn inst_get(s: &Spaces, x: &Expr, aid: Aid, d: u32) -> Option<Expr> {
+-    s.memos.borrow().inst.get(&(s.key(x), aid, d)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().inst.get(&(s.key(x), aid, d)).map(|r| s.expr_of(r));
++    HITS.with(|h| { let mut h = h.borrow_mut(); h[0][r.is_some() as usize] += 1; });
++    r
+ }
+ 
+ pub fn inst_put(s: &Spaces, x: &Expr, aid: Aid, d: u32, r: &Expr) {
+@@ -169,7 +171,9 @@ pub fn inst_put(s: &Spaces, x: &Expr, aid: Aid, d: u32, r: &Expr) {
+ /// `x`'s weak head normal form, if the memos have it. `whnf` reads no context, so an answer holds for the whole
+ /// region, across `def_eq` calls (doc section "Why the table lookups stay").
+ pub fn whnf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
+-    s.memos.borrow().whnf.get(&s.key(x)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().whnf.get(&s.key(x)).map(|r| s.expr_of(r));
++    HITS.with(|h| { let mut h = h.borrow_mut(); h[1][r.is_some() as usize] += 1; });
++    r
+ }
+ 
+ pub fn whnf_put(s: &Spaces, x: &Expr, r: &Expr) {
+@@ -177,7 +181,9 @@ pub fn whnf_put(s: &Spaces, x: &Expr, r: &Expr) {
+ }
+ 
+ pub fn nf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
+-    s.memos.borrow().nf.get(&s.key(x)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().nf.get(&s.key(x)).map(|r| s.expr_of(r));
++    HITS.with(|h| { let mut h = h.borrow_mut(); h[2][r.is_some() as usize] += 1; });
++    r
+ }
+ 
+ pub fn nf_put(s: &Spaces, x: &Expr, r: &Expr) {
+@@ -186,7 +192,9 @@ pub fn nf_put(s: &Spaces, x: &Expr, r: &Expr) {
+ 
+ /// Closed node -> its head normal form; see `hnf_rc`.
+ pub fn hnf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
+-    s.memos.borrow().hnf.get(&s.key(x)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().hnf.get(&s.key(x)).map(|r| s.expr_of(r));
++    HITS.with(|h| { let mut h = h.borrow_mut(); h[3][r.is_some() as usize] += 1; });
++    r
+ }
+ 
+ pub fn hnf_put(s: &Spaces, x: &Expr, r: &Expr) {
+@@ -195,7 +203,9 @@ pub fn hnf_put(s: &Spaces, x: &Expr, r: &Expr) {
+ 
+ /// Application -> its spine's head and closed prefix; see `spine`.
+ pub fn spine_get(s: &Spaces, x: &Expr) -> Option<(Expr, Option<Expr>)> {
+-    s.memos.borrow().spine.get(&s.key(x)).map(|&(h, p)| (s.expr_of(&h), p.map(|p| s.expr_of(&p))))
++    let r = s.memos.borrow().spine.get(&s.key(x)).map(|&(h, p)| (s.expr_of(&h), p.map(|p| s.expr_of(&p))));
++    HITS.with(|h| { let mut h = h.borrow_mut(); h[4][r.is_some() as usize] += 1; });
++    r
+ }
+ 
+ pub fn spine_put(s: &Spaces, x: &Expr, (h, p): (Expr, Option<Expr>)) {
+@@ -203,9 +213,15 @@ pub fn spine_put(s: &Spaces, x: &Expr, (h, p): (Expr, Option<Expr>)) {
+ }
+ 
+ pub fn shift_get(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Option<Expr> {
+-    s.memos.borrow().shifts.get(&(s.key(x), cutoff, amount)).map(|r| s.expr_of(r))
++    let r = s.memos.borrow().shifts.get(&(s.key(x), cutoff, amount)).map(|r| s.expr_of(r));
++    HITS.with(|h| { let mut h = h.borrow_mut(); h[5][r.is_some() as usize] += 1; });
++    r
+ }
+ 
+ pub fn shift_put(s: &Spaces, x: &Expr, cutoff: u32, amount: i32, r: &Expr) {
+     s.memos.borrow_mut().shifts.insert((s.key(x), cutoff, amount), s.key(r));
+ }
++
++thread_local! { pub static HITS: std::cell::RefCell<[[u64; 2]; 6]> = const { std::cell::RefCell::new([[0; 2]; 6]) }; }
++/// PROBE: [miss, hit] per memo: inst whnf nf hnf spine shifts.
++pub fn hits() -> [[u64; 2]; 6] { HITS.with(|h| *h.borrow()) }
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index 63534ee..02f8e95 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -248,6 +248,58 @@ impl Spaces {
+         self.work.get()
+     }
+ 
++    /// PROBE (y1, not for commit): [region nodes, region bytes, persistent bytes, memo bytes], by capacity.
++    pub(crate) fn footprint(&self) -> [usize; 4] {
++        use std::mem::size_of;
++        fn space(s: &Space) -> usize {
++            s.nodes.capacity() * size_of::<Node<Ref>>()
++                + (s.loose.capacity() + s.free.capacity() + s.uses.capacity()) * 4
++                + s.parents.capacity()
++                + s.height.capacity()
++                + s.table.capacity() * 9
++        }
++        fn map<K, V>(m: &IdMap<K, V>) -> usize {
++            m.capacity() * (size_of::<(K, V)>() + 1)
++        }
++        let i = self.get();
++        let m = self.memos.borrow();
++        let memo = map(&m.inst) + map(&m.shifts) + map(&m.whnf) + map(&m.hnf) + map(&m.nf) + map(&m.spine) + map(&m.arg_sets) + map(&m.bounds);
++        [i.region.nodes.len(), space(&i.region), space(&i.persistent), memo]
++    }
++
++    /// PROBE (z1 survey): each region array and memo as `name len cap bytes`.
++    pub(crate) fn footprint_detail(&self) -> String {
++        use std::mem::size_of;
++        let i = self.get();
++        let s = &i.region;
++        let m = self.memos.borrow();
++        let mut out = format!("Node<Ref> {} bytes; region nodes {}\n", size_of::<Node<Ref>>(), s.nodes.len());
++        let mut row = |n: &str, len: usize, cap: usize, per: usize| out += &format!("{n:10} len {len:9} cap {cap:9} {:7}K\n", cap * per / 1024);
++        row("nodes", s.nodes.len(), s.nodes.capacity(), size_of::<Node<Ref>>());
++        row("loose", s.loose.len(), s.loose.capacity(), 4);
++        row("free", s.free.len(), s.free.capacity(), 4);
++        row("uses", s.uses.len(), s.uses.capacity(), 4);
++        row("parents", s.parents.len(), s.parents.capacity(), 1);
++        row("height", s.height.len(), s.height.capacity(), 1);
++        row("table", s.table.len(), s.table.capacity(), 9);
++        row("copies", i.copies.len(), i.copies.capacity(), 4);
++        row("twins", i.twins.len(), i.twins.capacity(), size_of::<Ref>());
++        fn per<K, V>(_: &IdMap<K, V>) -> usize {
++            size_of::<(K, V)>() + 1
++        }
++        row("inst", m.inst.len(), m.inst.capacity(), per(&m.inst));
++        row("shifts", m.shifts.len(), m.shifts.capacity(), per(&m.shifts));
++        row("whnf", m.whnf.len(), m.whnf.capacity(), per(&m.whnf));
++        row("hnf", m.hnf.len(), m.hnf.capacity(), per(&m.hnf));
++        row("nf", m.nf.len(), m.nf.capacity(), per(&m.nf));
++        row("spine", m.spine.len(), m.spine.capacity(), per(&m.spine));
++        let arg_heap: usize = m.arg_sets.keys().map(|k| k.capacity() * 4).sum();
++        row("arg_sets", m.arg_sets.len(), m.arg_sets.capacity(), per(&m.arg_sets));
++        row("arg_heap", m.arg_sets.len(), arg_heap, 1);
++        row("bounds", m.bounds.len(), m.bounds.capacity(), per(&m.bounds));
++        out
++    }
++
+     #[inline(always)]
+     fn get(&self) -> &Inner {
+         // SAFETY: see the module doc; no `&mut` from `inner()` is live across a call to this.
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index aceb847..aa959c4 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -245,3 +245,98 @@ fn in_fragment_rejects_the_rest() {
+         assert!(!in_fragment(&s, h, arity), "{name} should be outside the fragment");
+     }
+ }
++
++/// PROBE (y1, not for commit): kernel footprint after building and after checking `doubling(d)`.
++#[test]
++#[ignore]
++fn probe_footprint() {
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(|| {
++            for d in 6..=13u32 {
++                let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
++                tatic_kernel::scoped(|| {
++                    let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                    let b = tatic_kernel::footprint();
++                    assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                    let c = tatic_kernel::footprint();
++                    let kb = |x: usize| x / 1024;
++                    println!("d={d} built: nodes={} region={}K | checked: nodes={} region={}K persistent={}K memos={}K total={}K",
++                        b[0], kb(b[1]), c[0], kb(c[1]), kb(c[2]), kb(c[3]), kb(c[1] + c[2] + c[3]));
++                });
++            }
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
++
++/// PROBE (y1, not for commit): one `doubling(PROBE_D)`, built, and checked when PROBE_CHECK=1; for cachegrind, which
++/// counts the whole process, so the check's misses are the difference of the two.
++#[test]
++#[ignore]
++fn probe_cg() {
++    let d: u32 = std::env::var("PROBE_D").unwrap().parse().unwrap();
++    let check = std::env::var("PROBE_CHECK").as_deref() == Ok("1");
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
++            tatic_kernel::scoped(|| {
++                let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                if check {
++                    assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                }
++                println!("d={d} check={check} work={}", tatic_kernel::work());
++            });
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
++
++/// PROBE (z1 survey): footprint by array and memo after checking `doubling(PROBE_D)`.
++#[test]
++#[ignore]
++fn probe_footprint_detail() {
++    let d: u32 = std::env::var("PROBE_D").unwrap().parse().unwrap();
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
++            tatic_kernel::scoped(|| {
++                let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                println!("after build:\n{}", tatic_kernel::footprint_detail());
++                assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                println!("after check:\n{}", tatic_kernel::footprint_detail());
++            });
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
++
++/// PROBE (z1 survey): memo hit rates while checking `doubling(PROBE_D)`.
++#[test]
++#[ignore]
++fn probe_memo_hits() {
++    let d: u32 = std::env::var("PROBE_D").unwrap().parse().unwrap();
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
++            tatic_kernel::scoped(|| {
++                let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                let h0 = tatic_kernel::hits();
++                assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                let h1 = tatic_kernel::hits();
++                for (i, n) in ["inst", "whnf", "nf", "hnf", "spine", "shift"].iter().enumerate() {
++                    let (m, k) = (h1[i][0] - h0[i][0], h1[i][1] - h0[i][1]);
++                    println!("d={d} {n:6} miss {m:9} hit {k:9} rate {:.3}", k as f64 / (m + k).max(1) as f64);
++                }
++            });
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}

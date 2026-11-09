@@ -875,8 +875,8 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   `t = add(t, x)` of the same tree size gives the same work within 1% at each d (776575 against 768735 at d = 11), so
   the stack depth of `doubling`'s machine program is not the cause either. What grows is the cost per unit of work:
   in release, best of 3, 112 ns at d = 6, 146-149 at d = 7-8, 185-205 at d = 9-11 and 235-239 at d = 12-13 (other
-  sessions held about 49% of the CPU, so the levels are rough). The cause is the kernel's tables outgrowing the caches.
-  The check's footprint (region nodes, side arrays, table and memos, by capacity) doubles with d: 1.0 MB at d = 6,
+  sessions held about 49% of the CPU, so the levels are rough). The kernel's tables outgrowing the caches is the
+  measured part of the cause; how much of the time it explains is open (next bullet). The check's footprint (region nodes, side arrays, table and memos, by capacity) doubles with d: 1.0 MB at d = 6,
   2.2 MB at 8, 16.5 MB at 11, 66 MB at 13 (525168 region nodes). Under cachegrind, with the last level simulated at
   the 7840U's L2 (1 MB) and L3 (16 MB), data references and L1 misses per doubling stay at 1.8-2.0, like the work, but
   last-level read misses do not (run `2026-11-09-cachegrind-doubling`, the check's misses taken as the difference
@@ -889,6 +889,26 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   reruns the sweep on the ignored test `measure_cachegrind`; the footprint probe is in
   `docs/runs/2026-11-09/patches/y1-cache-probes.patch`.
   `gate_check_work_is_linear_in_the_tree` now holds the work ratio under 2.05, below the 2.1 a log factor gave.
+- **What the check builds and where it misses (survey, 2026-11-09):** at `doubling(13)` the statement is 26520 region
+  nodes and the check grows the region to 525168. Comparing the lhs with the rhs (`conv` under `def_eq_in`) builds
+  498192 of the 498648 new nodes and does 40% of the work (1.21 M); typing the claim (`infer(expected)`) does 60%
+  (1.83 M) and builds 455 (`docs/runs/2026-11-09/patches/a1-phase-probes.patch`). Memo hit rates in the check: whnf
+  98% (157K entries, 7.62 M hits), shift 78%, spine 46%, inst 26% (164K entries); `bounds` holds 214K entries
+  (`patches/z1-memo-probes.patch`). cachegrind by function (run `2026-11-09-cg-annotate-d13b`, debug-info build,
+  `docs/runs/2026-11-09/scripts/cg_annotate.sh`): at a 16 MB last level, 34% of read misses are `memcpy` (`Vec`
+  growth), about 14% table rehashes, 9% `whnf_step`, 5% `beta_spine`, 4% each `hc::uses`, `shift_get` and the node
+  table's `find`; `whnf_get` is 0.3%, so the whnf memo stays in cache. At 1 MB the loose-variable and shift machinery
+  leads: `hc::uses` 10%, `shift_unchecked` 7%, `Space::push` 6%, `shift_put` 5%, `shift_get` 4%. The misses explain
+  only part of the time, an inference: the excess over d = 6's cost per unit of work is about 386 ms at d = 13, and
+  weighting the random misses by latency (about 0.7-1 M at 16 MB at ~80 ns, 3.9 M at 1 MB at ~10 ns) gives about
+  100-120 ms, while the `memcpy` misses stream and cost a few ms. cachegrind models no TLB and no prefetcher; TLB
+  misses over 66 MB of 4 KB pages are the untested remainder. Options, fewest concepts first: check the top
+  telescope under fresh typed free parameters instead of `Var` binders, so the program is closed and the shifted
+  copies of its suffix go (kernel, trusted base); one `u64` loose-variable mask per node in place of the `uses`
+  slot, `bounds`, `lowest_loose` and `InferCache::lows`; `inst` as per-call scratch, deleting `arg_sets` and `Aid`;
+  `whnf_in` returning non-redex tags without a probe and storing result -> result (a work cut, not a miss cut); one
+  32-byte row per node in place of six arrays. Rejected: per-case encoding rewrites, lossy bounded memos, a custom
+  table, narrower `loose`/`free`, a separate whnf slot array.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
