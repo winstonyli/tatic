@@ -795,7 +795,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   trusted "a `loop` with no `br` is its body" fact.
 - **Tree size:** the build doubles with the tree (linear) and the check grows faster (5.8x from d = 12 to 13), so the
   gate alone passes the JIT path's 0.4 s at 512 nodes, far below the 16,384-node cap. `in_fragment` takes trees of at
-  most 256 nodes (`MAX_GATE_TREE`, `doubling(7)`; 1024 since the build fix below, 2048 since the shift memo below); a larger straight-line term
+  most 256 nodes (`MAX_GATE_TREE`, `doubling(7)`; 1024 since the build fix below, 2048 since the shift memo below, 8192 since the build's constants below); a larger straight-line term
   installs through the existing chain.
 - **`Mul`:** 25-34 ms with two parameters as operands, so `Mul` stays in the fragment unrestricted.
 - **Stack:** building and proving `doubling(13)` on a 2 MB thread overflowed (run `2026-11-08-v07-gate-measure_stack_2mb`),
@@ -838,7 +838,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   the two flat batch pairs (max/best 1.0002 or less) differ by -0.001% and -0.010% in B's favour, and the first two pairs
   (max/best up to 1.004, the large-page wander of doc 14, "Why a retired-instruction count wanders") by +0.15% and
   +0.30% against it.
-- **Why the build grew 2.2x per doubling (spike, held for a decision):** the build rebuilt closed constants. Profiled at
+- **Why the build grew 2.2x per doubling:** the build rebuilt closed constants. Profiled at
   `doubling(7)` to `(13)` in release (`2026-11-08-build-growth-profile2`, samply), 80% of its samples sit in
   hash-consing: `seq_step` rebuilds `bv_ty(64)` for every slot of every instruction's stack type (49% inclusive), and
   `Op::term` the operator's circuit at every `Op` (15%). A stack slot's type costs `O(depth)` per instruction, the
@@ -846,10 +846,17 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   `bv_ty` and `Op::term` per interning generation (as `gates::constant` does for closed constants) and building `sty`
   with one shift of the base took the release build at `doubling(13)` from 837 ms to 64 ms, its kernel work from 738k
   to 148k, 1.98x per doubling. Test profile, one rep each (`2026-11-08-build-memo-gate-costs`, cpu 25%):
-  `doubling(11)` 30 + 166 ms, `(12)` 42 + 317 ms, `(13)` 94 + 738 ms; the check reads faster than before too, not
-  explained, and one rep is not enough to set the bound from. The patch is
-  `docs/superpowers/spikes/2026-11-08-build-memo.patch` (reverted); as written it fails church-bv's
-  `hidden_state_is_classified`, since it adds two thread-locals.
+  `doubling(11)` 30 + 166 ms, `(12)` 42 + 317 ms, `(13)` 94 + 738 ms. The spike
+  (`docs/superpowers/spikes/2026-11-08-build-memo.patch`) added two thread-locals, which church-bv's
+  `hidden_state_is_classified` rejects; as landed, `gates::constant`'s one memo takes a key and `constant_n` builds a
+  family of closed terms once per (builder, width), used by `bv_ty` and `Op::term` (`Source::op`'s local cache went), and
+  `gate_build_work_is_linear_in_the_tree` fails above 2.05x per doubling (1.94x, 1.97x). Timed, before against after,
+  A B A B, best of 3 per tree (runs `2026-11-08-gate-ab-a1-t18`, `-b1-t8`, `-a2-t8`, `-b2-t6`, cpu 12-24%, after 34
+  refusals on a busy machine), build + check in ms: `doubling(12)` 491 + 285 and 477 + 290 before, 45 + 334 and
+  41 + 306 after; `(13)` 1105 + 733 and 969 + 604 before, 96 + 788 and 85 + 656 after. The check is the same on both
+  arms (its kernel work too, within 0.04%), so the faster check of the one-rep run was the 44% load of the run before it;
+  after reads 5-15% higher at d = 12 and 13, inside the wall noise here. By the 0.4 s rule the bound is now 8192 nodes
+  (`doubling(12)`, 0.35-0.38 s; `doubling(13)` takes 0.74-0.88 s), set by the check.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
