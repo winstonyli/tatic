@@ -376,21 +376,6 @@ fn low_is_height_at_most_two() {
     assert!(!hc_low(&app(two, var(3))));
 }
 
-/// Lists that fit `args_id`'s stack buffer and lists that don't get stable ids, distinct per list.
-#[test]
-fn args_id_is_stable_for_short_and_long_lists() {
-    scoped(|| {
-        let vs: Vec<Expr> = (0..12).map(var).collect();
-        let refs: Vec<&Expr> = vs.iter().collect();
-        let (short, long) = (&refs[..3], &refs[..12]);
-        let (s, l) = (hc_args_id(short), hc_args_id(long));
-        assert!(s & LIST_BIT != 0 && l & LIST_BIT != 0);
-        assert_ne!(s, l);
-        assert_eq!((hc_args_id(short), hc_args_id(long)), (s, l));
-        assert_ne!(hc_args_id(&refs[1..4]), s);
-    })
-}
-
 #[test]
 fn subst_top_leaves_an_unused_argument_alone() {
     // n + 1 distinct nodes, 2^n as a tree: copying 2^20 takes about a

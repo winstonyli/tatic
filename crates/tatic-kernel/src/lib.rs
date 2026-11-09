@@ -39,7 +39,7 @@
 
 use hashbrown::HashMap;
 use std::fmt;
-use spaces::{IdMap, IdSet, Ref, Spaces, LIST_BIT};
+use spaces::{IdMap, IdSet, Ref, Spaces};
 
 mod spaces;
 mod postulates;

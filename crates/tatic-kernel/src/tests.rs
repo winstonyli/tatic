@@ -22,9 +22,6 @@ fn hc_uses(x: &Expr, d: u32, m: u32) -> bool {
 fn hc_low(x: &Expr) -> bool {
     with_spaces(|s| hc::low(s, x))
 }
-fn hc_args_id(args: &[&Expr]) -> Aid {
-    with_spaces(|s| hc::args_id(s, args))
-}
 fn hc_lowest_loose(x: &Expr, d: u32, memo: &mut IdMap<(Key, u32), u32>) -> u32 {
     with_spaces(|s| hc::lowest_loose(s, x, d, memo))
 }

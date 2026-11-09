@@ -75,11 +75,15 @@ pub(super) fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Exp
     if s.loose(e) <= d {
         return *e;
     }
-    inst_rec(s, e, args, hc::args_id(s, args), d)
+    hc::inst_begin(s);
+    debug_assert!(!s.inst_open.replace(true), "instantiate_n re-entered: its memo is per call");
+    let r = inst_rec(s, e, args, d);
+    debug_assert!(s.inst_open.replace(false));
+    r
 }
 
-/// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo.
-fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Aid, d: u32) -> Expr {
+/// `instantiate_n`'s recursion; the memo is per top-level call (nothing below calls `instantiate_n`).
+fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
     s.tick();
     let m = args.len() as u32;
     let go = |x: Expr, under: bool| {
@@ -91,12 +95,12 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Aid, d: u32) -> Expr {
             return shift_child(s, &x, d + m, -(m as i32));
         }
         let memo = s.shared(&x) && !hc::low(s, &x);
-        if memo && let Some(r) = hc::inst_get(s, &x, aid, d) {
+        if memo && let Some(r) = hc::inst_get(s, &x, d) {
             return r;
         }
-        let r = inst_rec(s, &x, args, aid, d);
+        let r = inst_rec(s, &x, args, d);
         if memo {
-            hc::inst_put(s, &x, aid, d, &r);
+            hc::inst_put(s, &x, d, &r);
         }
         r
     };

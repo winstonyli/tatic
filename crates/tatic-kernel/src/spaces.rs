@@ -22,8 +22,6 @@ pub(crate) struct Ref(pub(crate) u32);
 
 const REGION_BIT: u32 = 1 << 31;
 const INDEX_MASK: u32 = (1 << 30) - 1;
-/// Set in an argument-list id (`hc::args_id`) and clear in every `Ref`, so the two never collide as `Memos::inst` keys.
-pub(crate) const LIST_BIT: u32 = 1 << 30;
 
 impl Ref {
     fn new(region: bool, index: usize) -> Ref {
@@ -93,7 +91,7 @@ fn reset_vec<T>(v: &mut Vec<T>) {
         v.shrink_to(used);
     }
 }
-fn reset_map<K: Eq + std::hash::Hash, V>(m: &mut IdMap<K, V>) {
+pub(crate) fn reset_map<K: Eq + std::hash::Hash, V>(m: &mut IdMap<K, V>) {
     let used = m.len();
     m.clear();
     if used < m.capacity() / 4 {
@@ -153,8 +151,9 @@ impl Space {
 /// The region's memos, keyed by resolved `Ref` bits and emptied when it closes (they were `hc::Table`'s and
 /// `ReductionCache`'s). Entries made with no region open name persistent nodes and stay valid until the next close.
 pub(crate) struct Memos {
-    /// (node, argument-list id, depth) -> its instantiation.
-    pub(crate) inst: IdMap<(u32, u32, u32), u32>,
+    /// (node, depth) -> its instantiation under the current `instantiate_n` call's argument list; emptied at the start
+    /// of each top-level call (`hc::inst_begin`), since the list is fixed within a call and nothing in a call re-enters it.
+    pub(crate) inst: IdMap<(u32, u32), u32>,
     /// (node, cutoff, amount) -> it shifted.
     pub(crate) shifts: IdMap<(u32, u32, i32), u32>,
     /// Node -> its weak head normal form.
@@ -165,8 +164,6 @@ pub(crate) struct Memos {
     pub(crate) nf: IdMap<u32, u32>,
     /// Application -> its spine's head and its longest proper prefix with no loose variable (`kernel::spine`).
     pub(crate) spine: IdMap<u32, (u32, Option<u32>)>,
-    /// Argument lists of two or more nodes -> their id (`LIST_BIT | n`).
-    pub(crate) arg_sets: IdMap<Vec<u32>, u32>,
     /// (node, depth) -> bounds `(lo, hi)` on its lowest loose variable from that depth (`hc::uses`).
     pub(crate) bounds: IdMap<(u32, u32), (u32, u32)>,
 }
@@ -180,7 +177,6 @@ impl Memos {
             hnf: IdMap::with_hasher(H),
             nf: IdMap::with_hasher(H),
             spine: IdMap::with_hasher(H),
-            arg_sets: IdMap::with_hasher(H),
             bounds: IdMap::with_hasher(H),
         }
     }
@@ -191,7 +187,6 @@ impl Memos {
         reset_map(&mut self.hnf);
         reset_map(&mut self.nf);
         reset_map(&mut self.spine);
-        reset_map(&mut self.arg_sets);
         reset_map(&mut self.bounds);
     }
 }
@@ -217,6 +212,8 @@ pub(crate) struct Spaces {
     /// Calls to the kernel's six recursive workers on this thread (see [`tick`](Spaces::tick)): a deterministic count
     /// of its work, the same in every build.
     work: Cell<u64>,
+    /// Whether an `instantiate_n` call is running: its memo is per call, so debug builds assert it never re-enters.
+    pub(crate) inst_open: Cell<bool>,
 }
 
 impl Spaces {
@@ -233,6 +230,7 @@ impl Spaces {
             }),
             memos: RefCell::new(Memos::new()),
             work: Cell::new(0),
+            inst_open: Cell::new(false),
         }
     }
 

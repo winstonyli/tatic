@@ -282,8 +282,6 @@ pub fn work() -> u64 {
 
 /// A map key naming a node: its resolved `Ref`'s bits.
 pub(crate) type Key = u32;
-/// An argument list's id in the instantiation memo ([`hc::args_id`]).
-pub(crate) type Aid = u32;
 
 /// The kernel's handle-level reads and builds (`spaces.rs` works on `Ref`s).
 impl Spaces {

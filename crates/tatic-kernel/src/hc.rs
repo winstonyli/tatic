@@ -124,32 +124,6 @@ pub(super) fn lowest_loose(s: &Spaces, x: &Expr, d: u32, memo: &mut IdMap<(Key, 
     r
 }
 
-/// An id for the argument list: the node's key for one argument (`LIST_BIT` clear), `LIST_BIT | n` for the `n`-th
-/// list of several.
-pub fn args_id(s: &Spaces, args: &[&Expr]) -> Aid {
-    if let [a] = args {
-        return s.key(a);
-    }
-    // The keys go in a stack buffer when they fit; the set is only allocated for a new list.
-    let mut buf = [0u32; 8];
-    let heap: Vec<u32>;
-    let keys: &[u32] = if args.len() <= buf.len() {
-        buf.iter_mut().zip(args).for_each(|(k, a)| *k = s.key(a));
-        &buf[..args.len()]
-    } else {
-        heap = args.iter().map(|a| s.key(a)).collect();
-        &heap
-    };
-    let mut m = s.memos.borrow_mut();
-    if let Some(&n) = m.arg_sets.get(keys) {
-        return n;
-    }
-    let n = m.arg_sets.len() as u32;
-    assert!(n < LIST_BIT, "argument lists ran out of ids");
-    m.arg_sets.insert(keys.to_vec(), LIST_BIT | n);
-    LIST_BIT | n
-}
-
 /// Whether `x` is too small for the instantiation memo to pay: at most two levels above its
 /// leaves. Rebuilding such a node is a few node-table probes; its memo entry cost a probe and an
 /// insert for a 36% hit rate (one level), and the cutoff at two beat one, three and four (doc
@@ -158,12 +132,20 @@ pub fn low(s: &Spaces, x: &Expr) -> bool {
     s.height(x) <= 2
 }
 
-pub fn inst_get(s: &Spaces, x: &Expr, aid: Aid, d: u32) -> Option<Expr> {
-    s.memos.borrow().inst.get(&(s.key(x), aid, d)).map(|r| s.expr_of(r))
+/// Starts a top-level `instantiate_n` call: the memo holds the previous call's entries, which name another argument list.
+pub fn inst_begin(s: &Spaces) {
+    let mut m = s.memos.borrow_mut();
+    if !m.inst.is_empty() {
+        spaces::reset_map(&mut m.inst);
+    }
 }
 
-pub fn inst_put(s: &Spaces, x: &Expr, aid: Aid, d: u32, r: &Expr) {
-    s.memos.borrow_mut().inst.insert((s.key(x), aid, d), s.key(r));
+pub fn inst_get(s: &Spaces, x: &Expr, d: u32) -> Option<Expr> {
+    s.memos.borrow().inst.get(&(s.key(x), d)).map(|r| s.expr_of(r))
+}
+
+pub fn inst_put(s: &Spaces, x: &Expr, d: u32, r: &Expr) {
+    s.memos.borrow_mut().inst.insert((s.key(x), d), s.key(r));
 }
 
 /// `x`'s weak head normal form, if the memos have it. `whnf` reads no context, so an answer holds for the whole
