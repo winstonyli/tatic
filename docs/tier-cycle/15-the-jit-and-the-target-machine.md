@@ -869,6 +869,16 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   share once (the gate's lhs and frame, `wfold::proof`'s machine sides, the `refl` laws of `wasm/laws.rs`); the gate's
   build work at `doubling(11)` went from 37491 to 18774. The check is unchanged by it: the kernel interns both copies as
   one node and the checker memoises shared nodes.
+- **Where the check's wall time goes past linear:** the check's wall time grew 2.1-2.3x per doubling, but its kernel
+  work does not (run `2026-11-09-check-shapes`, two one-off probes at 02c10f1). Work per doubling of `doubling(d)` rises
+  toward 2.0 from below, 1.68, 1.81, 1.89, 1.94, 1.97 for d = 7 to 11 (a fixed cost amortising), and a left-deep chain
+  `t = add(t, x)` of the same tree size gives the same work within 1% at each d (776575 against 768735 at d = 11), so
+  the stack depth of `doubling`'s machine program is not the cause either. What grows is the cost per unit of work:
+  in release, best of 3, 112 ns at d = 6, 146-149 at d = 7-8, 185-205 at d = 9-11 and 235-239 at d = 12-13 (other
+  sessions held about 49% of the CPU, so the levels are rough). The steps look like the term tables outgrowing a cache
+  level, which fits hashbrown's probe being the top leaf of the profile above; that is an inference, unconfirmed (cache
+  miss counters or table sizes per d would test it). `gate_check_work_is_linear_in_the_tree` now holds the work ratio
+  under 2.05, below the 2.1 a log factor gave.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The

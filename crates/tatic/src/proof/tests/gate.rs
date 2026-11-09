@@ -98,6 +98,8 @@ fn gate_rejects_mutations() {
 
 /// The check's kernel work (`tatic_kernel::work`) about doubles with the tree: a shift memo that skipped unshared
 /// nodes re-shifted each program suffix at every step, 4x per doubling (doc 15, "Why the check grew 4x per doubling").
+/// The bound is under 2.1, the log factor's size: the ratio rises toward 2.0 from below (1.68 to 1.97, doc 15, "Where
+/// the check's wall time goes past linear").
 #[test]
 fn gate_check_work_is_linear_in_the_tree() {
     let work = |d: u32| {
@@ -113,7 +115,7 @@ fn gate_check_work_is_linear_in_the_tree() {
     println!("check work, doubling_7 to doubling_9: {w:?}");
     for i in 1..w.len() {
         let r = w[i] as f64 / w[i - 1] as f64;
-        assert!(r < 2.6, "check work grew {r:.2}x from doubling_{} to doubling_{}: {w:?}", 6 + i, 7 + i);
+        assert!(r < 2.05, "check work grew {r:.2}x from doubling_{} to doubling_{}: {w:?}", 6 + i, 7 + i);
     }
 }
 
