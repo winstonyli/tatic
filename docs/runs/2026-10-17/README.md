@@ -51,8 +51,8 @@ search time in `JoinCost`, plus `patches/no_bound.patch` (`RULEMINER_NO_BOUND`, 
 - `patches/score_pool_join.patch`: the `score-pool` spike (96b6e7e) ported onto c87573b: scoring workers alive for the
   whole search, their memo carried across rounds (reverted).
 - `patches/score_pool.patch` and `patches/ring_spikes.patch`: the spike commits themselves, 96b6e7e (2026-10-16) and
-  8a1df7d (the ring-theory spikes, `docs/tier-cycle/16-other-theories.md`), saved with `git format-patch` when their
-  branches were deleted (2026-11-08); `git am` applies each onto its parent.
+  8a1df7d (the ring-theory spikes, `docs/tier-cycle/16-other-theories.md`), saved with `git format-patch` so their
+  branches can be deleted (2026-11-08); `git am` applies each onto its parent.
 - `scripts/join_prof.sh <exe>` with `patches/join_prof.patch` (`driver::sweep_prof`, a throwaway test setting SALT=6
   SWEEP=mines:cmp3d, since `profile.ps1` passes no environment): a samply profile of that mine, built with
   `CARGO_PROFILE_SWEEP_DEBUG=true`.
