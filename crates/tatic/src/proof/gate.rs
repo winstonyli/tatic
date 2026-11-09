@@ -14,7 +14,6 @@
 use hashbrown::HashSet;
 use tatic_kernel::{app2, id, refl, scoped, sort, Expr};
 use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, At, Cx, Ty};
-use tatic_wasm::ops::Op;
 use tatic_wasm::wasm::{choose, mkpair, nat2_lit, well_formed, Ins, Wasm, K};
 
 use crate::jit::compile::tree_size;
@@ -143,7 +142,7 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
             let fr = frame(c, x);
             let (r, k, st, s) = (c.at(x[1]), c.at(x[2]), c.at(x[0]), c.at(x[s_at]));
             let qs: Vec<Expr> = (0..m).map(|j| c.at(x[4 + j])).collect();
-            let src = Source { store, qs, r: r.clone(), ops: Default::default() };
+            let src = Source { store, qs, r: r.clone() };
             let rhs = src.cps(body, &|v| app2(k.clone(), mkpair(st.clone(), v, s.clone()), fr.clone()));
             id(r, l, rhs)
         },
@@ -151,26 +150,14 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
     )
 }
 
-/// The right side's builder over the source term: parameters `qs` (q_j is `$p{j}`), the answer type `r`, and each
-/// operator's term built once.
+/// The right side's builder over the source term: parameters `qs` (q_j is `$p{j}`) and the answer type `r`.
 struct Source<'a> {
     store: &'a TermStore,
     qs: Vec<Expr>,
     r: Expr,
-    ops: std::cell::RefCell<Vec<(Op, Expr)>>,
 }
 
 impl Source<'_> {
-    fn op(&self, o: Op) -> Expr {
-        let mut ops = self.ops.borrow_mut();
-        if let Some((_, t)) = ops.iter().find(|(p, _)| *p == o) {
-            return t.clone();
-        }
-        let t = o.term(N);
-        ops.push((o, t.clone()));
-        t
-    }
-
     /// `h` in continuation-passing form with the meta-continuation `k`, evaluating operands left to right, as the
     /// lowering emits them. An `If` copies `k` into both arms; in the fragment every `If` is in tail position, so
     /// nothing grows.
@@ -185,12 +172,12 @@ impl Source<'_> {
             // de Bruijn 0 is the last parameter; written here, not taken from `shape::local_index`
             Term::Var(i) => k(self.qs[self.qs.len() - 1 - *i as usize].clone()),
             Term::Prim(p, a, b) => {
-                let o = self.op(op_of(*p).expect("in_fragment admits only table rows"));
+                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
                 self.cps(*a, &|x| self.cps(*b, &|y| k(app2(o.clone(), x.clone(), y))))
             }
             Term::If(c, t, e) => {
                 let Term::Prim(p, a, b) = self.store.resolve(*c) else { unreachable!("in_fragment: an If tests a Prim") };
-                let o = self.op(op_of(*p).expect("in_fragment admits only table rows"));
+                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
                 self.cps(*a, &|x| {
                     self.cps(*b, &|y| choose(self.r.clone(), app2(o.clone(), x.clone(), y), self.cps(*t, k), self.cps(*e, k)))
                 })

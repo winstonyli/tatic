@@ -18,17 +18,19 @@ pub enum Op {
 }
 
 impl Op {
-    /// The closed `V -> V -> V` (word rows) or `V -> V -> Bv_1` (bit rows) circuit at width `n`.
+    /// The closed `V -> V -> V` (word rows) or `V -> V -> Bv_1` (bit rows) circuit at width `n`, built once per width
+    /// and generation (`constant_n`).
     pub fn term(self, n: usize) -> Expr {
-        match self {
-            Op::Add => add(n),
-            Op::Sub => sub(n),
-            Op::Mul => mul(n),
-            Op::LtS => lt_s(n),
-            Op::LeS => le_s(n),
-            Op::Eq => eq_bit(n),
-            Op::LtU => lt_u(n),
-        }
+        let build: fn(usize) -> Expr = match self {
+            Op::Add => add,
+            Op::Sub => sub,
+            Op::Mul => mul,
+            Op::LtS => lt_s,
+            Op::LeS => le_s,
+            Op::Eq => eq_bit,
+            Op::LtU => lt_u,
+        };
+        constant_n(build, n)
     }
     pub fn mnemonic(self) -> &'static str {
         match self {

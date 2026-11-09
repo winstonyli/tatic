@@ -117,6 +117,27 @@ fn gate_check_work_is_linear_in_the_tree() {
     }
 }
 
+/// The statement's kernel work (`tatic_kernel::work`) about doubles with the tree too: rebuilding each stack slot's word
+/// type and each operator's circuit per instruction added a log factor, 2.1x per doubling (doc 15, "Why the build grew
+/// 2.2x per doubling").
+#[test]
+fn gate_build_work_is_linear_in_the_tree() {
+    let work = |d: u32| {
+        let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
+        tatic_kernel::scoped(|| {
+            let w0 = tatic_kernel::work();
+            let _ = statement(&s, h, 1, frag.entry(), 1);
+            tatic_kernel::work() - w0
+        })
+    };
+    let w: Vec<u64> = (9..=11).map(work).collect();
+    println!("build work, doubling_9 to doubling_11: {w:?}");
+    for i in 1..w.len() {
+        let r = w[i] as f64 / w[i - 1] as f64;
+        assert!(r < 2.05, "build work grew {r:.2}x from doubling_{} to doubling_{}: {w:?}", 8 + i, 9 + i);
+    }
+}
+
 /// `(build ms, check ms, accepted)` for one gate run, best of `reps`.
 fn time_gate(s: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, reps: usize) -> (f64, f64, bool) {
     let mut best = (f64::MAX, f64::MAX, true);

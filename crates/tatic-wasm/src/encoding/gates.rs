@@ -39,13 +39,20 @@ pub fn gen_memo<K: std::hash::Hash + Eq, V: Clone>(memo: &'static std::thread::L
     })
 }
 
+thread_local! {
+    static CONSTANTS: GenMemo<(usize, usize), Expr> = Default::default();
+}
+
 /// The closed constant `build` makes, built once per generation and keyed by the function's address: the machine proofs
 /// use the gates millions of times. A function with two addresses (two codegen units) only builds an equal term twice.
 pub fn constant(build: fn() -> Expr) -> Expr {
-    thread_local! {
-        static CONSTANTS: GenMemo<usize, Expr> = Default::default();
-    }
-    gen_memo(&CONSTANTS, build as usize, |_| build())
+    gen_memo(&CONSTANTS, (build as usize, 0), |_| build())
+}
+
+/// `constant` for a family of closed terms, one per `n` (a width): the gate's statement asks for the word type and the
+/// operator circuits at every instruction.
+pub fn constant_n(build: fn(usize) -> Expr, n: usize) -> Expr {
+    gen_memo(&CONSTANTS, (build as usize, n), |&(_, n)| build(n))
 }
 
 /// `Pi C. C -> C -> C`, written without `arrow`: its codomain shift ran at every call, and building the motives of the
@@ -85,13 +92,12 @@ pub fn low_bits(n: usize) -> u128 {
 }
 
 /// Bool0 -> ... -> Bool0 -> C (n arrows), in a context whose top variable is C. Written without `arrow`, like `bool0`:
-/// nested, each arrow shifted the whole chain below it, n^2 / 2 node shifts per call, and every stack slot's word type
-/// in the gate's statement makes one.
+/// nested, each arrow shifted the whole chain below it, n^2 / 2 node shifts per call.
 pub fn karrow(n: usize) -> Expr {
     (0..n).fold(var(n as u32), |body, _| pi(bool0(), body))
 }
 pub fn bv_ty(n: usize) -> Expr {
-    pi(sort(1), arrow(karrow(n), var(0)))
+    constant_n(|n| pi(sort(1), arrow(karrow(n), var(0))), n)
 }
 pub fn apps(mut f: Expr, args: Vec<Expr>) -> Expr {
     for a in args {

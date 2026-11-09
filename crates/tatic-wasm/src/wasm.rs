@@ -146,7 +146,9 @@ impl Wasm {
     }
     /// The stack type `ks` (top first) over the base `base`.
     pub fn sty(&self, c: &Cx, ks: &[K], base: At) -> Expr {
-        ks.iter().rev().fold(c.at(base), |acc, k| prod(self.word(*k), acc))
+        // the words are closed, so only the base moves: shift it under all `ks.len()` binders once
+        let base = shift(&c.at(base), 0, ks.len() as i32);
+        ks.iter().rev().fold(base, |acc, k| sigma(self.word(*k), acc))
     }
     /// `Mem = V -> (V -> R) -> R`.
     pub fn mem(&self, c: &mut Cx, r: At) -> Expr {
@@ -482,6 +484,21 @@ pub mod laws;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `sty`'s one shift of the base gives the nested `prod`s' term, under binders and at both word widths.
+    #[test]
+    fn sty_is_the_nested_prods() {
+        let w = Wasm { n: 64 };
+        Cx::default().under(|c, base| {
+            c.under(|c, _| {
+                for ks in [vec![], vec![K::W], vec![K::B, K::W], vec![K::W, K::W, K::B, K::W, K::W]] {
+                    let prods = ks.iter().rev().fold(c.at(base), |acc, k| prod(w.word(*k), acc));
+                    assert!(prods == w.sty(c, &ks, base), "sty differs at {ks:?}");
+                }
+                sort(0)
+            })
+        });
+    }
 
     #[test]
     fn well_formed_rejects_raw_underflow_bad_br_and_mismatched_arms() {
