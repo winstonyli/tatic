@@ -1,7 +1,7 @@
 // Spike (2026-11-01, task u3; builds on `width.rs`): the multiplier through the stream route, a second, nested induction.
 //
 // Stage A, the definition. Shift-and-add: `acc_0 = 0`, `acc_(j+1) = acc_j + (y_j ? x << j : 0)`, with the stream adder of
-// `width.rs` and the stream shift `shl` below. The kernel has no cumulativity, and that fixes the shape:
+// `width.rs` and the stream shift `shl` (`shl_fill` below, `fill = false`). The kernel has no cumulativity, and that fixes the shape:
 //   * the stream adder `sumbit(k, ..)` reads its operands at `Nat_k` and is indexed by `Nat_(k+1)` (its count), so
 //     `add : Bits(k) -> Bits(k) -> Bits(k+1)` raises the index level by one. No term lowers a stream's level: that would need
 //     `Nat_k -> Nat_(k+1)` (`embed` goes the other way, `Nat_(k+1) -> Nat_k`; `i C z s` for `i : Nat_k` needs `C : Sort k`).
@@ -23,19 +23,16 @@ use tatic_kernel::{self as kernel, Ctx, Expr};
 // ---------- stage A: the stream multiplier ----------
 /// One step of the shift's fold: (position, x at the previous position) -> (position + 1, x at this position).
 pub(crate) fn shl_step(k: u32, x: T) -> T {
-    lm("u", state(k), pair_s(k, ap(succ(k), fst(k, v("u"))), ap(x, fst(k, v("u")))))
+    lm("u", state(k), pair_s(ap(succ(k), fst(k, v("u"))), ap(x, fst(k, v("u")))))
 }
 /// The shift's fold over the count `n`, starting from (zero, `fill`).
 pub(crate) fn shl_state(k: u32, x: T, fill: bool, n: T) -> T {
-    ap3(n, state(k), pair_s(k, zero(k), if fill { tt() } else { ff() }), shl_step(k, x))
+    ap3(n, state(k), pair_s(zero(k), if fill { tt() } else { ff() }), shl_step(k, x))
 }
 /// `Bits(k) -> Bits(k+1)`: bit N of the result is `x (N-1)`, and the fill bit at N = 0 (false for the real shift; `fill = true`
 /// is the mutant the shift tests use). The fold over the count carries (position, the value `x` had at the position before).
 pub(crate) fn shl_fill(k: u32, x: T, fill: bool) -> T {
     lm("N", nat(k + 1), snd(k, shl_state(k, x, fill, v("N"))))
-}
-pub(crate) fn shl(k: u32, x: T) -> T {
-    shl_fill(k, x, false)
 }
 /// `x << j`, in `Bits(k0 + j)`.
 pub(crate) fn shl_n(k0: u32, j: usize, x: T, fill: bool) -> T {
@@ -171,7 +168,7 @@ fn y_stmt(k: u32, zero_right: bool) -> T {
 /// `maj(a em, c em, false) = false` from the goodness `ge_m` of `em = embed m` (the zero operand makes the carry stay false).
 pub(crate) fn carry_false(k: u32, a: &T, c: &T, to_false: &dyn Fn(T, T) -> T) -> T {
     let stn = |m: T| st(k, maj, a.clone(), c.clone(), m);
-    let target = |m: T| pair_s(k, embed(k, m), ff());
+    let target = |m: T| pair_s(embed(k, m), ff());
     let eq_ty = |m: T| idt(state(k), stn(m.clone()), target(m));
     let gty = |m: T| gk(k, embed(k, m));
     let pmf = |m: T| sig2(gty(m.clone()), eq_ty(m));
@@ -179,21 +176,21 @@ pub(crate) fn carry_false(k: u32, a: &T, c: &T, to_false: &dyn Fn(T, T) -> T) ->
     let ge_m = pr1(gty(v("m")), eq_ty(v("m")), v("ih"));
     let eq_m = pr2(gty(v("m")), eq_ty(v("m")), v("ih"));
     let h = rew(bool0(), maj(ap(a.clone(), em.clone()), ap(c.clone(), em.clone()), ff()), ff(), to_false(em.clone(), ge_m.clone()),
-        lm("t", bool0(), idt(state(k), pair_s(k, ap(succ(k), em.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))),
-        rfl(pair_s(k, ap(succ(k), em.clone()), ff())));
+        lm("t", bool0(), idt(state(k), pair_s(ap(succ(k), em.clone()), v("t")), pair_s(ap(succ(k), em.clone()), ff()))),
+        rfl(pair_s(ap(succ(k), em.clone()), ff())));
     let eq_new = rew(state(k), stn(v("m")), target(v("m")), eq_m,
-        lm("t", state(k), idt(state(k), ap(step(k, maj, a.clone(), c.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))), h);
+        lm("t", state(k), idt(state(k), ap(step(k, maj, a.clone(), c.clone()), v("t")), pair_s(ap(succ(k), em.clone()), ff()))), h);
     let sm = ap(succ(k + 1), v("m"));
     let step_ = lm("m", nat(k + 1), lm("ih", pmf(v("m")),
         mk2(gty(sm.clone()), eq_ty(sm), gsucc(k, em, ge_m), eq_new)));
     let z = zero(k + 1);
-    let base = mk2(gty(z.clone()), eq_ty(z), gzero(k), rfl(pair_s(k, zero(k), ff())));
+    let base = mk2(gty(z.clone()), eq_ty(z), gzero(k), rfl(pair_s(zero(k), ff())));
     ap3(v("g"), lm("M", nat(k + 1), pmf(v("M"))), base, step_)
 }
 pub(crate) fn y_proof(k: u32, zero_right: bool) -> T {
     let (a, c) = if zero_right { (v("su"), zs(k)) } else { (zs(k), v("su")) };
     let stn = |m: T| st(k, maj, a.clone(), c.clone(), m);
-    let target = |m: T| pair_s(k, embed(k, m), ff());
+    let target = |m: T| pair_s(embed(k, m), ff());
     let e = |m: T| embed(k, m);
     let eq_ty = |m: T| idt(state(k), stn(m.clone()), target(m));
     let gty = |m: T| gk(k, e(m));
@@ -207,9 +204,9 @@ pub(crate) fn y_proof(k: u32, zero_right: bool) -> T {
     } else {
         let em = e(v("m"));
         let eq_new = rew(state(k), stn(v("m")), target(v("m")), v("ih"),
-            lm("t", state(k), idt(state(k), ap(step(k, maj, a.clone(), c.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))),
-            rfl(pair_s(k, ap(succ(k), em), ff())));
-        let pn = ap3(v("g"), lm("M", nat(k + 1), eq_ty(v("M"))), rfl(pair_s(k, zero(k), ff())),
+            lm("t", state(k), idt(state(k), ap(step(k, maj, a.clone(), c.clone()), v("t")), pair_s(ap(succ(k), em.clone()), ff()))),
+            rfl(pair_s(ap(succ(k), em), ff())));
+        let pn = ap3(v("g"), lm("M", nat(k + 1), eq_ty(v("M"))), rfl(pair_s(zero(k), ff())),
             lm("m", nat(k + 1), lm("ih", eq_ty(v("m")), eq_new)));
         (pn, ap2(ge_proof(k), v("N"), v("g")))
     };

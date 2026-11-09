@@ -194,7 +194,7 @@ pub(crate) fn zs(k: u32) -> T {
 pub(crate) fn state(k: u32) -> T {
     Sig("_s", b(nat(k)), b(bool0()))
 }
-pub(crate) fn pair_s(k: u32, a: T, c: T) -> T {
+pub(crate) fn pair_s(a: T, c: T) -> T {
     Pair("_k", b(bool0()), b(a), b(c))
 }
 pub(crate) fn fst(k: u32, u: T) -> T {
@@ -205,12 +205,12 @@ pub(crate) fn snd(k: u32, u: T) -> T {
 }
 /// one step of the carry machine of the circuit `circ` (`maj` for the adder, the borrow for `lt`): (i, c) -> (i+1, circ(x i, y i, c))
 pub(crate) fn step(k: u32, circ: fn(T, T, T) -> T, x: T, y: T) -> T {
-    lm("u", state(k), pair_s(k, ap(succ(k), fst(k, v("u"))),
+    lm("u", state(k), pair_s(ap(succ(k), fst(k, v("u"))),
         circ(ap(x, fst(k, v("u"))), ap(y, fst(k, v("u"))), snd(k, v("u")))))
 }
 /// the fold over the Nat1 count n: (zero0, false) --step^n-->
 pub(crate) fn st(k: u32, circ: fn(T, T, T) -> T, x: T, y: T, n: T) -> T {
-    ap3(n, state(k), pair_s(k, zero(k), ff()), step(k, circ, x, y))
+    ap3(n, state(k), pair_s(zero(k), ff()), step(k, circ, x, y))
 }
 /// sum bit at the state's position: x_i xor y_i xor carry_i
 pub(crate) fn sumfn(k: u32, x: T, y: T, u: T) -> T {
@@ -267,20 +267,20 @@ pub(crate) fn proof_b(k: u32, with_y: bool) -> T {
     // one induction on the count: st M = (embed M, false), the position tracks the count and the carry stays false.
     // (Two separate statements, `fst = embed` and `snd = false`, would need an Id on Bool0 in the Good motive's sort,
     // which is Sort(k+1); a state equality lives there for every k.)
-    let target = |m: T| pair_s(k, embed(k, m), ff());
+    let target = |m: T| pair_s(embed(k, m), ff());
     let pm = lm("M", nat(k + 1), idt(state(k), stx(v("M")), target(v("M"))));
     let e = |m: T| embed(k, m);
     let m0 = |m: T| maj(ap(v("x"), e(m.clone())), ap(y.clone(), e(m)), ff());
     // h: Id(state, step (embed m, false), (succ (embed m), false)), from the bit x_m being true or false
     let to_false = cases1(ap(v("gx"), e(v("m"))), &|bb| maj(bb, ff(), ff()), &|_| ff());
     let h = rew(bool0(), m0(v("m")), ff(), to_false,
-        lm("t", bool0(), idt(state(k), pair_s(k, ap(succ(k), e(v("m"))), v("t")), pair_s(k, ap(succ(k), e(v("m"))), ff()))),
-        rfl(pair_s(k, ap(succ(k), e(v("m"))), ff())));
+        lm("t", bool0(), idt(state(k), pair_s(ap(succ(k), e(v("m"))), v("t")), pair_s(ap(succ(k), e(v("m"))), ff()))),
+        rfl(pair_s(ap(succ(k), e(v("m"))), ff())));
     let step_ = lm("m", nat(k + 1), lm("ih", idt(state(k), stx(v("m")), target(v("m"))),
         rew(state(k), stx(v("m")), target(v("m")), v("ih"),
-            lm("t", state(k), idt(state(k), ap(step(k, maj, v("x"), y.clone()), v("t")), pair_s(k, ap(succ(k), e(v("m"))), ff()))),
+            lm("t", state(k), idt(state(k), ap(step(k, maj, v("x"), y.clone()), v("t")), pair_s(ap(succ(k), e(v("m"))), ff()))),
             h)));
-    let pn = ap3(v("g"), pm, rfl(pair_s(k, zero(k), ff())), step_);
+    let pn = ap3(v("g"), pm, rfl(pair_s(zero(k), ff())), step_);
     let en = embed(k, v("N"));
     // per-bit leaf: xor(xor(a,false),false) = a
     let leaf = cases1(ap(v("gx"), en.clone()), &|bb| xor(xor(bb.clone(), ff()), ff()), &|bb| bb);
@@ -305,14 +305,14 @@ pub(crate) fn proof_c(k: u32) -> T {
     let r = yx(v("m"));
     let leaf = cases2(
         ap(v("gx"), fst(k, r.clone())), ap(v("gy"), fst(k, r.clone())), ap(v("y"), fst(k, r.clone())), state(k),
-        &|a, c| pair_s(k, ap(succ(k), fst(k, r.clone())), maj(a, c, snd(k, r.clone()))),
-        &|a, c| pair_s(k, ap(succ(k), fst(k, r.clone())), maj(c, a, snd(k, r.clone()))),
+        &|a, c| pair_s(ap(succ(k), fst(k, r.clone())), maj(a, c, snd(k, r.clone()))),
+        &|a, c| pair_s(ap(succ(k), fst(k, r.clone())), maj(c, a, snd(k, r.clone()))),
     );
     let stepc = lm("m", nat(k + 1), lm("ih", idt(state(k), xy(v("m")), yx(v("m"))),
         rew(state(k), xy(v("m")), yx(v("m")), v("ih"),
             lm("t", state(k), idt(state(k), ap(step(k, maj, v("x"), v("y")), v("t")), ap(step(k, maj, v("y"), v("x")), yx(v("m"))))),
             leaf)));
-    let pn = ap3(v("g"), pm, rfl(pair_s(k, zero(k), ff())), stepc);
+    let pn = ap3(v("g"), pm, rfl(pair_s(zero(k), ff())), stepc);
     let r2 = yx(v("N"));
     let leaf2 = cases2(
         ap(v("gx"), fst(k, r2.clone())), ap(v("gy"), fst(k, r2.clone())), ap(v("y"), fst(k, r2.clone())), bool0(),

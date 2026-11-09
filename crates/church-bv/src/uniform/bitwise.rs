@@ -319,18 +319,18 @@ fn lt_stmt(which: Lt, k: u32, wrong: bool) -> T {
 fn lt_proof(which: Lt, k: u32) -> T {
     let y = which.y(k);
     let stx = |m: T| st(k, borrow, v("x"), y.clone(), m);
-    let target = |m: T| pair_s(k, embed(k, m), ff());
+    let target = |m: T| pair_s(embed(k, m), ff());
     let pm = lm("M", nat(k + 1), idt(state(k), stx(v("M")), target(v("M"))));
     let em = embed(k, v("m"));
     let to_false = cases1(ap(v("gx"), em.clone()), &|bb| borrow(bb.clone(), which.ybit(bb), ff()), &|_| ff());
     let h = rew(bool0(), borrow(ap(v("x"), em.clone()), ap(y.clone(), em.clone()), ff()), ff(), to_false,
-        lm("t", bool0(), idt(state(k), pair_s(k, ap(succ(k), em.clone()), v("t")), pair_s(k, ap(succ(k), em.clone()), ff()))),
-        rfl(pair_s(k, ap(succ(k), em.clone()), ff())));
+        lm("t", bool0(), idt(state(k), pair_s(ap(succ(k), em.clone()), v("t")), pair_s(ap(succ(k), em.clone()), ff()))),
+        rfl(pair_s(ap(succ(k), em.clone()), ff())));
     let step_ = lm("m", nat(k + 1), lm("ih", idt(state(k), stx(v("m")), target(v("m"))),
         rew(state(k), stx(v("m")), target(v("m")), v("ih"),
-            lm("t", state(k), idt(state(k), ap(step(k, borrow, v("x"), y.clone()), v("t")), pair_s(k, ap(succ(k), em), ff()))),
+            lm("t", state(k), idt(state(k), ap(step(k, borrow, v("x"), y.clone()), v("t")), pair_s(ap(succ(k), em), ff()))),
             h)));
-    let pn = ap3(v("g"), pm, rfl(pair_s(k, zero(k), ff())), step_);
+    let pn = ap3(v("g"), pm, rfl(pair_s(zero(k), ff())), step_);
     let fin = rew(state(k), stx(v("N")), target(v("N")), pn,
         lm("t", state(k), idt(bool0(), snd(k, v("t")), ff())), rfl(ff()));
     lm("N", nat(k + 1), lm("g", ap(good1(k), v("N")), lm("x", bits(k), lm("gx", gbits(k, "x"), fin))))

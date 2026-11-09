@@ -68,15 +68,15 @@ pub(crate) fn j_proof(k: u32, fill: bool) -> T {
     let hb = cases2(ap(v("gx"), fu.clone()), gm, snd(k, um.clone()), bool0(),
         &|aa, cc| maj(aa.clone(), aa, cc), &|aa, _| aa);
     let h = rew(bool0(), maj(xp.clone(), xp.clone(), snd(k, um.clone())), xp.clone(), hb,
-        lm("t", bool0(), idt(state(k), pair_s(k, ap(succ(k), fu.clone()), v("t")), pair_s(k, ap(succ(k), fu.clone()), xp.clone()))),
-        rfl(pair_s(k, ap(succ(k), fu.clone()), xp)));
+        lm("t", bool0(), idt(state(k), pair_s(ap(succ(k), fu.clone()), v("t")), pair_s(ap(succ(k), fu.clone()), xp.clone()))),
+        rfl(pair_s(ap(succ(k), fu.clone()), xp)));
     let eq_new = rew(state(k), ad(k, v("m")), um.clone(), eqm,
         lm("t", state(k), idt(state(k), ap(step(k, maj, v("x"), v("x")), v("t")), ap(shl_step(k, v("x")), um.clone()))), h);
     let sm = ap(succ(k + 1), v("m"));
     let gnew = ap(v("gx"), fu);
     let step_ = lm("m", nat(k + 1), lm("ih", pmf(v("m")), mk2(ja(k, fill, sm.clone()), jb(k, fill, sm), gnew, eq_new)));
     let z = zero(k + 1);
-    let base = mk2(ja(k, fill, z.clone()), jb(k, fill, z), goodff(), rfl(pair_s(k, zero(k), ff())));
+    let base = mk2(ja(k, fill, z.clone()), jb(k, fill, z), goodff(), rfl(pair_s(zero(k), ff())));
     let pn = ap3(v("g"), lm("M", nat(k + 1), pmf(v("M"))), base, step_);
     lm("x", bits(k), lm("gx", gx_ty(k), lm("M", nat(k + 1), lm("g", ap(good1(k), v("M")), pn))))
 }
@@ -104,10 +104,10 @@ pub(crate) fn s_proof(k: u32, fill: bool) -> T {
 pub(crate) fn z_stmt(k: u32) -> T {
     pi_("N", nat(k + 1), arr(ap(good1(k), v("N")), pi_("za", bits(k), pi_("zc", bits(k),
         arr(pi_("i", nat(k), arr(gk(k, v("i")), idt(bool0(), ap(v("za"), v("i")), ff()))),
-            idt(state(k), st(k, maj, v("za"), v("zc"), v("N")), pair_s(k, embed(k, v("N")), ff())))))))
+            idt(state(k), st(k, maj, v("za"), v("zc"), v("N")), pair_s(embed(k, v("N")), ff())))))))
 }
 pub(crate) fn z_proof(k: u32) -> T {
-    let eq_ty = |m: T| idt(state(k), st(k, maj, v("za"), v("zc"), m.clone()), pair_s(k, embed(k, m), ff()));
+    let eq_ty = |m: T| idt(state(k), st(k, maj, v("za"), v("zc"), m.clone()), pair_s(embed(k, m), ff()));
     let gty = |m: T| gk(k, embed(k, m));
     // a (embed m) = false, so maj(a, c, false) = false whatever c is
     let pn = carry_false(k, &v("za"), &v("zc"), &|em, ge_m| rew(bool0(), ap(v("za"), em.clone()), ff(), ap2(v("hu"), em.clone(), ge_m),
@@ -162,7 +162,7 @@ pub(crate) fn shift_proof(k0: u32, m: usize, fill: bool) -> T {
     let h2 = cases1(gs, &|s_| xor(xor(ff(), and2(tt(), s_)), ff()), &|s_| s_);
     let h1 = rew(bool0(), ap(a.clone(), e.clone()), ff(), ap2(hu1, e.clone(), ge),
         lm("t", bool0(), idt(bool0(), xor(xor(v("t"), ap(c.clone(), e.clone())), ff()), shl_x(e.clone()))), h2);
-    let fin2 = rew(state(k1), st(k1, maj, a.clone(), c.clone(), v("N")), pair_s(k1, e.clone(), ff()), eqz,
+    let fin2 = rew(state(k1), st(k1, maj, a.clone(), c.clone(), v("N")), pair_s(e.clone(), ff()), eqz,
         lm("t", state(k1), idt(bool0(), sumfn(k1, a, c, v("t")), shl_x(e.clone()))), h1);
     let mut h = lm("N", nat(k1 + 1), lm("g", ap(good1(k1), v("N")), fin2));
     // w_2 = shl x lowered, with its conditional goodness

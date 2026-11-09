@@ -212,7 +212,7 @@ fn d_app(lem: Expr, b: T, hp: T, p: T, gp: T, a: &[T], c: &[T], r: Option<&[T]>,
 fn psh(n: usize, k: u32, c: &[T], fill: bool) -> (T, T) {
     let cp = shr(c);
     let sh_m = |m: T| shl_state(k, v("x"), fill, m);
-    let tgt = |m: T| pair_s(k, embed(k, m.clone()), look(n, &cp, low(k + 1, m)));
+    let tgt = |m: T| pair_s(embed(k, m.clone()), look(n, &cp, low(k + 1, m)));
     let eq_ty = |m: T| idt(state(k), sh_m(m.clone()), tgt(m));
     let gty = |m: T| gk(k, embed(k, m));
     let pmf = |m: T| sig2(gty(m.clone()), eq_ty(m));
@@ -225,13 +225,13 @@ fn psh(n: usize, k: u32, c: &[T], fill: bool) -> (T, T) {
     let sm = ap(succ(k + 1), v("m"));
     let hx_em = ap2(v("hx"), em.clone(), ge_m.clone());
     let h = rew(bool0(), ap(v("x"), em.clone()), look(n, c, low(k, em.clone())), hx_em,
-        lm("b", bool0(), idt(state(k), pair_s(k, ap(succ(k), em.clone()), v("b")), tgt(sm.clone()))), rfl(tgt(sm.clone())));
+        lm("b", bool0(), idt(state(k), pair_s(ap(succ(k), em.clone()), v("b")), tgt(sm.clone()))), rfl(tgt(sm.clone())));
     let eq_new = rew(state(k), sh_m(v("m")), tgt(v("m")), eq_m,
         lm("t", state(k), idt(state(k), ap(shl_step(k, v("x")), v("t")), tgt(sm.clone()))), h);
     let step_ = lm("m", nat(k + 1), lm("ih", pmf(v("m")),
         mk2(gty(sm.clone()), eq_ty(sm.clone()), gsucc(k, em, ge_m), eq_new)));
     let z = zero(k + 1);
-    let base = mk2(gty(z.clone()), eq_ty(z), gzero(k), rfl(pair_s(k, zero(k), if fill { tt() } else { ff() })));
+    let base = mk2(gty(z.clone()), eq_ty(z), gzero(k), rfl(pair_s(zero(k), if fill { tt() } else { ff() })));
     let pn = ap3(v("g"), lm("M", nat(k + 1), pmf(v("M"))), base, step_);
     let target = look(n, &cp, low(k + 1, v("M")));
     let fin = rew(state(k), sh_m(v("M")), tgt(v("M")), pr2(gty(v("M")), eq_ty(v("M")), pn),
@@ -340,7 +340,7 @@ fn stage(cx: &Cx, s: usize) -> Expr {
     };
     let pn = carry_false(kj, &su, &sv, &to_false);
     let stn = st(kj, maj, su.clone(), sv.clone(), v("N"));
-    let target = pair_s(kj, embed(kj, v("N")), ff());
+    let target = pair_s(embed(kj, v("N")), ff());
     let eq_ty = idt(state(kj), stn.clone(), target.clone());
     let gty = gk(kj, embed(kj, v("N")));
     let (eq_n, ge_n) = (pr2(gty.clone(), eq_ty.clone(), pn.clone()), pr1(gty, eq_ty, pn));
