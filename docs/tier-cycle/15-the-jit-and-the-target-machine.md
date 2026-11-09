@@ -817,7 +817,10 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   126 + 790 ms, `doubling(13)` 1,748 + 102,289 ms. The build is now linear and small; the check grows about 4x per
   doubling from d = 9 and is the whole cost above 512 nodes. By the same rule the bound is now 1024 nodes
   (`doubling(9)`, 0.25 s even at 77% load; `doubling(10)` takes 0.92 s); the table test accepts `doubling(9)` and
-  `in_fragment_rejects_the_rest` refuses `doubling(10)`.
+  `in_fragment_rejects_the_rest` refuses `doubling(10)`. The sweep barely gains: in a samply profile of a salt-1 sweep
+  on the build before the fix (run `2026-11-08-karrow-sweep-profile`, 199,220 busy samples) `karrow` is 0.62%
+  inclusive, since the sweep mines at small widths, where the n^2 / 2 shifts are few. That share caps the gain, so no
+  sweep A/B was run.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
