@@ -1057,6 +1057,18 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     Retired instructions of church-bv's `proof-cost-split`, both changes together (large pages off, CPU 4, 3 rotated
     batches of 4; paired batch medians, 9f65018 against both): 40.025 G to 39.496 G, 39.896 G to 39.469 G, 39.892 G to
     39.475 G (-1.32%, -1.07%, -1.05%; within-batch (median - best) / best 0.0001-0.0013); not split between the two.
+  - *Whether the whnf memo pays* (at 9f65018; `patches/l1-whnf-counters-spike.patch`, run
+    `2026-11-09-l1-whnf-counters2`; `patches/l1-whnf-memo-arms-spike.patch`, runs `2026-11-09-l1-ir`, `-l1-cg`,
+    `-l1-pcs-counts`, `-l1-pcs-a1`, `-l1-tests`, `-l1-tests2`). The gate's check reads it 21 times for 197 k inserts,
+    but `proof-cost-split` hits on 51% of 1.63 M gets (44% return a reduced term), the kernel's tests on 23% (nearly
+    all stuck terms) and tatic-wasm's on 45%. Arms: no memo; the get and the `e -> r` put only (the `r -> r` put and
+    its test-only whnf assert dropped). Without the memo the gate check retires 1.46% fewer instructions (d = 11 and
+    13; last-level misses -2.3% to -3.2%, `work` +109 of 3.1 M), but `proof-cost-split` retires 14.4% more (45.62 G
+    against 39.90 G, whole process, 3 rotated batches of 4) and 3 kernel tests fail, among them
+    `nf_and_def_eq_are_linear_on_a_stuck_spine` (still running at n = 16000 after 20 s), so it stays. Dropping only the
+    `r -> r` put: -0.78% (d = 13) and -0.77% (d = 11) on the gate check, -0.47% on `proof-cost-split` (39.71 G), all
+    tests green, outputs identical; untimed, and it would leave `whnf_in`'s doc and `whnf_of_a_whnf_does_no_work`'s
+    stated purpose (a reduced result answers without a `whnf_step`) out of date. Counted at 89% load in batch 1.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The

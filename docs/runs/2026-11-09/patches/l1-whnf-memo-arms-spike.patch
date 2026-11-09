@@ -1,0 +1,35 @@
+diff --git a/crates/tatic-kernel/src/reduce.rs b/crates/tatic-kernel/src/reduce.rs
+index 3c92793..5c08786 100644
+--- a/crates/tatic-kernel/src/reduce.rs
++++ b/crates/tatic-kernel/src/reduce.rs
+@@ -219,6 +219,9 @@ fn whnf_sigrec(s: &Spaces, motive: Expr, step: Expr, target: Expr) -> Option<Exp
+     }
+ }
+ 
++/// Spike l1: 0 shipped, 1 no whnf memo, 2 only the e -> r put.
++const L1_ARM: u8 = 1;
++
+ /// `whnf`, cached -- the same subterm recurs many times within one top-level call once a proof term
+ /// shares structure. Returns `e` itself when it is already in weak head normal form, so reducing a
+ /// result again, as `nf` and `def_eq` do with a stuck head, keeps its node and hits the cache from
+@@ -228,12 +231,17 @@ pub(super) fn whnf_in(s: &Spaces, e: &Expr) -> Expr {
+     if !matches!(s.node(e), Node::App(..) | Node::J { .. } | Node::WRec { .. } | Node::SigRec { .. }) {
+         return *e;
+     }
+-    if let Some(hit) = hc::whnf_get(s, e) {
+-        return hit;
++    if L1_ARM != 1 {
++        if let Some(hit) = hc::whnf_get(s, e) {
++            return hit;
++        }
+     }
+     let result = whnf_step(s, e).unwrap_or(*e);
++    if L1_ARM == 1 {
++        return result;
++    }
+     hc::whnf_put(s, e, &result);
+-    if !s.same(&result, e) {
++    if L1_ARM == 0 && !s.same(&result, e) {
+         // The kernel's own tests check the claim the entry makes; elsewhere the check would cost work.
+         #[cfg(test)]
+         assert!(whnf_step(s, &result).is_none(), "whnf_step's result is not in whnf");

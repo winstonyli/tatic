@@ -1,0 +1,35 @@
+diff --git a/crates/tatic-kernel/src/hc.rs b/crates/tatic-kernel/src/hc.rs
+index 5c71b19..8b1eb00 100644
+--- a/crates/tatic-kernel/src/hc.rs
++++ b/crates/tatic-kernel/src/hc.rs
+@@ -151,11 +151,28 @@ pub fn inst_put(s: &Spaces, x: &Expr, d: u32, r: &Expr) {
+ /// `x`'s weak head normal form, if the memos have it. `whnf` reads no context, so an answer holds for the whole
+ /// region, across `def_eq` calls (doc section "Why the table lookups stay").
+ pub fn whnf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
+-    s.memos.borrow().whnf.get(&s.key(x)).map(|r| s.expr_of(r))
++    use std::sync::atomic::Ordering::Relaxed as R;
++    let r = s.memos.borrow().whnf.get(&s.key(x)).map(|r| s.expr_of(r));
++    let g = L1_GETS.fetch_add(1, R) + 1;
++    if let Some(h) = &r {
++        if s.same(h, x) { L1_HIT_SELF.fetch_add(1, R); } else { L1_HIT_RED.fetch_add(1, R); }
++    }
++    if g % 4096 == 0 { eprintln!("L1 whnf gets={} hit_self={} hit_red={} puts={} newputs={} rr_puts={}", g, L1_HIT_SELF.load(R), L1_HIT_RED.load(R), L1_PUTS.load(R), L1_NEW.load(R), L1_RR.load(R)); }
++    r
+ }
+ 
++pub static L1_GETS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static L1_HIT_SELF: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static L1_HIT_RED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static L1_PUTS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static L1_NEW: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++pub static L1_RR: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
++
+ pub fn whnf_put(s: &Spaces, x: &Expr, r: &Expr) {
+-    s.memos.borrow_mut().whnf.insert(s.key(x), s.key(r));
++    use std::sync::atomic::Ordering::Relaxed as R;
++    L1_PUTS.fetch_add(1, R);
++    if s.same(x, r) { L1_RR.fetch_add(1, R); }
++    if s.memos.borrow_mut().whnf.insert(s.key(x), s.key(r)).is_none() { L1_NEW.fetch_add(1, R); }
+ }
+ 
+ pub fn nf_get(s: &Spaces, x: &Expr) -> Option<Expr> {
