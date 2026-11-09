@@ -794,7 +794,8 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   trusted "a `loop` with no `br` is its body" fact.
 - **Tree size:** the build doubles with the tree (linear) and the check grows faster (5.8x from d = 12 to 13), so the
   gate alone passes the JIT path's 0.4 s at 512 nodes, far below the 16,384-node cap. `in_fragment` takes trees of at
-  most 256 nodes (`MAX_GATE_TREE`, `doubling(7)`); a larger straight-line term installs through the existing chain.
+  most 256 nodes (`MAX_GATE_TREE`, `doubling(7)`; 1024 since the build fix below); a larger straight-line term
+  installs through the existing chain.
 - **`Mul`:** 25-34 ms with two parameters as operands, so `Mul` stays in the fragment unrestricted.
 - **Stack:** building and proving `doubling(13)` on a 2 MB thread overflowed (run `2026-11-08-v07-gate-measure_stack_2mb`),
   so `Wasm::seq` and the gate's `cps` now run each step under `tatic_kernel::grow`; the same run then passed in 105 s
@@ -806,6 +807,17 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   0.4 s. Products of symbolic products cost no more to check than one: `(a*b)*(a*b)` 25 + 10 ms, `(a*b)*(b*a)` 29 + 10
   ms, and a chain `a * b * .. * b` of k products builds in 24 ms (k = 2) to 48 ms (k = 8) and checks in 10-13 ms
   throughout, so `Mul` needs no rule of its own.
+- **The build was `karrow`:** a samply profile of the build at `doubling(7)` and `(8)` (run
+  `2026-11-08-gate-build-profile`) put 61% of its samples under `Wasm::sty` -> `word` -> `bv_ty` -> `karrow`, all of
+  it `arrow`'s codomain shift: `karrow(n)` nested n arrows, so each 64-bit word type cost about 2,000 node shifts, and
+  `sty` makes one per stack slot per instruction. Rebuilding `Op::term(64)` per instruction (0.25 ms each) and building
+  `prog` twice were the smaller part. `karrow` now writes its binders directly, as `bool0` does
+  (`karrow_is_the_arrow_chain` pins it to the arrow chain). Rerun (run `2026-11-08-gate-costs-direct-karrow`, cpu 77%,
+  one rep per tree): `doubling(7)` 17 + 26 ms, `doubling(8)` 34 + 53 ms, `doubling(9)` 66 + 184 ms, `doubling(10)`
+  126 + 790 ms, `doubling(13)` 1,748 + 102,289 ms. The build is now linear and small; the check grows about 4x per
+  doubling from d = 9 and is the whole cost above 512 nodes. By the same rule the bound is now 1024 nodes
+  (`doubling(9)`, 0.25 s even at 77% load; `doubling(10)` takes 0.92 s); the table test accepts `doubling(9)` and
+  `in_fragment_rejects_the_rest` refuses `doubling(10)`.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The

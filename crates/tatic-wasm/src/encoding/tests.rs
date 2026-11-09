@@ -75,6 +75,18 @@ fn constants_are_keyed_by_their_build_function() {
     })
 }
 
+/// `karrow`, built binder by binder, is the `arrow` chain it stands for.
+#[test]
+fn karrow_is_the_arrow_chain() {
+    tatic_kernel::scoped(|| {
+        let mut chain = var(0);
+        for n in 0..=64 {
+            assert!(karrow(n) == chain, "karrow({n})");
+            chain = arrow(bool0(), chain);
+        }
+    })
+}
+
 #[test]
 pub fn church_bitvector_add_computes_by_conv_at_8_bits() {
     run(8);

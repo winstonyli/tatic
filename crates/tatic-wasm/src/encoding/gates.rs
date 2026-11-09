@@ -84,9 +84,11 @@ pub fn low_bits(n: usize) -> u128 {
     if n >= 128 { u128::MAX } else { (1u128 << n) - 1 }
 }
 
-/// Bool0 -> ... -> Bool0 -> C (n arrows), in a context whose top variable is C.
+/// Bool0 -> ... -> Bool0 -> C (n arrows), in a context whose top variable is C. Written without `arrow`, like `bool0`:
+/// nested, each arrow shifted the whole chain below it, n^2 / 2 node shifts per call, and every stack slot's word type
+/// in the gate's statement makes one.
 pub fn karrow(n: usize) -> Expr {
-    if n == 0 { var(0) } else { arrow(bool0(), karrow(n - 1)) }
+    (0..n).fold(var(n as u32), |body, _| pi(bool0(), body))
 }
 pub fn bv_ty(n: usize) -> Expr {
     pi(sort(1), arrow(karrow(n), var(0)))

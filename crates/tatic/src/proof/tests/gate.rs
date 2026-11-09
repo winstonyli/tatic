@@ -38,8 +38,8 @@ fn gate_accepts_the_fragment_table() {
     let mut table = the_five();
     table.push(("a - b", Box::new(|s: &mut TermStore| source(s, r"\a b. a - b")), 2));
     table.push(("third", Box::new(|s: &mut TermStore| source(s, r"\a b c. c")), 3));
-    // at the tree bound: 2^8 nodes
-    table.push(("doubling_7", Box::new(|s: &mut TermStore| doubling(s, 7)), 1));
+    // at the tree bound: 2^10 nodes
+    table.push(("doubling_9", Box::new(|s: &mut TermStore| doubling(s, 9)), 1));
     table.push((
         "a + MIN",
         Box::new(|s: &mut TermStore| {
@@ -192,7 +192,7 @@ fn in_fragment_rejects_the_rest() {
             2,
         ),
         ("arity 0", Box::new(|s: &mut TermStore| source(s, "5")), 0),
-        ("doubling_8 (over the tree bound)", Box::new(|s: &mut TermStore| doubling(s, 8)), 1),
+        ("doubling_10 (over the tree bound)", Box::new(|s: &mut TermStore| doubling(s, 10)), 1),
         ("\\f. f 1", Box::new(|s: &mut TermStore| source(s, r"\f. f 1")), 1),
     ];
     for (name, build, arity) in cases {
