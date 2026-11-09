@@ -875,10 +875,19 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   `t = add(t, x)` of the same tree size gives the same work within 1% at each d (776575 against 768735 at d = 11), so
   the stack depth of `doubling`'s machine program is not the cause either. What grows is the cost per unit of work:
   in release, best of 3, 112 ns at d = 6, 146-149 at d = 7-8, 185-205 at d = 9-11 and 235-239 at d = 12-13 (other
-  sessions held about 49% of the CPU, so the levels are rough). The steps look like the term tables outgrowing a cache
-  level, which fits hashbrown's probe being the top leaf of the profile above; that is an inference, unconfirmed (cache
-  miss counters or table sizes per d would test it). `gate_check_work_is_linear_in_the_tree` now holds the work ratio
-  under 2.05, below the 2.1 a log factor gave.
+  sessions held about 49% of the CPU, so the levels are rough). The cause is the kernel's tables outgrowing the caches.
+  The check's footprint (region nodes, side arrays, table and memos, by capacity) doubles with d: 1.0 MB at d = 6,
+  2.2 MB at 8, 16.5 MB at 11, 66 MB at 13 (525168 region nodes). Under cachegrind, with the last level simulated at
+  the 7840U's L2 (1 MB) and L3 (16 MB), data references and L1 misses per doubling stay at 1.8-2.0, like the work, but
+  last-level read misses do not (run `2026-11-09-cachegrind-doubling`, the check's misses taken as the difference
+  of a build-only and a build-and-check run). At 1 MB they grow 2.2-2.7x per doubling, from 6449 at d = 6 to 3.93 M at
+  d = 13. At 16 MB they are nearly zero through d = 9 (21-302), then 8060 at d = 10, 151127 at 11, 511902 at 12 and
+  1.47 M at 13, so the jump starts where the footprint passes 16 MB. The two clear steps in time per unit of work
+  (d = 6 to 7, d = 11 to 12) sit at those two crossings. cachegrind is close to deterministic here: the two runs of each
+  d differed by a few ppm in data references and 0.06% in L1 misses. Raising the bound past 8192 therefore needs a
+  smaller footprint per node, or a check that touches less of it, as well as less work. The probes are in
+  `docs/runs/2026-11-09/patches/y1-cache-probes.patch`, run by `docs/runs/2026-11-09/scripts/cg.sh`.
+  `gate_check_work_is_linear_in_the_tree` now holds the work ratio under 2.05, below the 2.1 a log factor gave.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The

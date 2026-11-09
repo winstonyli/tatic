@@ -1,0 +1,103 @@
+diff --git a/crates/tatic-kernel/src/expr.rs b/crates/tatic-kernel/src/expr.rs
+index 6a3a0be..5e9a115 100644
+--- a/crates/tatic-kernel/src/expr.rs
++++ b/crates/tatic-kernel/src/expr.rs
+@@ -280,6 +280,11 @@ pub fn work() -> u64 {
+     with_spaces(|s| s.work())
+ }
+ 
++/// PROBE (y1, not for commit).
++pub fn footprint() -> [usize; 4] {
++    with_spaces(|s| s.footprint())
++}
++
+ /// A map key naming a node: its resolved `Ref`'s bits.
+ pub(crate) type Key = u32;
+ /// An argument list's id in the instantiation memo ([`hc::args_id`]).
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index 63534ee..41bd8c0 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -248,6 +248,25 @@ impl Spaces {
+         self.work.get()
+     }
+ 
++    /// PROBE (y1, not for commit): [region nodes, region bytes, persistent bytes, memo bytes], by capacity.
++    pub(crate) fn footprint(&self) -> [usize; 4] {
++        use std::mem::size_of;
++        fn space(s: &Space) -> usize {
++            s.nodes.capacity() * size_of::<Node<Ref>>()
++                + (s.loose.capacity() + s.free.capacity() + s.uses.capacity()) * 4
++                + s.parents.capacity()
++                + s.height.capacity()
++                + s.table.capacity() * 9
++        }
++        fn map<K, V>(m: &IdMap<K, V>) -> usize {
++            m.capacity() * (size_of::<(K, V)>() + 1)
++        }
++        let i = self.get();
++        let m = self.memos.borrow();
++        let memo = map(&m.inst) + map(&m.shifts) + map(&m.whnf) + map(&m.hnf) + map(&m.nf) + map(&m.spine) + map(&m.arg_sets) + map(&m.bounds);
++        [i.region.nodes.len(), space(&i.region), space(&i.persistent), memo]
++    }
++
+     #[inline(always)]
+     fn get(&self) -> &Inner {
+         // SAFETY: see the module doc; no `&mut` from `inner()` is live across a call to this.
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index aceb847..cd211ce 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -245,3 +245,52 @@ fn in_fragment_rejects_the_rest() {
+         assert!(!in_fragment(&s, h, arity), "{name} should be outside the fragment");
+     }
+ }
++
++/// PROBE (y1, not for commit): kernel footprint after building and after checking `doubling(d)`.
++#[test]
++#[ignore]
++fn probe_footprint() {
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(|| {
++            for d in 6..=13u32 {
++                let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
++                tatic_kernel::scoped(|| {
++                    let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                    let b = tatic_kernel::footprint();
++                    assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                    let c = tatic_kernel::footprint();
++                    let kb = |x: usize| x / 1024;
++                    println!("d={d} built: nodes={} region={}K | checked: nodes={} region={}K persistent={}K memos={}K total={}K",
++                        b[0], kb(b[1]), c[0], kb(c[1]), kb(c[2]), kb(c[3]), kb(c[1] + c[2] + c[3]));
++                });
++            }
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
++
++/// PROBE (y1, not for commit): one `doubling(PROBE_D)`, built, and checked when PROBE_CHECK=1; for cachegrind, which
++/// counts the whole process, so the check's misses are the difference of the two.
++#[test]
++#[ignore]
++fn probe_cg() {
++    let d: u32 = std::env::var("PROBE_D").unwrap().parse().unwrap();
++    let check = std::env::var("PROBE_CHECK").as_deref() == Ok("1");
++    std::thread::Builder::new()
++        .stack_size(256 << 20)
++        .spawn(move || {
++            let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
++            tatic_kernel::scoped(|| {
++                let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                if check {
++                    assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                }
++                println!("d={d} check={check} work={}", tatic_kernel::work());
++            });
++        })
++        .unwrap()
++        .join()
++        .unwrap();
++}
