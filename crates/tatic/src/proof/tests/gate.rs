@@ -140,10 +140,26 @@ fn measure_gate_costs() {
             break;
         }
     }
-    for (name, src) in [("mul a b", r"\a b. a * b"), ("mul in an arm", r"\a b. if a < b then a * b else a")] {
-        let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, src));
+    let mut muls: Vec<(String, String)> = [
+        ("mul a b", r"\a b. a * b"),
+        ("mul in an arm", r"\a b. if a < b then a * b else a"),
+        // a product of symbolic products, shared and not
+        ("mul square shared", r"\a b. (a * b) * (a * b)"),
+        ("mul square", r"\a b. (a * b) * (b * a)"),
+    ]
+    .map(|(n, s)| (n.to_string(), s.to_string()))
+    .into();
+    // a chain of k products, each operand already symbolic
+    muls.extend((2..=8).map(|k| (format!("mul chain {k}"), format!(r"\a b. a{}", " * b".repeat(k)))));
+    for (name, src) in muls {
+        let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
+        assert!(in_fragment(&s, h, 2), "{name} should be in the fragment");
         let (b, k, ok) = time_gate(&s, h, 2, frag.entry(), 1, 1);
         println!("{name} {b:.2} {k:.2} {ok}");
+        if b + k > 60_000.0 {
+            println!("mul: skipped the rest after {name} (over 60 s)");
+            break;
+        }
     }
 }
 
