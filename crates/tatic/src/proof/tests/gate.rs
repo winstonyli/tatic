@@ -223,6 +223,30 @@ fn measure_stack_2mb() {
     println!("doubling_13 on 2 MB {:.2} {:.2} {}", r.0, r.1, r.2);
 }
 
+/// One `doubling(GATE_D)`, built, and checked when `GATE_CHECK=1`: the target of `docs/runs/2026-11-09/scripts/cg.sh`.
+/// cachegrind counts the whole process, so the check's misses are the difference of the two runs.
+#[test]
+#[ignore]
+fn measure_cachegrind() {
+    let d: u32 = std::env::var("GATE_D").expect("GATE_D").parse().unwrap();
+    let check = std::env::var("GATE_CHECK").as_deref() == Ok("1");
+    std::thread::Builder::new()
+        .stack_size(256 << 20)
+        .spawn(move || {
+            let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
+            tatic_kernel::scoped(|| {
+                let (p, st) = statement(&s, h, 1, frag.entry(), 1);
+                if check {
+                    assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
+                }
+                println!("d={d} check={check} work={}", tatic_kernel::work());
+            });
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 #[test]
 fn in_fragment_rejects_the_rest() {
     let cases: Vec<(&str, Box<dyn Fn(&mut TermStore) -> Hash>, usize)> = vec![

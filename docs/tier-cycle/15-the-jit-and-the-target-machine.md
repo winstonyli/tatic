@@ -885,8 +885,9 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   1.47 M at 13, so the jump starts where the footprint passes 16 MB. The two clear steps in time per unit of work
   (d = 6 to 7, d = 11 to 12) sit at those two crossings. cachegrind is close to deterministic here: the two runs of each
   d differed by a few ppm in data references and 0.06% in L1 misses. Raising the bound past 8192 therefore needs a
-  smaller footprint per node, or a check that touches less of it, as well as less work. The probes are in
-  `docs/runs/2026-11-09/patches/y1-cache-probes.patch`, run by `docs/runs/2026-11-09/scripts/cg.sh`.
+  smaller footprint per node, or a check that touches less of it, as well as less work. `docs/runs/2026-11-09/scripts/cg.sh`
+  reruns the sweep on the ignored test `measure_cachegrind`; the footprint probe is in
+  `docs/runs/2026-11-09/patches/y1-cache-probes.patch`.
   `gate_check_work_is_linear_in_the_tree` now holds the work ratio under 2.05, below the 2.1 a log factor gave.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
