@@ -901,14 +901,35 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   leads: `hc::uses` 10%, `shift_unchecked` 7%, `Space::push` 6%, `shift_put` 5%, `shift_get` 4%. The misses explain
   only part of the time, an inference: the excess over d = 6's cost per unit of work is about 386 ms at d = 13, and
   weighting the random misses by latency (about 0.7-1 M at 16 MB at ~80 ns, 3.9 M at 1 MB at ~10 ns) gives about
-  100-120 ms, while the `memcpy` misses stream and cost a few ms. cachegrind models no TLB and no prefetcher; TLB
-  misses over 66 MB of 4 KB pages are the untested remainder. Options, fewest concepts first: check the top
+  100-120 ms, while the `memcpy` misses stream and cost a few ms. cachegrind models no TLB and no prefetcher (the TLB was then tested,
+  next bullet). Options, fewest concepts first: check the top
   telescope under fresh typed free parameters instead of `Var` binders, so the program is closed and the shifted
   copies of its suffix go (kernel, trusted base); one `u64` loose-variable mask per node in place of the `uses`
   slot, `bounds`, `lowest_loose` and `InferCache::lows`; `inst` as per-call scratch, deleting `arg_sets` and `Aid`;
   `whnf_in` returning non-redex tags without a probe and storing result -> result (a work cut, not a miss cut); one
   32-byte row per node in place of six arrays. Rejected: per-case encoding rewrites, lossy bounded memos, a custom
   table, narrower `loose`/`free`, a separate whnf slot array.
+- **Testing the survey's options (2026-11-09):** four follow-ups, at 026f290 plus the change named.
+  - *TLB.* mimalloc's large OS pages, on by default here, save only 4-7% of the check at d = 12-13 (best of 3, timed
+    lease: d = 13 511 ms with them, 537 ms with `MIMALLOC_ALLOW_LARGE_OS_PAGES=0`; d = 12 246 against 265; runs
+    `2026-11-09-lp1-*` and `2026-11-09-lp0-*`, `docs/runs/2026-11-09/scripts/lp.sh`), and the time still grows 2.03-2.07x
+    from d = 12 to 13 either way. So page walks are not the unexplained two-thirds of the excess; what that is stays
+    open.
+  - *Closed parameters, the falsifier.* Opening the law's 7 binders onto postulated constants (public `whnf` of each
+    `Pi` and `Lam` applied to a `Const`, then `Postulates::check`; `docs/runs/2026-11-09/patches/b2-opened-binder-spike.patch`,
+    kernel untouched) cuts the memo tables at d = 13 by about two-thirds (shifts 162K to 50K entries, inst 164K to 34K,
+    bounds 214K to 49K, arg_sets 90K to 25K) but the check builds more nodes, 680K against 499K, because the closed
+    machine spine turns on `hnf` (49K entries, 77 before). Work falls 6.5% (3.04 M to 2.84 M; 6.3% at d = 11) and the
+    untimed check 9%. The survey's estimate that nodes would fall to 40-70% was wrong: the option trades memo bytes for
+    node bytes and is not worth a change to the trusted base on this evidence.
+  - *A loose-variable mask.* A `u64` per node (56 bits of loose `Var`s and a byte for the lowest index lost to the cap)
+    agreed with `hc::uses` on every query it answered exactly (141K of 160K random ones), the kernel and wasm suites and the gate at d = 6-13 (identical work),
+    but answers only 24% of the gate's `uses` calls exactly: the rest ask nodes whose loose variables run past 56, under
+    the 64-binder word telescopes, though only 1.6% of queries have d + m of 64 or more
+    (`docs/runs/2026-11-09/patches/b3-mask-spike.patch`). One word cannot replace `bounds` and the slot; rejected.
+  - *The whnf fast path,* adopted (`reduce.rs#whnf_in`): non-redex tags skip the memo and a reduced result is stored as
+    its own whnf. The check's work falls 1.9% at d = 13 (3039350 to 2981514) and 2.7% at d = 6; the ratio per doubling
+    is unchanged (1.992 from d = 12 to 13). Too small to time.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The

@@ -1,0 +1,250 @@
+diff --git a/crates/tatic-kernel/src/expr.rs b/crates/tatic-kernel/src/expr.rs
+index 6a3a0be..32e294c 100644
+--- a/crates/tatic-kernel/src/expr.rs
++++ b/crates/tatic-kernel/src/expr.rs
+@@ -308,6 +308,11 @@ impl Spaces {
+         self.loose_at(self.res(e))
+     }
+ 
++    #[inline(always)]
++    pub(crate) fn mask(&self, e: &Expr) -> u64 {
++        self.mask_at(self.res(e))
++    }
++
+     #[inline(always)]
+     pub(crate) fn free(&self, e: &Expr) -> u32 {
+         self.free_at(self.res(e))
+@@ -532,3 +537,47 @@ pub fn arrow(a: Expr, b: Expr) -> Expr {
+     pi(a, shift(&b, 0, 1))
+ }
+ 
++
++/// SPIKE b3: sets `hc::uses`' mode (0 exact, 1 both asserted, 2 mask).
++pub fn mask_mode(m: u8) {
++    hc::MASK_MODE.with(|c| c.set(m));
++}
++/// SPIKE b3: `uses` calls by d + m, then inexact masks; resets them.
++pub fn mask_stats() -> [u64; 66] {
++    hc::MASK_STATS.with(|s| std::mem::replace(&mut *s.borrow_mut(), [0; 66]))
++}
++
++#[cfg(test)]
++mod mask_spike {
++    use super::*;
++    /// SPIKE b3: the mask's answer equals the exact walk on random terms with Vars up to 80 under up to ~12 binders.
++    #[test]
++    fn mask_matches_exact_uses() {
++        let mut rng = tatic_rng::SplitMix64::new(7);
++        fn rand_term(r: &mut tatic_rng::SplitMix64, depth: u32) -> Expr {
++            match if depth == 0 { r.below(2) } else { r.below(5) } {
++                0 => var(if r.below(4) == 0 { r.below(80) } else { r.below(8) }),
++                1 => sort(r.below(2)),
++                2 => pi(rand_term(r, depth - 1), rand_term(r, depth - 1)),
++                3 => lam(rand_term(r, depth - 1), rand_term(r, depth - 1)),
++                _ => app(rand_term(r, depth - 1), rand_term(r, depth - 1)),
++            }
++        }
++        mask_mode(1);
++        let mut n = 0;
++        scoped(|| {
++            for _ in 0..20000 {
++                let depth = 1 + rng.below(9);
++                let e = rand_term(&mut rng, depth);
++                for _ in 0..8 {
++                    let (d, m) = (rng.below(70), rng.below(70));
++                    with_spaces(|s| hc::uses(s, &e, d, m));
++                    n += 1;
++                }
++            }
++        });
++        let st = mask_stats();
++        mask_mode(0);
++        println!("queries {n}, inexact {}", st[65]);
++    }
++}
+diff --git a/crates/tatic-kernel/src/hc.rs b/crates/tatic-kernel/src/hc.rs
+index f2f1987..e9dee8e 100644
+--- a/crates/tatic-kernel/src/hc.rs
++++ b/crates/tatic-kernel/src/hc.rs
+@@ -48,6 +48,41 @@ pub fn large(s: &Spaces, e: &Expr, expected: &Expr) -> bool {
+ /// variable from `d`, which one (node, depth) entry answers for every `m` outside them; a walk
+ /// that still stops at its first hit narrows them (doc section "The slot in front of bounds").
+ pub fn uses(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
++    let mask = s.mask(x);
++    let f = mask >> 56;
++    let exact = f == 255 || (d + m) as u64 <= f.min(56) || s.loose(x) <= d || s.loose(x) <= f.min(56) as u32;
++    MASK_STATS.with(|st| {
++        let mut st = st.borrow_mut();
++        st[((d + m) as usize).min(64)] += 1;
++        st[65] += !exact as u64;
++    });
++    let by_mask = || {
++        let lo = d.min(56);
++        let hi = (d + m).min(56);
++        let range = if hi > lo { ((1u64 << (hi - lo)) - 1) << lo } else { 0 };
++        mask & range != 0
++    };
++    match MASK_MODE.with(|c| c.get()) {
++        2 if exact => by_mask(),
++        1 => {
++            let r = uses_exact(s, x, d, m);
++            if exact {
++                assert_eq!(r, by_mask(), "mask disagrees: d={d} m={m} mask={mask:#x}");
++            }
++            r
++        }
++        _ => uses_exact(s, x, d, m),
++    }
++}
++
++thread_local! {
++    /// SPIKE b3: 0 exact walk, 1 both with an assert, 2 the mask (the walk when inexact).
++    pub static MASK_MODE: std::cell::Cell<u8> = const { std::cell::Cell::new(1) };
++    /// SPIKE b3: calls by d + m (64: 64 or more), then [65] inexact masks.
++    pub static MASK_STATS: std::cell::RefCell<[u64; 66]> = const { std::cell::RefCell::new([0; 66]) };
++}
++
++fn uses_exact(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
+     let loose = s.loose(x);
+     if loose <= d {
+         return false;
+@@ -76,7 +111,7 @@ pub fn uses(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
+     } else {
+         let r = grow(|| {
+             let mut found = false;
+-            n.for_kids(|c, under| found = found || uses(s, c, d + under as u32, m));
++            n.for_kids(|c, under| found = found || uses_exact(s, c, d + under as u32, m));
+             found
+         });
+         let b = if r { (lo, m - 1) } else { (m, hi) };
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index 63534ee..b0fe7d9 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -109,6 +109,8 @@ struct Space {
+     free: Vec<u32>,
+     /// Per node, the `hc::uses` slot (0: empty).
+     uses: Vec<u32>,
++    /// SPIKE b3: bit k for a loose `Var k` (k < 63); bit 63 for one at 63 or above, after which the mask is inexact.
++    mask: Vec<u64>,
+     /// Per node, the nodes built over it, saturating at 2 (`Expr::shared`).
+     parents: Vec<u8>,
+     /// Per node, its height (a leaf 0), saturating: what `hc::low` asks without a walk.
+@@ -119,12 +121,13 @@ struct Space {
+ 
+ impl Space {
+     const fn new() -> Space {
+-        Space { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), uses: Vec::new(), parents: Vec::new(), height: Vec::new(), table: hashbrown::HashTable::new() }
++        Space { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), uses: Vec::new(), mask: Vec::new(), parents: Vec::new(), height: Vec::new(), table: hashbrown::HashTable::new() }
+     }
+     fn find(&self, h: u32, n: &Node<Ref>) -> Option<Ref> {
+         self.table.find(spread(h), |&(g, r)| g == h && self.nodes[r.index()] == *n).map(|&(_, r)| r)
+     }
+-    fn push(&mut self, region: bool, h: u32, n: Node<Ref>, (loose, free): (u32, u32), parents: u8, height: u8) -> Ref {
++    fn push(&mut self, region: bool, h: u32, n: Node<Ref>, (loose, free): (u32, u32), parents: u8, height: u8, mask: u64) -> Ref {
++        self.mask.push(mask);
+         let r = Ref::new(region, self.nodes.len());
+         self.nodes.push(n);
+         self.loose.push(loose);
+@@ -140,6 +143,7 @@ impl Space {
+         reset_vec(&mut self.loose);
+         reset_vec(&mut self.free);
+         reset_vec(&mut self.uses);
++        reset_vec(&mut self.mask);
+         reset_vec(&mut self.parents);
+         reset_vec(&mut self.height);
+         let used = self.table.len();
+@@ -316,6 +320,10 @@ impl Spaces {
+         self.space(r).height[r.index()]
+     }
+     #[inline(always)]
++    pub(crate) fn mask_at(&self, r: Ref) -> u64 {
++        self.space(r).mask[r.index()]
++    }
++    #[inline(always)]
+     pub(crate) fn uses_at(&self, r: Ref) -> u32 {
+         self.space(r).uses[r.index()]
+     }
+@@ -357,6 +365,25 @@ impl Spaces {
+             let at = |c: &Ref| if c.in_region() { g } else { p };
+             n.ranges(|c| at(c).loose[c.index()], |c| at(c).free[c.index()])
+         };
++        let mask = {
++            let (p, g) = (&i.persistent, &i.region);
++            // Low 56 bits: loose Vars below 56. Top byte F: the least relative index of an occurrence lost to the
++            // 56-bit cap (255: none), so bits below F are exact.
++            const LOW: u64 = (1 << 56) - 1;
++            match n {
++                Node::Var(k) => if k < 56 { 1u64 << k | 255 << 56 } else { (k.min(254) as u64) << 56 },
++                _ => {
++                    let (mut l, mut f) = (0u64, 255u64);
++                    n.for_kids(|c, under| {
++                        let x = (if c.in_region() { g } else { p }).mask[c.index()];
++                        let (xl, xf) = (x & LOW, x >> 56);
++                        l |= if under { xl >> 1 } else { xl };
++                        f = f.min(if under && xf != 255 { xf.saturating_sub(1) } else { xf });
++                    });
++                    l | f << 56
++                }
++            }
++        };
+         let height = {
+             let (p, g) = (&i.persistent, &i.region);
+             let mut height = 0u8;
+@@ -368,7 +395,7 @@ impl Spaces {
+             let p = &mut s.parents[c.index()];
+             *p = p.saturating_add(1).min(2);
+         });
+-        if in_region { i.region.push(true, h, n, ranges, 0, height) } else { i.persistent.push(false, h, n, ranges, 0, height) }
++        if in_region { i.region.push(true, h, n, ranges, 0, height, mask) } else { i.persistent.push(false, h, n, ranges, 0, height, mask) }
+     }
+ 
+     /// `r` (resolved) as a persistent `Ref`. The region nodes reachable from it are copied out bottom-up, each once per
+@@ -391,7 +418,7 @@ impl Spaces {
+         let i = self.inner();
+         let h = hash(&m);
+         debug_assert!(i.persistent.find(h, &m).is_none(), "persist met a copy it did not make (Invariant I)");
+-        let p = i.persistent.push(false, h, m, (i.region.loose[k], i.region.free[k]), i.region.parents[k], i.region.height[k]);
++        let p = i.persistent.push(false, h, m, (i.region.loose[k], i.region.free[k]), i.region.parents[k], i.region.height[k], i.region.mask[k]);
+         i.twins.push(r);
+         debug_assert_eq!(i.w as usize + i.twins.len(), i.persistent.nodes.len());
+         if i.copies.len() <= k {
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index e869264..dcadd9c 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -269,3 +269,34 @@ fn in_fragment_rejects_the_rest() {
+         assert!(!in_fragment(&s, h, arity), "{name} should be outside the fragment");
+     }
+ }
++
++/// SPIKE b3 (throwaway): doubling(d) for d in 6..=13 under `hc::uses` mode MASK (0 exact, 1 asserted, 2 mask): work,
++/// check ms and the d + m histogram.
++#[test]
++#[ignore]
++fn spike_mask() {
++    let mode: u8 = std::env::var("MASK").expect("MASK").parse().unwrap();
++    for d in 6..=13u32 {
++        std::thread::Builder::new()
++            .stack_size(256 << 20)
++            .spawn(move || {
++                tatic_kernel::mask_mode(mode);
++                let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
++                tatic_kernel::scoped(|| {
++                    let (p, st) = statement(&s, h, 1, frag.entry(), 1);
++                    let _ = tatic_kernel::mask_stats();
++                    let w0 = tatic_kernel::work();
++                    let t = std::time::Instant::now();
++                    assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++                    let ms = t.elapsed().as_secs_f64() * 1e3;
++                    let h = tatic_kernel::mask_stats();
++                    let calls: u64 = h[..65].iter().sum();
++                    let hist: Vec<String> = h[..65].iter().enumerate().filter(|(_, c)| **c > 0).map(|(k, c)| format!("{k}:{c}")).collect();
++                    println!("d={d} mode={mode} work={} ms={ms:.1} uses={calls} inexact={} hist {}", tatic_kernel::work() - w0, h[65], hist.join(" "));
++                });
++            })
++            .unwrap()
++            .join()
++            .unwrap();
++    }
++}
