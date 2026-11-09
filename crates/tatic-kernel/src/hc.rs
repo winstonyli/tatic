@@ -6,7 +6,7 @@
 //! (`Spaces::shared`, two or more parents). An unshared node is reached only through its one parent, so a repeated walk
 //! stops at the parent's entry first: its own entry would almost never be read (77% of `inst`'s entries took 14 of
 //! 148,047 hits in rule 33's check at n=64; doc section "Why `inst` has many entries per node"). `whnf`, `hnf` and
-//! `nf` serve calls on any term, not one walk, and `uses`' `bounds` is asked again per `m`, so they keep every node.
+//! `nf` serve calls on any term, not one walk, so they keep every node.
 //! `shifts` keeps every node too: shifts start from call roots with no entry of their own, and the gate's check
 //! reached the same unshared program suffixes from such roots at every step, 4x the work per doubling of the tree (doc
 //! 15, "Why the check grew 4x per doubling").
@@ -43,10 +43,10 @@ pub fn large(s: &Spaces, e: &Expr, expected: &Expr) -> bool {
 
 /// Whether `x` mentions a loose `Var` in `[d, d + m)`, i.e. whether instantiating `m` arguments
 /// at depth `d` can put any of them in. When it cannot, the result is `x` shifted down by `m`
-/// above `d + m`, whatever the arguments are. The node remembers its last answer
-/// ([`Spaces::uses_slot`]). Its misses go to the memos' `bounds` on the node's lowest loose
-/// variable from `d`, which one (node, depth) entry answers for every `m` outside them; a walk
-/// that still stops at its first hit narrows them (doc section "The slot in front of bounds").
+/// above `d + m`, whatever the arguments are. The node keeps one bounds slot
+/// ([`Spaces::bounds_slot`]): `lo <= the lowest loose variable from d <= hi`, for the last depth `d` asked.
+/// A query with `hi < m` or `lo >= m` is answered from it, whatever `m`; any other walks the children
+/// and narrows the bounds to what the answer shows.
 pub fn uses(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
     let loose = s.loose(x);
     if loose <= d {
@@ -56,20 +56,9 @@ pub fn uses(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
     if let Node::Var(k) = n {
         return k < d + m;
     }
-    if let Some(r) = s.uses_slot(x, d, m) {
-        return r;
-    }
-    // `lo <= the lowest loose variable from d <= hi`. `loose` bounds it from above unless it
-    // saturated.
-    let key = (s.key(x), d);
-    let (lo, hi) = s
-        .memos
-        .borrow()
-        .bounds
-        .get(&key)
-        .copied()
-        .unwrap_or((0, if loose == u32::MAX { u32::MAX } else { loose - 1 - d }));
-    let r = if hi < m {
+    // `loose` bounds the lowest loose variable from above unless it saturated.
+    let (lo, hi) = s.bounds_slot(x, d).unwrap_or((0, if loose == u32::MAX { u32::MAX } else { loose - 1 - d }));
+    if hi < m {
         true
     } else if lo >= m {
         false
@@ -79,12 +68,10 @@ pub fn uses(s: &Spaces, x: &Expr, d: u32, m: u32) -> bool {
             n.for_kids(|c, under| found = found || uses(s, c, d + under as u32, m));
             found
         });
-        let b = if r { (lo, m - 1) } else { (m, hi) };
-        s.memos.borrow_mut().bounds.insert(key, b);
+        let (lo, hi) = if r { (lo, m - 1) } else { (m, hi) };
+        s.set_bounds_slot(x, d, lo, hi);
         r
-    };
-    s.set_uses_slot(x, d, m, r);
-    r
+    }
 }
 
 /// The smallest loose `Var` index of `x` seen from `d` binders inside it, i.e. among `x`'s loose

@@ -283,6 +283,10 @@ pub fn work() -> u64 {
 /// A map key naming a node: its resolved `Ref`'s bits.
 pub(crate) type Key = u32;
 
+/// The bounds slot's limits (`Spaces::bounds_slot`): depths below `DEPTH_CAP` are stored; a bound is stored up to `BOUND_CAP`.
+const DEPTH_CAP: u32 = 1 << 15;
+const BOUND_CAP: u64 = (1 << 24) - 1;
+
 /// The kernel's handle-level reads and builds (`spaces.rs` works on `Ref`s).
 impl Spaces {
     #[inline(always)]
@@ -337,18 +341,24 @@ impl Spaces {
         Expr::at(Ref(*k), self.epoch())
     }
 
-    /// The node's remembered `uses(e, d, m)`, if the slot holds that query. The slot packs a set bit, `d` and `m` in 15
-    /// bits each, and the answer; queries that don't fit are never stored.
+    /// The node's remembered bounds `(lo, hi)` on its lowest loose variable from depth `d` (`hc::uses`), if the slot
+    /// holds depth `d`. The slot is one word: bit 63 set, `d` in 15 bits, `lo` and `hi` in 24 bits each. It only ever
+    /// loosens a bound: a `lo` past the cap is stored as the cap (a lower bound may go down), a `hi` past it as the cap
+    /// too, which reads back as `u32::MAX` (unbounded); a `d` that doesn't fit is never stored.
     #[inline(always)]
-    pub(crate) fn uses_slot(&self, e: &Expr, d: u32, m: u32) -> Option<bool> {
-        let s = self.uses_at(self.res(e));
-        (d < 1 << 15 && m < 1 << 15 && s >> 1 == (1 << 30 | d << 15 | m)).then_some(s & 1 == 1)
+    pub(crate) fn bounds_slot(&self, e: &Expr, d: u32) -> Option<(u32, u32)> {
+        let s = self.bounds_at(self.res(e));
+        (d < DEPTH_CAP && s >> 63 == 1 && (s >> 48) & (DEPTH_CAP as u64 - 1) == d as u64).then(|| {
+            let hi = (s & BOUND_CAP) as u32;
+            (((s >> 24) & BOUND_CAP) as u32, if hi as u64 == BOUND_CAP { u32::MAX } else { hi })
+        })
     }
 
     #[inline(always)]
-    pub(crate) fn set_uses_slot(&self, e: &Expr, d: u32, m: u32, r: bool) {
-        if d < 1 << 15 && m < 1 << 15 {
-            self.set_uses_at(self.res(e), (1 << 30 | d << 15 | m) << 1 | r as u32);
+    pub(crate) fn set_bounds_slot(&self, e: &Expr, d: u32, lo: u32, hi: u32) {
+        if d < DEPTH_CAP {
+            let (lo, hi) = ((lo as u64).min(BOUND_CAP), (hi as u64).min(BOUND_CAP));
+            self.set_bounds_at(self.res(e), 1 << 63 | (d as u64) << 48 | lo << 24 | hi);
         }
     }
 }

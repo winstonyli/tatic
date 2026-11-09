@@ -309,25 +309,53 @@ fn intern_finds_equal_nodes_after_growth() {
     })
 }
 
-/// The `uses` slot fills the node's spare word, and answers as the walk does: a repeated query
-/// is answered from the slot, a different one replaces it, and queries too wide for it still work.
+/// The bounds slot fills the node's spare word, and answers as the walk does: after a query the slot, if it holds
+/// that depth, decides the query; a query at another depth replaces it.
 #[test]
-fn uses_slot_is_free_and_agrees_with_the_walk() {
+fn bounds_slot_is_free_and_agrees_with_the_walk() {
     scoped(|| {
         let x = lam(var(0), app(var(1), var(3)));
-        assert_eq!(with_spaces(|s| s.uses_slot(&x, 0, 2)), None);
+        assert_eq!(with_spaces(|s| s.bounds_slot(&x, 0)), None);
         // Outside the binder `x` mentions loose variables 0 and 2.
-        for (d, m, want) in [(0, 2, true), (0, 2, true), (1, 1, false), (2, 1, true), (3, 1, false), (1, 1 << 15, true)] {
+        for (d, m, want) in [(0, 2, true), (0, 2, true), (1, 1, false), (2, 1, true), (3, 1, false), (1, 1 << 15, true), (0, 1, true)] {
             assert_eq!(hc_uses(&x, d, m), want, "d={d} m={m}");
-            // `uses` answers from `loose` alone, without the slot, when nothing is loose at or above `d`.
-            if m < 1 << 15 && x.loose() > d {
-                assert_eq!(with_spaces(|s| s.uses_slot(&x, d, m)), Some(want), "d={d} m={m}");
+            if let Some((lo, hi)) = with_spaces(|s| s.bounds_slot(&x, d)) {
+                assert!(if want { hi < m } else { lo >= m }, "d={d} m={m} lo={lo} hi={hi}");
             }
         }
+        assert_eq!(with_spaces(|s| s.bounds_slot(&x, 1)), None, "the last walk was at depth 0 and replaced depth 1's bounds");
     })
 }
 
-/// `uses`'s bounds memo answers as `lowest_loose` does, whatever order the queries come in: wide
+/// The slot's packing only loosens: a lowest loose variable past the 24-bit cap, and a depth past the 15-bit cap, still
+/// answer as the walk does, and what the slot holds stays a valid bound.
+#[test]
+fn bounds_slot_packing_stays_sound_at_the_caps() {
+    scoped(|| {
+        let big = 1u32 << 25;
+        let x = app(var(big), var(big + 3));
+        let ms = [1, (1 << 24) - 1, 1 << 24, (1 << 24) + 1, big, big + 1, big + 4];
+        for order in [ms.to_vec(), ms.iter().rev().copied().collect()] {
+            for m in order {
+                assert_eq!(hc_uses(&x, 0, m), big < m, "m={m}");
+                if let Some((lo, hi)) = with_spaces(|s| s.bounds_slot(&x, 0)) {
+                    assert!(lo <= big && big <= hi, "m={m} lo={lo} hi={hi}");
+                }
+            }
+        }
+        let deep = 1u32 << 15;
+        let y = app(var(deep + 7), var(deep + 9));
+        for (d, m) in [(deep, 7), (deep, 8), (deep + 1, 6), (deep - 1, 9), (deep + 5, 2)] {
+            assert_eq!(hc_uses(&y, d, m), 7 + deep - d < m, "d={d} m={m}");
+            if d >= deep {
+                assert_eq!(with_spaces(|s| s.bounds_slot(&y, d)), None, "a depth past the cap is never stored");
+            }
+        }
+        assert!(with_spaces(|s| s.bounds_slot(&y, deep - 1)).is_some(), "a depth past the cap leaves the slot as it was");
+    })
+}
+
+/// `uses`'s bounds answer as `lowest_loose` does, whatever order the queries come in: wide
 /// then narrow queries narrow `hi`, narrow then wide ones raise `lo`.
 #[test]
 fn uses_bounds_agree_with_lowest_loose() {

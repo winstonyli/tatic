@@ -106,8 +106,8 @@ struct Cols {
     /// Per node, as `Expr::loose` and `Expr::free`.
     loose: Vec<u32>,
     free: Vec<u32>,
-    /// Per node, the `hc::uses` slot (0: empty).
-    uses: Vec<u32>,
+    /// Per node, the `hc::uses` bounds slot (0: empty; layout in `Spaces::bounds_slot`).
+    bounds: Vec<u64>,
     /// Per node, the nodes built over it, saturating at 2 (`Expr::shared`).
     parents: Vec<u8>,
     /// Per node, its height (a leaf 0), saturating: what `hc::low` asks without a walk.
@@ -116,7 +116,7 @@ struct Cols {
 
 impl Cols {
     const fn new() -> Cols {
-        Cols { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), uses: Vec::new(), parents: Vec::new(), height: Vec::new() }
+        Cols { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), bounds: Vec::new(), parents: Vec::new(), height: Vec::new() }
     }
     /// Appends a node to every column, with no table entry; its `Ref`.
     fn push(&mut self, region: bool, n: Node<Ref>, (loose, free): (u32, u32), parents: u8, height: u8) -> Ref {
@@ -124,7 +124,7 @@ impl Cols {
         self.nodes.push(n);
         self.loose.push(loose);
         self.free.push(free);
-        self.uses.push(0);
+        self.bounds.push(0);
         self.parents.push(parents);
         self.height.push(height);
         r
@@ -133,7 +133,7 @@ impl Cols {
         reset_vec(&mut self.nodes);
         reset_vec(&mut self.loose);
         reset_vec(&mut self.free);
-        reset_vec(&mut self.uses);
+        reset_vec(&mut self.bounds);
         reset_vec(&mut self.parents);
         reset_vec(&mut self.height);
     }
@@ -199,8 +199,6 @@ pub(crate) struct Memos {
     pub(crate) nf: IdMap<u32, u32>,
     /// Application -> its spine's head and its longest proper prefix with no loose variable (`kernel::spine`).
     pub(crate) spine: IdMap<u32, (u32, Option<u32>)>,
-    /// (node, depth) -> bounds `(lo, hi)` on its lowest loose variable from that depth (`hc::uses`).
-    pub(crate) bounds: IdMap<(u32, u32), (u32, u32)>,
 }
 
 impl Memos {
@@ -212,7 +210,6 @@ impl Memos {
             hnf: IdMap::with_hasher(H),
             nf: IdMap::with_hasher(H),
             spine: IdMap::with_hasher(H),
-            bounds: IdMap::with_hasher(H),
         }
     }
     fn clear(&mut self) {
@@ -222,7 +219,6 @@ impl Memos {
         reset_map(&mut self.hnf);
         reset_map(&mut self.nf);
         reset_map(&mut self.spine);
-        reset_map(&mut self.bounds);
     }
 }
 
@@ -349,14 +345,14 @@ impl Spaces {
         self.cols(r).height[r.index()]
     }
     #[inline(always)]
-    pub(crate) fn uses_at(&self, r: Ref) -> u32 {
-        self.cols(r).uses[r.index()]
+    pub(crate) fn bounds_at(&self, r: Ref) -> u64 {
+        self.cols(r).bounds[r.index()]
     }
     #[inline(always)]
-    pub(crate) fn set_uses_at(&self, r: Ref, v: u32) {
+    pub(crate) fn set_bounds_at(&self, r: Ref, v: u64) {
         let i = self.inner();
         let s = if r.in_region() { &mut i.region.cols } else { &mut i.persistent.cols };
-        s.uses[r.index()] = v;
+        s.bounds[r.index()] = v;
     }
 
     /// The node `n` over resolved children. If all its children are persistent, it is looked up in the persistent space

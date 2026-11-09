@@ -1041,6 +1041,22 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     the statement alone; last-level and D1 misses unchanged (the second probe re-reads a group the first just loaded,
     an inference). Holding the vacant slot across the appends needs the region's fields borrowed one by one, so the
     spike copies `push`'s body into the region path; swapping the table out instead (`mem::swap`) cost +2.9%.
+    Shipped as `Space { cols: Cols, table }` (`spaces.rs`): one `Cols::push` for every column, `Space::push` adding the
+    table entry, and the region path holding the vacant entry across `Cols::push`, with no copied body. Cachegrind
+    (runs `2026-11-09-wf1-j1-cg-2`, `-wf1-j1-cg-irefs`): d = 13 5261.82 M instructions (-0.34%), d = 11 1327.56 M
+    (-0.36%); last-level misses unchanged (d = 13 16 MB 4,724,413 against 4,724,334).
+  - *One bounds entry in the node's row* (runs `2026-11-09-wf1-i1-cg`, `-wf1-i1-cg-reps2`, `-wf1-i1-pcs-counts`).
+    `Memos.bounds` and the per-node `(d, m, answer)` slot became one per-node slot of bounds `(lo, hi)` on the lowest
+    loose variable from the last depth asked (`Spaces::bounds_slot`, one `u64`: `d` 15 bits, `lo` and `hi` 24 bits each,
+    loosened by the caps only), so the walk's answer is stored once per node and read by any `m` outside the narrowed
+    bounds. Cachegrind with the one-probe change in both arms: d = 13 5225.58 M instructions (-0.69% from 5261.82 M),
+    d = 11 1318.48 M (-0.68% from 1327.56 M), d = 13 without the check unchanged (460.97 M; the -2.3% from 471.86 M is
+    the one-probe change's); last-level data misses, all this change's, at d = 13 4,524 k at 16 MB (-4.2%; writes
+    3,189 k against 3,383 k) and 8,753 k at 1 MB (-5.4%); d = 11 16 MB 821 k (-3.3%); `work` unchanged (3129184 at
+    d = 13). Repeat check (`REPS=2` less `REPS=1`, d = 13, 16 MB): 2.25 M write misses against 2.39-2.44 M.
+    Retired instructions of church-bv's `proof-cost-split`, both changes together (large pages off, CPU 4, 3 rotated
+    batches of 4; paired batch medians, 9f65018 against both): 40.025 G to 39.496 G, 39.896 G to 39.469 G, 39.892 G to
+    39.475 G (-1.32%, -1.07%, -1.05%; within-batch (median - best) / best 0.0001-0.0013); not split between the two.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
