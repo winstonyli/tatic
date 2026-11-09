@@ -38,8 +38,8 @@ fn gate_accepts_the_fragment_table() {
     let mut table = the_five();
     table.push(("a - b", Box::new(|s: &mut TermStore| source(s, r"\a b. a - b")), 2));
     table.push(("third", Box::new(|s: &mut TermStore| source(s, r"\a b c. c")), 3));
-    // at the tree bound: 2^11 nodes
-    table.push(("doubling_10", Box::new(|s: &mut TermStore| doubling(s, 10)), 1));
+    // at the tree bound: 2^13 nodes
+    table.push(("doubling_12", Box::new(|s: &mut TermStore| doubling(s, 12)), 1));
     table.push((
         "a + MIN",
         Box::new(|s: &mut TermStore| {
@@ -171,7 +171,7 @@ fn measure_gate_costs() {
             .stack_size(256 << 20)
             .spawn(move || {
                 let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
-                time_gate(&s, h, 1, frag.entry(), 1, 1)
+                time_gate(&s, h, 1, frag.entry(), 1, 3)
             })
             .unwrap()
             .join()
@@ -234,7 +234,7 @@ fn in_fragment_rejects_the_rest() {
             2,
         ),
         ("arity 0", Box::new(|s: &mut TermStore| source(s, "5")), 0),
-        ("doubling_11 (over the tree bound)", Box::new(|s: &mut TermStore| doubling(s, 11)), 1),
+        ("doubling_13 (over the tree bound)", Box::new(|s: &mut TermStore| doubling(s, 13)), 1),
         ("\\f. f 1", Box::new(|s: &mut TermStore| source(s, r"\f. f 1")), 1),
     ];
     for (name, build, arity) in cases {

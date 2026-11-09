@@ -23,9 +23,9 @@ use crate::lang::term::{Hash, Term, TermStore};
 const N: usize = 64;
 
 /// The largest tree (`compile::tree_size`) the gate takes: the largest power of two under the JIT path's 0.4 s.
-/// `doubling(10)` (2048 nodes) took 0.33 s, `doubling(11)` (4096) 0.71 s, build and check about equal (doc 15, "v0.7's
-/// build: measurements and checks").
-const MAX_GATE_TREE: u64 = 2048;
+/// `doubling(12)` (8192 nodes) took 0.35-0.38 s, `doubling(13)` (16384) 0.74-0.88 s, nearly all of it the check (doc
+/// 15, "Why the build grew 2.2x per doubling").
+const MAX_GATE_TREE: u64 = 8192;
 
 /// Whether `h` is in the gate's fragment (D3a): `arity` ≥ 1 leading `Abs`, then a body of parameters, literals and
 /// table rows, where every `If` is in tail position and tests a comparison of operands, and comparisons appear
