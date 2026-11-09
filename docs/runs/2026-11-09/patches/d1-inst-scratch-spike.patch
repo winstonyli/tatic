@@ -1,0 +1,223 @@
+diff --git a/crates/tatic-kernel/src/expr.rs b/crates/tatic-kernel/src/expr.rs
+index 6a3a0be..494d5a4 100644
+--- a/crates/tatic-kernel/src/expr.rs
++++ b/crates/tatic-kernel/src/expr.rs
+@@ -282,8 +282,6 @@ pub fn work() -> u64 {
+ 
+ /// A map key naming a node: its resolved `Ref`'s bits.
+ pub(crate) type Key = u32;
+-/// An argument list's id in the instantiation memo ([`hc::args_id`]).
+-pub(crate) type Aid = u32;
+ 
+ /// The kernel's handle-level reads and builds (`spaces.rs` works on `Ref`s).
+ impl Spaces {
+diff --git a/crates/tatic-kernel/src/hc.rs b/crates/tatic-kernel/src/hc.rs
+index f2f1987..5c71b19 100644
+--- a/crates/tatic-kernel/src/hc.rs
++++ b/crates/tatic-kernel/src/hc.rs
+@@ -124,32 +124,6 @@ pub(super) fn lowest_loose(s: &Spaces, x: &Expr, d: u32, memo: &mut IdMap<(Key,
+     r
+ }
+ 
+-/// An id for the argument list: the node's key for one argument (`LIST_BIT` clear), `LIST_BIT | n` for the `n`-th
+-/// list of several.
+-pub fn args_id(s: &Spaces, args: &[&Expr]) -> Aid {
+-    if let [a] = args {
+-        return s.key(a);
+-    }
+-    // The keys go in a stack buffer when they fit; the set is only allocated for a new list.
+-    let mut buf = [0u32; 8];
+-    let heap: Vec<u32>;
+-    let keys: &[u32] = if args.len() <= buf.len() {
+-        buf.iter_mut().zip(args).for_each(|(k, a)| *k = s.key(a));
+-        &buf[..args.len()]
+-    } else {
+-        heap = args.iter().map(|a| s.key(a)).collect();
+-        &heap
+-    };
+-    let mut m = s.memos.borrow_mut();
+-    if let Some(&n) = m.arg_sets.get(keys) {
+-        return n;
+-    }
+-    let n = m.arg_sets.len() as u32;
+-    assert!(n < LIST_BIT, "argument lists ran out of ids");
+-    m.arg_sets.insert(keys.to_vec(), LIST_BIT | n);
+-    LIST_BIT | n
+-}
+-
+ /// Whether `x` is too small for the instantiation memo to pay: at most two levels above its
+ /// leaves. Rebuilding such a node is a few node-table probes; its memo entry cost a probe and an
+ /// insert for a 36% hit rate (one level), and the cutoff at two beat one, three and four (doc
+@@ -158,12 +132,20 @@ pub fn low(s: &Spaces, x: &Expr) -> bool {
+     s.height(x) <= 2
+ }
+ 
+-pub fn inst_get(s: &Spaces, x: &Expr, aid: Aid, d: u32) -> Option<Expr> {
+-    s.memos.borrow().inst.get(&(s.key(x), aid, d)).map(|r| s.expr_of(r))
++/// Starts a top-level `instantiate_n` call: the memo holds the previous call's entries, which name another argument list.
++pub fn inst_begin(s: &Spaces) {
++    let mut m = s.memos.borrow_mut();
++    if !m.inst.is_empty() {
++        spaces::reset_map(&mut m.inst);
++    }
++}
++
++pub fn inst_get(s: &Spaces, x: &Expr, d: u32) -> Option<Expr> {
++    s.memos.borrow().inst.get(&(s.key(x), d)).map(|r| s.expr_of(r))
+ }
+ 
+-pub fn inst_put(s: &Spaces, x: &Expr, aid: Aid, d: u32, r: &Expr) {
+-    s.memos.borrow_mut().inst.insert((s.key(x), aid, d), s.key(r));
++pub fn inst_put(s: &Spaces, x: &Expr, d: u32, r: &Expr) {
++    s.memos.borrow_mut().inst.insert((s.key(x), d), s.key(r));
+ }
+ 
+ /// `x`'s weak head normal form, if the memos have it. `whnf` reads no context, so an answer holds for the whole
+diff --git a/crates/tatic-kernel/src/lib.rs b/crates/tatic-kernel/src/lib.rs
+index bfbf551..e1328d2 100644
+--- a/crates/tatic-kernel/src/lib.rs
++++ b/crates/tatic-kernel/src/lib.rs
+@@ -39,7 +39,7 @@
+ 
+ use hashbrown::HashMap;
+ use std::fmt;
+-use spaces::{IdMap, IdSet, Ref, Spaces, LIST_BIT};
++use spaces::{IdMap, IdSet, Ref, Spaces};
+ 
+ mod spaces;
+ mod postulates;
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index 63534ee..6a9da7a 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -22,8 +22,6 @@ pub(crate) struct Ref(pub(crate) u32);
+ 
+ const REGION_BIT: u32 = 1 << 31;
+ const INDEX_MASK: u32 = (1 << 30) - 1;
+-/// Set in an argument-list id (`hc::args_id`) and clear in every `Ref`, so the two never collide as `Memos::inst` keys.
+-pub(crate) const LIST_BIT: u32 = 1 << 30;
+ 
+ impl Ref {
+     fn new(region: bool, index: usize) -> Ref {
+@@ -93,7 +91,7 @@ fn reset_vec<T>(v: &mut Vec<T>) {
+         v.shrink_to(used);
+     }
+ }
+-fn reset_map<K: Eq + std::hash::Hash, V>(m: &mut IdMap<K, V>) {
++pub(crate) fn reset_map<K: Eq + std::hash::Hash, V>(m: &mut IdMap<K, V>) {
+     let used = m.len();
+     m.clear();
+     if used < m.capacity() / 4 {
+@@ -153,8 +151,9 @@ impl Space {
+ /// The region's memos, keyed by resolved `Ref` bits and emptied when it closes (they were `hc::Table`'s and
+ /// `ReductionCache`'s). Entries made with no region open name persistent nodes and stay valid until the next close.
+ pub(crate) struct Memos {
+-    /// (node, argument-list id, depth) -> its instantiation.
+-    pub(crate) inst: IdMap<(u32, u32, u32), u32>,
++    /// (node, depth) -> its instantiation under the current `instantiate_n` call's argument list; emptied at the start
++    /// of each top-level call (`hc::inst_begin`), since the list is fixed within a call and nothing in a call re-enters it.
++    pub(crate) inst: IdMap<(u32, u32), u32>,
+     /// (node, cutoff, amount) -> it shifted.
+     pub(crate) shifts: IdMap<(u32, u32, i32), u32>,
+     /// Node -> its weak head normal form.
+@@ -165,8 +164,6 @@ pub(crate) struct Memos {
+     pub(crate) nf: IdMap<u32, u32>,
+     /// Application -> its spine's head and its longest proper prefix with no loose variable (`kernel::spine`).
+     pub(crate) spine: IdMap<u32, (u32, Option<u32>)>,
+-    /// Argument lists of two or more nodes -> their id (`LIST_BIT | n`).
+-    pub(crate) arg_sets: IdMap<Vec<u32>, u32>,
+     /// (node, depth) -> bounds `(lo, hi)` on its lowest loose variable from that depth (`hc::uses`).
+     pub(crate) bounds: IdMap<(u32, u32), (u32, u32)>,
+ }
+@@ -180,7 +177,6 @@ impl Memos {
+             hnf: IdMap::with_hasher(H),
+             nf: IdMap::with_hasher(H),
+             spine: IdMap::with_hasher(H),
+-            arg_sets: IdMap::with_hasher(H),
+             bounds: IdMap::with_hasher(H),
+         }
+     }
+@@ -191,7 +187,6 @@ impl Memos {
+         reset_map(&mut self.hnf);
+         reset_map(&mut self.nf);
+         reset_map(&mut self.spine);
+-        reset_map(&mut self.arg_sets);
+         reset_map(&mut self.bounds);
+     }
+ }
+diff --git a/crates/tatic-kernel/src/subst.rs b/crates/tatic-kernel/src/subst.rs
+index 57517c4..d490bef 100644
+--- a/crates/tatic-kernel/src/subst.rs
++++ b/crates/tatic-kernel/src/subst.rs
+@@ -75,11 +75,12 @@ pub(super) fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Exp
+     if s.loose(e) <= d {
+         return *e;
+     }
+-    inst_rec(s, e, args, hc::args_id(s, args), d)
++    hc::inst_begin(s);
++    inst_rec(s, e, args, d)
+ }
+ 
+-/// `instantiate_n`'s recursion, with the argument list's id for the hash-consing memo.
+-fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Aid, d: u32) -> Expr {
++/// `instantiate_n`'s recursion; the memo is per top-level call (nothing below calls `instantiate_n`).
++fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
+     s.tick();
+     let m = args.len() as u32;
+     let go = |x: Expr, under: bool| {
+@@ -91,12 +92,12 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], aid: Aid, d: u32) -> Expr {
+             return shift_child(s, &x, d + m, -(m as i32));
+         }
+         let memo = s.shared(&x) && !hc::low(s, &x);
+-        if memo && let Some(r) = hc::inst_get(s, &x, aid, d) {
++        if memo && let Some(r) = hc::inst_get(s, &x, d) {
+             return r;
+         }
+-        let r = inst_rec(s, &x, args, aid, d);
++        let r = inst_rec(s, &x, args, d);
+         if memo {
+-            hc::inst_put(s, &x, aid, d, &r);
++            hc::inst_put(s, &x, d, &r);
+         }
+         r
+     };
+diff --git a/crates/tatic-kernel/src/tests.rs b/crates/tatic-kernel/src/tests.rs
+index 1c0f8b0..10e7953 100644
+--- a/crates/tatic-kernel/src/tests.rs
++++ b/crates/tatic-kernel/src/tests.rs
+@@ -22,9 +22,6 @@ fn hc_uses(x: &Expr, d: u32, m: u32) -> bool {
+ fn hc_low(x: &Expr) -> bool {
+     with_spaces(|s| hc::low(s, x))
+ }
+-fn hc_args_id(args: &[&Expr]) -> Aid {
+-    with_spaces(|s| hc::args_id(s, args))
+-}
+ fn hc_lowest_loose(x: &Expr, d: u32, memo: &mut IdMap<(Key, u32), u32>) -> u32 {
+     with_spaces(|s| hc::lowest_loose(s, x, d, memo))
+ }
+diff --git a/crates/tatic-kernel/src/tests/substitution.rs b/crates/tatic-kernel/src/tests/substitution.rs
+index 77aae0a..707e625 100644
+--- a/crates/tatic-kernel/src/tests/substitution.rs
++++ b/crates/tatic-kernel/src/tests/substitution.rs
+@@ -376,21 +376,6 @@ fn low_is_height_at_most_two() {
+     assert!(!hc_low(&app(two, var(3))));
+ }
+ 
+-/// Lists that fit `args_id`'s stack buffer and lists that don't get stable ids, distinct per list.
+-#[test]
+-fn args_id_is_stable_for_short_and_long_lists() {
+-    scoped(|| {
+-        let vs: Vec<Expr> = (0..12).map(var).collect();
+-        let refs: Vec<&Expr> = vs.iter().collect();
+-        let (short, long) = (&refs[..3], &refs[..12]);
+-        let (s, l) = (hc_args_id(short), hc_args_id(long));
+-        assert!(s & LIST_BIT != 0 && l & LIST_BIT != 0);
+-        assert_ne!(s, l);
+-        assert_eq!((hc_args_id(short), hc_args_id(long)), (s, l));
+-        assert_ne!(hc_args_id(&refs[1..4]), s);
+-    })
+-}
+-
+ #[test]
+ fn subst_top_leaves_an_unused_argument_alone() {
+     // n + 1 distinct nodes, 2^n as a tree: copying 2^20 takes about a

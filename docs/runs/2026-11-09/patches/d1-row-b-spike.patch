@@ -1,0 +1,283 @@
+diff --git a/crates/tatic-kernel/src/expr.rs b/crates/tatic-kernel/src/expr.rs
+index 6a3a0be..0e4470c 100644
+--- a/crates/tatic-kernel/src/expr.rs
++++ b/crates/tatic-kernel/src/expr.rs
+@@ -174,6 +174,34 @@ impl<C> Node<C> {
+         }
+     }
+ 
++    /// The inverse of `tag_leaf` and `for_kids`: the node with tag `tag`, leaf `leaf` (for a leaf tag) and children
++    /// `k` in field order (only the first as many as the constructor has are read).
++    #[inline(always)]
++    pub fn from_tag(tag: u8, leaf: u32, k: [C; 5]) -> Node<C>
++    where
++        C: Copy,
++    {
++        use Node::*;
++        match tag {
++            0 => Var(leaf),
++            1 => Sort(leaf),
++            2 => Const(leaf),
++            3 => Free(leaf),
++            4 => Pi(k[0], k[1]),
++            5 => Lam(k[0], k[1]),
++            6 => App(k[0], k[1]),
++            7 => Id(k[0], k[1], k[2]),
++            8 => Refl(k[0]),
++            9 => J { motive: k[0], base: k[1], a: k[2], b: k[3], p: k[4] },
++            10 => W(k[0], k[1]),
++            11 => Sup(k[0], k[1]),
++            12 => WRec { motive: k[0], children_ty: k[1], step: k[2], target: k[3] },
++            13 => Sigma(k[0], k[1]),
++            14 => Pair(k[0], k[1], k[2]),
++            _ => SigRec { motive: k[0], step: k[1], target: k[2] },
++        }
++    }
++
+     /// Whether `self` and `other` have the same outermost constructor (and index, for `Var`/`Sort`/`Const`/`Free`)
+     /// and `c` holds of each pair of children, in field order, stopping at the first that fails. Syntactic equality
+     /// and `conv_whnf` are both this with a different `c`.
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index 63534ee..288de0b 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -101,47 +101,73 @@ fn reset_map<K: Eq + std::hash::Hash, V>(m: &mut IdMap<K, V>) {
+     }
+ }
+ 
+-/// One space: its nodes, their side arrays and its table.
++/// A node's identity: its tag and five slots (the leaf value in slot 0 for a leaf tag, else the children's `Ref` bits in
++/// field order; unused slots 0).
++type Key = (u8, [u32; 5]);
++
++fn key(n: &Node<Ref>) -> Key {
++    let (tag, leaf) = n.tag_leaf();
++    let mut k = [leaf, 0, 0, 0, 0];
++    let mut i = 0;
++    n.for_kids(|c, _| {
++        k[i] = c.0;
++        i += 1;
++    });
++    (tag, k)
++}
++
++/// One node's hot fields in one cache line: its identity (`Key`) and everything the walks read of a child.
++#[derive(Clone, Copy)]
++#[repr(C, align(32))]
++struct Row {
++    tag: u8,
++    /// The nodes built over it, saturating at 2 (`Expr::shared`).
++    parents: u8,
++    /// Its height (a leaf 0), saturating: what `hc::low` asks without a walk.
++    height: u8,
++    _spare: u8,
++    kids: [u32; 5],
++    /// As `Expr::loose`.
++    loose: u32,
++    /// The `hc::uses` slot (0: empty).
++    uses: u32,
++}
++const _: () = assert!(std::mem::size_of::<Row>() == 32 && std::mem::align_of::<Row>() == 32);
++
++impl Row {
++    #[inline(always)]
++    fn node(&self) -> Node<Ref> {
++        let k = self.kids;
++        Node::from_tag(self.tag, k[0], [Ref(k[0]), Ref(k[1]), Ref(k[2]), Ref(k[3]), Ref(k[4])])
++    }
++}
++
++/// One space: its rows, the `free` array and its table.
+ struct Space {
+-    nodes: Vec<Node<Ref>>,
+-    /// Per node, as `Expr::loose` and `Expr::free`.
+-    loose: Vec<u32>,
++    rows: Vec<Row>,
++    /// Per node, as `Expr::free`.
+     free: Vec<u32>,
+-    /// Per node, the `hc::uses` slot (0: empty).
+-    uses: Vec<u32>,
+-    /// Per node, the nodes built over it, saturating at 2 (`Expr::shared`).
+-    parents: Vec<u8>,
+-    /// Per node, its height (a leaf 0), saturating: what `hc::low` asks without a walk.
+-    height: Vec<u8>,
+     /// Each node's hash and `Ref`: 8 bytes an entry.
+     table: hashbrown::HashTable<(u32, Ref)>,
+ }
+ 
+ impl Space {
+     const fn new() -> Space {
+-        Space { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), uses: Vec::new(), parents: Vec::new(), height: Vec::new(), table: hashbrown::HashTable::new() }
++        Space { rows: Vec::new(), free: Vec::new(), table: hashbrown::HashTable::new() }
+     }
+-    fn find(&self, h: u32, n: &Node<Ref>) -> Option<Ref> {
+-        self.table.find(spread(h), |&(g, r)| g == h && self.nodes[r.index()] == *n).map(|&(_, r)| r)
++    fn find(&self, h: u32, (tag, kids): &Key) -> Option<Ref> {
++        self.table.find(spread(h), |&(g, r)| g == h && { let w = &self.rows[r.index()]; w.tag == *tag && w.kids == *kids }).map(|&(_, r)| r)
+     }
+-    fn push(&mut self, region: bool, h: u32, n: Node<Ref>, (loose, free): (u32, u32), parents: u8, height: u8) -> Ref {
+-        let r = Ref::new(region, self.nodes.len());
+-        self.nodes.push(n);
+-        self.loose.push(loose);
++    fn push(&mut self, region: bool, h: u32, (tag, kids): Key, (loose, free): (u32, u32), parents: u8, height: u8) -> Ref {
++        let r = Ref::new(region, self.rows.len());
++        self.rows.push(Row { tag, parents, height, _spare: 0, kids, loose, uses: 0 });
+         self.free.push(free);
+-        self.uses.push(0);
+-        self.parents.push(parents);
+-        self.height.push(height);
+         self.table.insert_unique(spread(h), (h, r), |&(g, _)| spread(g));
+         r
+     }
+     fn clear(&mut self) {
+-        reset_vec(&mut self.nodes);
+-        reset_vec(&mut self.loose);
++        reset_vec(&mut self.rows);
+         reset_vec(&mut self.free);
+-        reset_vec(&mut self.uses);
+-        reset_vec(&mut self.parents);
+-        reset_vec(&mut self.height);
+         let used = self.table.len();
+         self.table.clear();
+         if used < self.table.capacity() / 4 {
+@@ -297,11 +323,11 @@ impl Spaces {
+     /// The node `r` (resolved) names.
+     #[inline(always)]
+     pub(crate) fn node_at(&self, r: Ref) -> Node<Ref> {
+-        self.space(r).nodes[r.index()]
++        self.space(r).rows[r.index()].node()
+     }
+     #[inline(always)]
+     pub(crate) fn loose_at(&self, r: Ref) -> u32 {
+-        self.space(r).loose[r.index()]
++        self.space(r).rows[r.index()].loose
+     }
+     #[inline(always)]
+     pub(crate) fn free_at(&self, r: Ref) -> u32 {
+@@ -309,21 +335,21 @@ impl Spaces {
+     }
+     #[inline(always)]
+     pub(crate) fn parents_at(&self, r: Ref) -> u8 {
+-        self.space(r).parents[r.index()]
++        self.space(r).rows[r.index()].parents
+     }
+     #[inline(always)]
+     pub(crate) fn height_at(&self, r: Ref) -> u8 {
+-        self.space(r).height[r.index()]
++        self.space(r).rows[r.index()].height
+     }
+     #[inline(always)]
+     pub(crate) fn uses_at(&self, r: Ref) -> u32 {
+-        self.space(r).uses[r.index()]
++        self.space(r).rows[r.index()].uses
+     }
+     #[inline(always)]
+     pub(crate) fn set_uses_at(&self, r: Ref, v: u32) {
+         let i = self.inner();
+         let s = if r.in_region() { &mut i.region } else { &mut i.persistent };
+-        s.uses[r.index()] = v;
++        s.rows[r.index()].uses = v;
+     }
+ 
+     /// The node `n` over resolved children. If all its children are persistent, it is looked up in the persistent space
+@@ -331,14 +357,15 @@ impl Spaces {
+     /// in the region or built there, without the search when a region child has no parent yet. With no region open, it is found or built in the persistent space.
+     pub(crate) fn build(&self, n: Node<Ref>) -> Ref {
+         let h = hash(&n);
++        let kx = key(&n);
+         let i = self.inner();
+         let (mut persistent_kids, mut fresh_kid) = (true, false);
+         n.for_kids(|c, _| {
+             persistent_kids &= !c.in_region();
+-            fresh_kid |= c.in_region() && i.region.parents[c.index()] == 0;
++            fresh_kid |= c.in_region() && i.region.rows[c.index()].parents == 0;
+         });
+         if persistent_kids
+-            && let Some(r) = i.persistent.find(h, &n)
++            && let Some(r) = i.persistent.find(h, &kx)
+             && r.0 < i.w
+         {
+             return r;
+@@ -348,27 +375,27 @@ impl Spaces {
+         // A region child with no parent yet means no node over it exists: `parents` rises only when a node is pushed, and
+         // persistent nodes have no region children. So the lookup, a cache miss, is skipped (a quarter of all builds;
+         // docs/tier-cycle/, "Skipping the lookup that must miss").
+-        debug_assert!(!fresh_kid || i.region.find(h, &n).is_none(), "a node over a parentless child already exists");
+-        if in_region && !fresh_kid && let Some(r) = i.region.find(h, &n) {
++        debug_assert!(!fresh_kid || i.region.find(h, &kx).is_none(), "a node over a parentless child already exists");
++        if in_region && !fresh_kid && let Some(r) = i.region.find(h, &kx) {
+             return r;
+         }
+         let ranges = {
+             let (p, g) = (&i.persistent, &i.region);
+             let at = |c: &Ref| if c.in_region() { g } else { p };
+-            n.ranges(|c| at(c).loose[c.index()], |c| at(c).free[c.index()])
++            n.ranges(|c| at(c).rows[c.index()].loose, |c| at(c).free[c.index()])
+         };
+         let height = {
+             let (p, g) = (&i.persistent, &i.region);
+             let mut height = 0u8;
+-            n.for_kids(|c, _| height = height.max((if c.in_region() { g } else { p }).height[c.index()].saturating_add(1)));
++            n.for_kids(|c, _| height = height.max((if c.in_region() { g } else { p }).rows[c.index()].height.saturating_add(1)));
+             height
+         };
+         n.for_kids(|c, _| {
+             let s = if c.in_region() { &mut i.region } else { &mut i.persistent };
+-            let p = &mut s.parents[c.index()];
++            let p = &mut s.rows[c.index()].parents;
+             *p = p.saturating_add(1).min(2);
+         });
+-        if in_region { i.region.push(true, h, n, ranges, 0, height) } else { i.persistent.push(false, h, n, ranges, 0, height) }
++        if in_region { i.region.push(true, h, kx, ranges, 0, height) } else { i.persistent.push(false, h, kx, ranges, 0, height) }
+     }
+ 
+     /// `r` (resolved) as a persistent `Ref`. The region nodes reachable from it are copied out bottom-up, each once per
+@@ -385,17 +412,19 @@ impl Spaces {
+             {
+                 return Ref(p);
+             }
+-            i.region.nodes[k]
++            i.region.rows[k].node()
+         };
+         let m = super::grow(|| n.map_kids(|c, _| self.persist(c)));
+         let i = self.inner();
+         let h = hash(&m);
+-        debug_assert!(i.persistent.find(h, &m).is_none(), "persist met a copy it did not make (Invariant I)");
+-        let p = i.persistent.push(false, h, m, (i.region.loose[k], i.region.free[k]), i.region.parents[k], i.region.height[k]);
++        let km = key(&m);
++        debug_assert!(i.persistent.find(h, &km).is_none(), "persist met a copy it did not make (Invariant I)");
++        let w = i.region.rows[k];
++        let p = i.persistent.push(false, h, km, (w.loose, i.region.free[k]), w.parents, w.height);
+         i.twins.push(r);
+-        debug_assert_eq!(i.w as usize + i.twins.len(), i.persistent.nodes.len());
++        debug_assert_eq!(i.w as usize + i.twins.len(), i.persistent.rows.len());
+         if i.copies.len() <= k {
+-            i.copies.resize(i.region.nodes.len(), u32::MAX);
++            i.copies.resize(i.region.rows.len(), u32::MAX);
+         }
+         i.copies[k] = p.0;
+         p
+@@ -409,7 +438,7 @@ impl Spaces {
+         }
+         i.epoch = i.next_epoch;
+         i.next_epoch = i.next_epoch.checked_add(1).expect("region generations ran out");
+-        i.w = i.persistent.nodes.len() as u32;
++        i.w = i.persistent.rows.len() as u32;
+         true
+     }
+ 
+@@ -426,12 +455,12 @@ impl Spaces {
+ 
+     #[cfg(test)]
+     fn persistent_len(&self) -> usize {
+-        self.get().persistent.nodes.len()
++        self.get().persistent.rows.len()
+     }
+ 
+     #[cfg(test)]
+     fn region_capacity(&self) -> usize {
+-        self.get().region.nodes.capacity()
++        self.get().region.rows.capacity()
+     }
+ }
+ 

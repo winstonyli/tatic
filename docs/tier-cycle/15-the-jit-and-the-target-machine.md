@@ -965,6 +965,25 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     paired, +4.7 ± 5.0 ms (standard error) at d = 13 and -0.8 ± 2.0 at d = 11 (run `2026-11-09-c2-reps-b`,
     `scripts/reps.sh` with `N=10`). So presizing the region would gain at most about 3% at d = 13 (95% interval
     -6.6 to +16 ms), too little to justify it without a timed A/B: `PARKED.md`, item (i).
+- **The survey's last two options, spiked (2026-11-09):** at 14fb70a, checked by cachegrind (the check's misses, c = 1
+  less c = 0) and work, each spike reviewed and one cachegrind config reproduced by a second agent.
+  - *One 32-byte row per node,* rejected. All six per-node fields are 38 bytes, so the row that fits holds the tag,
+    `parents` and `height` in the node's padding, five child slots, `loose` and `free`, with `uses` kept apart (variant
+    B swaps `uses` in and `free` out). Work is identical at d = 6-13, but read misses do not fall: +0.5% at 1 MB and
+    0.0% at 16 MB at d = 13, +3.2% at 16 MB at d = 11; write misses fall 1.3-2.2% (runs `2026-11-09-d1-row-cg`,
+    `2026-11-09-d1-row-b-cg`; `docs/runs/2026-11-09/patches/d1-row-spike.patch`, `d1-row-b-spike.patch`). So the
+    misses that grow are not the per-node arrays read side by side but the tables and memos.
+  - *`inst` as per-call scratch* (`patches/d1-inst-scratch-spike.patch`): the memo is keyed (node, depth) and emptied at
+    each top-level `instantiate_n`, since the argument list is fixed within a call and nothing reachable from `inst_rec`
+    calls `instantiate_n` again; `arg_sets`, `args_id`, `Aid` and `LIST_BIT` go (+24 / -66 lines). Work rises 2.4% at
+    d = 11-13 (3055582 to 3129184 at 13): the old memo's cross-call hits were few, and the map now holds at most 64
+    entries between calls. The check's read misses fall 11.7% at 1 MB and 14.5% at 16 MB at d = 13 (11.6% and 19.5% at
+    d = 11), write misses 9.7-12.5% (run `2026-11-09-2026-11-09-d1-inst-cg`, reproduced by
+    `2026-11-09-2026-11-09-d1-inst-verify`). Time, untimed and contended (other load 33%, a game; the timed lease
+    refused at 38%, run `2026-11-09-d1-ab-timed`), 12 paired rounds in ABBA order (`docs/runs/2026-11-09/scripts/ab.sh`,
+    run `2026-11-09-d1-ab-untimed`): the spike was faster in 10 of 12 rounds at each d, best of 12 573 against 641 ms at
+    d = 13 (-11%) and 124 against 143 at d = 11 (-13%); paired means -77 ± 29 and -32 ± 10 ms. A quiet timed run has not
+    confirmed it.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
