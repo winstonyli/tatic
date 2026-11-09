@@ -1,5 +1,5 @@
 ---
-status: draft
+status: done
 ---
 
 # v0.7: emitted code in the kernel (the straight-line gate)

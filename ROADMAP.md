@@ -44,6 +44,10 @@ milestone serves goal 1 or 2.
   the kernel has proved the emitted wasm instruction list, run over 64-bit words, equal to the source term on every
   input, where today it proves a model of the compiler (`proof.rs`'s `denote`). Picked 2026-11-08 (goal 1).
   - Done when: a corpus term's install is gated on that proof at n = 64, and a mutated instruction list is rejected.
+    Met 2026-11-08: `jit.rs#prove_install` sends the five fragment terms to `proof/gate.rs#gate` alone
+    (`jit/tests.rs`: `fragment_terms_install`, `the_gates_verdict_is_final_for_fragment_terms`); seven mutations are
+    rejected (`proof/tests/gate.rs#gate_rejects_mutations`); costs in doc 15, "The gate's costs, and the rules they
+    triggered".
   - First steps (done 2026-11-08): the census and the emit spike, in `docs/tier-cycle/`
     ("v0.7's first steps: the census and the emit spike"). The continuation form proves by refl at n = 64. Target
     term: `straight_line`, the only straight-line corpus term with a branch or multiply and a parameter.

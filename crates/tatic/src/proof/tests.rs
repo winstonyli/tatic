@@ -5,7 +5,7 @@ use tatic_kernel::Ctx;
 use crate::support::samples::{
     a_capturing_closure_call, a_pap_capturing, a_pap_non_capturing, capturing_closure_loop, factorial, fib, gcd,
     gcd_with_two_base_cases, inc, inconsistent_arity_loop_carried_parameter_loop, iterate,
-    over_application_pap_producing_root, source, straight_line, twice, twice_inc_5,
+    over_application_pap_producing_root, source, twice, twice_inc_5,
 };
 use crate::testing::test_corpus::{
     a_pap_of_a_capturing_self_recursive_combinator, a_pap_of_a_self_recursive_combinator,

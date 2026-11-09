@@ -1,9 +1,9 @@
 
 #[test]
 fn the_verify_battery_probes_zero_negatives_and_a_loop_that_runs_many_times() {
-    // What `verify` is the only check of (the emitted code) depends on the
-    // battery reaching these; the cap at 12 (docs/related-work/ §71) must not
-    // shrink it below them.
+    // Outside the gate's fragment, `verify` is the only check that runs the
+    // emitted code, and that depends on the battery reaching these; the cap
+    // at 12 (docs/related-work/ §71) must not shrink it below them.
     let samples: Vec<i64> = sample_arg_vectors(1).into_iter().map(|v| v[0]).collect();
     assert!(samples.contains(&0), "no zero");
     assert!(samples.iter().any(|&a| a < 0), "no negative");
@@ -123,7 +123,9 @@ fn the_installation_proof_is_about_the_specialised_term() {
     let sp = crate::jit::specialise::specialise(&s, h);
     let mut jit = JitEngine::new();
     assert!(!JitEngine::kernel_verify(&s, h, 1));
-    assert!(JitEngine::kernel_verify(&sp.store, sp.term, 1));
+    // `n + 1` is a fragment term: the gate proves its emitted body
+    let c = crate::jit::compile::compile_specialised(&sp.store, sp.term).expect("n + 1 compiles");
+    assert!(JitEngine::prove_install(&sp.store, sp.term, 1, c.frag.entry()));
     for n in [0, 5, -7] {
         assert_eq!(jit.apply(&s, h, &[n]), Ok(n + 1));
     }
@@ -712,4 +714,58 @@ fn a_known_partial_application_is_installed_specialised_with_a_universal_proof()
     }
     assert_eq!((jit.stats.compiled, jit.stats.specialised), (1, 1));
     assert!(jit.is_kernel_verified(h));
+}
+
+/// The goal-1 terms in the gate's fragment, with an argument list of their arity.
+fn fragment_terms() -> Vec<(&'static str, fn(&mut TermStore) -> Hash, Vec<i64>)> {
+    vec![
+        ("inc", crate::support::samples::inc, vec![41]),
+        ("doubling_4", |s| crate::testing::test_corpus::doubling(s, 4), vec![3]),
+        ("straight_line", crate::support::samples::straight_line, vec![3, 5]),
+        ("a_capturing_closure_call", crate::support::samples::a_capturing_closure_call, vec![7]),
+        ("a_pap_capturing", crate::support::samples::a_pap_capturing, vec![7]),
+    ]
+}
+
+#[test]
+fn the_gates_verdict_is_final_for_fragment_terms() {
+    use tatic_wasm::wasm::Ins;
+    let mut s = TermStore::new();
+    let h = crate::support::samples::straight_line(&mut s);
+    let crate::jit::compile::Compiled { frag, specialised } =
+        crate::jit::compile::compile_specialised(&s, h).expect("straight_line compiles");
+    let (s, h) = specialised.unwrap_or((s, h));
+    assert!(JitEngine::prove_install(&s, h, 2, frag.entry()));
+    let swapped = crate::testing::ins_mutate::mutate(frag.entry(), &|i| match i {
+        Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())),
+        _ => None,
+    });
+    assert_ne!(swapped, frag.entry());
+    // the chain would accept the term; for a fragment term it is not consulted
+    assert!(JitEngine::kernel_verify(&s, h, 2));
+    assert!(!JitEngine::prove_install(&s, h, 2, &swapped));
+}
+
+#[test]
+fn fragment_terms_install() {
+    for (name, build, args) in fragment_terms() {
+        let mut s = TermStore::new();
+        let h = build(&mut s);
+        let mut jit = JitEngine::new();
+        assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "{name}");
+        assert_eq!(jit.stats.compiled, 1, "{name} should install");
+        assert!(jit.is_kernel_verified(h), "{name}");
+    }
+}
+
+#[test]
+fn an_operand_if_installs_through_the_chain() {
+    let mut s = TermStore::new();
+    let h = crate::support::samples::source(&mut s, r"\a b. 1 + (if a < b then a else b)");
+    assert!(!crate::proof::gate::in_fragment(&s, h, 2));
+    let mut jit = JitEngine::new();
+    for args in [[1, 2], [5, 3], [-4, -4]] {
+        assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "args={args:?}");
+    }
+    assert_eq!(jit.stats.compiled, 1);
 }

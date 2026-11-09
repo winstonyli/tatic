@@ -1,5 +1,4 @@
-//! Cost of building kernel-checked proofs in `proof.rs`: the straight-line
-//! case (one `refl`), a single per-execution (`prove_closure_expr_instance`)
+//! Cost of building kernel-checked proofs in `proof.rs`: a single per-execution (`prove_closure_expr_instance`)
 //! proof, and the one-time universal proof -- plus a direct comparison
 //! between N per-execution proofs and one universal proof, since that
 //! crossover is the whole argument for building the universal proof at
@@ -7,20 +6,12 @@
 
 use criterion::{criterion_group, criterion_main, black_box, Criterion};
 
-use tatic::proof::{prove_closure_expr, prove_closure_expr_instance, prove_pure_expr, prove_tail_recursive_universal};
+use tatic::proof::{prove_closure_expr, prove_closure_expr_instance, prove_tail_recursive_universal};
 use tatic::support::samples;
 use tatic::lang::term::TermStore;
 
 #[global_allocator]
 static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
-
-fn straight_line_proof(c: &mut Criterion) {
-    let mut store = TermStore::new();
-    let h = samples::straight_line(&mut store);
-    c.bench_function("straight_line_refl_proof", |b| {
-        b.iter(|| tatic_kernel::scoped(|| { black_box(prove_pure_expr(&store, black_box(h)).unwrap()); }))
-    });
-}
 
 fn per_execution_proof(c: &mut Criterion) {
     let mut store = TermStore::new();
@@ -168,7 +159,6 @@ fn non_tail_closure_recursion_instance_proof(c: &mut Criterion) {
 
 criterion_group!(
     benches,
-    straight_line_proof,
     per_execution_proof,
     universal_proof,
     per_execution_scaling_vs_universal,

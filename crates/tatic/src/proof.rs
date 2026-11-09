@@ -1,8 +1,9 @@
-//! Connects the `kernel` module to the JIT: for the straight-line
-//! (non-recursive) fragment of the compilable terms, builds an actual
-//! kernel-checked `Id`-typed proof that the interpreter's reading and the
-//! compiled code's reading agree, instead of relying only on the empirical
-//! sampling `jit::JitEngine` otherwise uses.
+//! Connects the `kernel` module to the JIT: builds actual kernel-checked
+//! `Id`-typed proofs that the interpreter's reading and the compiled
+//! code's reading agree, instead of relying only on the empirical
+//! sampling `jit::JitEngine` otherwise uses. A term in the straight-line
+//! fragment is decided by `gate` instead, which proves the emitted
+//! instruction list itself rather than the model below.
 //!
 //! ## What this does and doesn't establish
 //!
@@ -255,9 +256,6 @@ impl Default for ArithPostulates {
 
 /// Which terms [`collect_literals`] walks, matching what the denoter that follows it accepts.
 pub(super) enum LitScope<'a> {
-    /// `denote`'s fragment (`Var`/`Lit`/`Prim`/`If`), plus, with `self_idx`, a saturated self-call, whose arguments are
-    /// collected: `prove_pure_expr`, the tail-recursive provers' `setup`, and the closure provers' arithmetic pre-passes.
-    Arith { arity: usize, self_idx: Option<u32> },
     /// [`denote_closure`]'s fragment: also a call through a `Clo`-typed parameter at its own arity, a call to a closure
     /// created right here (its arguments only: a combinator's body is never denoted), and a bare closure value, a bare
     /// `Rec` only with no self-call in scope.
@@ -278,7 +276,6 @@ pub(super) fn collect_literals(store: &TermStore, h: Hash, scope: &LitScope, out
         }
     };
     let (arity, self_idx, param_types) = match *scope {
-        LitScope::Arith { arity, self_idx } => (arity, self_idx, None),
         LitScope::Closure { arity, self_idx, param_types } => (arity, self_idx, Some(param_types)),
         LitScope::AnyTerm => {
             return match *store.resolve(h) {
@@ -354,12 +351,10 @@ fn denote_in(
 }
 
 /// A kernel-checked witness that a term's compiled and interpreted
-/// readings agree: either for *every* input (`prove_pure_expr`, the
-/// straight-line fragment) or for one specific call
-/// (`prove_closure_expr_instance`) -- both
-/// always `Int`-typed, unlike `prove_closure_expr`'s own use of this same
-/// struct, where `result_ty` may be `Int` or a `Clo_k` (a closure-typed
-/// top-level result, e.g. `\x. \y. x+y` used bare).
+/// readings agree: for *every* input (`prove_closure_expr`) or for one
+/// specific call (`prove_closure_expr_instance`, always `Int`-typed).
+/// `prove_closure_expr`'s `result_ty` may be `Int` or a `Clo_k` (a
+/// closure-typed top-level result, e.g. `\x. \y. x+y` used bare).
 pub struct EquivalenceProof {
     pub globals: Globals,
     pub arity: usize,
@@ -368,65 +363,6 @@ pub struct EquivalenceProof {
     /// `: Id(result_ty, denotation, denotation)`.
     pub proof: Expr,
 }
-
-/// Shared setup for both proofs below: postulate `Int`/its operators, then
-/// every literal `body` uses (see `collect_literals` for what `self_idx`
-/// means here), then `arity` more fresh `Int` postulates standing for the
-/// function's own parameters (indexed by `Var`, matching `denote`'s
-/// convention). Returns `None` if `body` isn't in the covered fragment.
-fn setup(store: &TermStore, body: Hash, arity: usize, self_idx: Option<u32>) -> Option<(ArithPostulates, Vec<Expr>)> {
-    let mut lits = Vec::new();
-    if !collect_literals(store, body, &LitScope::Arith { arity, self_idx }, &mut lits) {
-        return None;
-    }
-
-    let mut arith = ArithPostulates::new();
-    for n in lits {
-        arith.lit(n);
-    }
-
-    let mut param_positions = Vec::with_capacity(arity);
-    for _ in 0..arity {
-        let ty = arith.int_ty();
-        param_positions.push(arith.p.push(ty));
-    }
-    let params = param_positions.iter().map(|&pos| arith.p.get(pos)).collect();
-
-    Some((arith, params))
-}
-
-/// Shared finalize for both proofs below: package `denotation` (already
-/// the same symbolic value under both readings, by construction) into a
-/// `refl` proof, and confirm the kernel actually accepts it.
-fn finish(arith: ArithPostulates, arity: usize, denotation: Expr) -> Option<EquivalenceProof> {
-    let result_ty = arith.int_ty();
-    let proof = kernel::refl(denotation);
-    let proof_ty = kernel::id(result_ty, denotation, denotation);
-    arith.p.check(&proof, &proof_ty).ok()?;
-
-    Some(EquivalenceProof {
-        globals: arith.p.globals,
-        arity,
-        result_ty,
-        denotation,
-        proof,
-    })
-}
-
-/// Attempts to build an [`EquivalenceProof`] covering every input of `h`.
-/// Returns `None` for anything outside the covered fragment: recursive
-/// (`Rec`-wrapped) functions (needs induction -- see module docs),
-/// zero-arity terms, or terms containing `Abs`/`App`.
-pub fn prove_pure_expr(store: &TermStore, h: Hash) -> Option<EquivalenceProof> {
-    let (arity, body, is_rec) = shape::peel(store, h)?;
-    if is_rec || arity == 0 {
-        return None;
-    }
-    let (arith, params) = setup(store, body, arity, None)?;
-    let denotation = denote(store, body, &arith, &params)?;
-    finish(arith, arity, denotation)
-}
-
 
 pub mod gate;
 mod universal;

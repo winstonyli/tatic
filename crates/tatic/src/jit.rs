@@ -16,9 +16,8 @@
 //!    (`typing::well_typed`: compiled code can't tell an `Int` from a
 //!    closure, see `docs/related-work/` §38), it agrees with the interpreter
 //!    (the reference semantics) on a battery of sample inputs, *and*
-//!    `proof.rs` produced
-//!    a kernel-checked theorem covering every input
-//!    (`kernel_verify`). Every input means every `Int`: a
+//!    the kernel checked a theorem covering every input
+//!    (`prove_install`). Every input means every `Int`: a
 //!    theorem that types a parameter as a closure doesn't count (§42). A term that passes only the samples is
 //!    cached as `NoUniversalProof` and served by the interpreter forever
 //!    after -- see `compile_verify_and_apply` for why per-sample
@@ -32,16 +31,19 @@
 //! than risking a silently wrong "optimization".
 //!
 //! Installation takes both halves of that gate, and neither is redundant.
-//! The sample battery is the only check that touches the WAT wasmtime
-//! actually runs; the kernel theorem is the only one that says anything
-//! about inputs outside the battery -- but it is stated over `proof.rs`'s
-//! `denote`, which *models* the compiler (`compile::build_node` and the
-//! `lower_wat` templates) rather than reading its
-//! output. So the pair is strictly stronger than either alone and still
-//! short of end-to-end soundness (`docs/related-work/` 28). Neither half
-//! says anything about types, which is what the typing check is for.
+//! The sample battery runs the WAT wasmtime actually runs; the kernel
+//! theorem is the only check that says anything about inputs outside the
+//! battery. For a term in the straight-line fragment
+//! (`proof::gate::in_fragment`) that theorem is about the emitted
+//! instruction list itself, run on `tatic_wasm`'s machine at n = 64
+//! (`proof::gate`), and its verdict is final. For every other term it is
+//! stated over `proof.rs`'s model of the compiler (`compile::build_node`
+//! and the `lower_wat` templates) rather than its output, so there the
+//! pair is strictly stronger than either alone and still short of
+//! end-to-end soundness (`docs/related-work/` 28). Neither half says
+//! anything about types, which is what the typing check is for.
 //! `kernel_verify` below tries `proof.rs`'s strategies in order, first
-//! success wins: a straight-line term gets one `refl` proof covering every
+//! success wins: a closure term gets one `refl` proof covering every
 //! input; a tail-recursive term gets the universal theorem
 //! (`prove_tail_recursive_universal`) if its shape allows one -- also
 //! covering every input, from real induction rather than per-sample
@@ -237,27 +239,18 @@ impl JitEngine {
         if !self.verify(terms, h, func, hp_global, frag.arity) {
             return Err(Some(CacheEntry::FailedVerification));
         }
-        // The kernel theorems model the structure of the term that was
-        // compiled, so for a specialised fragment they are proved about
-        // `h'`. `h' ≡ h` itself is certificate-checked, not
-        // kernel-checked (docs/related-work/ §37).
+        // The kernel theorems are about the term that was compiled, so for
+        // a specialised fragment they are proved about `h'`. `h' ≡ h`
+        // itself is certificate-checked, not kernel-checked
+        // (docs/related-work/ §37).
         let (proof_store, proof_term) = specialised.as_ref().map_or((terms, h), |(s, t)| (s, *t));
         // The installation gate. `verify()` agreeing on the sample
         // battery is necessary but not sufficient: it is a finite
         // probe of an `i64` domain, and a compiled form installed on
         // that alone goes on to serve arbitrary arguments no evidence
         // ever covered, so only a theorem covering every input earns
-        // installation.
-        //
-        // Note this does *not* make the JIT sound end to end: the
-        // theorem is about `proof.rs`'s `denote`, which models
-        // the compiler (`build_node`, the `lower_wat` templates) rather
-        // than reading the WAT that actually
-        // runs. `verify()` remains the only check touching emitted
-        // code, which is why it stays as the first half of this gate
-        // rather than being replaced by the proof. See
-        // `docs/related-work/` 28.
-        if !Self::kernel_verify(proof_store, proof_term, frag.arity) {
+        // installation (`prove_install`).
+        if !Self::prove_install(proof_store, proof_term, frag.arity, frag.entry()) {
             return Err(Some(CacheEntry::NoUniversalProof));
         }
         self.cache.insert(
@@ -276,24 +269,37 @@ impl JitEngine {
         Ok(())
     }
 
-    /// Whether `proof.rs` proves `h` equivalent to its compiled form for
-    /// *every* input, on top of (not instead of) the sample-based `verify()`
-    /// above. Tries the strategies in order and stops at the first that
-    /// applies:
-    /// 1. `prove_pure_expr` -- a straight-line (non-recursive) term gets
-    ///    one proof covering every input.
-    /// 2. `prove_closure_expr` -- a closed, non-recursive term built from
+    /// Whether the kernel proves `h` equal to its compiled form for every
+    /// input, on top of (not instead of) the sample-based `verify()` above.
+    /// A term in the gate's fragment (`proof::gate::in_fragment`) is decided
+    /// by the gate alone, which reads `code`, the instruction list that
+    /// runs: its verdict is final, so a wrong body is refused even where a
+    /// theorem about `h`'s model would hold. Every other term goes to
+    /// `kernel_verify`, whose theorems are about `proof.rs`'s model of the
+    /// compiler, not the code that runs (`docs/related-work/` 28).
+    fn prove_install(terms: &TermStore, h: Hash, arity: usize, code: &[tatic_wasm::wasm::Ins]) -> bool {
+        if proof::gate::in_fragment(terms, h, arity) {
+            proof::gate::gate(terms, h, arity, code)
+        } else {
+            Self::kernel_verify(terms, h, arity)
+        }
+    }
+
+    /// Whether `proof.rs` proves `h` equivalent to the model of its compiled
+    /// form for *every* input. Tries the strategies in order and stops at
+    /// the first that applies:
+    /// 1. `prove_closure_expr` -- a closed, non-recursive term built from
     ///    non-capturing ("known-call") closures gets one proof covering
-    ///    every input too -- see its own docs for what's in and out of
+    ///    every input -- see its own docs for what's in and out of
     ///    scope (an `If` between two closures, self-recursion combined with
     ///    closures, ...).
-    /// 3. `prove_tail_recursive_universal` -- a recursive term whose shape
+    /// 2. `prove_tail_recursive_universal` -- a recursive term whose shape
     ///    it covers gets one universal theorem, via real induction rather
     ///    than per-sample checking. Branching recursion (e.g. naive
     ///    Fibonacci) included.
-    /// 4. At arity 0 only, where the one possible call is the whole input
+    /// 3. At arity 0 only, where the one possible call is the whole input
     ///    space, a per-execution certificate for that call,
-    ///    `prove_closure_expr_instance` (recursive shapes step 3 doesn't
+    ///    `prove_closure_expr_instance` (recursive shapes step 2 doesn't
     ///    cover, such as a closure-typed parameter called with inconsistent arities across call sites,
     ///    `compile.rs`'s curried-dispatch capability, including one threaded
     ///    through a recursive loop). Above arity 0 such certificates reach
@@ -311,8 +317,7 @@ impl JitEngine {
         if calls_a_parameter(terms, h) {
             return false;
         }
-        if proof::prove_pure_expr(terms, h).is_some()
-            || proof::prove_closure_expr(terms, h).is_some()
+        if proof::prove_closure_expr(terms, h).is_some()
             || proof::prove_tail_recursive_universal(terms, h).is_some()
         {
             return true;

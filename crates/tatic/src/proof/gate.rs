@@ -18,7 +18,7 @@ use tatic_wasm::ops::Op;
 use tatic_wasm::wasm::{choose, mkpair, nat2_lit, well_formed, Ins, Wasm, K};
 
 use crate::jit::compile::tree_size;
-use crate::jit::shape::op_of;
+use crate::jit::shape::{is_comparison, op_of};
 use crate::lang::term::{Hash, Term, TermStore};
 
 const N: usize = 64;
@@ -50,7 +50,7 @@ fn tail(store: &TermStore, h: Hash, m: usize, seen: &mut HashSet<Hash>) -> bool 
     match store.resolve(h) {
         Term::If(c, t, e) => match store.resolve(*c) {
             Term::Prim(p, a, b) => {
-                op_of(*p).is_some_and(|o| o.kind() == K::B)
+                is_comparison(*p)
                     && operand(store, *a, m, seen)
                     && operand(store, *b, m, seen)
                     && tail(store, *t, m, seen)

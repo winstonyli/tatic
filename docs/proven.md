@@ -219,8 +219,8 @@ This is stated precisely because it would be easy to overclaim here.
   call-specific evidence.
 - **Closures, non-capturing, capturing, and partially applied**: `prove_closure_expr` gives a
   closed, non-recursive closures term one kernel proof covering every
-  input, the same `refl`-on-a-shared-translation argument `prove_pure_expr`
-  makes for straight-line arithmetic — nothing here evaluates anything
+  input, a `refl`-on-a-shared-translation argument, as for straight-line
+  arithmetic — nothing here evaluates anything
   concrete, so it needs no `assume_prim_fact`-style grounding either. A
   closure value is postulated opaque (`Clo : Sort(0)`, `Int`'s own
   "postulated type" pattern). Calling one *through a parameter*
@@ -341,18 +341,24 @@ passes the samples but has no such theorem is cached as
 (`Stats::declined_no_universal_proof`).
 
 The last two cover different things, which is why both are required.
-The sample battery is the only check that touches the WAT wasmtime
-actually runs. The kernel theorem is the only one that says anything
-about inputs outside the battery — but it is stated over `proof.rs`'s
-`denote`, which *models* the compiler (`build_node` and the `lower_wat`
-templates) rather than reading its output.
-The pair is strictly stronger than either alone, and still short of
-end-to-end soundness.
+The sample battery runs the WAT wasmtime actually runs. The kernel
+theorem is the only check that says anything about inputs outside the
+battery. For a straight-line fragment term it is about the emitted
+instruction list itself (`proof/gate.rs`); for every other term it is
+stated over `proof.rs`'s `denote`, which *models* the compiler
+(`build_node` and the `lower_wat` templates) rather than reading its
+output. There the pair is strictly stronger than either alone, and still
+short of end-to-end soundness.
 
 What counts as "a theorem covering every input" (`kernel_verify`,
 reported by `JitEngine::is_kernel_verified`):
 
-- `prove_pure_expr`, `prove_closure_expr` or
+- For a term in the straight-line fragment (`proof/gate.rs#in_fragment`),
+  the gate's theorem alone (`jit.rs#prove_install`): the emitted
+  instruction list, run on `tatic_wasm`'s machine at n = 64, equals the
+  source term for every input. This one is about the code that runs, not a
+  model of the compiler.
+- `prove_closure_expr` or
   `prove_tail_recursive_universal`: one theorem covering every input. This
   is genuinely stronger than the sample battery. Every input means every
   `Int`, which is all the JIT passes: a theorem that types a called

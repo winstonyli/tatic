@@ -352,7 +352,7 @@ pub fn prove_tail_recursive_universal(store: &TermStore, h: Hash) -> Option<Univ
     let tree = classify_tree(store, body)?;
     let leaves = flatten_tree(store, &tree, self_call, &param_types)?;
     if leaves.iter().all(|l| l.calls.is_empty()) {
-        return None; // no recursion anywhere: not this function's job (see `prove_pure_expr`)
+        return None; // no recursion anywhere: not this function's job (see `prove_closure_expr`)
     }
 
     let mut lits = Vec::new();

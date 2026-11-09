@@ -800,3 +800,14 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   so `Wasm::seq` and the gate's `cps` now run each step under `tatic_kernel::grow`; the same run then passed in 105 s
   (run `2026-11-08-v07-gate-measure_stack_2mb-grow`). It stays an ignored test: the bound keeps such trees from the
   gate, and 105 s is no default test.
+- **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
+  (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
+  run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
+  bench row is deleted with the prover.
+
+**Fragment terms install on the gate's verdict alone.** `jit.rs#prove_install` sends a term in the fragment to `gate`
+and nothing else, and every other term to `kernel_verify`, which no longer tries `prove_pure_expr` (deleted, with its
+`setup`, `finish` and `LitScope::Arith`). A body with its `If` arms swapped is refused although the closure prover would
+accept the term (`jit/tests.rs#the_gates_verdict_is_final_for_fragment_terms`); all five Goal 1 terms install, and an
+operand `If`, outside the fragment, still installs through the chain. The workspace suite passed with 795 tests listed,
+782 before the plan plus 21 added and 8 removed (run `2026-11-08-v07-workspace`).

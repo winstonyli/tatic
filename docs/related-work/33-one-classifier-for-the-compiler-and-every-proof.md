@@ -25,7 +25,8 @@ closures fragment's parameter types. The rules it fixes in one place:
   and only when saturated -- under- or over-applied, it is a `VarCall`;
 - a callee counts as a combinator only if it peels to a function;
 - `If` conditions: `compile::is_comparison` is defined by `cmp_instr`
-  itself, and `classify_tree`'s soundness check (a condition must only
+  itself (since v0.7, `jit/shape.rs#is_comparison`, by the operator
+  table's `op_of`), and `classify_tree`'s soundness check (a condition must only
   ever denote `0` or `1`, §28) now uses it instead of a hand-copied
   `Lt | Le | Eq`.
 

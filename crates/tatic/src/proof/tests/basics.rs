@@ -22,12 +22,15 @@ fn every_arith_postulates_starts_from_one_checked_prelude() {
 /// caches see one subterm, not two copies (`docs/related-work/` §48).
 #[test]
 fn a_shared_subterm_is_denoted_once() {
-    // Hand-built: an open body (`x` free), passed to `setup` with arity 1.
+    // Hand-built: an open body (`x` free), with one `Int` postulate for `x`.
     let mut s = TermStore::new();
     let x = s.var(0);
     let a = s.prim(PrimOp::Mul, x, x);
     let body = s.prim(PrimOp::Add, a, a);
-    let (arith, params) = setup(&s, body, 1, None).unwrap();
+    let mut arith = ArithPostulates::new();
+    let int = arith.int_ty();
+    let pos = arith.p.push(int);
+    let params = vec![arith.p.get(pos)];
     let d = denote(&s, body, &arith, &params).unwrap();
     // `d` is `App(App(+, da), da')`; `da`, `da'` are `App(App(*, x), x)`.
     let kernel::Node::App(plus_da, da2) = d.node() else { panic!() };
@@ -36,47 +39,6 @@ fn a_shared_subterm_is_denoted_once() {
     assert!(kernel::node_key(&f1) == kernel::node_key(&f2), "the two operands were denoted separately");
 }
 
-#[test]
-fn straight_line_term_gets_a_kernel_checked_proof() {
-    let mut s = TermStore::new();
-    let f = straight_line(&mut s);
-
-    let proof = prove_pure_expr(&s, f).expect("straight-line term should be provable");
-    assert_eq!(proof.arity, 2);
-    // Independently re-typecheck from scratch (not just trusting the
-    // `.ok()?` inside `prove_pure_expr`).
-    kernel::check_in(
-        &proof.globals,
-        &Ctx::new(),
-        &proof.proof,
-        &kernel::id(proof.result_ty, proof.denotation, proof.denotation),
-    )
-    .expect("the recorded proof should independently re-typecheck");
-
-    // This term is also handled by the interpreter and the WASM
-    // compiler -- all three paths agree on which terms are in scope.
-    assert!(compile::try_compile(&s, f).is_some());
-}
-
-/// Confirms a `Clo_k`-shaped value can be built as the literal curried
-/// `Int -> .. -> Int` arrow type, reusing `Int` (already postulated by
-/// `ArithPostulates`) instead of an opaque `Sort(0)` postulate family
-/// (`docs/related-work/` section 11):
-///
-/// 1. Such a value can be called directly via ordinary `kernel::app`,
-///    typechecking as `Int` with no separate "how to call this" axiom
-///    needed at all.
-/// 2. `bool_rec` instantiated at a *constant* motive (`\_:Bool. A`) is a
-///    real `ite : Bool -> A -> A -> A` for any `A`, with its
-///    computation-rule axioms (`bool_rec_true_eq`/`bool_rec_false_eq`)
-///    already proving `ite`'s own -- but this does *not* extend to
-///    `ite_clo_ref`, whose condition is `Int`-typed rather than
-///    `Bool`-typed and so has no bridge to `bool_rec`'s own motive.
-/// 3. Two different arities are still genuinely distinct types --
-///    `kernel::check` rejects a `Clo_3`-shaped value where a `Clo_2` is
-///    expected, for free, from ordinary Pi-type structural inequality --
-///    so this doesn't reopen the arity-blind-`Clo` unsoundness
-///    `docs/types.md` section 6.2 documents.
 #[test]
 fn a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates() {
     fn curried_arrow(int_ty: &Expr, k: usize) -> Expr {
@@ -147,18 +109,3 @@ fn a_curried_int_arrow_can_stand_in_for_clo_k_with_zero_new_postulates() {
         "a Clo3-shaped value must still be rejected where a Clo2 is expected"
     );
 }
-
-#[test]
-fn recursive_term_is_out_of_scope() {
-    let mut s = TermStore::new();
-    let fact = factorial(&mut s);
-    assert!(prove_pure_expr(&s, fact).is_none());
-}
-
-#[test]
-fn genuinely_higher_order_term_is_out_of_scope() {
-    let mut s = TermStore::new();
-    let twice = twice(&mut s);
-    assert!(prove_pure_expr(&s, twice).is_none());
-}
-

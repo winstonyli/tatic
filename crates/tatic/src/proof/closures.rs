@@ -64,9 +64,9 @@ use super::*;
 // the result faithfully represents "call this closure" on *both*
 // readings, identically, symbol for symbol, the same way `denote`'s
 // postulated `Int` operators represent an arithmetic primitive without
-// either reading being numerically verified. The proof is `refl`, same
-// as `prove_pure_expr`'s straight-line argument: nothing here evaluates
-// anything concrete, so no per-value grounding is needed.
+// either reading being numerically verified. The proof is `refl`, as
+// for a straight-line term: nothing here evaluates anything concrete,
+// so no per-value grounding is needed.
 //
 // Scope, honestly: the *main*, top-level term must still be non-recursive
 // (`prove_closure_expr`'s own top-level check) -- proving what a
