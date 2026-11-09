@@ -982,8 +982,11 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     `2026-11-09-2026-11-09-d1-inst-verify`). Time, untimed and contended (other load 33%, a game; the timed lease
     refused at 38%, run `2026-11-09-d1-ab-timed`), 12 paired rounds in ABBA order (`docs/runs/2026-11-09/scripts/ab.sh`,
     run `2026-11-09-d1-ab-untimed`): the spike was faster in 10 of 12 rounds at each d, best of 12 573 against 641 ms at
-    d = 13 (-11%) and 124 against 143 at d = 11 (-13%); paired means -77 ± 29 and -32 ± 10 ms. A quiet timed run has not
-    confirmed it.
+    d = 13 (-11%) and 124 against 143 at d = 11 (-13%); paired means -77 ± 29 and -32 ± 10 ms. Timed on a quiet machine (total
+    CPU 3-5%, `run.ps1 -Timed`), 10 paired rounds each, two runs: medians 485.6 to 442.4 and 460.9 to 421.6 ms at
+    d = 13 (paired -42.0 ± 4.8 and -41.5 ± 6.1), 107.8 to 101.4 and 105.8 to 98.5 at d = 11 (-6.2 ± 1.4 and
+    -5.8 ± 2.0) (runs `2026-11-09-d1-ab-timed2`, `2026-11-09-d1-ab-timed2-2`). Adopted in f0e6b09, with a debug
+    assertion that `instantiate_n` never re-enters.
 - **After the per-call memo, the inst gate and the write misses (2026-11-09):** at f0e6b09, by cachegrind's instruction
   count (`I refs`) and misses for the check, one debug-info build with a knob choosing the gate
   (`patches/f2-inst-gate-spike.patch`, `scripts/f2_cg.sh`; runs `2026-11-09-f2-gate-cg2`, `2026-11-09-f2-gate-s0`).
