@@ -806,6 +806,15 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   0.4 s. Products of symbolic products cost no more to check than one: `(a*b)*(a*b)` 25 + 10 ms, `(a*b)*(b*a)` 29 + 10
   ms, and a chain `a * b * .. * b` of k products builds in 24 ms (k = 2) to 48 ms (k = 8) and checks in 10-13 ms
   throughout, so `Mul` needs no rule of its own.
+- **The build was `karrow`:** a samply profile of the build at `doubling(7)` and `(8)` (run
+  `2026-11-08-gate-build-profile`) put 61% of its samples under `Wasm::sty` -> `word` -> `bv_ty` -> `karrow`, all of
+  it `arrow`'s codomain shift: `karrow(n)` nested n arrows, so each 64-bit word type cost about 2,000 node shifts, and
+  `sty` makes one per stack slot per instruction. Rebuilding `Op::term(64)` per instruction (0.25 ms each) and building
+  `prog` twice were the smaller part. `karrow` now writes its binders directly, as `bool0` does
+  (`karrow_is_the_arrow_chain` pins it to the arrow chain). Rerun (run `2026-11-08-gate-costs-direct-karrow`, cpu 77%,
+  one rep per tree): `doubling(7)` 17 + 26 ms, `doubling(8)` 34 + 53 ms, `doubling(9)` 66 + 184 ms, `doubling(10)`
+  126 + 790 ms, `doubling(13)` 1,748 + 102,289 ms. The build is now linear and small; the check grows about 4x per
+  doubling from d = 9 and is the whole cost above 512 nodes.
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
