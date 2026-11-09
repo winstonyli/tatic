@@ -14,6 +14,7 @@
 
 use super::Node;
 use std::cell::{Cell, RefCell, UnsafeCell};
+use hashbrown::hash_table::Entry;
 use std::hash::BuildHasherDefault;
 
 /// A node in one of the two spaces: bit 31 set for the region, bits 0-29 the index into that space.
@@ -99,8 +100,8 @@ pub(crate) fn reset_map<K: Eq + std::hash::Hash, V>(m: &mut IdMap<K, V>) {
     }
 }
 
-/// One space: its nodes, their side arrays and its table.
-struct Space {
+/// One space's per-node columns, all the same length.
+struct Cols {
     nodes: Vec<Node<Ref>>,
     /// Per node, as `Expr::loose` and `Expr::free`.
     loose: Vec<u32>,
@@ -111,18 +112,14 @@ struct Space {
     parents: Vec<u8>,
     /// Per node, its height (a leaf 0), saturating: what `hc::low` asks without a walk.
     height: Vec<u8>,
-    /// Each node's hash and `Ref`: 8 bytes an entry.
-    table: hashbrown::HashTable<(u32, Ref)>,
 }
 
-impl Space {
-    const fn new() -> Space {
-        Space { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), uses: Vec::new(), parents: Vec::new(), height: Vec::new(), table: hashbrown::HashTable::new() }
+impl Cols {
+    const fn new() -> Cols {
+        Cols { nodes: Vec::new(), loose: Vec::new(), free: Vec::new(), uses: Vec::new(), parents: Vec::new(), height: Vec::new() }
     }
-    fn find(&self, h: u32, n: &Node<Ref>) -> Option<Ref> {
-        self.table.find(spread(h), |&(g, r)| g == h && self.nodes[r.index()] == *n).map(|&(_, r)| r)
-    }
-    fn push(&mut self, region: bool, h: u32, n: Node<Ref>, (loose, free): (u32, u32), parents: u8, height: u8) -> Ref {
+    /// Appends a node to every column, with no table entry; its `Ref`.
+    fn push(&mut self, region: bool, n: Node<Ref>, (loose, free): (u32, u32), parents: u8, height: u8) -> Ref {
         let r = Ref::new(region, self.nodes.len());
         self.nodes.push(n);
         self.loose.push(loose);
@@ -130,7 +127,6 @@ impl Space {
         self.uses.push(0);
         self.parents.push(parents);
         self.height.push(height);
-        self.table.insert_unique(spread(h), (h, r), |&(g, _)| spread(g));
         r
     }
     fn clear(&mut self) {
@@ -140,12 +136,51 @@ impl Space {
         reset_vec(&mut self.uses);
         reset_vec(&mut self.parents);
         reset_vec(&mut self.height);
+    }
+}
+
+/// One space: its columns and its table.
+struct Space {
+    cols: Cols,
+    /// Each node's hash and `Ref`: 8 bytes an entry.
+    table: hashbrown::HashTable<(u32, Ref)>,
+}
+
+impl Space {
+    const fn new() -> Space {
+        Space { cols: Cols::new(), table: hashbrown::HashTable::new() }
+    }
+    fn find(&self, h: u32, n: &Node<Ref>) -> Option<Ref> {
+        self.table.find(spread(h), |&(g, r)| g == h && self.cols.nodes[r.index()] == *n).map(|&(_, r)| r)
+    }
+    fn push(&mut self, region: bool, h: u32, n: Node<Ref>, ranges: (u32, u32), parents: u8, height: u8) -> Ref {
+        let r = self.cols.push(region, n, ranges, parents, height);
+        self.table.insert_unique(spread(h), (h, r), |&(g, _)| spread(g));
+        r
+    }
+    fn clear(&mut self) {
+        self.cols.clear();
         let used = self.table.len();
         self.table.clear();
         if used < self.table.capacity() / 4 {
             self.table.shrink_to(used, |&(g, _)| spread(g));
         }
     }
+}
+
+/// What a new node `n` over resolved children gets from them: its `(loose, free)` ranges and height. Each child's
+/// parent count rises.
+fn derive(p: &mut Cols, g: &mut Cols, n: &Node<Ref>) -> ((u32, u32), u8) {
+    let at = |c: &Ref| if c.in_region() { &*g } else { &*p };
+    let ranges = n.ranges(|c| at(c).loose[c.index()], |c| at(c).free[c.index()]);
+    let mut height = 0u8;
+    n.for_kids(|c, _| height = height.max(at(c).height[c.index()].saturating_add(1)));
+    n.for_kids(|c, _| {
+        let s = if c.in_region() { &mut *g } else { &mut *p };
+        let q = &mut s.parents[c.index()];
+        *q = q.saturating_add(1).min(2);
+    });
+    (ranges, height)
 }
 
 /// The region's memos, keyed by resolved `Ref` bits and emptied when it closes (they were `hc::Table`'s and
@@ -260,9 +295,9 @@ impl Spaces {
     }
 
     #[inline(always)]
-    fn space(&self, r: Ref) -> &Space {
+    fn cols(&self, r: Ref) -> &Cols {
         let i = self.get();
-        if r.in_region() { &i.region } else { &i.persistent }
+        if r.in_region() { &i.region.cols } else { &i.persistent.cols }
     }
 
     /// The open region's generation, 0 while none is open.
@@ -295,32 +330,32 @@ impl Spaces {
     /// The node `r` (resolved) names.
     #[inline(always)]
     pub(crate) fn node_at(&self, r: Ref) -> Node<Ref> {
-        self.space(r).nodes[r.index()]
+        self.cols(r).nodes[r.index()]
     }
     #[inline(always)]
     pub(crate) fn loose_at(&self, r: Ref) -> u32 {
-        self.space(r).loose[r.index()]
+        self.cols(r).loose[r.index()]
     }
     #[inline(always)]
     pub(crate) fn free_at(&self, r: Ref) -> u32 {
-        self.space(r).free[r.index()]
+        self.cols(r).free[r.index()]
     }
     #[inline(always)]
     pub(crate) fn parents_at(&self, r: Ref) -> u8 {
-        self.space(r).parents[r.index()]
+        self.cols(r).parents[r.index()]
     }
     #[inline(always)]
     pub(crate) fn height_at(&self, r: Ref) -> u8 {
-        self.space(r).height[r.index()]
+        self.cols(r).height[r.index()]
     }
     #[inline(always)]
     pub(crate) fn uses_at(&self, r: Ref) -> u32 {
-        self.space(r).uses[r.index()]
+        self.cols(r).uses[r.index()]
     }
     #[inline(always)]
     pub(crate) fn set_uses_at(&self, r: Ref, v: u32) {
         let i = self.inner();
-        let s = if r.in_region() { &mut i.region } else { &mut i.persistent };
+        let s = if r.in_region() { &mut i.region.cols } else { &mut i.persistent.cols };
         s.uses[r.index()] = v;
     }
 
@@ -333,7 +368,7 @@ impl Spaces {
         let (mut persistent_kids, mut fresh_kid) = (true, false);
         n.for_kids(|c, _| {
             persistent_kids &= !c.in_region();
-            fresh_kid |= c.in_region() && i.region.parents[c.index()] == 0;
+            fresh_kid |= c.in_region() && i.region.cols.parents[c.index()] == 0;
         });
         if persistent_kids
             && let Some(r) = i.persistent.find(h, &n)
@@ -347,26 +382,27 @@ impl Spaces {
         // persistent nodes have no region children. So the lookup, a cache miss, is skipped (a quarter of all builds;
         // docs/tier-cycle/, "Skipping the lookup that must miss").
         debug_assert!(!fresh_kid || i.region.find(h, &n).is_none(), "a node over a parentless child already exists");
-        if in_region && !fresh_kid && let Some(r) = i.region.find(h, &n) {
+        if in_region {
+            // One probe: the vacant slot the lookup finds is held while the columns are pushed.
+            let Space { cols, table } = &mut i.region;
+            let vacant = if fresh_kid {
+                None
+            } else {
+                match table.entry(spread(h), |&(g, r)| g == h && cols.nodes[r.index()] == n, |&(g, _)| spread(g)) {
+                    Entry::Occupied(e) => return e.get().1,
+                    Entry::Vacant(v) => Some(v),
+                }
+            };
+            let (ranges, height) = derive(&mut i.persistent.cols, cols, &n);
+            let r = cols.push(true, n, ranges, 0, height);
+            match vacant {
+                Some(v) => drop(v.insert((h, r))),
+                None => drop(table.insert_unique(spread(h), (h, r), |&(g, _)| spread(g))),
+            }
             return r;
         }
-        let ranges = {
-            let (p, g) = (&i.persistent, &i.region);
-            let at = |c: &Ref| if c.in_region() { g } else { p };
-            n.ranges(|c| at(c).loose[c.index()], |c| at(c).free[c.index()])
-        };
-        let height = {
-            let (p, g) = (&i.persistent, &i.region);
-            let mut height = 0u8;
-            n.for_kids(|c, _| height = height.max((if c.in_region() { g } else { p }).height[c.index()].saturating_add(1)));
-            height
-        };
-        n.for_kids(|c, _| {
-            let s = if c.in_region() { &mut i.region } else { &mut i.persistent };
-            let p = &mut s.parents[c.index()];
-            *p = p.saturating_add(1).min(2);
-        });
-        if in_region { i.region.push(true, h, n, ranges, 0, height) } else { i.persistent.push(false, h, n, ranges, 0, height) }
+        let (ranges, height) = derive(&mut i.persistent.cols, &mut i.region.cols, &n);
+        i.persistent.push(false, h, n, ranges, 0, height)
     }
 
     /// `r` (resolved) as a persistent `Ref`. The region nodes reachable from it are copied out bottom-up, each once per
@@ -383,17 +419,17 @@ impl Spaces {
             {
                 return Ref(p);
             }
-            i.region.nodes[k]
+            i.region.cols.nodes[k]
         };
         let m = super::grow(|| n.map_kids(|c, _| self.persist(c)));
         let i = self.inner();
         let h = hash(&m);
         debug_assert!(i.persistent.find(h, &m).is_none(), "persist met a copy it did not make (Invariant I)");
-        let p = i.persistent.push(false, h, m, (i.region.loose[k], i.region.free[k]), i.region.parents[k], i.region.height[k]);
+        let p = i.persistent.push(false, h, m, (i.region.cols.loose[k], i.region.cols.free[k]), i.region.cols.parents[k], i.region.cols.height[k]);
         i.twins.push(r);
-        debug_assert_eq!(i.w as usize + i.twins.len(), i.persistent.nodes.len());
+        debug_assert_eq!(i.w as usize + i.twins.len(), i.persistent.cols.nodes.len());
         if i.copies.len() <= k {
-            i.copies.resize(i.region.nodes.len(), u32::MAX);
+            i.copies.resize(i.region.cols.nodes.len(), u32::MAX);
         }
         i.copies[k] = p.0;
         p
@@ -407,7 +443,7 @@ impl Spaces {
         }
         i.epoch = i.next_epoch;
         i.next_epoch = i.next_epoch.checked_add(1).expect("region generations ran out");
-        i.w = i.persistent.nodes.len() as u32;
+        i.w = i.persistent.cols.nodes.len() as u32;
         true
     }
 
@@ -424,12 +460,12 @@ impl Spaces {
 
     #[cfg(test)]
     fn persistent_len(&self) -> usize {
-        self.get().persistent.nodes.len()
+        self.get().persistent.cols.nodes.len()
     }
 
     #[cfg(test)]
     fn region_capacity(&self) -> usize {
-        self.get().region.nodes.capacity()
+        self.get().region.cols.nodes.capacity()
     }
 }
 
