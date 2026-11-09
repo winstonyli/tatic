@@ -233,3 +233,18 @@ fn check_survives_a_term_far_deeper_than_the_native_stack_allows() {
         .unwrap();
 }
 
+
+/// `whnf` of a term that is not a redex by its tag (`Pi` here) does no work, and once a redex is reduced, `whnf` of the
+/// result does none either: `whnf_in` answers both without calling `whnf_step`.
+#[test]
+fn whnf_of_a_whnf_does_no_work() {
+    scoped(|| {
+        assert_eq!(worked(|| assert_eq!(whnf(&pi(sort(0), var(0))), pi(sort(0), var(0)))), 0);
+        let r = whnf(&app(lam(sort(1), app(var(0), var(0))), lam(sort(0), var(0))));
+        assert_eq!(r, lam(sort(0), var(0)));
+        let stuck = app(app(var(3), sort(0)), sort(1));
+        let redex = app(lam(sort(1), app(app(var(4), var(0)), sort(1))), sort(0));
+        assert_eq!(whnf(&redex), stuck);
+        assert_eq!(worked(|| assert_eq!(whnf(&stuck), stuck)), 0);
+    });
+}

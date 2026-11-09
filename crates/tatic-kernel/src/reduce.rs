@@ -222,13 +222,23 @@ fn whnf_sigrec(s: &Spaces, motive: Expr, step: Expr, target: Expr) -> Option<Exp
 /// `whnf`, cached -- the same subterm recurs many times within one top-level call once a proof term
 /// shares structure. Returns `e` itself when it is already in weak head normal form, so reducing a
 /// result again, as `nf` and `def_eq` do with a stuck head, keeps its node and hits the cache from
-/// then on.
+/// then on. A tag `whnf_step` never reduces is answered without the memo, and a result is stored as
+/// its own whnf, so asking again of a reduced term is a hit, not a `whnf_step` that finds it stuck.
 pub(super) fn whnf_in(s: &Spaces, e: &Expr) -> Expr {
+    if !matches!(s.node(e), Node::App(..) | Node::J { .. } | Node::WRec { .. } | Node::SigRec { .. }) {
+        return *e;
+    }
     if let Some(hit) = hc::whnf_get(s, e) {
         return hit;
     }
     let result = whnf_step(s, e).unwrap_or(*e);
     hc::whnf_put(s, e, &result);
+    if !s.same(&result, e) {
+        // The kernel's own tests check the claim the entry makes; elsewhere the check would cost work.
+        #[cfg(test)]
+        assert!(whnf_step(s, &result).is_none(), "whnf_step's result is not in whnf");
+        hc::whnf_put(s, &result, &result);
+    }
     result
 }
 
