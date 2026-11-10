@@ -7,7 +7,9 @@ Goal 1 of `ROADMAP.md` now says so and links here.
 
 ## Status
 
-- **Open:** which v0.8 (the options below). Nothing is started.
+- **Decided 2026-11-10:** v0.8 is z5 "Recursion once", staged S0-S4 with its own spec (below); division by zero is a
+  partial row whose trap is the no-value answer (below). The spec is not written yet; nothing is built.
+- **Open:** the heap relation for callees (below), and whether `loop`/`br` survive (the no-loop spike).
 - **Settled:** the "any backend" policy below. It extends the 2026-10-31 decision
   (`docs/decisions/2026-10-31-learned-target-model.md`) and does not change it.
 
@@ -75,7 +77,31 @@ Goal 1 of `ROADMAP.md` now says so and links here.
   - What exploration saves is the writing of rows. It does not remove the trust in them.
   - The rows-first shape of v0.8 is what makes both routes the same, because a row is the unit both produce.
 
-## Decide (v0.8 shape), open
+## Decided (v0.8 shape): z5, staged (2026-11-10)
+
+The user picked the staged form of z5 (g1), after a survey of z5 (checked by a second reader) and the spike that drives
+the generator from real terms (`docs/tier-cycle/`, "The generator on tatic's terms and the lowering's code: a spike":
+both sum loops, factorial, `redundant_arithmetic_recursion` and fib install from emitted code through the unchanged
+generator; 13 and 34 stop on `i32.const 0` and `call $c0`).
+
+- **S0** the instruction table over today's constructors, checked by equality of the derived constructor types,
+  meanings and printed WAT against the old ones, the existing tests, and an instruction count of `wasm_scaling`.
+- **S1** locals as their own state component, `local.set` a row, the lowering emitting it, the printer naming slots
+  `$p`/`$t` (today it prints every slot as `$p{i}`); the v0.7 gate suite unchanged.
+- **S2** the generator on `Source::cps` with the self-call case; both sum loops and terms 1, 2, 3 install, and a
+  function written after the generator is frozen. Then delete the loop law, fuel 1, `strip_loop` and `gate_with`.
+  Go/no-go here.
+- **S3** modules: a call that names its callee, the callee's law as a hypothesis, calls of any arity, an `i32` kind
+  for the environment pointer (13, 23, 34).
+- **S4** a toy second instruction table installs a straight-line term through the unchanged gate.
+- Not in S0-S4: 25 and 28 need bit rows (`wrap`, `extend`, `shl`, `or`); gcd needs the partial row (below); the
+  closure-record terms need the heap relation (below).
+- The spec's Decide groups (from the survey): D1 the loop's meaning (a restart label, as the lowering emits, or a
+  general loop), unless the no-loop spike removes `loop` and `br`; D2 the locals encoding and slot layout; D3 the call
+  row's arity and callee naming, and the `i32` kind; D4 one relational statement for all terms (a convertible-first
+  rule for straight-line code) or a kept `refl` path; D5 rows as data or as an enum with derived parts.
+
+The options as they stood when picked:
 
 Searched: removed a `Backend` trait (no second backend yet; the row table is the seam), and folded the straight-line
 statement into the loop law, which removes fuel 1 and `strip_loop` (already unused: its one caller passes `false`).
@@ -121,3 +147,39 @@ z1, z2 and z4 install none of the 26, so they rank below it.
     type-indexed closure relation. Locals with per-call frames, the closure convention and proofs derived from the
     instruction list each have a spike now (z5's generator and the closure spike above).
 - z4 **Backend boundary only**: the row table with no new instructions.
+
+Why not the others: z1 brings back a proof per loop and installs none of the 26; z2 keeps the five-site machine; z3 is
+z5 without the generator (proofs by hand per function); z4 is z5's S0 alone; z5 as one milestone has no checkpoint
+before its deletions and its "Done when" needed module work nothing had tried.
+
+## Decided: division and remainder by zero (2026-11-10)
+
+The user picked h1 after a survey (checked by a second reader). Today eval errors (`DivByZero`), wasm traps, and the
+remainder circuit answers `x`; the machine has no trap channel.
+
+- **Picked: a partial row.** A row gets an optional domain condition (for `rem_s`, divisor not 0). Outside it the
+  machine answers its existing no-value answer `z`, so the gate statement and every law keep their shape. The gate's
+  source side emits the same guard, and the evaluator's error and the row's domain read one definition, not two
+  copies. The table test checks the domain at b = 0 against eval's error and wasmtime's trap. Language, evaluator and
+  lowering are unchanged.
+- The gate cannot catch a wrong domain condition (both sides read it), only the table test can, as for circuits
+  today. Trap and timeout are not told apart. The guard's proof cost is unmeasured (the partial-row cost spike).
+- Not picked: a total row with a claim only where eval is defined (no new concept, but the kernel states a made-up
+  value at b = 0 and that row stays unchecked); a total language (`x % 0 = x`; the printed guard is trusted, not
+  proved, and CU1 removed a private `x / 0 = 0` evaluator as a bug on 2026-10-26); a precondition hypothesis (the
+  partial row's guard written as a path condition, plus a run-time check); excluding `Div`/`Mod` from the fragment
+  (status quo); an explicit guard and a `Trap` instruction (a new constructor and a guard per site that the engine
+  already checks).
+- Div's `MIN / -1` wrap still needs the lowering's wrapping sequence modelled as instructions.
+
+## Open: a heap relation for callees (2026-11-10)
+
+Closure records in memory, anything that allocates, and `iterate` against the gate need a relation between the heap
+before and after a call. A survey recommended pointwise cell hypotheses plus an allocation world; its checker rejected
+that as a first step: it needs order facts (`a < w`) on 64-bit words that nothing proves, most class C terms do not
+need it, and a captured cell read each iteration (term 37) has no source value to name. Two shapes it missed are being
+tried (the heap spike): the allocation pointer as a third part of the state, so fresh addresses are fresh by
+construction; and a closure record's cells stated inside the closure relation. Rejected by the survey: heap
+extensionality (not derivable without eta), separation-logic frames (need splitting of function-typed heaps), a list
+heap (a machine rewrite), a counter-style invariant per cell (one hypothesis per cell). Term 27 needs a type-indexed
+closure relation in any of these.

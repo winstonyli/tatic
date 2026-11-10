@@ -49,5 +49,10 @@ sends the five fragment terms to `proof/gate.rs#gate` alone (`jit/tests.rs`: `fr
 `the_gates_verdict_is_final_for_fragment_terms`), and seven mutations are rejected
 (`proof/tests/gate.rs#gate_rejects_mutations`). Its decisions are in the spec
 (`docs/superpowers/specs/2026-11-08-v07-straight-line-gate-design.md`); findings in `docs/tier-cycle/`, "v0.7's first
-steps: the census and the emit spike" and "The gate's costs, and the rules they triggered". No next milestone is
-picked yet; the options and the test they must pass are in `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`.
+steps: the census and the emit spike" and "The gate's costs, and the rules they triggered".
+
+- v0.8 **Recursion once** - loops and self-calls install from emitted code through one generated simulation proof, on
+  an instruction table with locals apart from the heap (staged S0-S4; picked 2026-11-10, spec not written yet:
+  `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`).
+  - Done when: both sum loops and terms 1, 2, 3 install through the generator, the loop law, fuel 1 and `strip_loop`
+    are deleted, and a toy second table installs a straight-line term (the spec may refine this).
