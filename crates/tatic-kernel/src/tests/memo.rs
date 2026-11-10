@@ -234,8 +234,10 @@ fn check_survives_a_term_far_deeper_than_the_native_stack_allows() {
 }
 
 
-/// `whnf` of a term that is not a redex by its tag (`Pi` here) does no work, and once a redex is reduced, `whnf` of the
-/// result does none either: `whnf_in` answers both without calling `whnf_step`.
+/// `whnf` of a term that is not a redex by its tag (`Pi` here) does no work, and neither does `whnf` of a result the
+/// reduction itself asked about: `whnf_step` ends a beta step with `whnf_in` of the contractum, which stores that
+/// term's own entry. `whnf_in` answers both without calling `whnf_step`. (A result no recursive call asks about has no
+/// entry and costs one `whnf_step`: `whnf_stores_the_asked_term_not_its_result`.)
 #[test]
 fn whnf_of_a_whnf_does_no_work() {
     scoped(|| {

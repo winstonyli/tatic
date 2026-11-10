@@ -75,6 +75,24 @@ fn whnf_memo_outlives_one_def_eq_in_a_scope() {
     })
 }
 
+/// `whnf` stores a result under the term asked about only: asking of the result itself finds no entry (one
+/// `whnf_step` that finds it stuck, then its own entry), so a reduction does not pay a second insert for it.
+#[test]
+fn whnf_stores_the_asked_term_not_its_result() {
+    scoped(|| {
+        // A `J` whose proof `(\x:Type1. x) v3` reduces to the stuck `v3`: the result is a new node, which no
+        // recursive call asks about.
+        let j = |p| jelim(var(0), var(1), var(2), var(4), p);
+        let e = j(app(lam(sort(1), var(0)), var(3)));
+        let r = j(var(3));
+        assert_eq!(whnf(&e), r);
+        assert_eq!(hc_whnf_get(&e), Some(r));
+        assert_eq!(hc_whnf_get(&r), None);
+        assert_eq!(worked(|| assert_eq!(whnf(&r), r)), 1);
+        assert_eq!(hc_whnf_get(&r), Some(r));
+    })
+}
+
 /// `brief_nf` prints what `brief(&nf(..))` prints, and reduces only the part it prints: the normal
 /// form of the Church numeral `16 4` has 4^16 nested applications.
 #[test]
