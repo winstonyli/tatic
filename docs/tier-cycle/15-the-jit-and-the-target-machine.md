@@ -1035,6 +1035,14 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     the segment sits at the same simulated addresses every check, so first touches cannot be told from re-touches;
     the depth bounds them at 0.72 M lines, at most 59% of the 1.22 M stack write misses. Since the segment is 3-4 times
     the 16 MB last level, reuse would not keep its lines cached; only smaller frames cut those misses.
+    Shipped (cbcc4c1) as no segment at all where the thread has the room: `check_in` runs a large check in place when
+    `stack::room(CHECK_SEGMENT)` holds, and church-bv's entry thread has a 256 MB stack; a thread with less room takes
+    the segment as before (church-bv's worker task threads and lanes among them, on default stacks). Page faults per
+    repeat check, f159775 against cbcc4c1 (`scripts/faults.ps1`, run `2026-11-09-m1-faults`; the process's count at
+    `GATE_REPS=3` less `GATE_REPS=1`, halved; 3 runs each, equal to within 6 faults): 15104 to 0 at d = 13 and 3802 to
+    -2 at d = 11; the first check also faults less (20398 to 17054 and 6589 to 5730 for the whole process). Not timed:
+    the lease was refused for 80 minutes (59-79% load), and an untimed pair at 70% load showed nothing either way (run
+    `2026-11-09-m1-ab-untimed`: d = 13 rep 3 B - A -26.8 +- 22.9 ms of about 760, rep 1 +42.1 +- 37.7; n = 20).
   - *One-probe interning* (`patches/h3-one-probe-intern-spike.patch`; runs `2026-11-09-h3-base`,
     `-h3-onepass-destructure`). `Space::build`'s region path with one `HashTable::entry` instead of `find` and
     `insert_unique`: instructions -0.44% at d = 13 (5279.96 M to 5256.51 M) and -0.47% at d = 11, -1.4% for building
@@ -1057,6 +1065,9 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     Retired instructions of church-bv's `proof-cost-split`, both changes together (large pages off, CPU 4, 3 rotated
     batches of 4; paired batch medians, 9f65018 against both): 40.025 G to 39.496 G, 39.896 G to 39.469 G, 39.892 G to
     39.475 G (-1.32%, -1.07%, -1.05%; within-batch (median - best) / best 0.0001-0.0013); not split between the two.
+    A timed pair of the gate check (`scripts/ab.sh`, run `2026-11-09-n3-ab-timed2`, 9f65018 against f159775, 10 paired
+    rounds) cannot see a saving this size: d = 11 B - A +1.9 +- 3.6 ms of 107, d = 13 -20.7 +- 26.8 ms of 517. The
+    count verdict stands as "less work", with no time claim.
   - *Whether the whnf memo pays* (at 9f65018; `patches/l1-whnf-counters-spike.patch`, run
     `2026-11-09-l1-whnf-counters2`; `patches/l1-whnf-memo-arms-spike.patch`, runs `2026-11-09-l1-ir`, `-l1-cg`,
     `-l1-pcs-counts`, `-l1-pcs-a1`, `-l1-tests`, `-l1-tests2`). The gate's check reads it 21 times for 197 k inserts,
@@ -1069,6 +1080,11 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     `r -> r` put: -0.78% (d = 13) and -0.77% (d = 11) on the gate check, -0.47% on `proof-cost-split` (39.71 G), all
     tests green, outputs identical; untimed, and it would leave `whnf_in`'s doc and `whnf_of_a_whnf_does_no_work`'s
     stated purpose (a reduced result answers without a `whnf_step`) out of date. Counted at 89% load in batch 1.
+    Shipped (4ff9a86): `whnf_in` stores `e -> r` only, with the doc and the test's purpose rewritten (the first ask of
+    a reducible-tagged result is one `whnf_step` that stores its own entry). The dropped put was already redundant for
+    a beta result, since beta ends in `whnf_in` of the contractum, which stores it; it mattered only for results of J,
+    WRec and SigRec steps and for an application whose head reduced to something stuck. Not timed (0.8% is under the
+    timed pair's noise, above).
 - **Against the old proof:** `prove_pure_expr`'s `refl` over the model of `straight_line` took 3.37 µs [3.20, 3.77]
   (criterion `straight_line_refl_proof`, untimed on a contended machine because the timed lease refused it at 42% load;
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
