@@ -221,10 +221,10 @@ fn whnf_sigrec(s: &Spaces, motive: Expr, step: Expr, target: Expr) -> Option<Exp
 
 /// `whnf`, cached -- the same subterm recurs many times within one top-level call once a proof term
 /// shares structure. Returns `e` itself when it is already in weak head normal form, so reducing a
-/// result again, as `nf` and `def_eq` do with a stuck head, keeps its node and hits the cache from
-/// then on. A tag `whnf_step` never reduces is answered without the memo. Only `e` is stored, not its
-/// result: asking of a reduced term the first time is one `whnf_step` that finds it stuck, which then
-/// stores that term's own entry (or a recursive call already did).
+/// result again, as `nf` and `def_eq` do with a stuck head, keeps its node. A tag `whnf_step` never
+/// reduces is answered without the memo. Only `e` is stored, not its result: the first ask of a result
+/// with a reducible tag is one `whnf_step` that finds it stuck and stores its own entry (unless a
+/// recursive call already did), and later asks hit that.
 pub(super) fn whnf_in(s: &Spaces, e: &Expr) -> Expr {
     if !matches!(s.node(e), Node::App(..) | Node::J { .. } | Node::WRec { .. } | Node::SigRec { .. }) {
         return *e;
