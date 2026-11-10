@@ -98,3 +98,21 @@ fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
     });
 }
 
+/// Conversion has no eta: `refl f` proves `Id(A -> B, f, f)` but not
+/// `Id(A -> B, f, \x. f x)`, and `def_eq` says the two sides differ.
+/// Proofs about machine programs depend on it: a continuation must be
+/// passed in exactly the form the machine builds it (`docs/tier-cycle/`,
+/// "A store at a run-time address across a call, the cost of `call`, and
+/// eta: three follow-ups").
+#[test]
+fn conversion_has_no_eta() {
+    // ctx [A, B, f]: f = var(0), B = var(1), A = var(2)
+    let stmt = |rhs: Expr| pi(sort(0), pi(sort(0), pi(arrow(var(1), var(0)), id(arrow(var(2), var(1)), var(0), rhs))));
+    let proof = lam(sort(0), lam(sort(0), lam(arrow(var(1), var(0)), refl(var(0)))));
+    let eta = lam(var(2), app(var(1), var(0)));
+    assert!(check(&Ctx::new(), &proof, &stmt(var(0))).is_ok());
+    assert!(check(&Ctx::new(), &proof, &stmt(eta)).is_err());
+    let f = var(5);
+    assert!(!def_eq(&f, &lam(sort(0), app(shift(&f, 0, 1), var(0)))));
+}
+

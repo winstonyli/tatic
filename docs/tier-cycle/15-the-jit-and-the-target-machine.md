@@ -1301,7 +1301,8 @@ What it settles, and what stays open:
 Three questions left by the section above, each a throwaway spike. The patch
 `docs/superpowers/spikes/2026-11-10-frame-eta-spike.patch` applies on top of the call spike's patch; both reverted.
 
-**Conversion has no eta, tested directly.** A kernel test (`conversion_has_no_eta`, in the patch) checks
+**Conversion has no eta, tested directly.** A kernel test (`conversion_has_no_eta`, first in the patch, kept since in
+`crates/tatic-kernel/src/tests/conversion.rs`) checks
 `\A B f. refl f` against `Pi A B (f : A -> B). Id(A -> B, f, f)`, which passes, and against
 `Id(A -> B, f, \x. f x)`, which is rejected with a type mismatch; `def_eq` also says `f` and `\x. f x` differ (run
 `2026-11-10-c3-eta`). It agrees with the code: `reduce.rs#conv_whnf` compares weak head normal forms constructor by
