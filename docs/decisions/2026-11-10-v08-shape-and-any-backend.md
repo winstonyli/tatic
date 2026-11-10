@@ -9,7 +9,8 @@ Goal 1 of `ROADMAP.md` now says so and links here.
 
 - **Decided 2026-11-10:** v0.8 is z5 "Recursion once", staged S0-S4 with its own spec (below); division by zero is a
   partial row whose trap is the no-value answer (below). The spec is not written yet; nothing is built.
-- **Open:** the heap relation for callees (below), and whether `loop`/`br` survive (the no-loop spike).
+- **Open:** the heap relation for callees (below), and whether `loop`/`br` survive: the no-loop spike says they need
+  not (`docs/tier-cycle/`, "Tail self-calls as `return_call`, with no `loop` or `br`: a spike"); the spec decides.
 - **Settled:** the "any backend" policy below. It extends the 2026-10-31 decision
   (`docs/decisions/2026-10-31-learned-target-model.md`) and does not change it.
 
@@ -97,7 +98,8 @@ generator; 13 and 34 stop on `i32.const 0` and `call $c0`).
 - Not in S0-S4: 25 and 28 need bit rows (`wrap`, `extend`, `shl`, `or`); gcd needs the partial row (below); the
   closure-record terms need the heap relation (below).
 - The spec's Decide groups (from the survey): D1 the loop's meaning (a restart label, as the lowering emits, or a
-  general loop), unless the no-loop spike removes `loop` and `br`; D2 the locals encoding and slot layout; D3 the call
+  general loop), or no loop: tail self-calls as `return_call` prove every target through the unchanged walk, run
+  10^6 iterations without growing the stack, and change 29 golden files; D2 the locals encoding and slot layout; D3 the call
   row's arity and callee naming, and the `i32` kind; D4 one relational statement for all terms (a convertible-first
   rule for straight-line code) or a kept `refl` path; D5 rows as data or as an enum with derived parts.
 
@@ -163,7 +165,9 @@ remainder circuit answers `x`; the machine has no trap channel.
   copies. The table test checks the domain at b = 0 against eval's error and wasmtime's trap. Language, evaluator and
   lowering are unchanged.
 - The gate cannot catch a wrong domain condition (both sides read it), only the table test can, as for circuits
-  today. Trap and timeout are not told apart. The guard's proof cost is unmeasured (the partial-row cost spike).
+  today. Trap and timeout are not told apart. The guard's cost is inside the run-to-run spread at n = 64, and gcd and
+  its two-base-case variant install through the generator (`docs/tier-cycle/`, "The partial row's cost, and gcd
+  through the generator").
 - Not picked: a total row with a claim only where eval is defined (no new concept, but the kernel states a made-up
   value at b = 0 and that row stays unchecked); a total language (`x % 0 = x`; the printed guard is trusted, not
   proved, and CU1 removed a private `x / 0 = 0` evaluator as a bug on 2026-10-26); a precondition hypothesis (the
@@ -177,9 +181,12 @@ remainder circuit answers `x`; the machine has no trap channel.
 Closure records in memory, anything that allocates, and `iterate` against the gate need a relation between the heap
 before and after a call. A survey recommended pointwise cell hypotheses plus an allocation world; its checker rejected
 that as a first step: it needs order facts (`a < w`) on 64-bit words that nothing proves, most class C terms do not
-need it, and a captured cell read each iteration (term 37) has no source value to name. Two shapes it missed are being
-tried (the heap spike): the allocation pointer as a third part of the state, so fresh addresses are fresh by
-construction; and a closure record's cells stated inside the closure relation. Rejected by the survey: heap
+need it, and a captured cell read each iteration (term 37) has no source value to name. One shape it missed now has a
+spike (`docs/tier-cycle/`, "Fresh addresses by construction: the allocation pointer in the state, a spike"): with
+the pointer in the state and cells as per-function hypotheses, a loop re-reading a captured cell, a record allocated
+and read by a callee, an in-place update and two allocations prove with no order facts. Still open: a non-tail call
+whose continuation reads the heap, an older record read after a later allocation, and cells declared by hand; the
+other missed shape, a record's cells inside the closure relation, is untried. Rejected by the survey: heap
 extensionality (not derivable without eta), separation-logic frames (need splitting of function-typed heaps), a list
 heap (a machine rewrite), a counter-style invariant per cell (one hypothesis per cell). Term 27 needs a type-indexed
 closure relation in any of these.
