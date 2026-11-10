@@ -20,10 +20,16 @@ fn lookup(name: &str) -> Option<fn()> {
     TABLE.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)
 }
 
-/// Runs `f` on a thread of its own with the default stack size, as libtest runs a test (a Windows exe's main thread has 1 MiB and
+/// Runs `f` on a thread of its own with a 256 MB stack, as the worker threads have (a Windows exe's main thread has 1 MiB and
 /// this code recurses deeply). `Err` is a panic, already reported by the panic hook.
 fn run_on_thread(f: impl FnOnce() + Send + 'static) -> Result<(), ()> {
-    std::thread::Builder::new().name("entry".into()).spawn(f).expect("start the entry thread").join().map_err(|_| ())
+    std::thread::Builder::new()
+        .name("entry".into())
+        .stack_size(256 << 20)
+        .spawn(f)
+        .expect("start the entry thread")
+        .join()
+        .map_err(|_| ())
 }
 
 /// `church-bv <subcommand>`: 0 when the entry returns, 101 when it panics (as a failed test exits), 2 for no or an unknown subcommand.

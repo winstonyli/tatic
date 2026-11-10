@@ -19,13 +19,14 @@
 const RED_ZONE: usize = 100 * 1024;
 /// Size of each new segment `grow` allocates.
 const STACK_PER_RECURSION: usize = 1024 * 1024;
-/// Size of the one segment a large `check_in` runs on. On Windows stacker builds a fiber per
-/// segment and frees it on return, so a deep recursion that straddles a segment boundary pays that
-/// cost at every crossing (65k+ times at n=512, a third of the CPU in page faults, doc section 76).
-/// Starting the check on a segment big enough that it never reaches the end avoids it, and a deeper
-/// recursion still chains further segments. Its pages cost no RAM until touched, but stacker's
-/// `CreateFiber` commits all of it: about 150 MB of a sweep worker's peak commit (PARKED.md, "Large
-/// `check_in` segments that commit only what they touch").
+/// Size of the one segment a large `check_in` runs on unless the thread already has this much stack
+/// left ([`room`]). On Windows stacker builds a fiber per segment and frees it on return, so a deep
+/// recursion that straddles a segment boundary pays that cost at every crossing (65k+ times at n=512,
+/// a third of the CPU in page faults, doc section 76). Starting the check on a stack big enough that
+/// it never reaches the end avoids it, and a deeper recursion still chains further segments. A new
+/// segment's pages cost no RAM until touched, but stacker's `CreateFiber` commits all of it: about
+/// 150 MB of a sweep worker's peak commit (PARKED.md, "Large `check_in` segments that commit only
+/// what they touch"), which a thread with the room never pays.
 pub(super) const CHECK_SEGMENT: usize = 64 * 1024 * 1024;
 
 thread_local! {
@@ -53,6 +54,14 @@ fn stack_addr() -> usize {
 #[inline(always)]
 fn stack_ok() -> bool {
     stack_addr() > FLOOR.with(|f| f.get())
+}
+
+/// Whether the current stack has at least `size` bytes left above `FLOOR` (which already keeps
+/// [`RED_ZONE`] clear). False while the thread's stack is unmeasured.
+pub(super) fn room(size: usize) -> bool {
+    learn_floor();
+    let floor = FLOOR.with(|f| f.get());
+    floor != usize::MAX && stack_addr().saturating_sub(floor) >= size
 }
 
 /// Runs `f`, first moving onto a fresh stack segment if fewer than
@@ -99,7 +108,8 @@ thread_local! {
     static SEGMENT_SWITCHES: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
 }
 
-/// How many times this thread has moved onto a new stack segment (by `grow` or a large `check_in`).
+/// How many times this thread has moved onto a new stack segment (by `grow`, or by a large `check_in`
+/// on a thread without [`CHECK_SEGMENT`] bytes of room).
 /// A segment is a fiber on Windows, so a recursion that crosses a boundary over and over is costly
 /// (doc section 76): tests read this to catch a return of that.
 pub fn segment_switches() -> u64 {
@@ -144,6 +154,26 @@ mod tests {
             .unwrap();
         assert!(0 < left && left <= THREAD_STACK, "{left} bytes left on a {THREAD_STACK}-byte stack");
         assert!(floor_known, "the thread's own floor is known after its first segment");
+    }
+
+    /// A large `check_in` takes its segment only on a thread without the room: none on a 256 MB stack,
+    /// at least one (and still a correct answer) on a 1 MiB one. In kernel tests every check is large.
+    #[test]
+    fn a_large_check_takes_a_segment_only_without_room() {
+        let switches_on = |stack_size: usize| {
+            std::thread::Builder::new()
+                .stack_size(stack_size)
+                .spawn(|| {
+                    let before = segment_switches();
+                    assert!(crate::check(&crate::Ctx::new(), &crate::sort(0), &crate::sort(1)).is_ok());
+                    segment_switches() - before
+                })
+                .unwrap()
+                .join()
+                .unwrap()
+        };
+        assert_eq!(switches_on(256 << 20), 0, "a 256 MB thread has room for the segment");
+        assert!(switches_on(1 << 20) >= 1, "a 1 MiB thread does not");
     }
 }
 

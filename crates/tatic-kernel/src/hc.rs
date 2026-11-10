@@ -36,7 +36,7 @@ fn exceeds(s: &Spaces, roots: &[&Expr], limit: usize) -> bool {
     limit == 0 && !roots.is_empty()
 }
 
-/// Whether `check_in`'s term and claim are large, so that it runs them on one big stack segment (`on_segment`).
+/// Whether `check_in`'s term and claim are large, so that it runs them on one big stack segment (`on_segment`) unless the thread has the room.
 pub fn large(s: &Spaces, e: &Expr, expected: &Expr) -> bool {
     exceeds(s, &[e, expected], LARGE)
 }
