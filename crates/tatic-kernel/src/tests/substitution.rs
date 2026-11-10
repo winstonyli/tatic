@@ -327,21 +327,71 @@ fn intern_finds_equal_nodes_after_growth() {
     })
 }
 
-/// The bounds slot fills the node's spare word, and answers as the walk does: after a query the slot, if it holds
-/// that depth, decides the query; a query at another depth replaces it.
+/// The bounds slot fills the node's spare word, and answers as the walk does: a walk stores bounds that decide the
+/// query just asked; a query decided by `loose` alone stores nothing; a query at another depth replaces the entry.
 #[test]
 fn bounds_slot_is_free_and_agrees_with_the_walk() {
     scoped(|| {
         let x = lam(var(0), app(var(1), var(3)));
         assert_eq!(with_spaces(|s| s.bounds_slot(&x, 0)), None);
-        // Outside the binder `x` mentions loose variables 0 and 2.
-        for (d, m, want) in [(0, 2, true), (0, 2, true), (1, 1, false), (2, 1, true), (3, 1, false), (1, 1 << 15, true), (0, 1, true)] {
+        // Outside the binder `x` mentions loose variables 0 and 2 (`loose` 3). Per query, the slot at depth `d`
+        // afterwards: `None` where `loose` alone decided it (no walk, nothing stored, the slot still holds the
+        // earlier depth), else the entry the walk narrowed to (or the hit left alone).
+        let queries = [
+            (0, 2, true, Some((0, 1))),
+            (0, 2, true, Some((0, 1))),
+            (1, 1, false, Some((1, 1))),
+            (2, 1, true, None),
+            (3, 1, false, None),
+            (1, 1 << 15, true, Some((1, 1))),
+            (0, 1, true, Some((0, 0))),
+        ];
+        for (d, m, want, slot) in queries {
             assert_eq!(hc_uses(&x, d, m), want, "d={d} m={m}");
-            if let Some((lo, hi)) = with_spaces(|s| s.bounds_slot(&x, d)) {
+            let got = with_spaces(|s| s.bounds_slot(&x, d));
+            assert_eq!(got, slot, "d={d} m={m}");
+            if let Some((lo, hi)) = got {
                 assert!(if want { hi < m } else { lo >= m }, "d={d} m={m} lo={lo} hi={hi}");
             }
         }
         assert_eq!(with_spaces(|s| s.bounds_slot(&x, 1)), None, "the last walk was at depth 0 and replaced depth 1's bounds");
+    })
+}
+
+/// `uses` answers from a decisive slot entry without looking at the children: a planted entry that is wrong is
+/// believed. The lie is the point: only a hit can return the wrong answer.
+#[test]
+fn uses_takes_the_slot_hit() {
+    scoped(|| {
+        // Lowest loose variable 0: `lo >= m` plants "no" where the walk says yes, and `hi < m` plants "yes" where it says no.
+        let (y, z) = (app(var(0), var(1)), app(var(5), var(6)));
+        let plant = |e: &Expr, lo, hi| with_spaces(|s| s.set_bounds_slot(e, 0, lo, hi));
+        plant(&y, 5, 5);
+        assert!(!hc_uses(&y, 0, 3), "lo >= m: the planted no, not the walk's yes");
+        plant(&z, 0, 0);
+        assert!(hc_uses(&z, 0, 2), "hi < m: the planted yes, not the walk's no");
+        // An entry that does not decide is not believed: the walk answers, and corrects the slot.
+        plant(&y, 0, 9);
+        assert!(hc_uses(&y, 0, 3));
+        assert_eq!(with_spaces(|s| s.bounds_slot(&y, 0)), Some((0, 2)));
+    })
+}
+
+/// A miss narrows the entry it found rather than discarding it: the new bounds still hold the true lowest loose
+/// variable, keep the old side the query did not touch, and decide the `m` just asked.
+#[test]
+fn uses_miss_narrows_the_bounds() {
+    scoped(|| {
+        let x = app(var(3), var(7)); // lowest loose variable 3; the first walk starts from `hi` 7 (`loose` 8)
+        let low = hc_lowest_loose(&x, 0, &mut IdMap::default());
+        assert_eq!(low, 3);
+        // (m, answer, the slot afterwards): each walk keeps the other side of what the last one left.
+        for (m, want, slot) in [(5, true, (0, 4)), (2, false, (2, 4)), (4, true, (2, 3)), (3, false, (3, 3))] {
+            assert_eq!(hc_uses(&x, 0, m), want, "m={m}");
+            let (lo, hi) = with_spaces(|s| s.bounds_slot(&x, 0)).expect("a walk stores its bounds");
+            assert_eq!((lo, hi), slot, "m={m}");
+            assert!(lo <= low && low <= hi && if want { hi < m } else { lo >= m }, "m={m} lo={lo} hi={hi}");
+        }
     })
 }
 
@@ -355,8 +405,16 @@ fn bounds_slot_packing_stays_sound_at_the_caps() {
         let ms = [1, (1 << 24) - 1, 1 << 24, (1 << 24) + 1, big, big + 1, big + 4];
         for order in [ms.to_vec(), ms.iter().rev().copied().collect()] {
             for m in order {
+                let before = with_spaces(|s| s.bounds_slot(&x, 0));
                 assert_eq!(hc_uses(&x, 0, m), big < m, "m={m}");
-                if let Some((lo, hi)) = with_spaces(|s| s.bounds_slot(&x, 0)) {
+                let after = with_spaces(|s| s.bounds_slot(&x, 0));
+                if m == big + 4 {
+                    // `loose` alone (`big + 4`) decides this one: no walk, so the slot is left as it was.
+                    assert_eq!(after, before, "m={m}");
+                } else {
+                    // Every other `m` walks or hits an entry a walk stored. The caps may make the entry too loose to
+                    // decide `m` (a `hi` past the cap reads back as unbounded), so it is checked as a bound only.
+                    let (lo, hi) = after.expect("a walk stores its bounds below the depth cap");
                     assert!(lo <= big && big <= hi, "m={m} lo={lo} hi={hi}");
                 }
             }
@@ -369,7 +427,7 @@ fn bounds_slot_packing_stays_sound_at_the_caps() {
                 assert_eq!(with_spaces(|s| s.bounds_slot(&y, d)), None, "a depth past the cap is never stored");
             }
         }
-        assert!(with_spaces(|s| s.bounds_slot(&y, deep - 1)).is_some(), "a depth past the cap leaves the slot as it was");
+        assert_eq!(with_spaces(|s| s.bounds_slot(&y, deep - 1)), Some((0, 8)), "a depth past the cap leaves the slot as it was");
     })
 }
 
