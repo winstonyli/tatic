@@ -518,7 +518,7 @@ fn w_fold_every_encoded_pair() {
     let threads = crate::Setup::process().or("WFOLD_THREADS", 1usize).clamp(1, 10);
     let proved: Vec<bool> = std::thread::scope(|sc| {
         let (sampled, prove) = (&sampled, &prove);
-        let workers: Vec<_> = (0..threads).map(|w| std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || {
+        let workers: Vec<_> = (0..threads).map(|w| std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(sc, move || {
             sampled.iter().skip(w).step_by(threads).map(|&(t, r)| tatic_kernel::scoped(|| prove(t, r))).collect::<Vec<_>>()
         }).unwrap()).collect();
         workers.into_iter().flat_map(|h| h.join().unwrap()).collect()

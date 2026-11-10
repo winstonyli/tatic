@@ -247,7 +247,7 @@ fn build_streams(salt: usize, budget: usize, levels: usize, threads: usize) -> V
                 built.push((i, stream_laws(ops, salt, budget, levels)));
             }
         };
-        let handles: Vec<_> = (0..threads.min(sets.len())).map(|_| std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap()).collect();
+        let handles: Vec<_> = (0..threads.min(sets.len())).map(|_| std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(sc, worker).unwrap()).collect();
         for h in handles {
             for (i, s) in h.join().unwrap() {
                 streams[i] = s;

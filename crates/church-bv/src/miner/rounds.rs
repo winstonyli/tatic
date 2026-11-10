@@ -43,7 +43,7 @@ impl Prover {
                     .map(|t| {
                         let idx: Vec<usize> = (t..cands.len()).step_by(threads).collect();
                         let (prove, setup) = (&prove, job.setup().clone());
-                        std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || prove(&mut Job::new(setup), &idx)).unwrap()
+                        std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(sc, move || prove(&mut Job::new(setup), &idx)).unwrap()
                     })
                     .collect();
                 handles.into_iter().flat_map(|h| h.join().unwrap()).collect()
@@ -378,7 +378,7 @@ impl<'a> Rounds<'a> {
                     });
                     join_workers.lock().unwrap().add(spent.join);
                 };
-                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, worker).unwrap();
+                std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(sc, worker).unwrap();
             }
             let winner = loop {
                 let best = (0..provable.len()).filter(|&i| self.proofs[i] != Some(false)).filter_map(|i| results[i].as_ref().map(|r| (r.0, i))).filter(|r| r.0 > 0).max_by_key(|&(g, i)| (g, std::cmp::Reverse(i)));
@@ -476,7 +476,7 @@ impl<'a> Rounds<'a> {
         std::thread::scope(|sc| {
             let spawn = |i: usize| {
                 let (tx, rule, setup) = (tx.clone(), &provable[i], setup.clone());
-                std::thread::Builder::new().stack_size(256 << 20).spawn_scoped(sc, move || relay(|| prover.prove(&mut Job::new(setup), rule), |r| tx.send((i, r)).unwrap())).unwrap();
+                std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(sc, move || relay(|| prover.prove(&mut Job::new(setup), rule), |r| tx.send((i, r)).unwrap())).unwrap();
             };
             let (mut s, mut round, mut open) = (self.state(job, vec![]), 0, Vec::<Open>::new());
             loop {

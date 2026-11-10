@@ -709,7 +709,7 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
                     c.check(e, expected)
                 })
             };
-            if large && !room(CHECK_SEGMENT) { on_segment(CHECK_SEGMENT, body) } else { body() }
+            if large && !has_check_room() { on_segment(CHECK_SEGMENT, body) } else { body() }
         })
     })
 }

@@ -29,6 +29,10 @@ const STACK_PER_RECURSION: usize = 1024 * 1024;
 /// what they touch"), which a thread with the room never pays.
 pub(super) const CHECK_SEGMENT: usize = 64 * 1024 * 1024;
 
+/// The stack size to give a thread that runs checks or other deep recursion: 256 MB, reserved and not
+/// committed, so a large `check_in` on it has the room and takes no segment ([`has_check_room`]).
+pub const CHECK_STACK: usize = 4 * CHECK_SEGMENT;
+
 thread_local! {
     /// The lowest stack address the current segment can reach with
     /// [`RED_ZONE`] still to spare; `usize::MAX` -- "unknown", which
@@ -58,10 +62,16 @@ fn stack_ok() -> bool {
 
 /// Whether the current stack has at least `size` bytes left above `FLOOR` (which already keeps
 /// [`RED_ZONE`] clear). False while the thread's stack is unmeasured.
-pub(super) fn room(size: usize) -> bool {
+fn room(size: usize) -> bool {
     learn_floor();
     let floor = FLOOR.with(|f| f.get());
     floor != usize::MAX && stack_addr().saturating_sub(floor) >= size
+}
+
+/// Whether a large `check_in` started here would run in place, on this thread's own stack, and not on
+/// a [`CHECK_SEGMENT`] of its own. True at the top of a [`CHECK_STACK`] thread.
+pub fn has_check_room() -> bool {
+    room(CHECK_SEGMENT)
 }
 
 /// Runs `f`, first moving onto a fresh stack segment if fewer than
@@ -156,24 +166,26 @@ mod tests {
         assert!(floor_known, "the thread's own floor is known after its first segment");
     }
 
-    /// A large `check_in` takes its segment only on a thread without the room: none on a 256 MB stack,
-    /// at least one (and still a correct answer) on a 1 MiB one. In kernel tests every check is large.
+    /// A large `check_in` takes its segment only on a thread without the room, as `has_check_room` says
+    /// beforehand: none on a `CHECK_STACK` thread, at least one (and still a correct answer) on a 1 MiB
+    /// one. In kernel tests every check is large.
     #[test]
     fn a_large_check_takes_a_segment_only_without_room() {
-        let switches_on = |stack_size: usize| {
+        let room_and_switches_on = |stack_size: usize| {
             std::thread::Builder::new()
                 .stack_size(stack_size)
                 .spawn(|| {
-                    let before = segment_switches();
+                    let (room, before) = (has_check_room(), segment_switches());
                     assert!(crate::check(&crate::Ctx::new(), &crate::sort(0), &crate::sort(1)).is_ok());
-                    segment_switches() - before
+                    (room, segment_switches() - before)
                 })
                 .unwrap()
                 .join()
                 .unwrap()
         };
-        assert_eq!(switches_on(256 << 20), 0, "a 256 MB thread has room for the segment");
-        assert!(switches_on(1 << 20) >= 1, "a 1 MiB thread does not");
+        assert_eq!(room_and_switches_on(CHECK_STACK), (true, 0), "a check-stack thread has room for the segment");
+        let (room, switches) = room_and_switches_on(1 << 20);
+        assert!(!room && switches >= 1, "a 1 MiB thread does not: room {room}, {switches} switches");
     }
 }
 

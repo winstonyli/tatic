@@ -25,7 +25,7 @@ fn lookup(name: &str) -> Option<fn()> {
 fn run_on_thread(f: impl FnOnce() + Send + 'static) -> Result<(), ()> {
     std::thread::Builder::new()
         .name("entry".into())
-        .stack_size(256 << 20)
+        .stack_size(tatic_kernel::CHECK_STACK)
         .spawn(f)
         .expect("start the entry thread")
         .join()

@@ -170,7 +170,7 @@ fn measure_gate_costs() {
     }
     for d in 1..=13u32 {
         let r = std::thread::Builder::new()
-            .stack_size(256 << 20)
+            .stack_size(tatic_kernel::CHECK_STACK)
             .spawn(move || {
                 let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
                 time_gate(&s, h, 1, frag.entry(), 1, 3)
@@ -239,7 +239,7 @@ fn measure_cachegrind() {
     let check = setting("GATE_CHECK").as_deref() == Some("1");
     let reps: u32 = if check { setting("GATE_REPS").map_or(1, |r| r.parse().unwrap()) } else { 1 };
     std::thread::Builder::new()
-        .stack_size(256 << 20)
+        .stack_size(tatic_kernel::CHECK_STACK)
         .spawn(move || {
             let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
             for _ in 0..reps {

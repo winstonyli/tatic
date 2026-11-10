@@ -281,7 +281,7 @@ impl Gen {
 fn a_well_typed_term_never_goes_wrong() {
     // `eval` recurses once per nested loop iteration, deeper than a
     // test thread's default stack in a debug build.
-    std::thread::Builder::new().stack_size(256 << 20).spawn(well_typed_terms_never_go_wrong).unwrap().join().unwrap();
+    std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn(well_typed_terms_never_go_wrong).unwrap().join().unwrap();
 }
 
 fn well_typed_terms_never_go_wrong() {
