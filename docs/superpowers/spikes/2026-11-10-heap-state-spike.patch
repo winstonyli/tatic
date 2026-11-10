@@ -1,0 +1,2874 @@
+diff --git a/crates/tatic-wasm/src/print.rs b/crates/tatic-wasm/src/print.rs
+index 5f46309..a137880 100644
+--- a/crates/tatic-wasm/src/print.rs
++++ b/crates/tatic-wasm/src/print.rs
+@@ -16,6 +16,7 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
+         match ins {
+             Ins::Push(v) => line(out, &format!("i64.const {v}")),
+             Ins::LocalGet(i) => line(out, &format!("local.get $p{i}")),
++            Ins::LocalSet(i) => line(out, &format!("local.set $p{i}")),
+             Ins::Op(o) => line(out, o.mnemonic()),
+             Ins::If(t, e) => {
+                 line(out, "if (result i64)");
+@@ -31,7 +32,7 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
+             }
+             Ins::Br(0) => line(out, "br $L"),
+             Ins::Raw(s) => line(out, s),
+-            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load => panic!("print_body: {ins:?} is never emitted"),
++            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load | Ins::Call | Ins::Alloc => panic!("print_body: {ins:?} is never emitted"),
+         }
+     }
+ }
+diff --git a/crates/tatic-wasm/src/wasm.rs b/crates/tatic-wasm/src/wasm.rs
+index 4ebe75c..0252870 100644
+--- a/crates/tatic-wasm/src/wasm.rs
++++ b/crates/tatic-wasm/src/wasm.rs
+@@ -22,6 +22,18 @@ pub fn choose(r: Expr, w: Expr, x: Expr, y: Expr) -> Expr {
+ /// An interpreter case's body from `A`, its operator if any, `rest`, the stack and the memory.
+ type Body<'a> = dyn Fn(&mut Cx, At, Option<At>, At, At, At) -> Expr + 'a;
+ 
++/// SPIKE: what a module supplies to the interpreter. `env` runs a call on a state and a return continuation; `lab` is the
++/// restart a function's own top-level `loop` jumps to; `ch` replaces `choose` by an opaque operator `Pi R. Bv1 -> R -> R -> R`
++/// (the generator's probe).
++#[derive(Clone, Copy, Default)]
++pub struct Hooks {
++    pub env: Option<At>,
++    pub lab: Option<At>,
++    pub ch: Option<At>,
++    /// SPIKE (i3): a control, `alloc` that returns the pointer without bumping it.
++    pub stale_hp: bool,
++}
++
+ /// What a stack slot holds: an n-bit word or a one-bit word (a compare's result).
+ #[derive(Clone, Copy, PartialEq, Debug)]
+ pub enum K {
+@@ -44,6 +56,12 @@ pub enum Ins {
+     Br(usize),
+     Store,
+     Load,
++    /// SPIKE: `call` of the module's one function, argument and result on the stack.
++    Call,
++    /// SPIKE: `local.set $p{i}`: pops a word into slot `i` of the activation's locals.
++    LocalSet(u32),
++    /// SPIKE (i3): `alloc`: pops a size, pushes the allocation pointer, and adds the size to it.
++    Alloc,
+     Raw(String),
+ }
+ 
+@@ -91,7 +109,8 @@ fn shape(code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Result<Option<Vec<K>
+                 return Ok(None);
+             }
+             Ins::Store => pop(&mut st, &[K::W, K::W])?,
+-            Ins::Load => {
++            Ins::LocalSet(_) => pop(&mut st, &[K::W])?,
++            Ins::Load | Ins::Call | Ins::Alloc => {
+                 pop(&mut st, &[K::W])?;
+                 st.insert(0, K::W)
+             }
+@@ -150,8 +169,14 @@ impl Wasm {
+         let base = shift(&c.at(base), 0, ks.len() as i32);
+         ks.iter().rev().fold(base, |acc, k| sigma(self.word(*k), acc))
+     }
+-    /// `Mem = V -> (V -> R) -> R`.
++    /// The machine's state `Mem = Locals x (V x Heap)`: the locals and the heap are `V -> (V -> R) -> R`, between them the
++    /// allocation pointer (SPIKE (i3): `hp` is its own component, so a fresh address is fresh by construction).
+     pub fn mem(&self, c: &mut Cx, r: At) -> Expr {
++        let h = self.heap(c, r);
++        prod(h, prod(self.v(), h))
++    }
++    /// `Heap = V -> (V -> R) -> R`, also the type of the locals.
++    pub fn heap(&self, c: &mut Cx, r: At) -> Expr {
+         let v = self.v();
+         c.pi(v, |c, _| {
+             let k = c.pi(v, |c, _| c.at(r));
+@@ -177,6 +202,10 @@ impl Wasm {
+                 4 => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                 5 => arrow(arrow(fa(a), fa(a)), fa(a)),
+                 6 => arrow(fa(a), fa(vva)),
++                // local.get (9) is push's type, local.set (10) pops a word
++                9 => arrow(v, arrow(fa(va), fa(a))),
++                10 => arrow(v, arrow(fa(a), fa(va))),
++                // load (7) and call (8): pop a word, push a word
+                 _ => arrow(fa(va), fa(va)),
+             }
+         })
+@@ -184,7 +213,7 @@ impl Wasm {
+     /// The eight constructor binders, each wrapped by `wrap` (`lam` or `pi`), then `body` with their variables.
+     fn ctors(&self, c: &mut Cx, f: At, wrap: fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+         let w = *self;
+-        let tys: Vec<Ty> = (0..8).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
++        let tys: Vec<Ty> = (0..12).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
+         tele(c, &tys, &mut vec![], &wrap, body)
+     }
+     /// `Prog S T`, with `S` and `T` built at each use.
+@@ -232,11 +261,13 @@ impl Wasm {
+                 let r = cont(c, with(&[K::W], 0));
+                 cons(c, 0, vec![ty(c, &st), lit(self.n, (*v as u64 as u128) & low_bits(self.n)), r])
+             }
+-            // push the slot's address, then load it
+             Ins::LocalGet(i) => {
+                 let r = cont(c, with(&[K::W], 0));
+-                let load = cons(c, 7, vec![ty(c, &st), r]);
+-                cons(c, 0, vec![ty(c, &st), lit(self.n, *i as u128), load])
++                cons(c, 9, vec![ty(c, &st), lit(self.n, *i as u128), r])
++            }
++            Ins::LocalSet(i) => {
++                let r = cont(c, below(1));
++                cons(c, 10, vec![ty(c, &below(1)), lit(self.n, *i as u128), r])
+             }
+             Ins::Op(o) => {
+                 let (i, top) = match o.kind() {
+@@ -278,8 +309,33 @@ impl Wasm {
+                 let r = cont(c, st.clone());
+                 cons(c, 7, vec![ty(c, &below(1)), r])
+             }
++            Ins::Call => {
++                let r = cont(c, st.clone());
++                cons(c, 8, vec![ty(c, &below(1)), r])
++            }
++            Ins::Alloc => {
++                let r = cont(c, st.clone());
++                cons(c, 11, vec![ty(c, &below(1)), r])
++            }
+         }
+     }
++    /// `upd` for a heap store, its address test through `choose R (eq_bit a b)` (convertible to `upd`'s) so the generator's
++    /// probe `ch` sees it: `\b kk. ch R (eq_bit a b) (kk v) (mu b kk)`.
++    pub fn hupd(&self, c: &mut Cx, r: At, ch: Option<At>, a: Expr, v: Expr, mu: Expr) -> Expr {
++        let (a, v, mu) = (c.mark(a), c.mark(v), c.mark(mu));
++        let n = self.n;
++        c.lam(self.v(), |c, b| {
++            let kt = c.pi(self.v(), |c, _| c.at(r));
++            c.lam(kt, |c, kk| {
++                let w = app2(eq_bit(n), c.at(a), c.at(b));
++                let (x, y) = (app(c.at(kk), c.at(v)), app2(c.at(mu), c.at(b), c.at(kk)));
++                match ch {
++                    Some(f) => apps(c.at(f), vec![c.at(r), w, x, y]),
++                    None => choose(c.at(r), w, x, y),
++                }
++            })
++        })
++    }
+     /// `upd a v mu = \b kk. (eq a b) R (kk v) (mu b kk)`.
+     pub fn upd(&self, c: &mut Cx, r: At, a: Expr, v: Expr, mu: Expr) -> Expr {
+         let (a, v, mu) = (c.mark(a), c.mark(v), c.mark(mu));
+@@ -303,7 +359,7 @@ impl Wasm {
+         sigrec(motive, step, c.at(st))
+     }
+     /// The constructors' meanings.
+-    fn interp(&self, c: &mut Cx, r: At, fuel: At, z: At) -> Vec<Expr> {
++    fn interp(&self, c: &mut Cx, r: At, fuel: At, z: At, hooks: &Hooks) -> Vec<Expr> {
+         let (v, v1) = (self.v(), bv_ty(1));
+         let w = *self;
+         // `\A rest st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`
+@@ -365,7 +421,11 @@ impl Wasm {
+                         c.lam(m, |c, mu| {
+                             w.split(c, r, v1, a, st, |c, b, s| {
+                                 let (s, mu) = (c.at(s), c.at(mu));
+-                                choose(c.at(r), c.at(b), app2(c.at(th), s, mu), app2(c.at(el), s, mu))
++                                let (x, y) = (app2(c.at(th), s.clone(), mu.clone()), app2(c.at(el), s, mu));
++                                match hooks.ch {
++                                    Some(f) => apps(c.at(f), vec![c.at(r), c.at(b), x, y]),
++                                    None => choose(c.at(r), c.at(b), x, y),
++                                }
+                             })
+                         })
+                     })
+@@ -374,39 +434,152 @@ impl Wasm {
+         });
+         let loop_ = c.lam(sort(2), |c, a| {
+             let ga = w.g(c, r, c.at(a));
+-            c.lam(arrow(ga, ga), |c, body| {
+-                let timeout = c.lam(c.at(a), |c, _| {
+-                    let m = w.mem(c, r);
+-                    c.lam(m, |c, _| c.at(z))
+-                });
+-                let ga = w.g(c, r, c.at(a));
+-                apps(c.at(fuel), vec![ga, timeout, c.at(body)])
++            c.lam(arrow(ga, ga), |c, body| match hooks.lab {
++                // the function's own recursion: the label restarts the function on the current state
++                Some(restart) => {
++                    let label = c.lam(c.at(a), |c, _| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu| app(c.at(restart), c.at(mu)))
++                    });
++                    app(c.at(body), label)
++                }
++                None => {
++                    let timeout = c.lam(c.at(a), |c, _| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, _| c.at(z))
++                    });
++                    let ga = w.g(c, r, c.at(a));
++                    apps(c.at(fuel), vec![ga, timeout, c.at(body)])
++                }
+             })
+         });
+         let store = shape(c, None, &|a| a, &|a| prod(v, prod(v, a)), &|c, a, _, rest, st, mu| {
+             let below = c.mark(prod(v, c.at(a)));
+             w.split(c, r, v, below, st, |c, x, rs| {
+                 w.split(c, r, v, a, rs, |c, ad, s| {
+-                    let mu2 = w.upd(c, r, c.at(ad), c.at(x), c.at(mu));
+-                    app2(c.at(rest), c.at(s), mu2)
++                    w.split_mu(c, r, mu, |c, loc, hp, heap| {
++                        let heap2 = w.hupd(c, r, hooks.ch, c.at(ad), c.at(x), c.at(heap));
++                        let mu2 = w.mkmu(c, r, c.at(loc), c.at(hp), heap2);
++                        app2(c.at(rest), c.at(s), mu2)
++                    })
+                 })
+             })
+         });
+         let load = shape(c, None, &|a| prod(v, a), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
+             w.split(c, r, v, a, st, |c, ad, s| {
+-                let k = c.lam(v, |c, x| app2(c.at(rest), mkpair(c.at(a), c.at(x), c.at(s)), c.at(mu)));
+-                app2(c.at(mu), c.at(ad), k)
++                w.split_mu(c, r, mu, |c, _, _, heap| {
++                    let k = c.lam(v, |c, x| app2(c.at(rest), mkpair(c.at(a), c.at(x), c.at(s)), c.at(mu)));
++                    app2(c.at(heap), c.at(ad), k)
++                })
++            })
++        });
++        // SPIKE (i3): `alloc` pops a size and pushes the allocation pointer, then adds the size to it (a control leaves it
++        // unchanged)
++        let alloc = shape(c, None, &|a| prod(v, a), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
++            w.split(c, r, v, a, st, |c, sz, s| {
++                w.split_mu(c, r, mu, |c, loc, hp, heap| {
++                    let hp2 = if hooks.stale_hp { c.at(hp) } else { app2(Op::Add.term(w.n), c.at(hp), c.at(sz)) };
++                    let mu2 = w.mkmu(c, r, c.at(loc), hp2, c.at(heap));
++                    app2(c.at(rest), mkpair(c.at(a), c.at(hp), c.at(s)), mu2)
++                })
+             })
+         });
+-        vec![push, bin, cmp, dup, if_, loop_, store, load]
++        // SPIKE: `call` runs `env : Mem -> (V -> Mem -> R) -> R` on a fresh activation (the popped word in local 0, the
++        // other locals 0, the heap shared) and pushes its answer, under the caller's locals again; with no environment
++        // it answers the timeout
++        let call = shape(c, None, &|a| prod(v, a), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
++            w.split(c, r, v, a, st, |c, x, s| match hooks.env {
++                Some(e) => w.split_mu(c, r, mu, |c, loc, hp, heap| {
++                    let kont = c.lam(v, |c, y| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu2| {
++                            w.split_mu(c, r, mu2, |c, _, hp2, heap2| {
++                                let back = w.mkmu(c, r, c.at(loc), c.at(hp2), c.at(heap2));
++                                app2(c.at(rest), mkpair(c.at(a), c.at(y), c.at(s)), back)
++                            })
++                        })
++                    });
++                    let blank = w.zero_heap(c, r);
++                    let fresh_loc = w.upd(c, r, lit(w.n, 0), c.at(x), blank);
++                    let fresh = w.mkmu(c, r, fresh_loc, c.at(hp), c.at(heap));
++                    apps(c.at(e), vec![fresh, kont])
++                }),
++                None => c.at(z),
++            })
++        });
++        // SPIKE: `local.get i` / `local.set i` read and write the activation's locals
++        let local_get = c.lam(sort(2), |c, a| {
++            c.lam(v, |c, i| {
++                let rt = w.g(c, r, prod(v, c.at(a)));
++                c.lam(rt, |c, rest| {
++                    c.lam(c.at(a), |c, s| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu| {
++                            w.split_mu(c, r, mu, |c, loc, _, _| {
++                                let k = c.lam(v, |c, x| app2(c.at(rest), mkpair(c.at(a), c.at(x), c.at(s)), c.at(mu)));
++                                app2(c.at(loc), c.at(i), k)
++                            })
++                        })
++                    })
++                })
++            })
++        });
++        let local_set = c.lam(sort(2), |c, a| {
++            c.lam(v, |c, i| {
++                let rt = w.g(c, r, c.at(a));
++                c.lam(rt, |c, rest| {
++                    c.lam(prod(v, c.at(a)), |c, st| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu| {
++                            w.split(c, r, v, a, st, |c, x, s| {
++                                w.split_mu(c, r, mu, |c, loc, hp, heap| {
++                                    let loc2 = w.upd(c, r, c.at(i), c.at(x), c.at(loc));
++                                    let mu2 = w.mkmu(c, r, loc2, c.at(hp), c.at(heap));
++                                    app2(c.at(rest), c.at(s), mu2)
++                                })
++                            })
++                        })
++                    })
++                })
++            })
++        });
++        vec![push, bin, cmp, dup, if_, loop_, store, load, call, local_get, local_set, alloc]
+     }
+     /// `M p N R k z`, of type `G S` for `p : Prog S T` and `k : G T`.
+     pub fn meaning(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At) -> Expr {
++        self.meaning_with(c, p, fuel, r, k, z, &Hooks::default())
++    }
++    /// SPIKE: `meaning`, with the module's hooks (`Hooks`).
++    #[allow(clippy::too_many_arguments)]
++    pub fn meaning_with(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At, hooks: &Hooks) -> Expr {
+         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
+         let mut args = vec![gfam, c.at(k)];
+-        args.extend(self.interp(c, r, fuel, z));
++        args.extend(self.interp(c, r, fuel, z, hooks));
+         apps(c.at(p), args)
+     }
++    /// `sigrec` on a state `mu : Locals x (V x Heap)` into `R`: `body(c, locals, hp, heap)`.
++    pub fn split_mu(&self, c: &mut Cx, r: At, mu: At, body: impl FnOnce(&mut Cx, At, At, At) -> Expr) -> Expr {
++        let h = self.heap(c, r);
++        let rest_ty = c.mark(prod(self.v(), h));
++        self.split(c, r, h, rest_ty, mu, |c, loc, rest| {
++            let h = self.heap(c, r);
++            let hat = c.mark(h);
++            self.split(c, r, self.v(), hat, rest, |c, hp, heap| body(c, loc, hp, heap))
++        })
++    }
++    /// `(locals, hp, heap)` as a state.
++    pub fn mkmu(&self, c: &mut Cx, r: At, loc: Expr, hp: Expr, heap: Expr) -> Expr {
++        let h = self.heap(c, r);
++        mkpair(prod(self.v(), h), loc, mkpair(h, hp, heap))
++    }
++    /// `\b kk. kk 0`: locals that are all 0.
++    pub fn zero_heap(&self, c: &mut Cx, r: At) -> Expr {
++        let n = self.n;
++        c.lam(self.v(), |c, _| {
++            let kt = c.pi(self.v(), |c, _| c.at(r));
++            c.lam(kt, |c, kk| app(c.at(kk), lit(n, 0)))
++        })
++    }
+     /// `p1 ++ p2 : Prog S U` for `p1 : Prog S T`, `p2 : Prog T U`.
+     pub fn append(&self, c: &mut Cx, u: &dyn Fn(&Cx) -> Expr, p1: At, p2: At) -> Expr {
+         c.lam(F_TY(), |c, f| {
+@@ -479,7 +652,9 @@ impl Wasm {
+     }
+ }
+ 
++pub mod addr;
+ pub mod laws;
++pub mod sim;
+ 
+ #[cfg(test)]
+ mod tests {
+@@ -528,11 +703,14 @@ mod tests {
+                 ty!(|_c, _x| bv_ty(n)),
+                 ty!(|_c, _x| bv_ty(n)),
+                 ty!(|c, x| c.at(x[0])),
+-                ty!(|c, x| w.mem(c, x[1])),
++                ty!(|c, x| w.heap(c, x[1])),
+             ];
++            // SPIKE (e1): the state is (locals, heap); the frame is the locals
+             let frame = |c: &mut Cx, x: &[At]| {
+                 let inner = w.upd(c, x[1], lit(n, 1), c.at(x[5]), c.at(x[7]));
+-                w.upd(c, x[1], lit(n, 0), c.at(x[4]), inner)
++                let loc = w.upd(c, x[1], lit(n, 0), c.at(x[4]), inner);
++                let blank = w.zero_heap(c, x[1]);
++                w.mkmu(c, x[1], loc, lit(n, 0), blank)
+             };
+             law(&tys, |c, x| {
+                 let p = w.prog(c, &code, &[], x[0]);
+diff --git a/crates/tatic-wasm/src/wasm/addr.rs b/crates/tatic-wasm/src/wasm/addr.rs
+new file mode 100644
+index 0000000..a38ff48
+--- /dev/null
++++ b/crates/tatic-wasm/src/wasm/addr.rs
+@@ -0,0 +1,510 @@
++//! SPIKE (throwaway, 2026-11-10, i3): address lemmas for the heap spike, extracted unchanged from the frame-eta and region
++//! spikes' patches (bind_bits, bool_lemma, eq_refl_lemma, region_law, cancel_law), plus eq_comm_law.
++use super::*;
++
++/// Binds `a_0..a_(n-1) : Bool0` then `ga_i : GoodBool a_i` (the `GoodBv` step's binders) around `body(a, ga)`.
++fn bind_bits(c: &mut Cx, n: usize, acc: &mut Vec<At>, body: &mut dyn FnMut(&mut Cx, &[At], &[At]) -> Expr) -> Expr {
++    let k = acc.len();
++    if k == 2 * n {
++        let (a, ga) = acc.split_at(n);
++        let (a, ga) = (a.to_vec(), ga.to_vec());
++        return body(c, &a, &ga);
++    }
++    let ty = if k < n { bool0() } else { app(good_bool(), c.at(acc[k - n])) };
++    c.lam(ty, |c, v| {
++        acc.push(v);
++        let r = bind_bits(c, n, acc, body);
++        acc.pop();
++        r
++    })
++}
++
++/// `Pi x. GoodBv x -> Id(Bool0, lhs x, b0)`. `GoodBv`'s motive must land in Sort2 and `Id(Bool0, ..)` is in Sort1
++/// (no cumulativity), so the motive is the Leibniz form `Pi Q:(Bool0 -> Sort1). Q b0 -> Q (lhs y)`, instantiated at the
++/// end with `Q e = Id(Bool0, e, b0)`. `step(c, a, ga)` proves `Id(Bool0, lhs (mk a), b0)` under the step's binders.
++fn bool_lemma(n: usize, lhs: &dyn Fn(Expr) -> Expr, b0: Expr,
++              step: &mut dyn FnMut(&mut Cx, &[At], &[At]) -> Expr) -> (Expr, Expr) {
++    let tys: Vec<Ty> = vec![ty!(|_c, _x| bv_ty(n)), ty!(|c, x| app(good_bv(n), c.at(x[0])))];
++    let qty = arrow(bool0(), sort(1));
++    law(&tys, |c, xs| {
++        let (x, g) = (xs[0], xs[1]);
++        let motive = c.lam(bv_ty(n), |c, y| {
++            c.pi(qty, |c, q| arrow(app(c.at(q), b0), app(c.at(q), lhs(c.at(y)))))
++        });
++        let body = bind_bits(c, n, &mut vec![], &mut |c, a, ga| {
++            let p = step(c, a, ga);
++            let bits: Vec<Expr> = a.iter().map(|b| c.at(*b)).collect();
++            let l = lhs(church_tuple(&bits));
++            let (p, l) = (c.mark(p), c.mark(l));
++            c.lam(qty, |c, q| {
++                let qb = app(c.at(q), b0);
++                c.lam(qb, |c, hq| {
++                    // J at `\a b _. Q b -> Q a` takes `Q b0` to `Q (lhs (mk a))`
++                    let jm = c.lam(bool0(), |c, u| {
++                        c.lam(bool0(), |c, v| {
++                            let e = id(bool0(), c.at(u), c.at(v));
++                            c.lam(e, |c, _| arrow(app(c.at(q), c.at(v)), app(c.at(q), c.at(u))))
++                        })
++                    });
++                    let base = c.lam(bool0(), |c, u| c.lam(app(c.at(q), c.at(u)), |c, h| c.at(h)));
++                    app(jelim(jm, base, c.at(l), b0, c.at(p)), c.at(hq))
++                })
++            })
++        });
++        let qid = lam(bool0(), id(bool0(), var(0), b0));
++        let proof = apps(app2(c.at(g), motive, body), vec![qid, refl(b0)]);
++        (proof, id(bool0(), lhs(c.at(x)), b0))
++    })
++}
++
++/// `Pi x. GoodBv x -> Id(Bool0, eq x x, true)`: a bit split per bit, chained by `cong1` and `trans_proof`.
++pub fn eq_refl_lemma(n: usize) -> (Expr, Expr) {
++    let (q, _) = bit_lemma(id(bool0(), and(t(), not_(xor(var(0), var(0)))), t()), refl(t()), refl(t()));
++    bool_lemma(n, &|y| app2(eq_bv(n), y, y), t(), &mut |c, a, ga| {
++        let (mut acc, mut p) = (t(), refl(t()));
++        for i in 0..n {
++            let xi = not_(xor(c.at(a[i]), c.at(a[i])));
++            let next = and(acc, xi);
++            let fmap = lam(bool0(), and(var(0), shift(&xi, 0, 1)));
++            let cong = cong1(&bool0(), &bool0(), &fmap, acc, t(), p);
++            let qi = app2(q, c.at(a[i]), c.at(ga[i]));
++            p = trans_proof(&bool0(), &next, &and(t(), xi), &t(), cong, qi);
++            acc = next;
++        }
++        p
++    })
++}
++
++// ---- SPIKE d1/d3: the region lemma `eq (p + j) p = eq j 0` for symbolic p, j, and the literal offset 2.
++
++/// Closed `Pi v_0..v_(k-1). GoodBool v_0 -> .. -> GoodBool v_(k-1) -> body(v)`, by a nested bit split on every variable;
++/// each of the `2^k` leaves is `refl` of the literal `val(bits)` that both sides of `body` (an `Id` over `Bool0`) reach.
++fn lemma_k(k: usize, body: &dyn Fn(&[Expr]) -> Expr, val: &dyn Fn(&[bool]) -> bool) -> (Expr, Expr) {
++    let mut tys: Vec<Ty> = (0..k).map(|_| ty!(|_c, _x| bool0())).collect();
++    for i in 0..k {
++        tys.push(ty!(|c, x| app(good_bool(), c.at(x[i]))));
++    }
++    fn split(c: &mut Cx, xs: &[At], k: usize, i: usize, vals: &mut Vec<bool>, body: &dyn Fn(&[Expr]) -> Expr,
++             val: &dyn Fn(&[bool]) -> bool) -> Expr {
++        if i == k {
++            return refl(bit(val(vals)));
++        }
++        let motive = c.lam(bool0(), |c, y| {
++            let vs: Vec<Expr> = (0..k).map(|j| if j < i { bit(vals[j]) } else if j == i { c.at(y) } else { c.at(xs[j]) }).collect();
++            body(&vs)
++        });
++        vals.push(true);
++        let bt = split(c, xs, k, i + 1, vals, body, val);
++        vals.pop();
++        vals.push(false);
++        let bf = split(c, xs, k, i + 1, vals, body, val);
++        vals.pop();
++        app3(c.at(xs[k + i]), motive, bt, bf)
++    }
++    law(&tys, |c, xs| {
++        let vs: Vec<Expr> = (0..k).map(|j| c.at(xs[j])).collect();
++        (split(c, xs, k, 0, &mut vec![], body, val), body(&vs))
++    })
++}
++
++/// `[B, a, b, c]`: `and B (xnor (a^b^c) a) = and B (xnor b (and B c))`.
++fn region_s1() -> (Expr, Expr) {
++    lemma_k(
++        4,
++        &|v| {
++            let (bb, a, b, c) = (v[0], v[1], v[2], v[3]);
++            id(bool0(), and(bb, not_(xor(xor(xor(a, b), c), a))), and(bb, not_(xor(b, and(bb, c)))))
++        },
++        &|v| v[0] && (v[2] == v[3]),
++    )
++}
++/// `[B, a, b, c]`: `and (and B nb) (carry a b c) = and (and B c) (and a nb)`, `nb = not (xor b false)`.
++fn region_s2() -> (Expr, Expr) {
++    lemma_k(
++        4,
++        &|v| {
++            let (bb, a, b, c) = (v[0], v[1], v[2], v[3]);
++            let nb = not_(xor(b, f()));
++            let carry = or(and(a, b), and(c, xor(a, b)));
++            id(bool0(), and(and(bb, nb), carry), and(and(bb, c), and(a, nb)))
++        },
++        &|v| v[0] && !v[2] && ((v[1] && v[2]) || (v[3] && (v[1] != v[2]))),
++    )
++}
++
++/// `Lam Q. Lam (h: Q r). J p h` for `p : Id(Bool0, l, r)`: the Leibniz form that lands in Sort2 (see `bool_lemma`).
++fn leibniz(c: &mut Cx, p: Expr, l: Expr, r: Expr) -> Expr {
++    let qty = arrow(bool0(), sort(1));
++    let (p, l, r) = (c.mark(p), c.mark(l), c.mark(r));
++    c.lam(qty, |c, q| {
++        let qb = app(c.at(q), c.at(r));
++        c.lam(qb, |c, hq| {
++            let jm = c.lam(bool0(), |c, u| {
++                c.lam(bool0(), |c, v| {
++                    let e = id(bool0(), c.at(u), c.at(v));
++                    c.lam(e, |c, _| arrow(app(c.at(q), c.at(v)), app(c.at(q), c.at(u))))
++                })
++            });
++            let base = c.lam(bool0(), |c, u| c.lam(app(c.at(q), c.at(u)), |c, h| c.at(h)));
++            app(jelim(jm, base, c.at(l), c.at(r), c.at(p)), c.at(hq))
++        })
++    })
++}
++
++/// The chain proof of `Id(Bool0, eq (mk a + mk b) (mk a), eq (mk b) 0)` over the bits, by the invariant
++/// `A_i = B_i` and `and B_i c_i = false`: `A_i`, `B_i` the prefix conjunctions of the two sides, `c_i` the carry.
++fn region_chain(c: &mut Cx, a: &[At], ga: &[At], b: &[At], gb: &[At], s1: Expr, s2: Expr, stale: bool) -> Expr {
++    let n = a.len();
++    let (g_and, _) = good2(&|x, y| and(x, y), &and_truth);
++    let (g_or, _) = good2(&|x, y| or(x, y), &or_truth);
++    let (g_xor, _) = good2(&|x, y| xor(x, y), &xor_truth);
++    let (g_and_l, _) = good_and_lemma();
++    let (g_xn, _) = good_xnor_lit(false);
++    let bb0 = bool0();
++    let (mut aa, mut bb, mut cc) = (t(), t(), f());
++    let (mut gbb, mut gcc) = (good_bit(true), good_bit(false));
++    let (mut p1, mut p2) = (refl(t()), refl(f()));
++    for i in 0..n {
++        let (ai, bi, gai, gbi) = (c.at(a[i]), c.at(b[i]), c.at(ga[i]), c.at(gb[i]));
++        let x = xor(ai, bi);
++        let xi = not_(xor(xor(x, cc), ai));
++        let nb = not_(xor(bi, f()));
++        let args = vec![bb, ai, bi, cc, gbb, gai, gbi, gcc];
++        // P1: and A xi = and B xi = and B (xnor b (and B c)) = and B (xnor b false)
++        let f1 = lam(bb0, and(var(0), shift(&xi, 0, 1)));
++        let e1 = cong1(&bb0, &bb0, &f1, aa, bb, p1);
++        let e2 = apps(s1, args.clone());
++        let mid = and(bb, not_(xor(bi, and(bb, cc))));
++        let f3 = lam(bb0, and(shift(&bb, 0, 1), not_(xor(shift(&bi, 0, 1), var(0)))));
++        let e3 = cong1(&bb0, &bb0, &f3, and(bb, cc), f(), p2);
++        let t12 = trans_proof(&bb0, &and(aa, xi), &and(bb, xi), &mid, e1, e2);
++        let p1n = trans_proof(&bb0, &and(aa, xi), &mid, &and(bb, nb), t12, e3);
++        // P2: and (and B nb) c' = and (and B c) (and a nb) = and false (and a nb)
++        let w = and(ai, nb);
++        let cc1 = or(and(ai, bi), and(cc, x));
++        let e4 = apps(s2, args);
++        let f5 = lam(bb0, and(var(0), shift(&w, 0, 1)));
++        let e5 = cong1(&bb0, &bb0, &f5, and(bb, cc), f(), p2);
++        let p2n = trans_proof(&bb0, &and(and(bb, nb), cc1), &and(and(bb, cc), w), &and(f(), w), e4, e5);
++        let p2n = if stale { refl(f()) } else { p2n };
++        // the witnesses
++        let gnb = app2(g_xn, bi, gbi);
++        let gbn = apps(g_and_l, vec![bb, nb, gbb, gnb]);
++        let gx = apps(g_xor, vec![ai, bi, gai, gbi]);
++        let gab = apps(g_and, vec![ai, bi, gai, gbi]);
++        let gcx = apps(g_and, vec![cc, x, gcc, gx]);
++        let gcn = apps(g_or, vec![and(ai, bi), and(cc, x), gab, gcx]);
++        (aa, bb, cc, gbb, gcc, p1, p2) = (and(aa, xi), and(bb, nb), cc1, gbn, gcn, p1n, p2n);
++    }
++    p1
++}
++
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum Rg {
++    Ok,
++    /// stated as `eq (p + j) p = false`
++    FalseRhs,
++    /// `sub` for `add`
++    SubStmt,
++    /// `eq (p + j) j`
++    SwapStmt,
++    /// `refl`
++    Refl,
++    /// the carry invariant not carried: `refl false` for `and B c = false` at every step
++    StaleCarry,
++}
++
++/// `Pi p j. GoodBv p -> GoodBv j -> Id(Bool0, eq (p + j) p, eq j 0)`: both vectors opened by `GoodBv` at the Leibniz motive,
++/// the bit chain `region_chain` inside.
++pub fn region_law(n: usize, ctl: Rg) -> (Expr, Expr) {
++    let add = Op::Add.term(n);
++    let (s1, s2) = (region_s1().0, region_s2().0);
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| app(good_bv(n), c.at(x[0]))),
++        ty!(|c, x| app(good_bv(n), c.at(x[1]))),
++    ];
++    let lhs = move |x: Expr, y: Expr| app2(eq_bv(n), app2(add, x, y), x);
++    let rhs = move |y: Expr| app2(eq_bv(n), y, lit(n, 0));
++    let qty = arrow(bool0(), sort(1));
++    law(&tys, |c, xs| {
++        let (j, gp, gj) = (xs[1], xs[2], xs[3]);
++        let stmt = match ctl {
++            Rg::FalseRhs => id(bool0(), lhs(c.at(xs[0]), c.at(j)), f()),
++            Rg::SubStmt => id(bool0(), app2(eq_bv(n), app2(Op::Sub.term(n), c.at(xs[0]), c.at(j)), c.at(xs[0])), rhs(c.at(j))),
++            Rg::SwapStmt => id(bool0(), app2(eq_bv(n), app2(add, c.at(xs[0]), c.at(j)), c.at(j)), rhs(c.at(j))),
++            _ => id(bool0(), lhs(c.at(xs[0]), c.at(j)), rhs(c.at(j))),
++        };
++        if ctl == Rg::Refl {
++            return (refl(rhs(c.at(j))), stmt);
++        }
++        let motive_p = c.lam(bv_ty(n), |c, x| {
++            c.pi(qty, |c, q| arrow(app(c.at(q), rhs(c.at(j))), app(c.at(q), lhs(c.at(x), c.at(j)))))
++        });
++        let step_p = bind_bits(c, n, &mut vec![], &mut |c, a, ga| {
++            let mk = |c: &Cx, bits: &[At]| church_tuple(&bits.iter().map(|b| c.at(*b)).collect::<Vec<_>>());
++            let motive_j = c.lam(bv_ty(n), |c, y| {
++                c.pi(qty, |c, q| arrow(app(c.at(q), rhs(c.at(y))), app(c.at(q), lhs(mk(c, a), c.at(y)))))
++            });
++            let step_j = bind_bits(c, n, &mut vec![], &mut |c, b, gb| {
++                let pf = region_chain(c, a, ga, b, gb, s1, s2, ctl == Rg::StaleCarry);
++                let (l, r) = (lhs(mk(c, a), mk(c, b)), rhs(mk(c, b)));
++                leibniz(c, pf, l, r)
++            });
++            app2(c.at(gj), motive_j, step_j)
++        });
++        let body = app2(c.at(gp), motive_p, step_p);
++        let qid = lam(bool0(), id(bool0(), var(0), shift(&rhs(c.at(j)), 0, 1)));
++        (apps(body, vec![qid, refl(rhs(c.at(j)))]), stmt)
++    })
++}
++
++// ---- SPIKE d1 stretch: cancellation `eq (p + i) (p + j) = eq i j`.
++
++/// `[B, a, i, j, ci, cj]`: `and B (xnor (a^i^ci) (a^j^cj)) = and B (xnor (i ^ and B ci) (j ^ and B cj))`.
++fn cancel_t1() -> (Expr, Expr) {
++    lemma_k(
++        6,
++        &|v| {
++            let (bb, a, i, j, ci, cj) = (v[0], v[1], v[2], v[3], v[4], v[5]);
++            id(bool0(), and(bb, not_(xor(xor(xor(a, i), ci), xor(xor(a, j), cj)))),
++                and(bb, not_(xor(xor(i, and(bb, ci)), xor(j, and(bb, cj))))))
++        },
++        &|v| v[0] && ((v[2] != v[4]) == (v[3] != v[5])),
++    )
++}
++/// `[B, i, j, K]`: `and B (xnor (i^K) (j^K)) = and B (xnor i j)`.
++fn cancel_t2() -> (Expr, Expr) {
++    lemma_k(
++        4,
++        &|v| {
++            let (bb, i, j, k) = (v[0], v[1], v[2], v[3]);
++            id(bool0(), and(bb, not_(xor(xor(i, k), xor(j, k)))), and(bb, not_(xor(i, j))))
++        },
++        &|v| v[0] && (v[1] == v[2]),
++    )
++}
++/// `[B, a, i, j, c]`: `and (and B nx) (carry a i c) = and (and B nx) (carry a i (and B c))`, `nx = xnor i j`.
++fn cancel_u1() -> (Expr, Expr) {
++    lemma_k(
++        5,
++        &|v| {
++            let (bb, a, i, j, c) = (v[0], v[1], v[2], v[3], v[4]);
++            let bn = and(bb, not_(xor(i, j)));
++            id(bool0(), and(bn, or(and(a, i), and(c, xor(a, i)))), and(bn, or(and(a, i), and(and(bb, c), xor(a, i)))))
++        },
++        &|v| v[0] && (v[2] == v[3]) && ((v[1] && v[2]) || (v[4] && (v[1] != v[2]))),
++    )
++}
++/// `[B, a, i, j, c]`: `and (and B nx) (carry a i (and B c)) = and (and B nx) (carry a j c)`.
++fn cancel_u2() -> (Expr, Expr) {
++    lemma_k(
++        5,
++        &|v| {
++            let (bb, a, i, j, c) = (v[0], v[1], v[2], v[3], v[4]);
++            let bn = and(bb, not_(xor(i, j)));
++            id(bool0(), and(bn, or(and(a, i), and(and(bb, c), xor(a, i)))), and(bn, or(and(a, j), and(c, xor(a, j)))))
++        },
++        &|v| v[0] && (v[2] == v[3]) && ((v[1] && v[2]) || (v[4] && (v[1] != v[2]))),
++    )
++}
++
++/// The chain proof of `Id(Bool0, eq (mk p + mk i) (mk p + mk j), eq (mk i) (mk j))`, by the invariant `A_k = B_k` and
++/// `and B_k ci_k = and B_k cj_k`.
++fn cancel_chain(c: &mut Cx, pa: &[At], pga: &[At], ia: &[At], iga: &[At], ja: &[At], jga: &[At], ls: [Expr; 4]) -> Expr {
++    let [t1, t2, u1, u2] = ls;
++    let n = pa.len();
++    let (g_and, _) = good2(&|x, y| and(x, y), &and_truth);
++    let (g_or, _) = good2(&|x, y| or(x, y), &or_truth);
++    let (g_xor, _) = good2(&|x, y| xor(x, y), &xor_truth);
++    let (g_xnor, _) = good2(&|x, y| not_(xor(x, y)), &|x, y| x == y);
++    let (g_and_l, _) = good_and_lemma();
++    let bb0 = bool0();
++    let (mut aa, mut bb, mut ci, mut cj) = (t(), t(), f(), f());
++    let (mut gbb, mut gci, mut gcj) = (good_bit(true), good_bit(false), good_bit(false));
++    let (mut p1, mut p2) = (refl(t()), refl(f()));
++    for k in 0..n {
++        let (a, i, j) = (c.at(pa[k]), c.at(ia[k]), c.at(ja[k]));
++        let (ga, gi, gj) = (c.at(pga[k]), c.at(iga[k]), c.at(jga[k]));
++        let (xi_, xj_) = (xor(a, i), xor(a, j));
++        let (si, sj) = (xor(xi_, ci), xor(xj_, cj));
++        let xn = not_(xor(si, sj));
++        let nx = not_(xor(i, j));
++        let kk = and(bb, cj);
++        // P1: and A xn = and B xn = and B (xnor (i ^ B ci) (j ^ B cj)) = and B (xnor (i ^ K) (j ^ K)) = and B nx
++        let f1 = lam(bb0, and(var(0), shift(&xn, 0, 1)));
++        let e1 = cong1(&bb0, &bb0, &f1, aa, bb, p1);
++        let e2 = apps(t1, vec![bb, a, i, j, ci, cj, gbb, ga, gi, gj, gci, gcj]);
++        let m1 = and(bb, not_(xor(xor(i, and(bb, ci)), xor(j, and(bb, cj)))));
++        let f3 = lam(bb0, and(shift(&bb, 0, 1), not_(xor(xor(shift(&i, 0, 1), var(0)), shift(&xor(j, kk), 0, 1)))));
++        let e3 = cong1(&bb0, &bb0, &f3, and(bb, ci), kk, p2);
++        let m2 = and(bb, not_(xor(xor(i, kk), xor(j, kk))));
++        let gk = apps(g_and_l, vec![bb, cj, gbb, gcj]);
++        let e4 = apps(t2, vec![bb, i, j, kk, gbb, gi, gj, gk]);
++        let t12 = trans_proof(&bb0, &and(aa, xn), &and(bb, xn), &m1, e1, e2);
++        let t123 = trans_proof(&bb0, &and(aa, xn), &m1, &m2, t12, e3);
++        let p1n = trans_proof(&bb0, &and(aa, xn), &m2, &and(bb, nx), t123, e4);
++        // P2: and B' ci' = and B' (carry a i (B ci)) = and B' (carry a i K) = and B' cj'
++        let bn = and(bb, nx);
++        let ci1 = or(and(a, i), and(ci, xi_));
++        let cj1 = or(and(a, j), and(cj, xj_));
++        let args = vec![bb, a, i, j, ci, gbb, ga, gi, gj, gci];
++        let h1 = apps(u1, args);
++        let f5 = lam(bb0, and(shift(&bn, 0, 1), or(and(shift(&a, 0, 1), shift(&i, 0, 1)), and(var(0), shift(&xi_, 0, 1)))));
++        let h2 = cong1(&bb0, &bb0, &f5, and(bb, ci), kk, p2);
++        let mid1 = and(bn, or(and(a, i), and(and(bb, ci), xi_)));
++        let mid2 = and(bn, or(and(a, i), and(kk, xi_)));
++        let h3 = apps(u2, vec![bb, a, i, j, cj, gbb, ga, gi, gj, gcj]);
++        let h12 = trans_proof(&bb0, &and(bn, ci1), &mid1, &mid2, h1, h2);
++        let p2n = trans_proof(&bb0, &and(bn, ci1), &mid2, &and(bn, cj1), h12, h3);
++        // the witnesses
++        let gnx = apps(g_xnor, vec![i, j, gi, gj]);
++        let gbn = apps(g_and_l, vec![bb, nx, gbb, gnx]);
++        let carry = |c0: Expr, gc0: Expr, v: Expr, gv: Expr| {
++            let x = xor(a, v);
++            let gx = apps(g_xor, vec![a, v, ga, gv]);
++            let gab = apps(g_and, vec![a, v, ga, gv]);
++            let gcx = apps(g_and, vec![c0, x, gc0, gx]);
++            apps(g_or, vec![and(a, v), and(c0, x), gab, gcx])
++        };
++        let (gci1, gcj1) = (carry(ci, gci, i, gi), carry(cj, gcj, j, gj));
++        (aa, bb, ci, cj, gbb, gci, gcj, p1, p2) = (and(aa, xn), and(bb, nx), ci1, cj1, gbn, gci1, gcj1, p1n, p2n);
++    }
++    p1
++}
++
++/// `Pi p i j. GoodBv p -> GoodBv i -> GoodBv j -> Id(Bool0, eq (p + i) (p + j), eq i j)`; `Rg::SwapStmt` states `eq (p+i) (p+j) = eq i i`... see below.
++pub fn cancel_law(n: usize, ctl: Rg) -> (Expr, Expr) {
++    let add = Op::Add.term(n);
++    let ls = [cancel_t1().0, cancel_t2().0, cancel_u1().0, cancel_u2().0];
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| app(good_bv(n), c.at(x[0]))),
++        ty!(|c, x| app(good_bv(n), c.at(x[1]))),
++        ty!(|c, x| app(good_bv(n), c.at(x[2]))),
++    ];
++    let lr = move |v: &[Expr]| {
++        (app2(eq_bv(n), app2(add, v[0], v[1]), app2(add, v[0], v[2])), app2(eq_bv(n), v[1], v[2]))
++    };
++    let qty = arrow(bool0(), sort(1));
++    type Opened = Vec<(Vec<At>, Vec<At>)>;
++    fn open(c: &mut Cx, n: usize, k: usize, xs: &[At], gs: &[At], got: &mut Opened, lr: &dyn Fn(&[Expr]) -> (Expr, Expr),
++            ls: [Expr; 4]) -> Expr {
++        let mk = |c: &Cx, bits: &[At]| church_tuple(&bits.iter().map(|b| c.at(*b)).collect::<Vec<_>>());
++        if k == 3 {
++            let vs: Vec<Expr> = got.iter().map(|(a, _)| mk(c, a)).collect();
++            let (l, r) = lr(&vs);
++            let pf = cancel_chain(c, &got[0].0, &got[0].1, &got[1].0, &got[1].1, &got[2].0, &got[2].1, ls);
++            return leibniz(c, pf, l, r);
++        }
++        let qty = arrow(bool0(), sort(1));
++        let motive = c.lam(bv_ty(n), |c, y| {
++            c.pi(qty, |c, q| {
++                let vs: Vec<Expr> = (0..3).map(|m| if m < k { mk(c, &got[m].0) } else if m == k { c.at(y) } else { c.at(xs[m]) }).collect();
++                let (l, r) = lr(&vs);
++                arrow(app(c.at(q), r), app(c.at(q), l))
++            })
++        });
++        let step = bind_bits(c, n, &mut vec![], &mut |c, a, ga| {
++            got.push((a.to_vec(), ga.to_vec()));
++            let r = open(c, n, k + 1, xs, gs, got, lr, ls);
++            got.pop();
++            r
++        });
++        app2(c.at(gs[k]), motive, step)
++    }
++    law(&tys, |c, xs| {
++        let (vs, gs) = (&xs[..3], &xs[3..]);
++        let ev: Vec<Expr> = vs.iter().map(|v| c.at(*v)).collect();
++        let (l, r) = lr(&ev);
++        let stmt = match ctl {
++            Rg::FalseRhs => id(bool0(), l, f()),
++            Rg::SwapStmt => id(bool0(), l, app2(eq_bv(n), ev[1], ev[1])),
++            _ => id(bool0(), l, r),
++        };
++        if ctl == Rg::Refl {
++            return (refl(r), stmt);
++        }
++        let _ = qty;
++        let body = open(c, n, 0, vs, gs, &mut vec![], &lr, ls);
++        let qid = lam(bool0(), id(bool0(), var(0), shift(&r, 0, 1)));
++        (apps(body, vec![qid, refl(r)]), stmt)
++    })
++}
++
++
++
++// ---- i3: commutativity of `eq`, `eq x y = eq y x`, so a store at `p` read at `p + j` reuses the region lemma.
++
++/// `[B, a, b]`: `and B (xnor a b) = and B (xnor b a)`.
++fn comm_s() -> (Expr, Expr) {
++    lemma_k(
++        3,
++        &|v| id(bool0(), and(v[0], not_(xor(v[1], v[2]))), and(v[0], not_(xor(v[2], v[1])))),
++        &|v| v[0] && (v[1] == v[2]),
++    )
++}
++
++/// The chain proof of `Id(Bool0, eq (mk a) (mk b), eq (mk b) (mk a))`, by the invariant `A_i = B_i` (the two prefix conjunctions).
++fn comm_chain(c: &mut Cx, a: &[At], ga: &[At], b: &[At], gb: &[At], s: Expr) -> Expr {
++    let n = a.len();
++    let (g_xnor, _) = good2(&|x, y| not_(xor(x, y)), &|x, y| x == y);
++    let (g_and_l, _) = good_and_lemma();
++    let bb0 = bool0();
++    let (mut aa, mut bb) = (t(), t());
++    let mut gbb = good_bit(true);
++    let mut p = refl(t());
++    for i in 0..n {
++        let (ai, bi, gai, gbi) = (c.at(a[i]), c.at(b[i]), c.at(ga[i]), c.at(gb[i]));
++        let xab = not_(xor(ai, bi));
++        let xba = not_(xor(bi, ai));
++        let f1 = lam(bb0, and(var(0), shift(&xab, 0, 1)));
++        let e1 = cong1(&bb0, &bb0, &f1, aa, bb, p);
++        let e2 = apps(s, vec![bb, ai, bi, gbb, gai, gbi]);
++        let pn = trans_proof(&bb0, &and(aa, xab), &and(bb, xab), &and(bb, xba), e1, e2);
++        let gx = apps(g_xnor, vec![bi, ai, gbi, gai]);
++        let gn = apps(g_and_l, vec![bb, xba, gbb, gx]);
++        (aa, bb, gbb, p) = (and(aa, xab), and(bb, xba), gn, pn);
++    }
++    p
++}
++
++/// `Pi x y. GoodBv x -> GoodBv y -> Id(Bool0, eq x y, eq y x)`.
++pub fn eq_comm_law(n: usize) -> (Expr, Expr) {
++    let s = comm_s().0;
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| app(good_bv(n), c.at(x[0]))),
++        ty!(|c, x| app(good_bv(n), c.at(x[1]))),
++    ];
++    let lhs = move |x: Expr, y: Expr| app2(eq_bv(n), x, y);
++    let rhs = move |x: Expr, y: Expr| app2(eq_bv(n), y, x);
++    let qty = arrow(bool0(), sort(1));
++    law(&tys, |c, xs| {
++        let (x, y, gx, gy) = (xs[0], xs[1], xs[2], xs[3]);
++        let stmt = id(bool0(), lhs(c.at(x), c.at(y)), rhs(c.at(x), c.at(y)));
++        let motive_p = c.lam(bv_ty(n), |c, p| {
++            c.pi(qty, |c, q| arrow(app(c.at(q), rhs(c.at(p), c.at(y))), app(c.at(q), lhs(c.at(p), c.at(y)))))
++        });
++        let step_p = bind_bits(c, n, &mut vec![], &mut |c, a, ga| {
++            let mk = |c: &Cx, bits: &[At]| church_tuple(&bits.iter().map(|b| c.at(*b)).collect::<Vec<_>>());
++            let motive_j = c.lam(bv_ty(n), |c, yy| {
++                c.pi(qty, |c, q| arrow(app(c.at(q), rhs(mk(c, a), c.at(yy))), app(c.at(q), lhs(mk(c, a), c.at(yy)))))
++            });
++            let step_j = bind_bits(c, n, &mut vec![], &mut |c, b, gb| {
++                let pf = comm_chain(c, a, ga, b, gb, s);
++                let (l, r) = (lhs(mk(c, a), mk(c, b)), rhs(mk(c, a), mk(c, b)));
++                leibniz(c, pf, l, r)
++            });
++            app2(c.at(gy), motive_j, step_j)
++        });
++        let body = app2(c.at(gx), motive_p, step_p);
++        let r0 = rhs(c.at(x), c.at(y));
++        let qid = lam(bool0(), id(bool0(), var(0), shift(&r0, 0, 1)));
++        (apps(body, vec![qid, refl(r0)]), stmt)
++    })
++}
+diff --git a/crates/tatic-wasm/src/wasm/laws.rs b/crates/tatic-wasm/src/wasm/laws.rs
+index b2aa4d1..f365013 100644
+--- a/crates/tatic-wasm/src/wasm/laws.rs
++++ b/crates/tatic-wasm/src/wasm/laws.rs
+@@ -376,7 +376,13 @@ pub fn countdown_law(w: Wasm, dec: Op) -> (Expr, Expr) {
+     })
+ }
+ 
+-/// `Pi S R k z s mu. Id(R, M p fuel R k z (start..s) mu, want)`, by `refl`: a concrete run.
++/// SPIKE (e1): the state with all-zero locals over the heap `h`.
++fn start_mu(w: Wasm, c: &mut Cx, r: At, h: Expr) -> Expr {
++    let blank = w.zero_heap(c, r);
++    w.mkmu(c, r, blank, lit(w.n, 0), h)
++}
++
++/// `Pi S R k z s mu. Id(R, M p fuel R k z (start..s) mu, want)`, by `refl`: a concrete run (`mu` here is the heap).
+ fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn(&mut Cx, &[At]) -> Expr) -> (Expr, Expr) {
+     let ks: Vec<K> = start.iter().map(|_| K::W).collect();
+     let out = out_stack(code, ks.clone()).unwrap();
+@@ -386,14 +392,15 @@ fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn
+         ty!(|c, x| { let t = w.sty(c, &out, x[0]); w.g(c, x[1], t) }),
+         ty!(|c, x| c.at(x[1])),
+         ty!(|c, x| c.at(x[0])),
+-        ty!(|c, x| w.mem(c, x[1])),
++        ty!(|c, x| w.heap(c, x[1])),
+     ];
+     law(&tys, |c, x| {
+         let p = w.prog(c, code, &ks, x[0]);
+         let p = c.mark(p);
+         let fuel = c.mark(nat2_lit(fuel));
+         let st = start.iter().rev().fold(c.at(x[4]), |acc, v| mkpair(c.at(x[0]), lit(w.n, *v), acc));
+-        let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), st, c.at(x[5]));
++        let mu = start_mu(w, c, x[1], c.at(x[5]));
++        let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), st, mu);
+         (refl(l), id(c.at(x[1]), l, want(c, x)))
+     })
+ }
+@@ -437,12 +444,16 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
+     timed("loop law", loop_law(w));
+     timed("countdown invariant", countdown_law(w, Op::Sub));
+     // concrete runs: the countdown from 3 exits at 0 with fuel 4 and times out with fuel 3; store then load
+-    let at = |v: u128| move |c: &mut Cx, x: &[At]| app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, v), c.at(x[4])), c.at(x[5]));
++    let at = |v: u128| move |c: &mut Cx, x: &[At]| {
++        let mu = start_mu(w, c, x[1], c.at(x[5]));
++        app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, v), c.at(x[4])), mu)
++    };
+     timed("countdown 3, fuel 4", run_by_refl(w, &countdown(Op::Sub), &[3], 4, &at(0)));
+     timed("countdown 3, fuel 3", run_by_refl(w, &countdown(Op::Sub), &[3], 3, &|c, x| c.at(x[3])));
+     let mem_prog = [Ins::Push(3), Ins::Push(5), Ins::Store, Ins::Push(3), Ins::Load];
+     let stored = |c: &mut Cx, x: &[At]| {
+-        let mu = w.upd(c, x[1], lit(n, 3), lit(n, 5), c.at(x[5]));
++        let h = w.upd(c, x[1], lit(n, 3), lit(n, 5), c.at(x[5]));
++        let mu = start_mu(w, c, x[1], h);
+         app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, 5), c.at(x[4])), mu)
+     };
+     timed("store 5@3, load 3", run_by_refl(w, &mem_prog, &[], 0, &stored));
+diff --git a/crates/tatic-wasm/src/wasm/sim.rs b/crates/tatic-wasm/src/wasm/sim.rs
+new file mode 100644
+index 0000000..e29ee38
+--- /dev/null
++++ b/crates/tatic-wasm/src/wasm/sim.rs
+@@ -0,0 +1,931 @@
++//! SPIKE (throwaway, 2026-11-10, e1): ONE generator of simulation proofs for a function body with `Loop`/`Br`/`Call`.
++//!
++//! `gen_sim(w, code, arity, temps, src)` returns `(proof, statement)` for every fuel `N` with `GoodNat N`, every `R`, `z`,
++//! arguments `x_i`, heap `h`, machine continuation `km` and source continuation `ks`:
++//!
++//! ```text
++//! (Pi a mu. km a mu = ks a) -> M_N (frame x.., h) km = S_N x.. ks
++//! ```
++//!
++//! `M_N = N H timeout Bm` runs `code` through `prog`, with `call` and the function's own top-level `loop`/`br` both
++//! going through the one environment `env : H = State -> Ret -> R`. `S_N` is the source's step unrolled by the same fuel.
++//!
++//! The proof is `GoodNat`'s induction on fuel. In the step, both sides are put in weak head normal form and walked in
++//! lockstep as kernel terms (`Sim::sim`), with no match on the instruction list or the function:
++//!   - `km a mu` against `ks a'`: the relation hypothesis;
++//!   - `CH R w t e` against `CH R w' t' e'` (`CH` is the probe standing for `choose`): J through the shared choice;
++//!   - a stuck read of a parameter's slot `loc i K`: the slot hypothesis, then on;
++//!   - the fuel variable applied to a state, a continuation (a `br` or a `call`: one rule): the induction hypothesis at
++//!     the arguments read off the source side, the state and continuation read off the machine side as built, and the
++//!     continuation relation generated by walking the two continuations under their binders.
++//! `CH` is a bound variable of the proof only: the statement uses the real `choose`, and the proof is applied to it.
++use super::addr::{cancel_law, eq_comm_law, eq_refl_lemma, region_law, Rg};
++use super::*;
++use std::cell::{OnceCell, RefCell};
++
++/// What a source builder is given: the answer sort `r`, the function's own fixpoint variable `g`, its parameters, and
++/// the probe `ch` that stands for `choose` (the statement uses the real one: `None`).
++pub struct SEnv {
++    pub n: usize,
++    pub r: At,
++    pub g: At,
++    pub params: Vec<At>,
++    /// The source's parameters after `params`: the value of each heap cell the statement fixes (`HeapSpec`), one per cell.
++    /// The source passes them on in its own calls, so a call says what each cell holds afterwards.
++    pub cells: Vec<At>,
++    pub ch: Option<At>,
++}
++
++impl SEnv {
++    /// `choose R cond t f`, through the probe in the proof.
++    pub fn choose(&self, c: &Cx, cond: Expr, t: Expr, f: Expr) -> Expr {
++        match self.ch {
++            Some(h) => apps(c.at(h), vec![c.at(self.r), cond, t, f]),
++            None => choose(c.at(self.r), cond, t, f),
++        }
++    }
++    /// A call of the function itself on `args`, its answer passed to `k`: `g args (\res. k res)`.
++    pub fn call(&self, c: &mut Cx, args: &[At], k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++        let kont = c.lam(bv_ty(self.n), |c, res| k(c, c.at(res)));
++        let mut xs: Vec<Expr> = args.iter().map(|a| c.at(*a)).collect();
++        xs.push(kont);
++        apps(c.at(self.g), xs)
++    }
++}
++
++/// The source in continuation-passing form: given the environment and the final continuation, `cps src`.
++pub type SrcFn<'a> = dyn Fn(&mut Cx, &SEnv, &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr + 'a;
++
++/// `CH : Pi R:Sort0. Bv1 -> R -> R -> R`.
++fn ch_ty() -> Expr {
++    pi(sort(0), arrow(bv_ty(1), arrow(var(0), arrow(var(0), var(0)))))
++}
++/// The real choice, `\R w x y. choose R w x y`.
++fn choose_fn() -> Expr {
++    Cx::default().lam(sort(0), |c, r| {
++        c.lam(bv_ty(1), |c, w| {
++            c.lam(c.at(r), |c, x| c.lam(c.at(r), |c, y| choose(c.at(r), c.at(w), c.at(x), c.at(y))))
++        })
++    })
++}
++
++/// `p : a = b`, `q : b = c` give `a = c`.
++fn trans(c: &mut Cx, r: At, (a, b, cc): (Expr, Expr, Expr), p: Expr, q: Expr) -> Expr {
++    let a = c.mark(a);
++    let motive = c.lam(c.at(r), |c, u| {
++        c.lam(c.at(r), |c, v| {
++            let ty = id(c.at(r), c.at(u), c.at(v));
++            c.lam(ty, |c, _| arrow(id(c.at(r), c.at(a), c.at(u)), id(c.at(r), c.at(a), c.at(v))))
++        })
++    });
++    let base = c.lam(c.at(r), |c, u| {
++        let ty = id(c.at(r), c.at(a), c.at(u));
++        c.lam(ty, |c, h| c.at(h))
++    });
++    app(jelim(motive, base, b, cc, q), p)
++}
++
++/// `Id(R, CH R w t e, CH R w t' e')` from `Id(R, t, t')` and `Id(R, e, e')`: J on each branch.
++fn cong(c: &mut Cx, r: At, ch: At, cd: At, (t, t2, pt): (Expr, Expr, Expr), (e, e2, pe): (Expr, Expr, Expr)) -> Expr {
++    let pick = |c: &Cx, x: Expr, y: Expr| apps(c.at(ch), vec![c.at(r), c.at(cd), x, y]);
++    let (e, e2, pe) = (c.mark(e), c.mark(e2), c.mark(pe));
++    let outer_m = c.lam(c.at(r), |c, a| {
++        c.lam(c.at(r), |c, b| {
++            let ty = id(c.at(r), c.at(a), c.at(b));
++            c.lam(ty, |c, _| id(c.at(r), pick(c, c.at(a), c.at(e)), pick(c, c.at(b), c.at(e2))))
++        })
++    });
++    let outer_b = c.lam(c.at(r), |c, a| {
++        let inner_m = c.lam(c.at(r), |c, y| {
++            c.lam(c.at(r), |c, y2| {
++                let ty = id(c.at(r), c.at(y), c.at(y2));
++                c.lam(ty, |c, _| id(c.at(r), pick(c, c.at(a), c.at(y)), pick(c, c.at(a), c.at(y2))))
++            })
++        });
++        let inner_b = c.lam(c.at(r), |c, y| refl(pick(c, c.at(a), c.at(y))));
++        jelim(inner_m, inner_b, c.at(e), c.at(e2), c.at(pe))
++    });
++    jelim(outer_m, outer_b, t, t2, pt)
++}
++
++fn spine(e: &Expr) -> (Expr, Vec<Expr>) {
++    let (mut args, mut cur) = (vec![], *e);
++    while let tatic_kernel::Node::App(f, a) = cur.node() {
++        args.push(a);
++        cur = f;
++    }
++    args.reverse();
++    (cur, args)
++}
++
++/// The sizes the generator works at.
++#[derive(Clone, Copy)]
++struct G<'a> {
++    w: Wasm,
++    n: usize,
++    m: usize,
++    /// The heap cells the statement fixes: `(parameter, offset)` is the cell at address `param + offset`.
++    cells: &'a [(usize, u128)],
++    /// The machine parameters the source does not take (pointers).
++    ptrs: &'a [usize],
++}
++
++impl G<'_> {
++    fn v(&self) -> Expr {
++        self.w.v()
++    }
++    /// How many parameters the source takes: the machine's non-pointer ones, then one per cell.
++    fn nsrc(&self) -> usize {
++        self.m - self.ptrs.len() + self.cells.len()
++    }
++    /// The source's arguments from the machine's parameters and the cells' values.
++    fn src_args<T: Copy>(&self, args: &[T], cvs: &[T]) -> Vec<T> {
++        let mut v: Vec<T> = (0..self.m).filter(|i| !self.ptrs.contains(i)).map(|i| args[i]).collect();
++        v.extend_from_slice(cvs);
++        v
++    }
++    /// `Ret = V -> State -> R`.
++    fn ret_m(&self, c: &mut Cx, r: At) -> Expr {
++        let mem = self.w.mem(c, r);
++        arrow(self.v(), arrow(mem, c.at(r)))
++    }
++    /// `H = State -> Ret -> R`.
++    fn hm(&self, c: &mut Cx, r: At) -> Expr {
++        let (mem, ret) = (self.w.mem(c, r), self.ret_m(c, r));
++        arrow(mem, arrow(ret, c.at(r)))
++    }
++    fn ret_s(&self, c: &Cx, r: At) -> Expr {
++        arrow(self.v(), c.at(r))
++    }
++    /// `Hs = V^m -> (V -> R) -> R`.
++    fn hs(&self, c: &Cx, r: At) -> Expr {
++        (0..self.nsrc()).fold(arrow(self.ret_s(c, r), c.at(r)), |acc, _| arrow(self.v(), acc))
++    }
++    fn rel_ty(&self, c: &mut Cx, r: At, km: At, ks: At) -> Expr {
++        let w = self.w;
++        // over the components of the state, not a state variable: a `sigrec` on a variable is stuck (no eta)
++        c.pi(self.v(), |c, a| {
++            let hl = w.heap(c, r);
++            c.pi(hl, |c, loc| {
++                c.pi(self.v(), |c, hp| {
++                    let hh = w.heap(c, r);
++                    c.pi(hh, |c, h| {
++                        let mu = w.mkmu(c, r, c.at(loc), c.at(hp), c.at(h));
++                        id(c.at(r), app2(c.at(km), c.at(a), mu), app(c.at(ks), c.at(a)))
++                    })
++                })
++            })
++        })
++    }
++    /// The address of cell `k`, `param + offset`, over the parameters `args`.
++    fn cell_addr(&self, k: usize, args: &[Expr]) -> Expr {
++        let (p, off) = self.cells[k];
++        if off == 0 {
++            return args[p];
++        }
++        app2(Op::Add.term(self.n), args[p], lit(self.n, off))
++    }
++    /// `Pi K. Id(R, h addr K, K cv)`: the heap holds `cv` at the cell's address, whatever else it holds.
++    fn cell_ty(&self, c: &mut Cx, r: At, h: At, k: usize, args: &[At], cv: At) -> Expr {
++        let kt = arrow(self.v(), c.at(r));
++        c.pi(kt, |c, kk| {
++            // built under the binder, so its indices count it
++            let addr = self.cell_addr(k, &args.iter().map(|a| c.at(*a)).collect::<Vec<_>>());
++            id(c.at(r), app2(c.at(h), addr, c.at(kk)), app(c.at(kk), c.at(cv)))
++        })
++    }
++    /// `Pi K. Id(R, loc i K, K a)`: slot `i` of `loc` holds `a`.
++    fn hyp_ty(&self, c: &mut Cx, r: At, loc: At, i: usize, a: At) -> Expr {
++        let n = self.n;
++        let kt = arrow(self.v(), c.at(r));
++        c.pi(kt, |c, kk| id(c.at(r), app2(c.at(loc), lit(n, i as u128), c.at(kk)), app(c.at(kk), c.at(a))))
++    }
++    /// The parameters at slots `0..m` over locals that are all 0.
++    fn frame(&self, c: &mut Cx, r: At, args: &[At]) -> Expr {
++        let blank = self.w.zero_heap(c, r);
++        args.iter().enumerate().rev().fold(blank, |acc, (i, a)| self.w.upd(c, r, lit(self.n, i as u128), c.at(*a), acc))
++    }
++    fn tm(&self, c: &mut Cx, r: At, z: At) -> Expr {
++        let w = self.w;
++        let mem = w.mem(c, r);
++        c.lam(mem, |c, _| {
++            let ret = self.ret_m(c, r);
++            c.lam(ret, |c, _| c.at(z))
++        })
++    }
++    fn ts(&self, c: &mut Cx, r: At, z: At) -> Expr {
++        let n = self.n;
++        let args: Vec<Ty> = (0..self.nsrc()).map(|_| ty!(|_c, _x| bv_ty(n))).collect();
++        tele(c, &args, &mut vec![], &lam, &mut |c, _| {
++            let rs = self.ret_s(c, r);
++            c.lam(rs, |c, _| c.at(z))
++        })
++    }
++    /// `Bm = \env mu k. M_env (prog code) 0 mu`, the body's answer passed to `k`.
++    fn bm(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, code: &[Ins], stale: bool) -> Expr {
++        let (w, n) = (self.w, self.n);
++        let hm = self.hm(c, r);
++        c.lam(hm, |c, env| {
++            let mem = w.mem(c, r);
++            c.lam(mem, |c, mu| {
++                let rm = self.ret_m(c, r);
++                c.lam(rm, |c, k| {
++                    let base = c.mark(w.v());
++                    let p = w.prog(c, code, &[], base);
++                    let p = c.mark(p);
++                    let fuel0 = c.mark(nat2_lit(0));
++                    let st_ty = prod(w.v(), c.at(base));
++                    let kk = c.lam(st_ty, |c, st| {
++                        let mem = w.mem(c, r);
++                        c.lam(mem, |c, mu2| w.split(c, r, w.v(), base, st, |c, y, _| app2(c.at(k), c.at(y), c.at(mu2))))
++                    });
++                    let kk = c.mark(kk);
++                    let restart = {
++                        let mem = w.mem(c, r);
++                        c.lam(mem, |c, m2| app2(c.at(env), c.at(m2), c.at(k)))
++                    };
++                    let restart = c.mark(restart);
++                    let hooks = Hooks { env: Some(env), lab: Some(restart), ch, stale_hp: stale };
++                    let m = w.meaning_with(c, p, fuel0, r, kk, z, &hooks);
++                    app2(m, lit(n, 0), c.at(mu))
++                })
++            })
++        })
++    }
++    /// `Bs = \g x.. ks. cps src`.
++    fn bs(&self, c: &mut Cx, r: At, ch: Option<At>, src: &SrcFn) -> Expr {
++        let n = self.n;
++        let hs = self.hs(c, r);
++        c.lam(hs, |c, g| {
++            let vs: Vec<Ty> = (0..self.nsrc()).map(|_| ty!(|_c, _x| bv_ty(n))).collect();
++            tele(c, &vs, &mut vec![], &lam, &mut |c, xs| {
++                let rs = self.ret_s(c, r);
++                c.lam(rs, |c, ks| {
++                    let mp = xs.len() - self.cells.len();
++                    let env = SEnv { n, r, g, params: xs[..mp].to_vec(), cells: xs[mp..].to_vec(), ch };
++                    src(c, &env, &|c, v| app(c.at(ks), v))
++                })
++            })
++        })
++    }
++    /// The binders of the induction's motive, step and hypothesis applications, after the dummy numeral that lifts the
++    /// motive to Sort3: `d, a_0..a_{m-1}, cv_0..cv_{c-1}, loc, hp, h, km, ks, rel, slot_0..slot_{m-1}, cell_0..cell_{c-1}`.
++    fn binders(&self, c: &mut Cx, r: At, wrap: &dyn Fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
++        let (g, n, m, nc) = (self, self.n, self.m, self.cells.len());
++        let q = m + nc;
++        let mut tys: Vec<Ty> = vec![ty!(|_c, _x| nat2())];
++        tys.extend((0..q).map(|_| ty!(|_c, _x| bv_ty(n))));
++        tys.push(ty!(|c, _x| g.w.heap(c, r)));
++        tys.push(ty!(|_c, _x| bv_ty(n)));
++        tys.push(ty!(|c, _x| g.w.heap(c, r)));
++        tys.push(ty!(|c, _x| g.ret_m(c, r)));
++        tys.push(ty!(|c, _x| g.ret_s(c, r)));
++        tys.push(ty!(|c, x| g.rel_ty(c, r, x[q + 4], x[q + 5])));
++        for i in 0..m {
++            tys.push(ty!(|c, x| g.hyp_ty(c, r, x[q + 1], i, x[1 + i])));
++        }
++        for k in 0..nc {
++            tys.push(ty!(|c, x| g.cell_ty(c, r, x[q + 3], k, &x[1..1 + m], x[1 + m + k])));
++        }
++        if want_good(nc) {
++            // `GoodBv hp`: the allocation pointer is a well-formed word, for the address lemmas
++            tys.push(ty!(|c, x| app(good_bv(n), c.at(x[q + 2]))));
++            // and each pointer parameter is one
++            for &pi in g.ptrs {
++                tys.push(ty!(|c, x| app(good_bv(n), c.at(x[1 + pi]))));
++            }
++        }
++        tele(c, &tys, &mut vec![], wrap, body)
++    }
++}
++
++/// What `gen_sim` checks of the code before generating anything.
++fn check_code(code: &[Ins], arity: usize, temps: usize) -> Result<(), String> {
++    fn walk(code: &[Ins], locals: usize, top: bool) -> Result<(), String> {
++        for ins in code {
++            match ins {
++                Ins::Loop(b) if top && code.len() == 1 => walk(b, locals, false)?,
++                Ins::Loop(_) => return Err("a loop other than the function's one top-level loop".into()),
++                Ins::If(t, e) => {
++                    walk(t, locals, false)?;
++                    walk(e, locals, false)?
++                }
++                Ins::LocalGet(i) | Ins::LocalSet(i) if *i as usize >= locals => return Err(format!("local {i} out of range")),
++                Ins::Raw(s) => return Err(format!("raw line {s:?}")),
++                Ins::Dup => return Err(format!("{ins:?}: not modelled here")),
++                _ => {}
++            }
++        }
++        Ok(())
++    }
++    walk(code, arity + temps, true)?;
++    match shape(code, vec![], &[]) {
++        Ok(Some(s)) if s == vec![K::W] => Ok(()),
++        other => Err(format!("the body does not run from [] to [word]: {other:?}")),
++    }
++}
++
++fn want_good(nc: usize) -> bool {
++    nc > 0
++}
++
++/// The heap a statement fixes beyond the locals.
++#[derive(Default, Clone)]
++pub struct HeapSpec {
++    /// `(p, off)`: a cell at address `x_p + off`. Its value is one more source parameter, after the non-pointer ones.
++    pub cells: Vec<(usize, u128)>,
++    /// The machine parameters the source does not take (pointers).
++    pub ptrs: Vec<usize>,
++    /// A control: `alloc` that does not bump the allocation pointer.
++    pub stale_hp: bool,
++}
++
++/// `gen_sim_with` over no heap.
++pub fn gen_sim(w: Wasm, code: &[Ins], arity: usize, temps: usize, src: &SrcFn) -> Result<(Expr, Expr), String> {
++    gen_sim_with(w, code, arity, temps, &HeapSpec::default(), src)
++}
++
++/// `Pi R t e. Id(R, CH R (lit1 b) t e, t or e)`: the probe's behaviour at a literal condition (applied to the real
++/// `choose` at the end, where it is `refl`).
++fn probe_ty(c: &mut Cx, ch: At, truth: bool) -> Expr {
++    c.pi(sort(0), |c, r| {
++        c.pi(c.at(r), |c, t| {
++            c.pi(c.at(r), |c, e| {
++                let pick = apps(c.at(ch), vec![c.at(r), lit(1, truth as u128), c.at(t), c.at(e)]);
++                id(c.at(r), pick, c.at(if truth { t } else { e }))
++            })
++        })
++    })
++}
++fn probe_real(truth: bool) -> Expr {
++    Cx::default().lam(sort(0), |c, r| c.lam(c.at(r), |c, t| c.lam(c.at(r), |c, e| refl(c.at(if truth { t } else { e })))))
++}
++
++/// `(proof, statement)` for `code` (a function of `arity` parameters and `temps` temporaries) against `src`, or why the
++/// two do not simulate each other. The kernel is the judge either way: an `Err` is only an early, readable reason.
++///
++/// `spec` is the heap the statement fixes: for every heap `h` and allocation pointer `hp` (`GoodBv`), each cell `(p, off)`
++/// holds its value `cv` at `x_p + off` (`Pi K. Id(R, h (x_p + off) K, K cv)`).
++pub fn gen_sim_with(w: Wasm, code: &[Ins], arity: usize, temps: usize, spec: &HeapSpec, src: &SrcFn) -> Result<(Expr, Expr), String> {
++    check_code(code, arity, temps)?;
++    let g = G { w, n: w.n, m: arity, cells: &spec.cells, ptrs: &spec.ptrs };
++    let (m, nc) = (arity, spec.cells.len());
++    let q = m + nc;
++    let stale = spec.stale_hp;
++    // N gn R z x_0..x_{m-1} cv_0.. hp h km ks rel cell_0.. [ghp]
++    let mut tys: Vec<Ty> = vec![
++        ty!(|_c, _x| nat2()),
++        ty!(|c, x| w.good_nat(c, x[0])),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[2])),
++    ];
++    tys.extend((0..q).map(|_| ty!(|_c, _x| bv_ty(w.n))));
++    tys.push(ty!(|_c, _x| bv_ty(w.n)));
++    tys.push(ty!(|c, x| w.heap(c, x[2])));
++    tys.push(ty!(|c, x| g.ret_m(c, x[2])));
++    tys.push(ty!(|c, x| g.ret_s(c, x[2])));
++    tys.push(ty!(|c, x| g.rel_ty(c, x[2], x[6 + q], x[7 + q])));
++    for k in 0..nc {
++        tys.push(ty!(|c, x| g.cell_ty(c, x[2], x[5 + q], k, &x[4..4 + m], x[4 + m + k])));
++    }
++    if want_good(nc) {
++        tys.push(ty!(|c, x| app(good_bv(w.n), c.at(x[4 + q]))));
++        for &pi in &spec.ptrs {
++            tys.push(ty!(|c, x| app(good_bv(w.n), c.at(x[4 + pi]))));
++        }
++    }
++
++    let stmt = tele(&mut Cx::default(), &tys, &mut vec![], &pi, &mut |c, x| {
++        let (fuel, r, z) = (x[0], x[2], x[3]);
++        let args: Vec<At> = x[4..4 + m].to_vec();
++        let cvs: Vec<At> = x[4 + m..4 + q].to_vec();
++        let (hp, h, km, ks) = (x[4 + q], x[5 + q], x[6 + q], x[7 + q]);
++        let (hm, hs) = (g.hm(c, r), g.hs(c, r));
++        let (tm, bm) = (g.tm(c, r, z), g.bm(c, r, z, None, code, stale));
++        let (ts, bs) = (g.ts(c, r, z), g.bs(c, r, None, src));
++        let fr = g.frame(c, r, &args);
++        let mu = w.mkmu(c, r, fr, c.at(hp), c.at(h));
++        let l = app2(apps(c.at(fuel), vec![hm, tm, bm]), mu, c.at(km));
++        let sargs: Vec<Expr> = g.src_args(&args, &cvs).iter().map(|a| c.at(*a)).collect();
++        let rhs = apps(c.at(fuel), [vec![hs, ts, bs], sargs, vec![c.at(ks)]].concat());
++        id(c.at(r), l, rhs)
++    });
++
++    let err: RefCell<Option<String>> = RefCell::new(None);
++    let proof = Cx::default().lam(ch_ty(), |c, ch| {
++        let ht_ty = probe_ty(c, ch, true);
++        c.lam(ht_ty, |c, ht| {
++            let hf_ty = probe_ty(c, ch, false);
++            c.lam(hf_ty, |c, hf| {
++                tele(c, &tys, &mut vec![], &lam, &mut |c, x| {
++                    let (gn, r, z) = (x[1], x[2], x[3]);
++                    let args: Vec<At> = x[4..4 + m].to_vec();
++                    let cvs0: Vec<At> = x[4 + m..4 + q].to_vec();
++                    let (hp0, h, km, ks, rel) = (x[4 + q], x[5 + q], x[6 + q], x[7 + q], x[8 + q]);
++                    let cell_hyps0: Vec<At> = x[9 + q..9 + q + nc].to_vec();
++                    let (hm0, hs0) = (g.hm(c, r), g.hs(c, r));
++                    let (hm, hs) = (c.mark(hm0), c.mark(hs0));
++                    let (tm0, ts0) = (g.tm(c, r, z), g.ts(c, r, z));
++                    let (tm, ts) = (c.mark(tm0), c.mark(ts0));
++                    let bm0 = g.bm(c, r, z, Some(ch), code, stale);
++                    let bm = c.mark(bm0);
++                    let bs0 = g.bs(c, r, Some(ch), src);
++                    let bs = c.mark(bs0);
++                    // the motive at a fuel: the binders, then the two sides
++                    let mot = |c: &mut Cx, mm: Expr| {
++                        let mm = c.mark(mm);
++                        g.binders(c, r, &pi, &mut |c, y| {
++                            let (ya, ycv, loc, hp, hh, kmm, kss) = (&y[1..1 + m], &y[1 + m..1 + q], y[1 + q], y[2 + q], y[3 + q], y[4 + q], y[5 + q]);
++                            let mu = w.mkmu(c, r, c.at(loc), c.at(hp), c.at(hh));
++                            let l = app2(apps(c.at(mm), vec![c.at(hm), c.at(tm), c.at(bm)]), mu, c.at(kmm));
++                            let sargs: Vec<Expr> = g.src_args(ya, ycv).iter().map(|a| c.at(*a)).collect();
++                            let rhs = apps(c.at(mm), [vec![c.at(hs), c.at(ts), c.at(bs)], sargs, vec![c.at(kss)]].concat());
++                            id(c.at(r), l, rhs)
++                        })
++                    };
++                    let motive = c.lam(nat2(), |c, mm| mot(c, c.at(mm)));
++                    let hz = g.binders(c, r, &lam, &mut |c, _| refl(c.at(z)));
++                    let step = c.lam(nat2(), |c, j| {
++                        let ih_ty = mot(c, c.at(j));
++                        c.lam(ih_ty, |c, ih| {
++                            g.binders(c, r, &lam, &mut |c, y| {
++                                let sim = Sim {
++                                    g: &g,
++                                    r,
++                                    ch,
++                                    j,
++                                    ih,
++                                    d: y[0],
++                                    loc: y[1 + q],
++                                    hp: y[2 + q],
++                                    h: y[3 + q],
++                                    km: y[4 + q],
++                                    ks: y[5 + q],
++                                    rel: y[6 + q],
++                                    args: y[1..1 + m].to_vec(),
++                                    cvs: y[1 + m..1 + q].to_vec(),
++                                    hyps: y[7 + q..7 + q + m].to_vec(),
++                                    cell_hyps: y[7 + q + m..7 + q + m + nc].to_vec(),
++                                    ghp: if want_good(nc) { Some(y[7 + q + m + nc]) } else { None },
++                                    gptrs: if want_good(nc) { spec.ptrs.iter().enumerate().map(|(k, &pi)| (pi, y[8 + q + m + nc + k])).collect() } else { vec![] },
++                                    ht,
++                                    hf,
++                                    lem: Lemmas::default(),
++                                };
++                                let mu = w.mkmu(c, r, c.at(y[1 + q]), c.at(y[2 + q]), c.at(y[3 + q]));
++                                let mj = apps(c.at(j), vec![c.at(hm), c.at(tm), c.at(bm)]);
++                                let sj = apps(c.at(j), vec![c.at(hs), c.at(ts), c.at(bs)]);
++                                let m0 = apps(c.at(bm), vec![mj, mu, c.at(y[4 + q])]);
++                                let sargs: Vec<Expr> = g.src_args(&sim.args, &sim.cvs).iter().map(|a| c.at(*a)).collect();
++                                let s0 = apps(c.at(bs), [vec![sj], sargs, vec![c.at(y[5 + q])]].concat());
++                                match sim.sim(c, m0, s0, "body") {
++                                    Ok(p) => p,
++                                    Err(e) => {
++                                        err.borrow_mut().get_or_insert(e);
++                                        refl(m0)
++                                    }
++                                }
++                            })
++                        })
++                    });
++                    let fr = g.frame(c, r, &args);
++                    let slots: Vec<Expr> = (0..m)
++                        .map(|i| {
++                            let a = args[i];
++                            c.lam(arrow(w.v(), c.at(r)), |c, kk| refl(app(c.at(kk), c.at(a))))
++                        })
++                        .collect();
++                    let mut all = vec![motive, hz, step, nat2_lit(0)];
++                    all.extend(args.iter().map(|a| c.at(*a)));
++                    all.extend(cvs0.iter().map(|a| c.at(*a)));
++                    all.extend([fr, c.at(hp0), c.at(h), c.at(km), c.at(ks), c.at(rel)]);
++                    all.extend(slots);
++                    all.extend(cell_hyps0.iter().map(|a| c.at(*a)));
++                    if want_good(nc) {
++                        all.push(c.at(x[9 + q + nc]));
++                        all.extend((0..spec.ptrs.len()).map(|k| c.at(x[10 + q + nc + k])));
++                    }
++                    apps(c.at(gn), all)
++                })
++            })
++        })
++    });
++    if let Some(e) = err.into_inner() {
++        return Err(e);
++    }
++    Ok((apps(proof, vec![choose_fn(), probe_real(true), probe_real(false)]), stmt))
++}
++
++/// The address lemmas, built when a walk first needs one.
++#[derive(Default)]
++struct Lemmas {
++    refl: OnceCell<Expr>,
++    comm: OnceCell<Expr>,
++    region: OnceCell<Expr>,
++    cancel: OnceCell<Expr>,
++    good_add: OnceCell<Expr>,
++}
++
++/// One walk's fixed names.
++struct Sim<'g, 'a> {
++    g: &'g G<'a>,
++    r: At,
++    ch: At,
++    j: At,
++    ih: At,
++    d: At,
++    loc: At,
++    hp: At,
++    h: At,
++    km: At,
++    ks: At,
++    rel: At,
++    args: Vec<At>,
++    cvs: Vec<At>,
++    hyps: Vec<At>,
++    cell_hyps: Vec<At>,
++    ghp: Option<At>,
++    /// `(parameter, GoodBv witness)` for each pointer parameter
++    gptrs: Vec<(usize, At)>,
++    ht: At,
++    hf: At,
++    lem: Lemmas,
++}
++
++/// `\u. \C k. k u : Bool0 -> Bv1`: a bit as a one-bit word (`eq_bit a b` is this of `eq a b`).
++fn fmap() -> Expr {
++    lam(bool0(), lam(sort(1), lam(karrow(1), app(var(0), var(2)))))
++}
++
++impl Sim<'_, '_> {
++    /// What a term in weak head normal form is doing, for the reasons.
++    fn kind(&self, c: &Cx, head: &Expr) -> &'static str {
++        if *head == c.at(self.km) || *head == c.at(self.ks) {
++            "returns"
++        } else if *head == c.at(self.ch) {
++            "branches"
++        } else if *head == c.at(self.j) {
++            "recurses"
++        } else if *head == c.at(self.loc) {
++            "reads a local"
++        } else if *head == c.at(self.h) {
++            "reads the heap"
++        } else {
++            "is stuck"
++        }
++    }
++
++    /// A proof of `Id(R, m, s)`.
++    fn sim(&self, c: &mut Cx, m: Expr, s: Expr, path: &str) -> Result<Expr, String> {
++        tatic_kernel::grow(|| self.sim_step(c, m, s, path))
++    }
++
++    /// The three components of a state in weak head normal form: `(locals, hp, heap)`.
++    fn parts(st: &Expr) -> Option<(Expr, Expr, Expr)> {
++        let tatic_kernel::Node::Pair(_, loc, rest) = whnf(st).node() else { return None };
++        let tatic_kernel::Node::Pair(_, hp, heap) = whnf(&rest).node() else { return None };
++        Some((loc, hp, heap))
++    }
++
++    // ---- addresses
++
++    /// `base + off` as built (not reduced), or the whole address with no offset.
++    fn addr_parts(&self, e: &Expr) -> (Expr, Option<Expr>) {
++        let (h, a) = spine(e);
++        if a.len() == 2 && def_eq(&h, &Op::Add.term(self.g.n)) { (a[0], Some(a[1])) } else { (*e, None) }
++    }
++
++    /// The word a literal builds, if `e` is one.
++    fn as_lit(&self, e: &Expr) -> Option<u128> {
++        let tatic_kernel::Node::Lam(_, b) = e.node() else { return None };
++        let tatic_kernel::Node::Lam(_, b) = b.node() else { return None };
++        let (h, bits) = spine(&b);
++        if h != var(0) || bits.len() != self.g.n {
++            return None;
++        }
++        let mut v = 0u128;
++        for (i, bt) in bits.iter().enumerate() {
++            if def_eq(bt, &t()) {
++                v |= 1 << i;
++            } else if !def_eq(bt, &f()) {
++                return None;
++            }
++        }
++        Some(v)
++    }
++
++    /// A proof of `GoodBv e` for an address built from the allocation pointer, literals and `+`.
++    fn good_of(&self, c: &Cx, e: &Expr) -> Result<Expr, String> {
++        let n = self.g.n;
++        if let Some(gh) = self.ghp {
++            if def_eq(e, &c.at(self.hp)) {
++                return Ok(c.at(gh));
++            }
++        }
++        if let Some((_, gp)) = self.gptrs.iter().find(|(pi, _)| def_eq(e, &c.at(self.args[*pi]))) {
++            return Ok(c.at(*gp));
++        }
++        if let Some(v) = self.as_lit(e) {
++            return Ok(good_lit(n, v));
++        }
++        let (h, a) = spine(e);
++        if a.len() == 2 && def_eq(&h, &Op::Add.term(n)) {
++            let (ga, gb) = (self.good_of(c, &a[0])?, self.good_of(c, &a[1])?);
++            let ad = self.lem.good_add.get_or_init(|| good_add(n).0);
++            return Ok(apps(*ad, vec![a[0], a[1], ga, gb]));
++        }
++        Err("an address is not built from the allocation pointer, literals and +: no GoodBv witness".into())
++    }
++
++    /// For a store at `s` read at `t`: whether the two are the same address, and a proof of
++    /// `Id(Bool0, eq s t, true or false)` (up to conversion of the right side).
++    fn decide(&self, c: &Cx, s: &Expr, t: &Expr) -> Result<(bool, Expr), String> {
++        let n = self.g.n;
++        let eq = |x: &Expr, y: &Expr| app2(eq_bv(n), *x, *y);
++        if def_eq(s, t) {
++            let g = self.good_of(c, s)?;
++            let l = self.lem.refl.get_or_init(|| eq_refl_lemma(n).0);
++            return Ok((true, apps(*l, vec![*s, g])));
++        }
++        let ((bs, os), (bt, ot)) = (self.addr_parts(s), self.addr_parts(t));
++        let zero = lit(n, 0);
++        match (os, ot) {
++            // a store at `p`, a read at `p + j`: commute, then the region lemma `eq (p + j) p = eq j 0`
++            (None, Some(j)) if def_eq(&bs, &bt) => {
++                if !def_eq(&eq(&j, &zero), &f()) {
++                    return Err("a store at p and a read at p + j, with j not a nonzero literal".into());
++                }
++                let (gs, gt, gj) = (self.good_of(c, s)?, self.good_of(c, t)?, self.good_of(c, &j)?);
++                let comm = apps(*self.lem.comm.get_or_init(|| eq_comm_law(n).0), vec![*s, *t, gs, gt]);
++                let reg = apps(*self.lem.region.get_or_init(|| region_law(n, Rg::Ok).0), vec![*s, j, gs, gj]);
++                Ok((false, trans_proof(&bool0(), &eq(s, t), &eq(t, s), &eq(&j, &zero), comm, reg)))
++            }
++            // a store at `p + j`, a read at `p`: the region lemma as it stands
++            (Some(j), None) if def_eq(&bs, t) => {
++                if !def_eq(&eq(&j, &zero), &f()) {
++                    return Err("a store at p + j and a read at p, with j not a nonzero literal".into());
++                }
++                let (gt, gj) = (self.good_of(c, t)?, self.good_of(c, &j)?);
++                Ok((false, apps(*self.lem.region.get_or_init(|| region_law(n, Rg::Ok).0), vec![*t, j, gt, gj])))
++            }
++            // two offsets from one base: cancellation `eq (p + i) (p + j) = eq i j`
++            (Some(i), Some(j)) if def_eq(&bs, &bt) => {
++                if !def_eq(&eq(&i, &j), &f()) {
++                    return Err("two offsets from one base that are not distinct literals".into());
++                }
++                let (gp, gi, gj) = (self.good_of(c, &bs)?, self.good_of(c, &i)?, self.good_of(c, &j)?);
++                Ok((false, apps(*self.lem.cancel.get_or_init(|| cancel_law(n, Rg::Ok).0), vec![bs, i, j, gp, gi, gj])))
++            }
++            _ => Err("cannot tell whether a store address and a read address are the same".into()),
++        }
++    }
++
++    /// `Id(R, CH R w x y, x or y)` from `pe : Id(Bool0, eq s t, true or false)` and `w = eq_bit s t`.
++    fn ch_by(&self, c: &mut Cx, truth: bool, (s, t): (Expr, Expr), x: Expr, y: Expr, pe: Expr) -> Expr {
++        let (r, n) = (self.r, self.g.n);
++        let w = app2(eq_bit(n), s, t);
++        let lit_b = lit(1, truth as u128);
++        let e1 = cong1(&bool0(), &bv_ty(1), &fmap(), app2(eq_bv(n), s, t), bit(truth), pe);
++        let (xm, ym) = (c.mark(x), c.mark(y));
++        let f2 = c.lam(bv_ty(1), |c, u| apps(c.at(self.ch), vec![c.at(r), c.at(u), c.at(xm), c.at(ym)]));
++        let rt = c.at(r);
++        let e2 = cong1(&bv_ty(1), &rt, &f2, w, lit_b, e1);
++        let probe = c.at(if truth { self.ht } else { self.hf });
++        let e3 = apps(probe, vec![c.at(r), x, y]);
++        let pick = |w: Expr| apps(c.at(self.ch), vec![c.at(r), w, x, y]);
++        let tup = (pick(w), pick(lit_b), if truth { x } else { y });
++        trans(c, r, tup, e2, e3)
++    }
++
++    /// A proof of `Id(R, e, K target)` for `e = heap t K` with `heap` a chain of stores over the statement's heap.
++    fn cell_pf(&self, c: &mut Cx, e: Expr, target: &Expr, kk: &Expr) -> Result<Expr, String> {
++        let n = self.g.n;
++        let w = whnf(&e);
++        let (h, a) = spine(&w);
++        if h == c.at(self.h) && a.len() == 2 {
++            let Some(k) = (0..self.g.cells.len()).find(|k| def_eq(&a[0], &self.g.cell_addr(*k, &self.arg_exprs(c)))) else {
++                return Err("a cell is read at an address the statement's cells do not fix".into());
++            };
++            if !def_eq(&c.at(self.cvs[k]), target) {
++                return Err(format!("cell {k} is not written, yet the source's call passes a different value for it"));
++            }
++            return Ok(app(c.at(self.cell_hyps[k]), a[1]));
++        }
++        if h == c.at(self.ch) && a.len() == 4 {
++            let (wh, wa) = spine(&a[1]);
++            if wa.len() != 2 || !def_eq(&wh, &eq_bit(n)) {
++                return Err("a store's address test is not `eq_bit`".into());
++            }
++            let (s, t, x, y) = (wa[0], wa[1], a[2], a[3]);
++            let (same, pe) = self.decide(c, &s, &t)?;
++            let pick = self.ch_by(c, same, (s, t), x, y, pe);
++            if same {
++                if !def_eq(&x, &app(*kk, *target)) {
++                    return Err("the last store to the cell writes a value other than the source's".into());
++                }
++                return Ok(pick);
++            }
++            let rest = self.cell_pf(c, y, target, kk)?;
++            return Ok(trans(c, self.r, (w, y, app(*kk, *target)), pick, rest));
++        }
++        Err("a cell's heap is neither the statement's heap nor a store over it".into())
++    }
++
++    fn arg_exprs(&self, c: &Cx) -> Vec<Expr> {
++        self.args.iter().map(|a| c.at(*a)).collect()
++    }
++
++    fn sim_step(&self, c: &mut Cx, m: Expr, s: Expr, path: &str) -> Result<Expr, String> {
++        let n = self.g.n;
++        let (mw, sw) = (whnf(&m), whnf(&s));
++        let ((mh, ma), (sh, sa)) = (spine(&mw), spine(&sw));
++        let (mk, sk) = (self.kind(c, &mh), self.kind(c, &sh));
++
++        // a stuck read of a parameter's slot: rewrite by the slot hypothesis, then go on
++        if mh == c.at(self.loc) && ma.len() == 2 {
++            let Some(i) = (0..self.g.m).find(|i| def_eq(&ma[0], &lit(n, *i as u128))) else {
++                return Err(format!("{path}: reads a local that no parameter or earlier write fixes"));
++            };
++            let next = app(ma[1], c.at(self.args[i]));
++            let rest = self.sim(c, next, s, path)?;
++            let p = app(c.at(self.hyps[i]), ma[1]);
++            return Ok(trans(c, self.r, (mw, next, s), p, rest));
++        }
++        // a stuck read of the heap at a cell the statement fixes: rewrite by the cell's hypothesis, then go on
++        if mh == c.at(self.h) && ma.len() == 2 {
++            let Some(k) = (0..self.g.cells.len()).find(|k| def_eq(&ma[0], &self.g.cell_addr(*k, &self.arg_exprs(c)))) else {
++                return Err(format!("{path}: reads a heap address that no cell fixes"));
++            };
++            let next = app(ma[1], c.at(self.cvs[k]));
++            let rest = self.sim(c, next, s, path)?;
++            let p = app(c.at(self.cell_hyps[k]), ma[1]);
++            return Ok(trans(c, self.r, (mw, next, s), p, rest));
++        }
++        if mh == c.at(self.km) {
++            if sh != c.at(self.ks) {
++                return Err(format!("{path}: the machine {mk} but the source {sk}"));
++            }
++            if ma.len() != 2 || sa.len() != 1 || !def_eq(&ma[0], &sa[0]) {
++                return Err(format!("{path}: both return, with different values"));
++            }
++            let Some((loc2, hp2, h2)) = Self::parts(&ma[1]) else {
++                return Err(format!("{path}: returns in a state that is not a triple"));
++            };
++            return Ok(apps(c.at(self.rel), vec![ma[0], loc2, hp2, h2]));
++        }
++        // a store's address test (`eq_bit s t`) in the machine alone: decide it, take the branch it picks, go on
++        if mh == c.at(self.ch) && ma.len() == 4 {
++            let (wh, wa) = spine(&ma[1]);
++            if wa.len() == 2 && def_eq(&wh, &eq_bit(n)) {
++                let (same, pe) = self.decide(c, &wa[0], &wa[1]).map_err(|e| format!("{path}: {e}"))?;
++                let pick = self.ch_by(c, same, (wa[0], wa[1]), ma[2], ma[3], pe);
++                let next = if same { ma[2] } else { ma[3] };
++                let rest = self.sim(c, next, s, path)?;
++                return Ok(trans(c, self.r, (mw, next, s), pick, rest));
++            }
++        }
++        if mh == c.at(self.ch) {
++            if sh != c.at(self.ch) || ma.len() != 4 || sa.len() != 4 {
++                return Err(format!("{path}: the machine {mk} but the source {sk}"));
++            }
++            if !def_eq(&ma[1], &sa[1]) {
++                return Err(format!("{path}: the branch conditions differ"));
++            }
++            let pt = self.sim(c, ma[2], sa[2], &format!("{path}/then"))?;
++            let pe = self.sim(c, ma[3], sa[3], &format!("{path}/else"))?;
++            let cd = c.mark(ma[1]);
++            return Ok(cong(c, self.r, self.ch, cd, (ma[2], sa[2], pt), (ma[3], sa[3], pe)));
++        }
++        if mh == c.at(self.j) {
++            let (m_args, nsrc) = (self.g.m, self.g.nsrc());
++            if sh != c.at(self.j) || ma.len() != 5 || sa.len() != 3 + nsrc + 1 {
++                return Err(format!("{path}: the machine {mk} but the source {sk}"));
++            }
++            let Some((loc2, hp2, h2)) = Self::parts(&ma[3]) else {
++                return Err(format!("{path}: the state at the recursion is not a triple"));
++            };
++            let (k2, ks2) = (ma[4], sa[sa.len() - 1]);
++            let src_args = &sa[3..3 + nsrc];
++            // each machine parameter's next value: the source's argument (the slot must hold it, or be untouched with the
++            // source's argument the parameter itself), or for a pointer the machine's own, read off the new frame
++            let mut next_args: Vec<Expr> = vec![];
++            let mut untouched = vec![false; m_args];
++            let mut si = 0;
++            for i in 0..m_args {
++                if self.g.ptrs.contains(&i) {
++                    let (same, val) = c.under(|c, _| {
++                        let got = whnf(&app2(shift(&loc2, 0, 1), lit(n, i as u128), var(0)));
++                        let same = def_eq(&got, &app2(c.at(self.loc), lit(n, i as u128), var(0)));
++                        let (hd, va) = spine(&got);
++                        let val = if hd == var(0) && va.len() == 1 { Some(shift(&va[0], 0, -1)) } else { None };
++                        (same, val)
++                    });
++                    if same {
++                        next_args.push(c.at(self.args[i]));
++                        untouched[i] = true;
++                    } else if let Some(v) = val {
++                        next_args.push(v);
++                    } else {
++                        return Err(format!("{path}: at the recursion, pointer local {i} is not a plain store"));
++                    }
++                    continue;
++                }
++                let a = &src_args[si];
++                si += 1;
++                let (ok, same) = c.under(|c, _| {
++                    let (kv, l2) = (var(0), shift(&loc2, 0, 1));
++                    let got = app2(l2.clone(), lit(n, i as u128), kv.clone());
++                    let held = def_eq(&got, &app(kv.clone(), shift(a, 0, 1)));
++                    let same = def_eq(&got, &app2(c.at(self.loc), lit(n, i as u128), kv)) && def_eq(&shift(a, 0, 1), &c.at(self.args[i]));
++                    (held, same)
++                });
++                if !ok && !same {
++                    return Err(format!("{path}: at the recursion, local {i} does not hold the source's argument {si}"));
++                }
++                untouched[i] = !ok;
++                next_args.push(*a);
++            }
++            let cv_next: Vec<Expr> = src_args[si..].to_vec();
++            // the cells at the recursion: each must hold the value the source passes, in the heap the machine passes
++            let (h2m, mut cell_proofs) = (c.mark(h2), vec![]);
++            let na: Vec<At> = next_args.iter().map(|a| c.mark(*a)).collect();
++            let cn: Vec<At> = cv_next.iter().map(|a| c.mark(*a)).collect();
++            for k in 0..self.g.cells.len() {
++                let failed: RefCell<Option<String>> = RefCell::new(None);
++                let ne: Vec<Expr> = na.iter().map(|a| c.at(*a)).collect();
++                let addr = c.mark(self.g.cell_addr(k, &ne));
++                let kt = arrow(self.g.v(), c.at(self.r));
++                let p = c.lam(kt, |c, kk| {
++                    let e = app2(c.at(h2m), c.at(addr), c.at(kk));
++                    let (tv, kv) = (c.at(cn[k]), c.at(kk));
++                    match self.cell_pf(c, e, &tv, &kv) {
++                        Ok(p) => p,
++                        Err(e) => {
++                            failed.borrow_mut().get_or_insert(format!("{path}: cell {k} at the recursion: {e}"));
++                            refl(c.at(addr))
++                        }
++                    }
++                });
++                if let Some(e) = failed.into_inner() {
++                    return Err(e);
++                }
++                cell_proofs.push(p);
++            }
++            let ghp_next = if self.ghp.is_some() { Some(self.good_of(c, &hp2)?) } else { None };
++            // each pointer's next value must be good too
++            let mut gp_next: Vec<Expr> = vec![];
++            if self.ghp.is_some() {
++                for (pi, _) in &self.gptrs {
++                    gp_next.push(self.good_of(c, &c.at(na[*pi]))?);
++                }
++            }
++            // the continuation relation, from walking the two continuations under their binders
++            let (k2m, ks2m) = (c.mark(k2), c.mark(ks2));
++            let failed: RefCell<Option<String>> = RefCell::new(None);
++            let w = self.g.w;
++            let rel2 = c.lam(self.g.v(), |c, a| {
++                let hl = w.heap(c, self.r);
++                c.lam(hl, |c, loc| {
++                    c.lam(self.g.v(), |c, hp| {
++                        let hh = w.heap(c, self.r);
++                        c.lam(hh, |c, h| {
++                            let mu = w.mkmu(c, self.r, c.at(loc), c.at(hp), c.at(h));
++                            let (l, r) = (app2(c.at(k2m), c.at(a), mu), app(c.at(ks2m), c.at(a)));
++                            match self.sim(c, l, r, &format!("{path}/after")) {
++                                Ok(p) => p,
++                                Err(e) => {
++                                    failed.borrow_mut().get_or_insert(e);
++                                    refl(l)
++                                }
++                            }
++                        })
++                    })
++                })
++            });
++            if let Some(e) = failed.into_inner() {
++                return Err(e);
++            }
++            let slots: Vec<Expr> = (0..m_args)
++                .map(|i| {
++                    let a = na[i];
++                    c.lam(arrow(self.g.v(), c.at(self.r)), |c, kk| {
++                        if untouched[i] { app(c.at(self.hyps[i]), c.at(kk)) } else { refl(app(c.at(kk), c.at(a))) }
++                    })
++                })
++                .collect();
++            let mut all = vec![c.at(self.d)];
++            all.extend(na.iter().map(|a| c.at(*a)));
++            all.extend(cn.iter().map(|a| c.at(*a)));
++            all.extend([loc2, hp2, h2, k2, ks2, rel2]);
++            all.extend(slots);
++            all.extend(cell_proofs);
++            all.extend(ghp_next);
++            all.extend(gp_next);
++            return Ok(apps(c.at(self.ih), all));
++        }
++        Err(format!("{path}: the machine {mk} but the source {sk}"))
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/tatic-wasm/src/wasm/sim/tests.rs b/crates/tatic-wasm/src/wasm/sim/tests.rs
+new file mode 100644
+index 0000000..50c22d2
+--- /dev/null
++++ b/crates/tatic-wasm/src/wasm/sim/tests.rs
+@@ -0,0 +1,518 @@
++//! SPIKE tests for the generator: `gen_spike` (six functions, three widths) and `gen_spike_controls` (mutants).
++use super::*;
++use std::time::Instant;
++
++/// The mini source language: a mirror of what a `Term` walk produces, for these tests only (the real one is
++/// `tatic::proof::gate::Source`).
++#[derive(Clone, Debug)]
++enum Src {
++    Param(usize),
++    Lit(u128),
++    /// A word operator on two operands.
++    Prim(Op, Box<Src>, Box<Src>),
++    /// `If(cmp, a, b, then, else)`: `cmp a b` chooses.
++    If(Op, Box<Src>, Box<Src>, Box<Src>, Box<Src>),
++    /// A call of the function itself (non-tail or tail).
++    SelfCall(Vec<Src>),
++    /// The value of heap cell `k` (`gen_sim_cells`).
++    Cell(usize),
++}
++
++fn cps(e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++    tatic_kernel::grow(|| match s {
++        Src::Param(i) => k(c, c.at(e.params[*i])),
++        Src::Lit(v) => k(c, lit(e.n, *v & low_bits(e.n))),
++        Src::Cell(i) => k(c, c.at(e.cells[*i])),
++        Src::Prim(o, a, b) => cps(e, c, a, &|c, x| {
++            let x = c.mark(x);
++            cps(e, c, b, &|c, y| k(c, app2(o.term(e.n), c.at(x), y)))
++        }),
++        Src::If(o, a, b, t, f) => cps(e, c, a, &|c, x| {
++            let x = c.mark(x);
++            cps(e, c, b, &|c, y| {
++                let cond = app2(o.term(e.n), c.at(x), y);
++                let (t2, f2) = (cps(e, c, t, k), cps(e, c, f, k));
++                e.choose(c, cond, t2, f2)
++            })
++        }),
++        Src::SelfCall(args) => call_args(e, c, args, vec![], k),
++    })
++}
++
++fn call_args(e: &SEnv, c: &mut Cx, args: &[Src], done: Vec<At>, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++    match args.split_first() {
++        None => e.call(c, &done, k),
++        Some((a, rest)) => cps(e, c, a, &|c, x| {
++            let mut d2 = done.clone();
++            d2.push(c.mark(x));
++            call_args(e, c, rest, d2, k)
++        }),
++    }
++}
++
++fn p(i: usize) -> Src {
++    Src::Param(i)
++}
++fn l(v: u128) -> Src {
++    Src::Lit(v)
++}
++fn pr(o: Op, a: Src, b: Src) -> Src {
++    Src::Prim(o, Box::new(a), Box::new(b))
++}
++fn iff(o: Op, a: Src, b: Src, t: Src, e: Src) -> Src {
++    Src::If(o, Box::new(a), Box::new(b), Box::new(t), Box::new(e))
++}
++fn lg(i: u32) -> Ins {
++    Ins::LocalGet(i)
++}
++fn ls(i: u32) -> Ins {
++    Ins::LocalSet(i)
++}
++fn op(o: Op) -> Ins {
++    Ins::Op(o)
++}
++fn pu(v: i64) -> Ins {
++    Ins::Push(v)
++}
++/// `loop { cond; if (t) else (e) }`, the function's body.
++fn func(cond: Vec<Ins>, t: Vec<Ins>, e: Vec<Ins>) -> Vec<Ins> {
++    vec![Ins::Loop([cond, vec![Ins::If(t, e)]].concat())]
++}
++
++/// name, code, arity, temps, source
++type Case = (&'static str, Vec<Ins>, usize, usize, Src);
++
++fn sum() -> Case {
++    let cond = vec![lg(0), pu(0), op(Op::LeS)];
++    let e = vec![lg(0), pu(1), op(Op::Sub), ls(2), lg(1), lg(0), op(Op::Add), ls(3), lg(2), ls(0), lg(3), ls(1), Ins::Br(0)];
++    let src = iff(Op::LeS, p(0), l(0), p(1), Src::SelfCall(vec![pr(Op::Sub, p(0), l(1)), pr(Op::Add, p(1), p(0))]));
++    ("sum", func(cond, vec![lg(1)], e), 2, 2, src)
++}
++fn fact() -> Case {
++    let e = vec![lg(0), lg(0), pu(1), op(Op::Sub), Ins::Call, op(Op::Mul)];
++    let src = iff(Op::LeS, p(0), l(0), l(1), pr(Op::Mul, p(0), Src::SelfCall(vec![pr(Op::Sub, p(0), l(1))])));
++    ("fact", func(vec![lg(0), pu(0), op(Op::LeS)], vec![pu(1)], e), 1, 0, src)
++}
++fn fib() -> Case {
++    let e = vec![lg(0), pu(1), op(Op::Sub), Ins::Call, lg(0), pu(2), op(Op::Sub), Ins::Call, op(Op::Add)];
++    let rec = |k| Src::SelfCall(vec![pr(Op::Sub, p(0), l(k))]);
++    let src = iff(Op::LeS, p(0), l(1), p(0), pr(Op::Add, rec(1), rec(2)));
++    ("fib", func(vec![lg(0), pu(1), op(Op::LeS)], vec![lg(0)], e), 1, 0, src)
++}
++fn nest() -> Case {
++    let e = vec![lg(0), pu(1), op(Op::Sub), Ins::Call, Ins::Call];
++    let src = iff(Op::LeS, p(0), l(0), p(0), Src::SelfCall(vec![Src::SelfCall(vec![pr(Op::Sub, p(0), l(1))])]));
++    ("nest", func(vec![lg(0), pu(0), op(Op::LeS)], vec![lg(0)], e), 1, 0, src)
++}
++/// unseen after the freeze: `tri x = if x<=0 then 0 else x + tri(x-1) + 1`
++fn tri() -> Case {
++    let e = vec![lg(0), lg(0), pu(1), op(Op::Sub), Ins::Call, op(Op::Add), pu(1), op(Op::Add)];
++    let rec = Src::SelfCall(vec![pr(Op::Sub, p(0), l(1))]);
++    let src = iff(Op::LeS, p(0), l(0), l(0), pr(Op::Add, pr(Op::Add, p(0), rec), l(1)));
++    ("tri", func(vec![lg(0), pu(0), op(Op::LeS)], vec![pu(0)], e), 1, 0, src)
++}
++/// unseen after the freeze: `pw n acc p = if n<=0 then acc else pw (n-1) (acc+p) (p+p)`
++fn pow2sum() -> Case {
++    let e = vec![
++        lg(0), pu(1), op(Op::Sub), ls(3), lg(1), lg(2), op(Op::Add), ls(4), lg(2), lg(2), op(Op::Add), ls(2), lg(3), ls(0), lg(4),
++        ls(1), Ins::Br(0),
++    ];
++    let src = iff(
++        Op::LeS,
++        p(0),
++        l(0),
++        p(1),
++        Src::SelfCall(vec![pr(Op::Sub, p(0), l(1)), pr(Op::Add, p(1), p(2)), pr(Op::Add, p(2), p(2))]),
++    );
++    ("pow2sum", func(vec![lg(0), pu(0), op(Op::LeS)], vec![lg(1)], e), 3, 2, src)
++}
++
++// ---- written after sim.rs was frozen (sha256 0f509c17..., 11:21): no generator change for any of these
++/// `dbl x = if x<=0 then 1 else dbl(x-1) + dbl(x-1)`
++fn dbl() -> Case {
++    let rec = || Src::SelfCall(vec![pr(Op::Sub, p(0), l(1))]);
++    let call = [lg(0), pu(1), op(Op::Sub), Ins::Call];
++    let e = [&call[..], &call[..], &[op(Op::Add)]].concat();
++    let src = iff(Op::LeS, p(0), l(0), l(1), pr(Op::Add, rec(), rec()));
++    ("dbl", func(vec![lg(0), pu(0), op(Op::LeS)], vec![pu(1)], e), 1, 0, src)
++}
++/// `mulloop n acc = if n<=0 then acc else mulloop (n-1) (acc*n)`, one temp
++fn mulloop() -> Case {
++    let e = vec![lg(0), pu(1), op(Op::Sub), ls(2), lg(1), lg(0), op(Op::Mul), ls(1), lg(2), ls(0), Ins::Br(0)];
++    let src = iff(Op::LeS, p(0), l(0), p(1), Src::SelfCall(vec![pr(Op::Sub, p(0), l(1)), pr(Op::Mul, p(1), p(0))]));
++    ("mulloop", func(vec![lg(0), pu(0), op(Op::LeS)], vec![lg(1)], e), 2, 1, src)
++}
++/// `g x = if x<=2 then x else g(g(x-2)) * x + g(x-3)`
++fn mixed() -> Case {
++    let e = vec![
++        lg(0), pu(2), op(Op::Sub), Ins::Call, Ins::Call, lg(0), op(Op::Mul), lg(0), pu(3), op(Op::Sub), Ins::Call, op(Op::Add),
++    ];
++    let rec = |k| Src::SelfCall(vec![pr(Op::Sub, p(0), l(k))]);
++    let inner = Src::SelfCall(vec![rec(2)]);
++    let src = iff(Op::LeS, p(0), l(2), p(0), pr(Op::Add, pr(Op::Mul, inner, p(0)), rec(3)));
++    ("mixed", func(vec![lg(0), pu(2), op(Op::LeS)], vec![lg(0)], e), 1, 0, src)
++}
++
++/// A proof of one function does not check against another's statement: the kernel is the judge, not the walk.
++#[test]
++fn gen_spike_kernel_rejects_a_proof_for_another_statement() {
++    std::thread::scope(|s| {
++        std::thread::Builder::new()
++            .stack_size(tatic_kernel::CHECK_STACK)
++            .spawn_scoped(s, || {
++                let ((_, a, b, c, d), (_, e, f, g, h)) = (fact(), nest());
++                let (proof, own) = gen_sim(Wasm { n: 8 }, &a, b, c, &|cx, en, k| cps(en, cx, &d, k)).unwrap();
++                let (_, other) = gen_sim(Wasm { n: 8 }, &e, f, g, &|cx, en, k| cps(en, cx, &h, k)).unwrap();
++                assert!(tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &own).is_ok());
++                let r = tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &other);
++                println!("KERNEL-NEG: {}", r.as_ref().err().map(|e| e.chars().take(100).collect::<String>()).unwrap_or_default());
++                assert!(r.is_err(), "the kernel accepted fact's proof for nest's statement");
++            })
++            .unwrap()
++            .join()
++            .unwrap()
++    })
++}
++
++/// Build and check on one `CHECK_STACK` thread (an `Expr` does not cross threads).
++fn run(n: usize, case: &Case) -> Result<(), String> {
++    std::thread::scope(|s| {
++        std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(s, || run_here(n, case)).unwrap().join().unwrap()
++    })
++}
++
++fn run_here(n: usize, case: &Case) -> Result<(), String> {
++    let (name, code, arity, temps, src) = case;
++    let t0 = Instant::now();
++    let (proof, stmt) = gen_sim(Wasm { n }, code, *arity, *temps, &|cx, en, k| cps(en, cx, src, k))?;
++    let build = t0.elapsed();
++    let t1 = Instant::now();
++    let r = tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &stmt);
++    println!(
++        "GEN n={n} {name}: build {:.1} ms, check {:.1} ms{}",
++        build.as_secs_f64() * 1e3,
++        t1.elapsed().as_secs_f64() * 1e3,
++        if r.is_ok() { "" } else { " (CHECK FAILED)" }
++    );
++    r.map_err(|e| format!("kernel: {}", e.chars().take(300).collect::<String>()))
++}
++
++#[test]
++fn gen_spike() {
++    let mut failed = vec![];
++    for n in [4, 24, 64] {
++        for case in [sum(), fact(), fib(), nest(), tri(), pow2sum(), dbl(), mulloop(), mixed()] {
++            if let Err(e) = run(n, &case) {
++                println!("GEN n={n} {}: FAIL {}", case.0, e.chars().take(300).collect::<String>());
++                failed.push((n, case.0));
++            }
++        }
++    }
++    assert!(failed.is_empty(), "failed: {failed:?}");
++}
++
++/// the body is `[Loop([cond.., If(t, e)])]`
++fn arms(code: &mut [Ins]) -> (&mut Vec<Ins>, &mut Vec<Ins>) {
++    let Ins::Loop(b) = &mut code[0] else { panic!() };
++    let Some(Ins::If(t, e)) = b.last_mut() else { panic!() };
++    (t, e)
++}
++
++fn mutate(mut c: Case, f: &dyn Fn(&mut [Ins])) -> Case {
++    f(&mut c.1);
++    c
++}
++
++/// Mutated code against the intended source: each must be rejected, by the generator's walk or the kernel.
++#[test]
++fn gen_spike_controls() {
++    let cases: Vec<(&str, Case)> = vec![
++        (
++            "operator swapped (sum: acc+n -> acc-n)",
++            mutate(sum(), &|c| {
++                let (_, e) = arms(c);
++                let k = e.iter().position(|i| *i == Ins::Op(Op::Add)).unwrap();
++                e[k] = Ins::Op(Op::Sub);
++            }),
++        ),
++        (
++            "call dropped (fact)",
++            mutate(fact(), &|c| {
++                let (_, e) = arms(c);
++                e.retain(|i| *i != Ins::Call);
++            }),
++        ),
++        (
++            "call argument off by one (fact: n-1 -> n-2)",
++            mutate(fact(), &|c| {
++                let (_, e) = arms(c);
++                let k = e.iter().position(|i| *i == Ins::Push(1)).unwrap();
++                e[k] = Ins::Push(2);
++            }),
++        ),
++        (
++            "branches swapped (fact)",
++            mutate(fact(), &|c| {
++                let (t, e) = arms(c);
++                std::mem::swap(t, e);
++            }),
++        ),
++        (
++            "wrong local.set (sum: local.set 0 -> 2)",
++            mutate(sum(), &|c| {
++                let (_, e) = arms(c);
++                let k = e.iter().position(|i| *i == Ins::LocalSet(0)).unwrap();
++                e[k] = Ins::LocalSet(2);
++            }),
++        ),
++    ];
++    let mut accepted = vec![];
++    for n in [4, 24] {
++        for (what, case) in &cases {
++            match run(n, case) {
++                Ok(()) => accepted.push((n, *what)),
++                Err(e) => println!("CONTROL n={n} {what}: rejected: {}", e.chars().take(100).collect::<String>()),
++            }
++        }
++    }
++    assert!(accepted.is_empty(), "accepted: {accepted:?}");
++}
++
++// ---- i3: the heap. A function whose frame holds a pointer to a record; the statement is over every heap holding the
++// record's cells, and the source takes the cells' values as parameters.
++
++/// name, code, arity, temps, source, spec
++type HCase = (&'static str, Vec<Ins>, usize, usize, Src, HeapSpec);
++
++fn ld(off: i64) -> Vec<Ins> {
++    vec![pu(off), op(Op::Add), Ins::Load]
++}
++fn cat(parts: Vec<Vec<Ins>>) -> Vec<Ins> {
++    parts.into_iter().flatten().collect()
++}
++
++/// `capt p n acc = if n <= 0 then acc else capt p (n-1) (acc + cell[p+8])`, the cell read each iteration.
++fn capt() -> HCase {
++    let e = cat(vec![
++        vec![lg(1), pu(1), op(Op::Sub), ls(3), lg(2), lg(0)],
++        ld(8),
++        vec![op(Op::Add), ls(4), lg(3), ls(1), lg(4), ls(2), Ins::Br(0)],
++    ]);
++    let src = iff(Op::LeS, p(0), l(0), p(1), Src::SelfCall(vec![pr(Op::Sub, p(0), l(1)), pr(Op::Add, p(1), Src::Cell(0)), Src::Cell(0)]));
++    let spec = HeapSpec { cells: vec![(0, 8)], ptrs: vec![0], stale_hp: false };
++    ("capt", func(vec![lg(1), pu(0), op(Op::LeS)], vec![lg(2)], e), 3, 2, src, spec)
++}
++
++/// `cellread p = cell[p+8]`, no loop.
++fn cellread() -> HCase {
++    let code = vec![Ins::Loop(ld_of(vec![lg(0)], 8))];
++    let spec = HeapSpec { cells: vec![(0, 8)], ptrs: vec![0], stale_hp: false };
++    ("cellread", code, 1, 0, Src::Cell(0), spec)
++}
++/// `ptrloop p n acc`: `sum` with an unused pointer first.
++fn ptrloop() -> HCase {
++    let cond = vec![lg(1), pu(0), op(Op::LeS)];
++    let e = vec![lg(1), pu(1), op(Op::Sub), ls(3), lg(2), lg(1), op(Op::Add), ls(4), lg(3), ls(1), lg(4), ls(2), Ins::Br(0)];
++    let src = iff(Op::LeS, p(0), l(0), p(1), Src::SelfCall(vec![pr(Op::Sub, p(0), l(1)), pr(Op::Add, p(1), p(0))]));
++    ("ptrloop", func(cond, vec![lg(2)], e), 3, 2, src, HeapSpec { cells: vec![], ptrs: vec![0], stale_hp: false })
++}
++fn stv(base: u32, off: i64, val: u32) -> Vec<Ins> {
++    vec![lg(base), pu(off), op(Op::Add), lg(val), Ins::Store]
++}
++
++/// The record function `g n v = if n <= 0 then v else g (n-1) (v+n)` over a record `p` (`n` at `p+8`, `v` at `p+16`).
++/// How the else arm passes the next record is `how`.
++#[derive(Clone, Copy, PartialEq)]
++enum Pass {
++    /// a fresh record: `alloc 24`, the two cells stored, the call on it
++    Fresh,
++    /// the same plus a header word stored at the record's base, last
++    FreshHeader,
++    /// the same record, updated in place
++    InPlace,
++}
++
++struct Mut {
++    /// the condition reads this offset instead of 8
++    cond_off: i64,
++    /// the two cell stores' offsets swapped
++    swap: bool,
++    /// the first store's value is `t1 + 1`
++    wrong_value: bool,
++    /// (in place) `t2` is computed after `n` is overwritten
++    read_after_store: bool,
++    stale_hp: bool,
++}
++const NOMUT: Mut = Mut { cond_off: 8, swap: false, wrong_value: false, read_after_store: false, stale_hp: false };
++
++fn recfn(name: &'static str, how: Pass, m: Mut) -> HCase {
++    let (n_off, v_off) = if m.swap { (16, 8) } else { (8, 16) };
++    let t1 = cat(vec![vec![lg(0)], ld(8), vec![pu(1), op(Op::Sub), ls(1)]]);
++    let t1b = if m.wrong_value { vec![lg(1), pu(1), op(Op::Add), ls(1)] } else { vec![] };
++    let t2 = cat(vec![vec![lg(0)], ld(16), vec![lg(0)], ld(8), vec![op(Op::Add), ls(2)]]);
++    let rec = match how {
++        Pass::InPlace if m.read_after_store => cat(vec![t1, t1b, stv(0, 8, 1), t2, stv(0, 16, 2), vec![lg(0), Ins::Call]]),
++        Pass::InPlace => cat(vec![t1, t1b, t2, stv(0, n_off, 1), stv(0, v_off, 2), vec![lg(0), Ins::Call]]),
++        _ => cat(vec![
++            t1,
++            t1b,
++            t2,
++            vec![pu(24), Ins::Alloc, ls(3)],
++            stv(3, n_off, 1),
++            stv(3, v_off, 2),
++            if how == Pass::FreshHeader { vec![lg(3), pu(7), Ins::Store] } else { vec![] },
++            vec![lg(3), Ins::Call],
++        ]),
++    };
++    let cond = cat(vec![vec![lg(0)], ld(m.cond_off), vec![pu(0), op(Op::LeS)]]);
++    let then = cat(vec![vec![lg(0)], ld(16)]);
++    let src = iff(
++        Op::LeS,
++        Src::Cell(0),
++        l(0),
++        Src::Cell(1),
++        Src::SelfCall(vec![pr(Op::Sub, Src::Cell(0), l(1)), pr(Op::Add, Src::Cell(1), Src::Cell(0))]),
++    );
++    let spec = HeapSpec { cells: vec![(0, 8), (0, 16)], ptrs: vec![0], stale_hp: m.stale_hp };
++    (name, func(cond, then, rec), 1, 3, src, spec)
++}
++
++fn ld_of(base: Vec<Ins>, off: i64) -> Vec<Ins> {
++    cat(vec![base, ld(off)])
++}
++
++fn run_h(n: usize, case: &HCase) -> Result<(), String> {
++    std::thread::scope(|s| {
++        std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(s, || run_h_here(n, case)).unwrap().join().unwrap()
++    })
++}
++
++fn run_h_here(n: usize, case: &HCase) -> Result<(), String> {
++    let (name, code, arity, temps, src, spec) = case;
++    let t0 = Instant::now();
++    let (proof, stmt) = gen_sim_with(Wasm { n }, code, *arity, *temps, spec, &|cx, en, k| cps(en, cx, src, k))?;
++    let build = t0.elapsed();
++    let t1 = Instant::now();
++    let r = tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &stmt);
++    println!(
++        "HEAP n={n} {name}: build {:.1} ms, check {:.1} ms{}",
++        build.as_secs_f64() * 1e3,
++        t1.elapsed().as_secs_f64() * 1e3,
++        if r.is_ok() { "" } else { " (CHECK FAILED)" }
++    );
++    if let Err(e) = &r {
++        if std::env::var("HEAP_FULL").is_ok() {
++            println!("KERNEL-ERR-LEN {}", e.len());
++            if let Ok(p) = std::env::var("HEAP_DUMP") {
++                std::fs::write(p, e).unwrap();
++            }
++            let i = e.find("expected").unwrap_or(0);
++            println!("KERNEL-ERR-HEAD {}", e.chars().take(400).collect::<String>());
++            println!("KERNEL-ERR-EXPECTED {}", e.chars().skip(e[..i].chars().count()).take(900).collect::<String>());
++        }
++    }
++    r.map_err(|e| format!("kernel: {}", e.chars().take(300).collect::<String>()))
++}
++
++/// `recfn` with the cells at `p` and `p+8`, and a second allocation after the record's: a one-word object whose header is
++/// stored at its base. With the pointer bumped it lies after the record; with a stale pointer it is the record's first cell.
++fn two_alloc(name: &'static str, stale_hp: bool) -> HCase {
++    let rd = |off: i64| if off == 0 { vec![lg(0), Ins::Load] } else { ld_of(vec![lg(0)], off) };
++    let code = func(
++        cat(vec![rd(0), vec![pu(0), op(Op::LeS)]]),
++        rd(8),
++        cat(vec![
++            rd(0),
++            vec![pu(1), op(Op::Sub), ls(1)],
++            rd(8),
++            rd(0),
++            vec![op(Op::Add), ls(2), pu(16), Ins::Alloc, ls(3), lg(3), lg(1), Ins::Store],
++            stv(3, 8, 2),
++            vec![pu(8), Ins::Alloc, ls(4), lg(4), pu(7), Ins::Store, lg(3), Ins::Call],
++        ]),
++    );
++    let src = iff(
++        Op::LeS,
++        Src::Cell(0),
++        l(0),
++        Src::Cell(1),
++        Src::SelfCall(vec![pr(Op::Sub, Src::Cell(0), l(1)), pr(Op::Add, Src::Cell(1), Src::Cell(0))]),
++    );
++    (name, code, 1, 4, src, HeapSpec { cells: vec![(0, 0), (0, 8)], ptrs: vec![0], stale_hp })
++}
++
++/// `capt` with its read at another offset (`ld(16)`), or with `n-1` stored over the cell before the read.
++fn capt_mut(clobber: bool, off: i64) -> HCase {
++    let mut c = capt();
++    let e = cat(vec![
++        vec![lg(1), pu(1), op(Op::Sub), ls(3)],
++        if clobber { stv(0, 8, 3) } else { vec![] },
++        vec![lg(2), lg(0)],
++        ld(off),
++        vec![op(Op::Add), ls(4), lg(3), ls(1), lg(4), ls(2), Ins::Br(0)],
++    ]);
++    c.1 = func(vec![lg(1), pu(0), op(Op::LeS)], vec![lg(2)], e);
++    c.0 = if clobber { "capt-clobber" } else { "capt-wrong-offset" };
++    c
++}
++
++/// Mutants of the heap cases: each must be rejected, by the walk or the kernel (`stale-hp` is reported either way).
++#[test]
++fn heap_controls() {
++    let m = |f: &dyn Fn(&mut Mut)| {
++        let mut x = NOMUT;
++        f(&mut x);
++        x
++    };
++    let cases: Vec<(&str, HCase)> = vec![
++        ("loop reads the cell at the wrong offset", capt_mut(false, 16)),
++        ("loop overwrites its own cell with n-1 before reading it", capt_mut(true, 8)),
++        ("record: the condition reads the wrong offset", recfn("c-cond-off", Pass::Fresh, m(&|x| x.cond_off = 16))),
++        ("record: cell stores' offsets swapped", recfn("c-swap", Pass::Fresh, m(&|x| x.swap = true))),
++        ("record: the new n is stored one too large", recfn("c-value", Pass::Fresh, m(&|x| x.wrong_value = true))),
++        ("in place: the offsets swapped", recfn("c-ip-swap", Pass::InPlace, m(&|x| x.swap = true))),
++        ("in place: the new n is stored one too large", recfn("c-ip-value", Pass::InPlace, m(&|x| x.wrong_value = true))),
++        ("in place: n overwritten before v+n reads it", recfn("c-ip-clobber", Pass::InPlace, m(&|x| x.read_after_store = true))),
++        ("record: alloc does not bump the pointer", recfn("c-stale-hp", Pass::Fresh, m(&|x| x.stale_hp = true))),
++        ("two allocations: alloc does not bump the pointer", two_alloc("c-two-stale", true)),
++    ];
++    let mut accepted = vec![];
++    for n in [8, 24] {
++        for (what, case) in &cases {
++            match run_h(n, case) {
++                Ok(()) => accepted.push((n, *what)),
++                Err(e) => println!("HCONTROL n={n} {what}: rejected: {}", e.chars().take(140).collect::<String>()),
++            }
++        }
++    }
++    println!("HCONTROL accepted: {accepted:?}");
++    assert!(accepted.iter().all(|(_, w)| *w == "record: alloc does not bump the pointer"), "accepted: {accepted:?}");
++}
++
++#[test]
++fn heap_spike() {
++    let sizes: Vec<usize> = std::env::var("HEAP_N").map(|s| s.split(',').map(|x| x.parse().unwrap()).collect()).unwrap_or(vec![8, 24, 64]);
++    let mut failed = vec![];
++    for n in sizes {
++        let only = std::env::var("HEAP_ONLY").ok();
++        let good = [
++            cellread(),
++            ptrloop(),
++            capt(),
++            recfn("fresh", Pass::Fresh, NOMUT),
++            recfn("fresh-header", Pass::FreshHeader, NOMUT),
++            recfn("in-place", Pass::InPlace, NOMUT),
++            two_alloc("two-alloc", false),
++        ];
++        for case in good {
++            if only.as_deref().is_some_and(|o| o != case.0) {
++                continue;
++            }
++            if let Err(e) = run_h(n, &case) {
++                println!("HEAP n={n} {}: FAIL {}", case.0, e.chars().take(300).collect::<String>());
++                failed.push((n, case.0));
++            }
++        }
++    }
++    assert!(failed.is_empty(), "failed: {failed:?}");
++}
+\ No newline at end of file
+diff --git a/crates/tatic/src/proof/gate.rs b/crates/tatic/src/proof/gate.rs
+index a06db69..38976c3 100644
+--- a/crates/tatic/src/proof/gate.rs
++++ b/crates/tatic/src/proof/gate.rs
+@@ -13,7 +13,8 @@
+ 
+ use hashbrown::HashSet;
+ use tatic_kernel::{app2, id, refl, scoped, sort, Expr};
+-use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, Ty};
++use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, At, Cx, Ty};
++use tatic_wasm::wasm::sim::{gen_sim, SEnv};
+ use tatic_wasm::wasm::{choose, mkpair, nat2_lit, well_formed, Ins, Wasm, K};
+ 
+ use crate::jit::compile::tree_size;
+@@ -123,55 +124,154 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
+     ];
+     tys.extend((0..m).map(|_| ty!(|_c, _x| w.v())));
+     tys.push(ty!(|c, x| c.at(x[0])));
+-    tys.push(ty!(|c, x| w.mem(c, x[1])));
++    // SPIKE (e1): the state is (locals, heap); the abstract part is the locals' base, the heap is all zeros
++    tys.push(ty!(|c, x| w.heap(c, x[1])));
+     let (s_at, mu_at) = (4 + m, 5 + m);
+     law(&tys, |c, x| {
+-        let fr = (0..m).rev().fold(c.at(x[mu_at]), |acc, j| w.upd(c, x[1], lit(N, j as u128), c.at(x[4 + j]), acc));
++        let loc = (0..m).rev().fold(c.at(x[mu_at]), |acc, j| w.upd(c, x[1], lit(N, j as u128), c.at(x[4 + j]), acc));
++        let blank = w.zero_heap(c, x[1]);
++        let fr = w.mkmu(c, x[1], loc, lit(N, 0), blank);
+         let p = w.prog(c, code, &[], x[0]);
+         let p = c.mark(p);
+         let fuel = c.mark(nat2_lit(fuel));
+         let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[s_at]), fr);
+-        let (r, k, st, s) = (c.at(x[1]), c.at(x[2]), c.at(x[0]), c.at(x[s_at]));
+-        let qs: Vec<Expr> = (0..m).map(|j| c.at(x[4 + j])).collect();
+-        let src = Source { store, qs, r };
+-        let rhs = src.cps(body, &|v| app2(k, mkpair(st, v, s), fr));
++        let r = c.at(x[1]);
++        let (k, st, s, fr) = (x[2], x[0], x[s_at], c.mark(fr));
++        let src = Source { store, qs: x[4..4 + m].to_vec(), r: x[1], n: N, sim: None };
++        let rhs = src.cps(c, body, &|c, v| app2(c.at(k), mkpair(c.at(st), v, c.at(s)), c.at(fr)));
+         (refl(l), id(r, l, rhs))
+     })
+ }
+ 
+-/// The right side's builder over the source term: parameters `qs` (q_j is `$p{j}`) and the answer type `r`.
++/// The right side's builder over the source term: parameters `qs` (q_j is `$p{j}`), the answer type `r`, the width
++/// `n`, and, when the term calls itself, the generator's environment (`sim`: the fixpoint variable and the shared
++/// `choose` hook).
+ struct Source<'a> {
+     store: &'a TermStore,
+-    qs: Vec<Expr>,
+-    r: Expr,
++    qs: Vec<At>,
++    r: At,
++    n: usize,
++    sim: Option<&'a SEnv>,
+ }
+ 
+ impl Source<'_> {
+     /// `h` in continuation-passing form with the meta-continuation `k`, evaluating operands left to right, as the
+     /// lowering emits them. An `If` copies `k` into both arms; in the fragment every `If` is in tail position, so
+-    /// nothing grows.
+-    fn cps(&self, h: Hash, k: &dyn Fn(Expr) -> Expr) -> Expr {
++    /// nothing grows (a term with a self-call is outside the fragment: `sim_check`).
++    fn cps(&self, c: &mut Cx, h: Hash, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
+         // one frame per node and continuation: run on the kernel's growable stack, as `Wasm::seq` does
+-        tatic_kernel::grow(|| self.cps_step(h, k))
++        tatic_kernel::grow(|| self.cps_step(c, h, k))
+     }
+ 
+-    fn cps_step(&self, h: Hash, k: &dyn Fn(Expr) -> Expr) -> Expr {
++    fn cps_step(&self, c: &mut Cx, h: Hash, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++        let n = self.n;
+         match self.store.resolve(h) {
+-            Term::Lit(v) => k(lit(N, (*v as u64 as u128) & low_bits(N))),
++            Term::Lit(v) => k(c, lit(n, (*v as u64 as u128) & low_bits(n))),
+             // de Bruijn 0 is the last parameter; written here, not taken from `shape::local_index`
+-            Term::Var(i) => k(self.qs[self.qs.len() - 1 - *i as usize].clone()),
++            Term::Var(i) => k(c, c.at(self.qs[self.qs.len() - 1 - *i as usize])),
+             Term::Prim(p, a, b) => {
+-                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
+-                self.cps(*a, &|x| self.cps(*b, &|y| k(app2(o.clone(), x.clone(), y))))
++                let o = op_of(*p).expect("in_fragment admits only table rows").term(n);
++                self.cps(c, *a, &|c, x| {
++                    let x = c.mark(x);
++                    self.cps(c, *b, &|c, y| k(c, app2(o.clone(), c.at(x), y)))
++                })
+             }
+-            Term::If(c, t, e) => {
+-                let Term::Prim(p, a, b) = self.store.resolve(*c) else { unreachable!("in_fragment: an If tests a Prim") };
+-                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
+-                self.cps(*a, &|x| {
+-                    self.cps(*b, &|y| choose(self.r.clone(), app2(o.clone(), x.clone(), y), self.cps(*t, k), self.cps(*e, k)))
++            Term::If(cd, t, e) => {
++                let Term::Prim(p, a, b) = self.store.resolve(*cd) else { unreachable!("in_fragment: an If tests a Prim") };
++                let o = op_of(*p).expect("in_fragment admits only table rows").term(n);
++                self.cps(c, *a, &|c, x| {
++                    let x = c.mark(x);
++                    self.cps(c, *b, &|c, y| {
++                        let cond = app2(o.clone(), c.at(x), y);
++                        let (t2, e2) = (self.cps(c, *t, k), self.cps(c, *e, k));
++                        match self.sim {
++                            Some(env) => env.choose(c, cond, t2, e2),
++                            None => choose(c.at(self.r), cond, t2, e2),
++                        }
++                    })
+                 })
+             }
+-            other => unreachable!("in_fragment admits no {other:?}"),
++            // the fixpoint variable applied to its arguments: `g args (\res. k res)`
++            Term::App(..) => {
++                let env = self.sim.expect("a self-call outside the generator");
++                let mut args = vec![];
++                let mut cur = h;
++                while let Term::App(f, a) = self.store.resolve(cur) {
++                    args.push(*a);
++                    cur = *f;
++                }
++                args.reverse();
++                self.call_args(c, env, &args, vec![], k)
++            }
++            other => unreachable!("sim_check admits no {other:?}"),
++        }
++    }
++
++    /// The arguments evaluated left to right, then the call.
++    fn call_args(&self, c: &mut Cx, env: &SEnv, args: &[Hash], done: Vec<At>, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++        match args.split_first() {
++            None => env.call(c, &done, k),
++            Some((a, rest)) => self.cps(c, *a, &|c, x| {
++                let mut d2 = done.clone();
++                d2.push(c.mark(x));
++                self.call_args(c, env, rest, d2, k)
++            }),
++        }
++    }
++}
++
++/// The body of `h`, a function of `m` parameters (`Rec`-wrapped if it calls itself), if the generator takes it: a body
++/// of parameters, literals and table rows, with `If`s on comparisons, and saturated calls of the function itself (the
++/// self variable is `Var(m)` under the `m` `Abs`).
++pub(crate) fn sim_body(store: &TermStore, h: Hash, m: usize) -> Result<Hash, String> {
++    let mut body = match store.resolve(h) {
++        Term::Rec(inner) => *inner,
++        _ => h,
++    };
++    for _ in 0..m {
++        match store.resolve(body) {
++            Term::Abs(b) => body = *b,
++            other => return Err(format!("fewer than {m} leading lambdas: {other:?}")),
++        }
++    }
++    fn walk(store: &TermStore, h: Hash, m: usize) -> Result<(), String> {
++        match store.resolve(h) {
++            Term::Lit(_) => Ok(()),
++            Term::Var(i) if (*i as usize) < m => Ok(()),
++            Term::Var(i) => Err(format!("free variable {i}")),
++            Term::Prim(p, a, b) => match op_of(*p) {
++                Some(o) if o.kind() == K::W => walk(store, *a, m).and(walk(store, *b, m)),
++                _ => Err(format!("operator {p:?} has no word row")),
++            },
++            Term::If(c, t, e) => match store.resolve(*c) {
++                Term::Prim(p, a, b) if is_comparison(*p) => walk(store, *a, m).and(walk(store, *b, m)).and(walk(store, *t, m)).and(walk(store, *e, m)),
++                other => Err(format!("an If on {other:?}, not a comparison")),
++            },
++            Term::App(..) => {
++                let (mut args, mut cur) = (vec![], h);
++                while let Term::App(f, a) = store.resolve(cur) {
++                    args.push(*a);
++                    cur = *f;
++                }
++                match store.resolve(cur) {
++                    Term::Var(i) if *i as usize == m && args.len() == m => args.iter().try_for_each(|a| walk(store, *a, m)),
++                    other => Err(format!("an application of {other:?} that is not a saturated self-call")),
++                }
++            }
++            other => Err(format!("{other:?} is outside the generator's fragment")),
+         }
+     }
++    walk(store, body, m)?;
++    Ok(body)
+ }
++
++/// `(proof, statement)` that `code` (a function of `m` parameters and `temps` temporaries, as the machine runs it) and
++/// `h` simulate each other at width `n`, from the generator (`tatic_wasm::wasm::sim::gen_sim`) over the real term.
++pub(crate) fn sim_statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], temps: usize, n: usize) -> Result<(Expr, Expr), String> {
++    let body = sim_body(store, h, m)?;
++    gen_sim(Wasm { n }, code, m, temps, &|c, env, k| {
++        let src = Source { store, qs: env.params.clone(), r: env.r, n, sim: Some(env) };
++        src.cps(c, body, k)
++    })
++}
++
+diff --git a/crates/tatic/src/proof/tests.rs b/crates/tatic/src/proof/tests.rs
+index 9e27355..8e55148 100644
+--- a/crates/tatic/src/proof/tests.rs
++++ b/crates/tatic/src/proof/tests.rs
+@@ -28,6 +28,7 @@ fn check_instance_proof(proof: &EquivalenceProof) {
+ 
+ mod basics;
+ mod gate;
++mod gen_real;
+ mod per_instance;
+ mod universal;
+ mod closures;
+diff --git a/crates/tatic/src/proof/tests/gen_real.rs b/crates/tatic/src/proof/tests/gen_real.rs
+new file mode 100644
+index 0000000..a39a2ee
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/gen_real.rs
+@@ -0,0 +1,261 @@
++//! SPIKE (f1, 2026-11-10): the e1 generator (`tatic_wasm::wasm::sim::gen_sim`) driven from tatic's real terms and the
++//! real lowering's instruction lists, with no per-function case. `gen_real` runs the targets, `gen_real_controls` the
++//! mutants of emitted code and the kernel-level negative.
++use std::time::Instant;
++
++use tatic_wasm::ops::Op;
++use tatic_wasm::wasm::Ins;
++
++use crate::jit::compile::{compile_specialised, CompiledFragment, Item};
++use crate::lang::syntax::print;
++use crate::lang::term::{Hash, TermStore};
++use crate::proof::gate::sim_statement;
++use crate::support::samples::{capturing_closure_loop, factorial, fib, partial_application_loop, redundant_arithmetic_recursion, source, twice_inc_5};
++use crate::testing::ins_mutate::mutate;
++use crate::testing::test_corpus::let_bound_factorial_10;
++
++/// The term the gate sees (the specialised one, if `specialise` changed it) and its compiled fragment.
++fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, CompiledFragment) {
++    let mut s = TermStore::new();
++    let h = build(&mut s);
++    let c = compile_specialised(&s, h).expect("compiles");
++    match c.specialised {
++        Some((s2, h2)) => (s2, h2, c.frag),
++        None => (s, h, c.frag),
++    }
++}
++
++/// The lowering's list as the machine's: its `local.set $p{k}` / `local.get $p{k}` are `LocalSet`/`LocalGet` at `k`,
++/// its `local.set $t{k}` / `local.get $t{k}` at `arity + k` (the WAT index space: parameters first, then the declared
++/// `$t` locals), and a one-parameter
++/// `call $f` is `Call`. Every other `Raw` line stays `Raw` and is pushed to `raws`.
++fn lift(code: &[Ins], arity: usize, raws: &mut Vec<String>) -> Vec<Ins> {
++    code.iter()
++        .map(|ins| match ins {
++            Ins::Loop(b) => Ins::Loop(lift(b, arity, raws)),
++            Ins::If(t, e) => Ins::If(lift(t, arity, raws), lift(e, arity, raws)),
++            Ins::Raw(s) => {
++                let temp = |p: &str| s.strip_prefix(p).and_then(|k| k.parse::<u32>().ok());
++                if let Some(k) = temp("local.set $t") {
++                    Ins::LocalSet(arity as u32 + k)
++                } else if let Some(k) = temp("local.set $p") {
++                    Ins::LocalSet(k)
++                } else if let Some(k) = temp("local.get $p") {
++                    Ins::LocalGet(k)
++                } else if let Some(k) = temp("local.get $t") {
++                    Ins::LocalGet(arity as u32 + k)
++                } else if s == "call $f" && arity == 1 {
++                    Ins::Call
++                } else {
++                    raws.push(s.clone());
++                    ins.clone()
++                }
++            }
++            other => other.clone(),
++        })
++        .collect()
++}
++
++/// `Ok((build ms, check ms))` for `n`, or why not. On one `CHECK_STACK` thread (an `Expr` does not cross threads).
++fn prove(s: &TermStore, h: Hash, arity: usize, code: &[Ins], n: usize) -> Result<(f64, f64), String> {
++    let mut raws = vec![];
++    let machine = lift(code, arity, &mut raws);
++    if !raws.is_empty() {
++        raws.dedup();
++        return Err(format!("Raw lines with no Ins: {raws:?}"));
++    }
++    let t0 = Instant::now();
++    let (proof, stmt) = sim_statement(s, h, arity, &machine, arity, n)?;
++    let build = t0.elapsed().as_secs_f64() * 1e3;
++    let t1 = Instant::now();
++    tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &stmt).map_err(|e| format!("kernel: {}", e.chars().take(300).collect::<String>()))?;
++    Ok((build, t1.elapsed().as_secs_f64() * 1e3))
++}
++
++fn on_big_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
++    std::thread::scope(|sc| std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(sc, f).unwrap().join().unwrap())
++}
++
++type Target = (&'static str, fn(&mut TermStore) -> Hash);
++
++fn targets() -> Vec<Target> {
++    vec![
++        ("sum loop (capturing_closure_loop)", capturing_closure_loop),
++        ("sum loop (partial_application_loop)", partial_application_loop),
++        ("factorial", factorial),
++        ("redundant_arithmetic_recursion", redundant_arithmetic_recursion),
++        ("fib", fib),
++        ("direct call 13 (twice_inc_5)", twice_inc_5),
++        ("direct call 34 (let_bound_factorial_10)", let_bound_factorial_10),
++    ]
++}
++
++/// Terms written after `sim.rs` was hashed (d9f576fc..., 12:31): real syntax, the real specialiser and lowering.
++fn unseen() -> Vec<Target> {
++    vec![
++        ("tri", |s| source(s, "rec f n = if n <= 0 then 0 else n + f (n - 1) + 1")),
++        ("dbl", |s| source(s, "rec f n = if n <= 0 then 1 else f (n - 1) + f (n - 1)")),
++        ("mulloop", |s| source(s, "rec f n acc = if n <= 0 then acc else f (n - 1) (acc * n)")),
++        ("mixed", |s| source(s, "rec f n = if n <= 2 then n else f (f (n - 2)) * n + f (n - 3)")),
++        ("pow2sum (3 params)", |s| source(s, "rec f n acc p = if n <= 0 then acc else f (n - 1) (acc + p) (p + p)")),
++        ("eq-guarded loop (==)", |s| source(s, "rec f a b = if a == 0 then b else f (a - 1) (b + a)")),
++        ("two guards, two base cases", |s| source(s, "rec f a b = if a == 0 then b else if b == 0 then a else f (a - 1) (b - 1) + 1")),
++    ]
++}
++
++/// Every function of the module, with its parameter count and the `Raw` lines `lift` cannot map.
++fn raw_report(name: &str, frag: &CompiledFragment) {
++    for item in &frag.module {
++        if let Item::Func { name: f, header, body } = item {
++            let arity = header.matches("(param $p").count();
++            let mut raws = vec![];
++            lift(body, arity, &mut raws);
++            raws.dedup();
++            println!("RAWS {name}: ${f} ({arity} params, header {:?}): {raws:?}", header.split_whitespace().take(6).collect::<Vec<_>>().join(" "));
++        }
++    }
++}
++
++#[test]
++fn gen_real_unseen() {
++    let mut failed = vec![];
++    for (name, build) in unseen() {
++        on_big_stack(|| {
++            let (s, h, frag) = compiled(&build);
++            println!("TERM {name}: {} (arity {})", print(&s, h), frag.arity);
++            for n in [4, 24, 64] {
++                match prove(&s, h, frag.arity, frag.entry(), n) {
++                    Ok((b, k)) => println!("REAL n={n} {name}: build {b:.1} ms, check {k:.1} ms"),
++                    Err(e) => {
++                        println!("REAL n={n} {name}: FAIL {}", e.chars().take(400).collect::<String>());
++                        failed.push((n, name));
++                    }
++                }
++            }
++        });
++    }
++    println!("FAILED: {failed:?}");
++}
++
++#[test]
++fn gen_real() {
++    let mut failed = vec![];
++    for (name, build) in targets() {
++        on_big_stack(|| {
++            let (s, h, frag) = compiled(&build);
++            println!("TERM {name}: {} (arity {})", print(&s, h), frag.arity);
++            println!("CODE {name}: {:?}", frag.entry());
++            raw_report(name, &frag);
++            for n in [4, 24, 64] {
++                match prove(&s, h, frag.arity, frag.entry(), n) {
++                    Ok((b, k)) => println!("REAL n={n} {name}: build {b:.1} ms, check {k:.1} ms"),
++                    Err(e) => {
++                        println!("REAL n={n} {name}: FAIL {}", e.chars().take(400).collect::<String>());
++                        failed.push((n, name));
++                    }
++                }
++            }
++        });
++    }
++    println!("FAILED: {failed:?}");
++}
++
++fn first_in_else(code: &[Ins], f: &dyn Fn(&Ins) -> Option<Ins>) -> Vec<Ins> {
++    let Some(Ins::Loop(body)) = code.first() else { panic!("not a loop") };
++    let mut body = body.clone();
++    let Some(Ins::If(_, e)) = body.last_mut() else { panic!("no If") };
++    let mutated = mutate(e, f);
++    *e = mutated;
++    vec![Ins::Loop(body)]
++}
++
++/// Mutated emitted code against the unchanged term: each must be rejected, by the generator's walk or the kernel.
++#[test]
++fn gen_real_controls() {
++    type Mut = Box<dyn Fn(&[Ins]) -> Vec<Ins> + Sync>;
++    let sub = |o: Op, to: Op| -> Mut { Box::new(move |c| mutate(c, &|i| (*i == Ins::Op(o)).then_some(Ins::Op(to)))) };
++    let cases: Vec<(&str, Target, Mut)> = vec![
++        ("operator: factorial Mul -> Add", ("factorial", factorial), sub(Op::Mul, Op::Add)),
++        ("operator: fib Add -> Sub", ("fib", fib), sub(Op::Add, Op::Sub)),
++        ("operator: sum loop acc + n -> acc - n", ("sum", capturing_closure_loop), Box::new(|c| mutate(c, &|i| (*i == Ins::Op(Op::Add)).then_some(Ins::Op(Op::Sub))))),
++        ("condition: factorial n <= 1 -> n < 1", ("factorial", factorial), sub(Op::LeS, Op::LtS)),
++        (
++            "call argument: factorial n - 1 -> n - 2",
++            ("factorial", factorial),
++            Box::new(|c| first_in_else(c, &|i| matches!(i, Ins::Push(_)).then_some(Ins::Push(2)))),
++        ),
++        (
++            "call argument: fib n - 1 -> n - 3",
++            ("fib", fib),
++            Box::new(|c| first_in_else(c, &|i| matches!(i, Ins::Push(_)).then_some(Ins::Push(3)))),
++        ),
++        (
++            "call dropped: factorial",
++            ("factorial", factorial),
++            Box::new(|c| first_in_else(c, &|i| (*i == Ins::Raw("call $f".into())).then_some(Ins::Push(7)))),
++        ),
++        (
++            "branches swapped: factorial",
++            ("factorial", factorial),
++            Box::new(|c| mutate(c, &|i| match i { Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())), _ => None })),
++        ),
++        (
++            "branches swapped: sum loop",
++            ("sum", capturing_closure_loop),
++            Box::new(|c| mutate(c, &|i| match i { Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())), _ => None })),
++        ),
++        (
++            "wrong local.set: sum loop `local.set $p0` -> `$p1`",
++            ("sum", capturing_closure_loop),
++            Box::new(|c| mutate(c, &|i| (*i == Ins::Raw("local.set $p0".into())).then_some(Ins::Raw("local.set $p1".into())))),
++        ),
++        (
++            "base case: factorial 1 -> 2",
++            ("factorial", factorial),
++            Box::new(|c| mutate(c, &|i| match i {
++                Ins::If(t, e) if *t == vec![Ins::Push(1)] => Some(Ins::If(vec![Ins::Push(2)], e.clone())),
++                _ => None,
++            })),
++        ),
++    ];
++    let mut accepted = vec![];
++    for n in [4, 24] {
++        for (what, (name, build), f) in &cases {
++            let r = on_big_stack(|| {
++                let (s, h, frag) = compiled(build);
++                let code = frag.entry();
++                let mutated = f(code);
++                if mutated == code {
++                    return Err("MUTATION DID NOT CHANGE THE CODE".to_string());
++                }
++                prove(&s, h, frag.arity, &mutated, n).map(|_| ())
++            });
++            match r {
++                Ok(()) => accepted.push((n, *what)),
++                Err(e) if e.starts_with("MUTATION") => accepted.push((n, *what)),
++                Err(e) => println!("CONTROL n={n} {what}: rejected: {}", e.chars().take(160).collect::<String>()),
++            }
++            let _ = name;
++        }
++    }
++    assert!(accepted.is_empty(), "accepted: {accepted:?}");
++}
++
++/// A proof of one term does not check against another's statement: the kernel is the judge, not the walk.
++#[test]
++fn gen_real_kernel_rejects_a_proof_for_another_statement() {
++    on_big_stack(|| {
++        let build = |b: fn(&mut TermStore) -> Hash| {
++            let (s, h, frag) = compiled(&b);
++            let mut raws = vec![];
++            let machine = lift(frag.entry(), frag.arity, &mut raws);
++            sim_statement(&s, h, frag.arity, &machine, frag.arity, 8).unwrap()
++        };
++        let (proof, own) = build(factorial);
++        let (_, other) = build(fib);
++        assert!(tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &own).is_ok());
++        let r = tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &other);
++        println!("KERNEL-NEG: {}", r.as_ref().err().map(|e| e.chars().take(100).collect::<String>()).unwrap_or_default());
++        assert!(r.is_err(), "the kernel accepted factorial's proof for fib's statement");
++    });
++}

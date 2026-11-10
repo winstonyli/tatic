@@ -1638,3 +1638,117 @@ What it settles, and what stays open:
   division's scratch locals, `$envtmp`, `$papenv`, `call_indirect`.
 - **The printer** names every slot `$p{i}`, so a temporary at `arity + k` would print as a parameter that does not
   exist; nothing emits these yet.
+
+### Tail self-calls as `return_call`, with no `loop` or `br`: a spike (2026-11-10)
+
+The question: `br` and `call` are one edge in the generator, and the lowering's only `loop` wraps a function for its
+tail self-calls. Can tail self-calls lower to `return_call $f`, so the machine needs no `loop` or `br`? Throwaway;
+patch `docs/superpowers/spikes/2026-11-10-no-loop-spike.patch`, which applies to `b092e5c` on its own and contains the
+previous spike's patch; reverted.
+
+**What changed.** The lowering emits a self-call's arguments and then `return_call $f` in tail position or `call $f`
+otherwise, with no loop wrapper, staging temporaries, copy-back or `br` (`lower_wat.rs` +7 -22). The machine's `call`
+takes the callee's arity (a fresh frame, parameter `i` in local `i`), and `return_call` calls the environment with the
+activation's own return continuation, a new hook; one constructor per arity up to 3. The generator's walk did not
+change; its one edit, before the first run, passes that hook. wasmtime 42.0.1 accepts `return_call` with its default
+configuration (the repo sets none).
+
+Run `2026-11-10-i1-no-loop-gen-real-3` (untimed, 27% load), build + check at n = 64, ms:
+
+| case | n = 64 | case | n = 64 |
+|---|---|---|---|
+| sum loop A | 5.9 + 11.8 | tri | 4.9 + 13.3 |
+| sum loop B | 6.1 + 13.3 | dbl | 6.3 + 17.9 |
+| factorial | 7.6 + 68.0 | mulloop | 8.9 + 21.0 |
+| `redundant_arithmetic_recursion` | 7.6 + 22.0 | mixed | 11.8 + 26.5 |
+| fib | 6.4 + 16.6 | pow2sum (3 parameters) | 9.8 + 18.5 |
+| `==`-guarded loop | 6.2 + 10.7 | two parameters, non-tail self-call | 7.0 + 13.7 |
+
+Every case also proves at n = 4 and 24. The two-parameter non-tail self-call, which stopped on `call $f` in the
+previous spike, now proves; 13 and 34 still stop on `i32.const 0`, `call $c0`. The test prints a failure list
+instead of asserting; its only entries are 13 and 34, and a case is printed as proved only after the kernel accepts
+it. Rejected at n = 4 and 24: operator swaps, `<=` as `<`, call arguments off by one or two, a dropped call, swapped
+branches, a wrong `local.get` in the condition and in the call's argument, a wrong base case, `return_call` put for a
+non-tail `call` in factorial, fib and tri, and factorial's proof against fib's statement (by the kernel). `call` put
+for a tail `return_call` proves, as it should: the code is equivalent.
+
+Run against the emitted code: the differential compile fuzz passes 7 of 7 (`-compile-fuzz`); a tail loop of 10^6
+iterations returns `n(n+1)/2` (`-deep`), while the same WAT with `call` for `return_call` traps on the stack;
+`tatic-wasm` passes (`-wasm-lib`). What fails until updated: all three golden WAT tests (29 files: 23 corpus, 4
+fragment, 2 specialised; `-golden`), and two `tatic` tests that expect a `loop` wrapper,
+`fragment_bodies_contain_no_raw` and `gate_rejects_mutations` (`-tatic-lib`).
+
+What it settles: one recursion edge suffices, so z5's D1 (what `loop` means) can be removed instead of decided. Gone
+with `loop` and `br` (grepped, not deleted): the two constructors, `shape`'s loop stack, the restart hook, `laws.rs`'s
+`loop_law` and countdown checks, the printer's arms, and `strip_loop`. Fuel stays: it moves from the machine's
+`meaning` into the generator's induction. Open: calls of any arity need a family of constructors or one constructor
+over a frame (the spike capped arity at 3).
+
+### Fresh addresses by construction: the allocation pointer in the state, a spike (2026-11-10)
+
+The question: callees that allocate or read records need a relation between heaps before and after a call (the
+decision file's open heap relation). Does making the allocation pointer part of the state, so fresh addresses are
+fresh by construction, avoid order reasoning on 64-bit words? Throwaway; patch
+`docs/superpowers/spikes/2026-11-10-heap-state-spike.patch` (applies to `b092e5c` on its own, with the generator-on-
+real-terms patch inside); reverted. Machine code is hand-written in the lowering's shape, not emitted.
+
+**What changed.** The state is `(locals, hp, heap)`; `alloc k` returns `hp` and bumps it. The generator gained general
+rules, not cases: a stuck heap read at a declared cell is rewritten by that cell's hypothesis (as rule 3 does for a
+local); a store chain is walked down to the heap, deciding each address test by conversion, the region lemma or
+cancellation; a test only the machine makes on an address is decided and walked down the branch it picks. Cells are
+declared per function as hypotheses `h (p + off) K = K v` with the source taking `v` as a parameter; the variant with
+the record's cells inside the closure relation was not built.
+
+Run `2026-11-10-i3-heap-state-final` (untimed), build + check at n = 64, ms:
+
+| case | n = 64 |
+|---|---|
+| a read at `p + 8` | 1.0 + 5.5 |
+| a loop re-reading a captured cell each iteration (term 37's shape) | 8.7 + 12.1 |
+| `alloc 24`, two stores, a call on the record; the callee reads it | 81.1 + 65.1 |
+| the same with a header store at `q` | 111.0 + 64.2 |
+| the record updated in place and passed again | 74.2 + 52.8 |
+| two allocations, cells at `q` and `q + 8` | 97.3 + 58.6 |
+
+All prove at n = 8 and 24 too, with the heap and `hp` symbolic. At n = 4 the header and two-allocation cases fail
+(addresses alias in four bits); the others pass. Rejected at n = 8 and 24: a read at the wrong offset, a cell
+overwritten before its read, a condition on the wrong offset, swapped store offsets, a stored value one too large,
+an overwrite before a read, and a stale `hp` with two allocations. A stale `hp` with one allocation is accepted:
+nothing reads the aliased cell, so nothing differs.
+
+What it settles, and what stays open:
+
+- **No order reasoning was needed** for addresses of the form `hp + k`, `p + k`, `hp` or `p`: the region and
+  cancellation lemmas decide them. Nested sums like `(hp + 16) + 8` are not normalised and give "cannot tell".
+- **Open:** a non-tail call whose continuation reads the heap (the walk after the call has no cell hypotheses), and
+  reading an older record after a later allocation or store with no relation to it: both need a callee
+  heap-preservation relation or order facts. Cells are declared per function by hand.
+
+### The partial row's cost, and gcd through the generator (2026-11-10)
+
+The question: the decision file picks a partial row for remainder (outside its domain the machine answers the
+no-value answer `z`). What does the guard cost, and does gcd then install? Throwaway; patches
+`docs/superpowers/spikes/2026-11-10-partial-row-spike.patch` (the rem-cost probe plus the row; applies to `b092e5c`)
+and `docs/superpowers/spikes/2026-11-10-partial-row-gcd-spike.patch` (combined with the generator-on-real-terms
+patch); reverted.
+
+**What changed.** `Dom::NonZeroDivisor` has `holds(x, y)` and a kernel circuit; `shape::dom_of` is the one lookup,
+read by `eval::apply_prim` (its two hand-written zero checks go), `Source::cps` and the machine. A partial row is a new
+constructor, `bin` plus the domain, meaning `choose(r, dom x y, rest (op x y), z)`. The generator gained one general
+rule: two sides that are the same stuck term are equal by `refl` (both answer `z` outside the domain). `eval` now
+reads `jit::shape`, so the lookup belongs in `lang`.
+
+Cost, runs `2026-11-10-i4-partial-row-cost` and `-cost-2` (untimed, 59-66% load), build + check at n = 64 in ms,
+guarded against unguarded: rem in tail position 20.1 and 27.3 against 25.7 and 30.0; non-tail `(a % b) + b` 24.4
+and 20.9 against 25.2 and 25.8; `(a % b) % c` 28.4 and 32.5 against 22.3 and 31.0; rem in an arm 30.0 and 36.2
+against 25.8 and 35.3. At n = 64 the guard is inside the spread between samples (up to about 40%); at n = 4 the
+guarded rows are higher in all 8 pairs (under 1 ms), and at n = 24 one pair is 58% higher (4.6 against 2.9 ms).
+
+gcd (`if b == 0 then a else f b (a % b)`) installs through the generator from its real term, run
+`2026-11-10-i4-partial-row-gcd-4`: 18.0 + 24.1 ms at n = 64; the two-base-case gcd 12.1 + 22.6 ms. Rejected: the
+machine dropping the guard ("the machine recurses but the source branches"), the machine alone testing the wrong
+operand, and rem replaced by mul or sub. Accepted, as the decision file predicts: the wrong operand on both sides,
+and no guard on either; only the table test can see those (reasoning: the domain circuit then differs from `holds` at
+(5, 0); the table test was not run with these mutants). The table test at b = 0 (`-table`) passes: the domain circuit
+equals `holds`, eval errors and wasmtime traps exactly where `holds` is false, and where defined the three agree,
+`MIN % -1` giving 0 in all.

@@ -1,0 +1,710 @@
+diff --git a/crates/tatic-wasm/src/encoding/gates.rs b/crates/tatic-wasm/src/encoding/gates.rs
+index c494286..6733cf4 100644
+--- a/crates/tatic-wasm/src/encoding/gates.rs
++++ b/crates/tatic-wasm/src/encoding/gates.rs
+@@ -176,10 +176,24 @@ pub fn eq_bit(n: usize) -> Expr {
+     let body = app(var(0), app2(eq_bv(n), var(3), var(2)));
+     lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
+ }
++/// `y != 0` as a one-bit word: `\x y C k. k (not (eq_bv y 0))`.
++pub fn nonzero_second(n: usize) -> Expr {
++    let body = app(var(0), not_(app2(eq_bv(n), var(2), lit(n, 0))));
++    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
++}
++/// CONTROL ONLY: `x != 0`, the wrong operand for a divisor's domain.
++pub fn nonzero_first(n: usize) -> Expr {
++    let body = app(var(0), not_(app2(eq_bv(n), var(3), lit(n, 0))));
++    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
++}
+ /// Wrapping `a * b` (mod 2^n): the shift-and-add rows of `mul_bits` as a `V -> V -> V` circuit.
+ pub fn mul(n: usize) -> Expr {
+     bits_circuit(n, &move |x, y| mul_bits(n, x, y))
+ }
++/// Signed `a % b` (`wrapping_rem`, `x % 0 = x`): `rem_s_bits` as a `V -> V -> V` circuit.
++pub fn rem_s(n: usize) -> Expr {
++    bits_circuit(n, &move |x, y| rem_s_bits(n, x, y))
++}
+ /// The next carry (or borrow) of one position, given its operand bits, the incoming carry and `x = a ^ b`.
+ pub fn ripple_carry(sub: bool, a: Expr, b: Expr, c: Expr, x: Expr) -> Expr {
+     if sub {
+@@ -285,6 +299,35 @@ pub fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
+ 
+ pub type BitsFn<'a> = &'a dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
+ 
++/// `a` negated when `s` is set: `(a ^ s) + s`.
++pub fn neg_if(a: &[Expr], s: Expr) -> Vec<Expr> {
++    let xs: Vec<Expr> = a.iter().map(|&x| xor(x, s)).collect();
++    let one: Vec<Expr> = (0..a.len()).map(|i| if i == 0 { s } else { f() }).collect();
++    add_rows(&xs, &one)
++}
++
++/// Signed remainder (`wrapping_rem`; the sign of the dividend; `x % 0 = x`, where the source errors and wasm traps):
++/// restoring division of the magnitudes, one subtract-and-select row per dividend bit, MSB first.
++pub fn rem_s_bits(n: usize, a: &[Expr], b: &[Expr]) -> Vec<Expr> {
++    let (sa, sb) = (a[n - 1], b[n - 1]);
++    let (ma, mb) = (neg_if(a, sa), neg_if(b, sb));
++    let mut r: Vec<Expr> = vec![f(); n];
++    for i in (0..n).rev() {
++        // r2 = (r << 1) | ma[i]; r < mb <= 2^(n-1), so r2 < 2^n
++        let r2: Vec<Expr> = (0..n).map(|j| if j == 0 { ma[i] } else { r[j - 1] }).collect();
++        let mut borrow = f();
++        let mut diff = Vec::with_capacity(n);
++        for j in 0..n {
++            let x = xor(r2[j], mb[j]);
++            diff.push(xor(x, borrow));
++            borrow = ripple_carry(true, r2[j], mb[j], borrow, x);
++        }
++        let ge = not_(borrow);
++        r = (0..n).map(|j| mux(ge, diff[j], r2[j])).collect();
++    }
++    neg_if(&r, sa)
++}
++
+ pub fn mul_bits(n: usize, x: &[Expr], y: &[Expr]) -> Vec<Expr> {
+     let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i], x[j - i]) }).collect() };
+     (1..n).fold(row(0), |acc, i| add_rows(&acc, &row(i)))
+diff --git a/crates/tatic-wasm/src/encoding/tests.rs b/crates/tatic-wasm/src/encoding/tests.rs
+index 9360ba0..423e64b 100644
+--- a/crates/tatic-wasm/src/encoding/tests.rs
++++ b/crates/tatic-wasm/src/encoding/tests.rs
+@@ -443,3 +443,64 @@ pub fn add_of_x_and_not_x_is_all_ones() {
+ // Terms over x, y (and z) are *run* on every tuple of n-bit literals by the kernel (`normalize`); terms with
+ // the same results are conjectured equal; each conjecture is then *checked*: by the matching library
+ // generator, or by a generic builder (`bitwise_law`) that has no template for the particular lemma.
++
++/// `Op::RemS` on literals against Rust's `wrapping_rem` (and `x % 0 = x`, which `eval` rejects and wasm traps on).
++fn rem_ref(n: usize, a: u128, b: u128) -> u128 {
++    let sext = |v: u128| ((v << (128 - n)) as i128) >> (128 - n);
++    let (x, y) = (sext(a), sext(b));
++    (if y == 0 { x } else { x.wrapping_rem(y) } as u128) & low_bits(n)
++}
++
++#[test]
++pub fn rem_s_computes_on_literals_n8_sample() {
++    let n = 8;
++    let ty = pi(bv_ty(n), pi(bv_ty(n), bv_ty(n)));
++    ck("rem_s type", &rem_s(n), &ty);
++    let term = rem_s(n);
++    let vals: Vec<u128> = (0..256u128).step_by(5).chain([0, 1, 2, 127, 128, 129, 254, 255]).collect();
++    for &a in &vals {
++        for &b in &vals {
++            let got = app2(term.clone(), lit(n, a), lit(n, b));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a, b))), "rem a={a:#x} b={b:#x}");
++        }
++    }
++}
++
++#[test]
++#[ignore]
++pub fn rem_s_computes_on_literals_n8_exhaustive() {
++    let n = 8;
++    let term = rem_s(n);
++    for a in 0..256u128 {
++        for b in 0..256u128 {
++            let got = app2(term.clone(), lit(n, a), lit(n, b));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a, b))), "rem a={a:#x} b={b:#x}");
++        }
++    }
++}
++
++#[test]
++pub fn rem_s_computes_on_literals_n64_edges_and_random() {
++    let n = 64;
++    let term = rem_s(n);
++    let vals: Vec<u64> = vec![0, 1, u64::MAX, i64::MIN as u64, i64::MAX as u64, 2, 3, (-7i64) as u64, 7, 1 << 32, (1 << 32) - 1];
++    let mut x = 0x9E3779B97F4A7C15u64;
++    let mut next = || {
++        x ^= x << 13;
++        x ^= x >> 7;
++        x ^= x << 17;
++        x
++    };
++    let mut pairs: Vec<(u64, u64)> = vals.iter().flat_map(|&a| vals.iter().map(move |&b| (a, b))).collect();
++    for _ in 0..90 {
++        let (a, b) = (next(), next());
++        // vary magnitudes so quotients are neither always 0 nor always huge
++        pairs.push((a, b >> (next() % 64)));
++    }
++    tatic_kernel::scoped(|| {
++        for (a, b) in pairs {
++            let got = app2(term.clone(), lit(n, a as u128), lit(n, b as u128));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a as u128, b as u128))), "rem a={a:#x} b={b:#x}");
++        }
++    })
++}
+diff --git a/crates/tatic-wasm/src/ops.rs b/crates/tatic-wasm/src/ops.rs
+index 8c91983..4e5fccb 100644
+--- a/crates/tatic-wasm/src/ops.rs
++++ b/crates/tatic-wasm/src/ops.rs
+@@ -11,6 +11,7 @@ pub enum Op {
+     Add,
+     Sub,
+     Mul,
++    RemS,
+     LtS,
+     LeS,
+     Eq,
+@@ -25,6 +26,7 @@ impl Op {
+             Op::Add => add,
+             Op::Sub => sub,
+             Op::Mul => mul,
++            Op::RemS => rem_s,
+             Op::LtS => lt_s,
+             Op::LeS => le_s,
+             Op::Eq => eq_bit,
+@@ -37,31 +39,79 @@ impl Op {
+             Op::Add => "i64.add",
+             Op::Sub => "i64.sub",
+             Op::Mul => "i64.mul",
++            Op::RemS => "i64.rem_s",
+             Op::LtS => "i64.lt_s",
+             Op::LeS => "i64.le_s",
+             Op::Eq => "i64.eq",
+             Op::LtU => "i64.lt_u",
+         }
+     }
++    /// The row's domain condition, if it is partial: outside it the machine answers its no-value answer `z`.
++    pub fn dom(self) -> Option<Dom> {
++        match self {
++            Op::RemS => Some(Dom::NonZeroDivisor),
++            _ => None,
++        }
++    }
+     /// What the operator leaves on the stack: a word, or a compare's one-bit word.
+     pub fn kind(self) -> K {
+         match self {
+-            Op::Add | Op::Sub | Op::Mul => K::W,
++            Op::Add | Op::Sub | Op::Mul | Op::RemS => K::W,
+             Op::LtS | Op::LeS | Op::Eq | Op::LtU => K::B,
+         }
+     }
+ }
+ 
++/// A domain condition on an operator's operands: the ONE definition of where a partial row has a value. The machine
++/// (`Ins::Op` of a partial row), the gate's source side and `eval` all read it: `holds` is the semantics on words,
++/// `term` the same predicate as a kernel `V -> V -> Bv_1` circuit (the table test pairs the two).
++#[derive(Clone, Copy, Debug, PartialEq, Eq)]
++pub enum Dom {
++    /// The second operand is not zero (`div`, `rem`).
++    NonZeroDivisor,
++}
++
++impl Dom {
++    pub fn holds(self, _x: i64, y: i64) -> bool {
++        match self {
++            Dom::NonZeroDivisor => y != 0,
++        }
++    }
++    pub fn term(self, n: usize) -> Expr {
++        let build: fn(usize) -> Expr = match self {
++            Dom::NonZeroDivisor if ctrl() == 2 => nonzero_first,
++            Dom::NonZeroDivisor => nonzero_second,
++        };
++        constant_n(build, n)
++    }
++    /// CONTROL ONLY: the wrong-operand circuit, for the machine side alone.
++    pub fn wrong_term(self, n: usize) -> Expr {
++        constant_n(nonzero_first, n)
++    }
++}
++
++/// CONTROL ONLY (spike scaffolding): 1 = the machine drops the guard; 2 = `Dom::term` tests the wrong operand on both
++/// sides; 3 = the machine alone tests the wrong operand; 4 = neither side guards (cost reference only, unsound).
++pub static CTRL: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
++pub fn ctrl() -> u8 {
++    CTRL.load(std::sync::atomic::Ordering::Relaxed)
++}
++
+ #[test]
+ fn op_rows_are_closed_and_typed() {
+     let n = 8;
+     let v = bv_ty(n);
+-    for o in [Op::Add, Op::Sub, Op::Mul, Op::LtS, Op::LeS, Op::Eq, Op::LtU] {
++    for o in [Op::Add, Op::Sub, Op::Mul, Op::RemS, Op::LtS, Op::LeS, Op::Eq, Op::LtU] {
+         let want = match o.kind() {
+             K::W => arrow(v.clone(), arrow(v.clone(), v.clone())),
+             K::B => arrow(v.clone(), arrow(v.clone(), bv_ty(1))),
+         };
+         let got = infer(&Ctx::new(), &o.term(n)).unwrap_or_else(|e| panic!("{o:?}: {e}"));
+         assert!(def_eq(&got, &want), "{o:?} ({}) has the wrong type", o.mnemonic());
++        if let Some(d) = o.dom() {
++            let want = arrow(v.clone(), arrow(v.clone(), bv_ty(1)));
++            let got = infer(&Ctx::new(), &d.term(n)).unwrap_or_else(|e| panic!("{d:?}: {e}"));
++            assert!(def_eq(&got, &want), "{d:?} has the wrong type");
++        }
+     }
+ }
+diff --git a/crates/tatic-wasm/src/wasm.rs b/crates/tatic-wasm/src/wasm.rs
+index 4ebe75c..9fd247c 100644
+--- a/crates/tatic-wasm/src/wasm.rs
++++ b/crates/tatic-wasm/src/wasm.rs
+@@ -20,7 +20,7 @@ pub fn choose(r: Expr, w: Expr, x: Expr, y: Expr) -> Expr {
+ }
+ 
+ /// An interpreter case's body from `A`, its operator if any, `rest`, the stack and the memory.
+-type Body<'a> = dyn Fn(&mut Cx, At, Option<At>, At, At, At) -> Expr + 'a;
++type Body<'a> = dyn Fn(&mut Cx, At, &[At], At, At, At) -> Expr + 'a;
+ 
+ /// What a stack slot holds: an n-bit word or a one-bit word (a compare's result).
+ #[derive(Clone, Copy, PartialEq, Debug)]
+@@ -177,14 +177,15 @@ impl Wasm {
+                 4 => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                 5 => arrow(arrow(fa(a), fa(a)), fa(a)),
+                 6 => arrow(fa(a), fa(vva)),
+-                _ => arrow(fa(va), fa(va)),
++                7 => arrow(fa(va), fa(va)),
++                _ => arrow(arrow(v, arrow(v, v)), arrow(arrow(v, arrow(v, v1)), arrow(fa(va), fa(vva)))),
+             }
+         })
+     }
+     /// The eight constructor binders, each wrapped by `wrap` (`lam` or `pi`), then `body` with their variables.
+     fn ctors(&self, c: &mut Cx, f: At, wrap: fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+         let w = *self;
+-        let tys: Vec<Ty> = (0..8).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
++        let tys: Vec<Ty> = (0..9).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
+         tele(c, &tys, &mut vec![], &wrap, body)
+     }
+     /// `Prog S T`, with `S` and `T` built at each use.
+@@ -244,7 +245,11 @@ impl Wasm {
+                     K::B => (2, K::B),
+                 };
+                 let r = cont(c, with(&[top], 2));
+-                cons(c, i, vec![ty(c, &below(2)), o.term(self.n), r])
++                match o.dom() {
++                    Some(d) if crate::ops::ctrl() == 3 => cons(c, 8, vec![ty(c, &below(2)), o.term(self.n), d.wrong_term(self.n), r]),
++                    Some(d) if !matches!(crate::ops::ctrl(), 1 | 4) => cons(c, 8, vec![ty(c, &below(2)), o.term(self.n), d.term(self.n), r]),
++                    _ => cons(c, i, vec![ty(c, &below(2)), o.term(self.n), r]),
++                }
+             }
+             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
+             Ins::Dup => {
+@@ -307,22 +312,27 @@ impl Wasm {
+         let (v, v1) = (self.v(), bv_ty(1));
+         let w = *self;
+         // `\A rest st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`
+-        let shape = |c: &mut Cx, extra: Option<Expr>, rest_ty: &dyn Fn(Expr) -> Expr, st_ty: &dyn Fn(Expr) -> Expr,
++        let shape = |c: &mut Cx, extra: Vec<Expr>, rest_ty: &dyn Fn(Expr) -> Expr, st_ty: &dyn Fn(Expr) -> Expr,
+                      body: &Body| {
+             c.lam(sort(2), |c, a| {
+-                let inner = |c: &mut Cx, op: Option<At>| {
++                fn binders(c: &mut Cx, extra: &[Expr], got: &mut Vec<At>, inner: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
++                    match extra.split_first() {
++                        None => inner(c, got),
++                        Some((t, rest)) => c.lam(t.clone(), |c, x| {
++                            got.push(x);
++                            binders(c, rest, got, inner)
++                        }),
++                    }
++                }
++                binders(c, &extra, &mut vec![], &mut |c, ops| {
+                     let rt = w.g(c, r, rest_ty(c.at(a)));
+                     c.lam(rt, |c, rest| {
+                         c.lam(st_ty(c.at(a)), |c, st| {
+                             let m = w.mem(c, r);
+-                            c.lam(m, |c, mu| body(c, a, op, rest, st, mu))
++                            c.lam(m, |c, mu| body(c, a, ops, rest, st, mu))
+                         })
+                     })
+-                };
+-                match extra {
+-                    Some(t) => c.lam(t, |c, op| inner(c, Some(op))),
+-                    None => inner(c, None),
+-                }
++                })
+             })
+         };
+         let push = c.lam(sort(2), |c, a| {
+@@ -336,20 +346,30 @@ impl Wasm {
+                 })
+             })
+         });
+-        let binop = |c: &mut Cx, out: Expr| {
+-            shape(c, Some(arrow(v, arrow(v, out))), &|a| prod(out, a), &|a| prod(v, prod(v, a)), &|c, a, op, rest, st, mu| {
++        // a partial row (`partial`) also takes its domain `V -> V -> Bv_1`; outside it the machine answers `z`
++        let binop = |c: &mut Cx, out: Expr, partial: bool| {
++            let mut extra = vec![arrow(v, arrow(v, out))];
++            if partial {
++                extra.push(arrow(v, arrow(v, v1)));
++            }
++            shape(c, extra, &|a| prod(out, a), &|a| prod(v, prod(v, a)), &|c, a, ops, rest, st, mu| {
+                 let below = c.mark(prod(v, c.at(a)));
+                 w.split(c, r, v, below, st, |c, y, rs| {
+                     w.split(c, r, v, a, rs, |c, x, s| {
+-                        let val = app2(c.at(op.unwrap()), c.at(x), c.at(y));
+-                        app2(c.at(rest), mkpair(c.at(a), val, c.at(s)), c.at(mu))
++                        let val = app2(c.at(ops[0]), c.at(x), c.at(y));
++                        let go = app2(c.at(rest), mkpair(c.at(a), val, c.at(s)), c.at(mu));
++                        match ops.get(1) {
++                            Some(dom) => choose(c.at(r), app2(c.at(*dom), c.at(x), c.at(y)), go, c.at(z)),
++                            None => go,
++                        }
+                     })
+                 })
+             })
+         };
+-        let bin = binop(c, v);
+-        let cmp = binop(c, v1);
+-        let dup = shape(c, None, &|a| prod(v, prod(v, a)), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
++        let bin = binop(c, v, false);
++        let cmp = binop(c, v1, false);
++        let binp = binop(c, v, true);
++        let dup = shape(c, vec![], &|a| prod(v, prod(v, a)), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
+             w.split(c, r, v, a, st, |c, x, s| {
+                 let inner = mkpair(c.at(a), c.at(x), c.at(s));
+                 app2(c.at(rest), mkpair(prod(v, c.at(a)), c.at(x), inner), c.at(mu))
+@@ -383,7 +403,7 @@ impl Wasm {
+                 apps(c.at(fuel), vec![ga, timeout, c.at(body)])
+             })
+         });
+-        let store = shape(c, None, &|a| a, &|a| prod(v, prod(v, a)), &|c, a, _, rest, st, mu| {
++        let store = shape(c, vec![], &|a| a, &|a| prod(v, prod(v, a)), &|c, a, _, rest, st, mu| {
+             let below = c.mark(prod(v, c.at(a)));
+             w.split(c, r, v, below, st, |c, x, rs| {
+                 w.split(c, r, v, a, rs, |c, ad, s| {
+@@ -392,13 +412,13 @@ impl Wasm {
+                 })
+             })
+         });
+-        let load = shape(c, None, &|a| prod(v, a), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
++        let load = shape(c, vec![], &|a| prod(v, a), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
+             w.split(c, r, v, a, st, |c, ad, s| {
+                 let k = c.lam(v, |c, x| app2(c.at(rest), mkpair(c.at(a), c.at(x), c.at(s)), c.at(mu)));
+                 app2(c.at(mu), c.at(ad), k)
+             })
+         });
+-        vec![push, bin, cmp, dup, if_, loop_, store, load]
++        vec![push, bin, cmp, dup, if_, loop_, store, load, binp]
+     }
+     /// `M p N R k z`, of type `G S` for `p : Prog S T` and `k : G T`.
+     pub fn meaning(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At) -> Expr {
+diff --git a/crates/tatic/src/jit/lower_wat.rs b/crates/tatic/src/jit/lower_wat.rs
+index edd1c01..433639a 100644
+--- a/crates/tatic/src/jit/lower_wat.rs
++++ b/crates/tatic/src/jit/lower_wat.rs
+@@ -460,7 +460,6 @@ impl Lowering<'_> {
+                 self.node(cx, b, w);
+                 match *op {
+                     PrimOp::Div => emit_wrapping_div(w),
+-                    PrimOp::Mod => raw(w, "i64.rem_s"),
+                     op => {
+                         let o = op_of(op).filter(|o| o.kind() == K::W);
+                         w.push(Ins::Op(o.expect("ir::check: Arith carries an arithmetic op (shape::op_of)")))
+diff --git a/crates/tatic/src/jit/op_table_tests.rs b/crates/tatic/src/jit/op_table_tests.rs
+index 2c451da..997fc82 100644
+--- a/crates/tatic/src/jit/op_table_tests.rs
++++ b/crates/tatic/src/jit/op_table_tests.rs
+@@ -14,7 +14,7 @@ use tatic_wasm::wasm::K;
+ 
+ use crate::jit::compile::try_compile;
+ use crate::jit::shape::op_of;
+-use crate::lang::eval::apply_term;
++use crate::lang::eval::{apply_term, EvalError};
+ use crate::lang::term::{PrimOp, TermStore};
+ 
+ /// `ir_fuzz.rs`'s edges less `MIN + 1`, `-7` and `7`: the full set took 4-6 s
+@@ -69,6 +69,18 @@ fn agree(n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
+         for (x, y) in pairs() {
+             let (x, y) = (mask(n, x), mask(n, y));
+             let (sx, sy) = (sign_extend(n, x), sign_extend(n, y));
++            if let Some(d) = o.dom() {
++                // a partial row: outside its domain eval errors, wasm traps, and the domain circuit says 0; inside,
++                // all three say defined (the value checks follow)
++                let holds = d.holds(sx, sy);
++                let dterm = app2(d.term(n), lit(n, x as u128), lit(n, y as u128));
++                assert!(def_eq(&dterm, &lit(1, holds as u128)), "{d:?} at n = {n}: ({x:#x}, {y:#x}): circuit is not {holds}");
++                assert_eq!(apply_term(&s, h, &[sx, sy]) == Err(EvalError::DivByZero), !holds, "eval at ({x:#x}, {y:#x})");
++                assert_eq!(f.call(&mut store, (sx, sy)).is_err(), !holds, "wasm trap at ({x:#x}, {y:#x})");
++                if !holds {
++                    continue;
++                }
++            }
+             let r_eval = mask(n, apply_term(&s, h, &[sx, sy]).expect("no division") as u64);
+             let r_wasm = mask(n, f.call(&mut store, (sx, sy)).expect("no trap") as u64);
+             assert_eq!(r_eval, r_wasm, "{o:?} at n = {n}: ({x:#x}, {y:#x}): eval {r_eval:#x} vs wasm {r_wasm:#x}");
+diff --git a/crates/tatic/src/jit/shape.rs b/crates/tatic/src/jit/shape.rs
+index 291c5e6..f27d8a3 100644
+--- a/crates/tatic/src/jit/shape.rs
++++ b/crates/tatic/src/jit/shape.rs
+@@ -7,7 +7,7 @@
+ 
+ use hashbrown::HashMap;
+ 
+-use tatic_wasm::ops::Op;
++use tatic_wasm::ops::{Dom, Op};
+ use tatic_wasm::wasm::K;
+ 
+ use crate::lang::term::{Hash, PrimOp, Term, TermStore};
+@@ -166,20 +166,31 @@ pub(crate) fn is_comparison(op: PrimOp) -> bool {
+     op_of(op).is_some_and(|o| o.kind() == K::B)
+ }
+ 
++/// Where a source operator has a value: its row's domain (`Op::dom`), or for `Div`, which has no row yet, the same
++/// `Dom`. `eval` (`DivByZero` outside it), the gate's source side (the answer `z` outside it) and the machine (a
++/// partial row's constructor) all read this one definition.
++pub fn dom_of(op: PrimOp) -> Option<Dom> {
++    match op {
++        PrimOp::Div => Some(Dom::NonZeroDivisor),
++        p => op_of(p).and_then(Op::dom),
++    }
++}
++
+ /// The one map from a source operator to its machine operator row (the
+ /// lowering, the gate's source side and the fragment predicate all read it).
+-/// `Div` and `Mod` have none: the lowering emits `i64.div_s` (inside
+-/// `emit_wrapping_div`) and `i64.rem_s` as `Raw` lines.
++/// `Div` has none: the lowering emits `i64.div_s` (inside
++/// `emit_wrapping_div`) as a `Raw` line.
+ pub fn op_of(op: PrimOp) -> Option<Op> {
+     use PrimOp::*;
+     Some(match op {
+         Add => Op::Add,
+         Sub => Op::Sub,
+         Mul => Op::Mul,
++        Mod => Op::RemS,
+         Lt => Op::LtS,
+         Le => Op::LeS,
+         Eq => Op::Eq,
+-        Div | Mod => return None,
++        Div => return None,
+     })
+ }
+ 
+diff --git a/crates/tatic/src/lang/eval.rs b/crates/tatic/src/lang/eval.rs
+index 6da480b..ae42f41 100644
+--- a/crates/tatic/src/lang/eval.rs
++++ b/crates/tatic/src/lang/eval.rs
+@@ -21,6 +21,7 @@
+ use std::rc::Rc;
+ 
+ use crate::lang::term::{Hash, PrimOp, Term, TermStore};
++use crate::jit::shape::dom_of;
+ 
+ #[derive(Clone)]
+ pub enum Value {
+@@ -133,22 +134,16 @@ fn apply_step(store: &TermStore, f: Value, arg: Value) -> Result<(Env, Hash), Ev
+ 
+ fn apply_prim(op: PrimOp, x: i64, y: i64) -> Result<Value, EvalError> {
+     use PrimOp::*;
++    // where the operator has a value: the one definition the machine and the gate also read (`shape::dom_of`)
++    if dom_of(op).is_some_and(|d| !d.holds(x, y)) {
++        return Err(EvalError::DivByZero);
++    }
+     Ok(match op {
+         Add => Value::Int(x.wrapping_add(y)),
+         Sub => Value::Int(x.wrapping_sub(y)),
+         Mul => Value::Int(x.wrapping_mul(y)),
+-        Div => {
+-            if y == 0 {
+-                return Err(EvalError::DivByZero);
+-            }
+-            Value::Int(x.wrapping_div(y))
+-        }
+-        Mod => {
+-            if y == 0 {
+-                return Err(EvalError::DivByZero);
+-            }
+-            Value::Int(x.wrapping_rem(y))
+-        }
++        Div => Value::Int(x.wrapping_div(y)),
++        Mod => Value::Int(x.wrapping_rem(y)),
+         Lt => Value::Int((x < y) as i64),
+         Le => Value::Int((x <= y) as i64),
+         Eq => Value::Int((x == y) as i64),
+diff --git a/crates/tatic/src/proof/gate.rs b/crates/tatic/src/proof/gate.rs
+index a06db69..3a2523b 100644
+--- a/crates/tatic/src/proof/gate.rs
++++ b/crates/tatic/src/proof/gate.rs
+@@ -17,10 +17,17 @@ use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, Ty};
+ use tatic_wasm::wasm::{choose, mkpair, nat2_lit, well_formed, Ins, Wasm, K};
+ 
+ use crate::jit::compile::tree_size;
+-use crate::jit::shape::{is_comparison, op_of};
++use crate::jit::shape::{dom_of, is_comparison, op_of};
+ use crate::lang::term::{Hash, Term, TermStore};
+ 
+-const N: usize = 64;
++/// The gate's width (spike: `set_nbits` sweeps it; default 64).
++static NBITS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(64);
++pub(crate) fn nbits() -> usize {
++    NBITS.load(std::sync::atomic::Ordering::Relaxed)
++}
++pub(crate) fn set_nbits(n: usize) {
++    NBITS.store(n, std::sync::atomic::Ordering::Relaxed)
++}
+ 
+ /// The largest tree (`compile::tree_size`) the gate takes: the largest power of two under the JIT path's 0.4 s.
+ /// `doubling(12)` (8192 nodes) took 0.35-0.38 s, `doubling(13)` (16384) 0.74-0.88 s, nearly all of it the check (doc
+@@ -111,7 +118,7 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
+         let Term::Abs(b) = store.resolve(body) else { unreachable!("in_fragment checks the leading Abs") };
+         body = *b;
+     }
+-    let w = Wasm { n: N };
++    let w = Wasm { n: nbits() };
+     let mut tys: Vec<Ty> = vec![
+         ty!(|_c, _x| sort(2)),
+         ty!(|_c, _x| sort(0)),
+@@ -126,14 +133,14 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
+     tys.push(ty!(|c, x| w.mem(c, x[1])));
+     let (s_at, mu_at) = (4 + m, 5 + m);
+     law(&tys, |c, x| {
+-        let fr = (0..m).rev().fold(c.at(x[mu_at]), |acc, j| w.upd(c, x[1], lit(N, j as u128), c.at(x[4 + j]), acc));
++        let fr = (0..m).rev().fold(c.at(x[mu_at]), |acc, j| w.upd(c, x[1], lit(nbits(), j as u128), c.at(x[4 + j]), acc));
+         let p = w.prog(c, code, &[], x[0]);
+         let p = c.mark(p);
+         let fuel = c.mark(nat2_lit(fuel));
+         let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[s_at]), fr);
+         let (r, k, st, s) = (c.at(x[1]), c.at(x[2]), c.at(x[0]), c.at(x[s_at]));
+         let qs: Vec<Expr> = (0..m).map(|j| c.at(x[4 + j])).collect();
+-        let src = Source { store, qs, r };
++        let src = Source { store, qs, r, z: c.at(x[3]) };
+         let rhs = src.cps(body, &|v| app2(k, mkpair(st, v, s), fr));
+         (refl(l), id(r, l, rhs))
+     })
+@@ -144,6 +151,8 @@ struct Source<'a> {
+     store: &'a TermStore,
+     qs: Vec<Expr>,
+     r: Expr,
++    /// The machine's no-value answer, which a partial row answers outside its domain.
++    z: Expr,
+ }
+ 
+ impl Source<'_> {
+@@ -157,16 +166,26 @@ impl Source<'_> {
+ 
+     fn cps_step(&self, h: Hash, k: &dyn Fn(Expr) -> Expr) -> Expr {
+         match self.store.resolve(h) {
+-            Term::Lit(v) => k(lit(N, (*v as u64 as u128) & low_bits(N))),
++            Term::Lit(v) => k(lit(nbits(), (*v as u64 as u128) & low_bits(nbits()))),
+             // de Bruijn 0 is the last parameter; written here, not taken from `shape::local_index`
+             Term::Var(i) => k(self.qs[self.qs.len() - 1 - *i as usize].clone()),
+             Term::Prim(p, a, b) => {
+-                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
+-                self.cps(*a, &|x| self.cps(*b, &|y| k(app2(o.clone(), x.clone(), y))))
++                let o = op_of(*p).expect("in_fragment admits only table rows").term(nbits());
++                let dom = dom_of(*p).filter(|_| tatic_wasm::ops::ctrl() != 4).map(|d| d.term(nbits()));
++                self.cps(*a, &|x| {
++                    self.cps(*b, &|y| {
++                        let go = k(app2(o.clone(), x.clone(), y.clone()));
++                        // a partial row answers `z` outside its domain, as the machine's partial constructor does
++                        match &dom {
++                            Some(d) => choose(self.r.clone(), app2(d.clone(), x.clone(), y), go, self.z.clone()),
++                            None => go,
++                        }
++                    })
++                })
+             }
+             Term::If(c, t, e) => {
+                 let Term::Prim(p, a, b) = self.store.resolve(*c) else { unreachable!("in_fragment: an If tests a Prim") };
+-                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
++                let o = op_of(*p).expect("in_fragment admits only table rows").term(nbits());
+                 self.cps(*a, &|x| {
+                     self.cps(*b, &|y| choose(self.r.clone(), app2(o.clone(), x.clone(), y), self.cps(*t, k), self.cps(*e, k)))
+                 })
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index 3af3395..41d8bbd 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -207,6 +207,103 @@ fn measure_gate_costs() {
+     }
+ }
+ 
++/// Runs `f` on a `CHECK_STACK` thread.
++fn big<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> T {
++    std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn(f).unwrap().join().unwrap()
++}
++
++/// The partial-row cost (i4): per width, each term guarded (`ctrl` 0) and, for the `%` terms, with both guards removed
++/// (`ctrl` 4: unsound, cost reference only), beside the same shapes with `*`. Prints
++/// `n name guard build_ms check_ms ok`, best of 3.
++#[test]
++#[ignore]
++fn measure_partial_row_cost() {
++    use crate::proof::gate::set_nbits;
++    let cases: [(&str, &str, usize, bool); 8] = [
++        ("rem tail", r"\a b. a % b", 2, true),
++        ("rem nontail", r"\a b. (a % b) + b", 2, true),
++        ("rem twice", r"\a b c. (a % b) % c", 3, true),
++        ("rem in an arm", r"\a b. if a < b then a % b else a", 2, true),
++        ("mul tail", r"\a b. a * b", 2, false),
++        ("mul nontail", r"\a b. (a * b) + b", 2, false),
++        ("mul twice", r"\a b c. (a * b) * c", 3, false),
++        ("mul in an arm", r"\a b. if a < b then a * b else a", 2, false),
++    ];
++    for n in [4usize, 24, 64] {
++        set_nbits(n);
++        for (name, src, arity, partial) in cases {
++            for ctrl in if partial { vec![0u8, 4] } else { vec![0] } {
++                tatic_wasm::ops::CTRL.store(ctrl, std::sync::atomic::Ordering::Relaxed);
++                let (b, k, ok) = big(move || {
++                    let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, src));
++                    assert!(in_fragment(&s, h, arity), "{name} should be in the fragment");
++                    time_gate(&s, h, arity, frag.entry(), 1, 3)
++                });
++                println!("n={n} {name} {} {b:.2} {k:.2} {ok}", if ctrl == 4 { "unguarded" } else { "guarded" });
++            }
++        }
++    }
++    tatic_wasm::ops::CTRL.store(0, std::sync::atomic::Ordering::Relaxed);
++}
++
++/// The partial row's controls (n = 64 unless said). Each mutant must be rejected, for the reason printed.
++#[test]
++#[ignore]
++fn partial_row_controls() {
++    use std::sync::atomic::Ordering::Relaxed;
++    use tatic_wasm::ops::{Dom, CTRL};
++    let srcs: [(&str, usize); 3] = [(r"\a b. a % b", 2), (r"\a b. (a % b) + b", 2), (r"\a b c. (a % b) % c", 3)];
++    let run = |ctrl: u8| -> Vec<bool> {
++        CTRL.store(ctrl, Relaxed);
++        let r = big(move || {
++            srcs.iter()
++                .map(|&(src, arity)| {
++                    let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, src));
++                    gate(&s, h, arity, frag.entry())
++                })
++                .collect::<Vec<bool>>()
++        });
++        CTRL.store(0, Relaxed);
++        r
++    };
++    println!("sound (ctrl 0): gate accepts {:?}", run(0));
++    println!("machine guard dropped (ctrl 1): gate accepts {:?}", run(1));
++    println!("machine tests the wrong operand (ctrl 3): gate accepts {:?}", run(3));
++    println!("both sides test the wrong operand (ctrl 2): gate accepts {:?}", run(2));
++    println!("both sides unguarded (ctrl 4): gate accepts {:?}", run(4));
++    // the table test's check of a wrong shared Dom: the circuit against `holds`, at n = 8
++    CTRL.store(2, Relaxed);
++    let bad = big(|| {
++        let d = Dom::NonZeroDivisor;
++        let mut bad = vec![];
++        for (x, y) in [(5i64, 0i64), (0, 5), (3, 3), (0, 0)] {
++            let got = tatic_kernel::app2(d.term(8), tatic_wasm::encoding::lit(8, x as u128), tatic_wasm::encoding::lit(8, y as u128));
++            if !tatic_kernel::def_eq(&got, &tatic_wasm::encoding::lit(1, d.holds(x, y) as u128)) {
++                bad.push((x, y));
++            }
++        }
++        bad
++    });
++    CTRL.store(0, Relaxed);
++    println!("wrong-operand Dom (ctrl 2) disagrees with `holds` at {bad:?}");
++    // an operator mutated in the emitted code, and `%` replaced by `/` in the source
++    for (what, to) in [("RemS -> Mul", Op::Mul), ("RemS -> Add", Op::Add), ("RemS -> Sub", Op::Sub)] {
++        let ok = big(move || {
++            let (s, h, frag) = compiled(&|s: &mut TermStore| source(s, r"\a b. a % b"));
++            let m = mutate(frag.entry(), &|i| (i == &Ins::Op(Op::RemS)).then_some(Ins::Op(to)));
++            assert_ne!(m, frag.entry(), "{what} changed nothing");
++            gate(&s, h, 2, &m)
++        });
++        println!("{what}: gate accepts {ok}");
++    }
++    let (s, h, _) = {
++        let mut s = TermStore::new();
++        let h = source(&mut s, r"\a b. a / b");
++        (s, h, ())
++    };
++    println!("`a / b` (Div, no row): in_fragment {}", in_fragment(&s, h, 2));
++}
++
+ /// `doubling(13)` (the tree cap) on a default-size 2 MB thread. Alone, since an overflow aborts the exe.
+ #[test]
+ #[ignore]
