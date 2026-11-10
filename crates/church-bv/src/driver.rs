@@ -150,7 +150,7 @@ pub fn run_worker() {
                 // after the redirect: the setup's reads as it is built print ENV lines (`Setup::var`), which go in the log
                 let setup = Setup::for_task(env, results);
                 let ok = match task_fn(&name) {
-                    Some(run) => std::thread::Builder::new().name(name.clone()).spawn(move || run(&setup)).unwrap().join().is_ok(),
+                    Some(run) => crate::entry::run_on_thread(&name, move || run(&setup)).is_ok(),
                     None => {
                         eprintln!("worker: no task {name}");
                         false
@@ -488,8 +488,8 @@ impl Drop for Worker {
     }
 }
 
-/// `f(item, lane)` for every item on `lanes` threads, item `i` on lane `i % lanes`; the results in `items`' order. Fixed,
-/// not the next free lane: a lane's worker carries its lemma file and memos into its next item, so a timing-picked lane
+/// `f(item, lane)` for every item on `lanes` threads, item `i` on lane `i % lanes`; the results in `items`' order. A lane
+/// has the check stack. Fixed, not the next free lane: a lane's worker carries its lemma file and memos into its next item, so a timing-picked lane
 /// made an item's work counts depend on which items ran before it (2026-10-24 review, `work-assoc-*`: loop 3 changed
 /// lanes in 4 of 10 salts).
 fn run_lanes<T: Sync, R: Send>(items: &[T], lanes: usize, f: impl Fn(&T, usize) -> R + Sync) -> Vec<R> {
@@ -498,11 +498,12 @@ fn run_lanes<T: Sync, R: Send>(items: &[T], lanes: usize, f: impl Fn(&T, usize) 
     std::thread::scope(|s| {
         for lane in 0..lanes {
             let (out, f) = (&out, &f);
-            s.spawn(move || {
+            let run = move || {
                 for i in (lane..items.len()).step_by(lanes) {
                     *out[i].lock().unwrap() = Some(f(&items[i], lane));
                 }
-            });
+            };
+            std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(s, run).unwrap();
         }
     });
     out.into_iter().map(|m| m.into_inner().unwrap().unwrap()).collect()
@@ -529,6 +530,7 @@ fn run_lanes_keeps_order_and_overlaps() {
     assert_eq!(out.iter().map(|r| r.1).collect::<Vec<_>>(), items.iter().map(|i| i % 3).collect::<Vec<_>>());
     assert!(peak.into_inner() >= 2, "lanes never overlapped");
     assert_eq!(run_lanes(&[] as &[usize], 2, |&i, _| i), Vec::<usize>::new());
+    assert_eq!(run_lanes(&[0, 1], 2, |_, _| tatic_kernel::has_check_room()), [true, true], "a large check would take a segment on a lane");
 }
 
 fn append(path: &Path, text: &str) {

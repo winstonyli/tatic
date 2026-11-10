@@ -1036,8 +1036,10 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     the depth bounds them at 0.72 M lines, at most 59% of the 1.22 M stack write misses. Since the segment is 3-4 times
     the 16 MB last level, reuse would not keep its lines cached; only smaller frames cut those misses.
     Shipped (cbcc4c1) as no segment at all where the thread has the room: `check_in` runs a large check in place when
-    `stack::room(CHECK_SEGMENT)` holds, and church-bv's entry thread has a 256 MB stack; a thread with less room takes
-    the segment as before (church-bv's worker task threads and lanes among them, on default stacks). Page faults per
+    `stack::has_check_room()` holds, and church-bv's entry thread has a 256 MB stack (`CHECK_STACK`); a thread with
+    less room takes the segment as before. church-bv's worker task threads and lanes were on default stacks and still
+    took it; since 2026-11-09 they have the check stack too (their tests assert the room; a sweep's commit and faults
+    not remeasured). Page faults per
     repeat check, f159775 against cbcc4c1 (`scripts/faults.ps1`, run `2026-11-09-m1-faults`; the process's count at
     `GATE_REPS=3` less `GATE_REPS=1`, halved; 3 runs each, equal to within 6 faults): 15104 to 0 at d = 13 and 3802 to
     -2 at d = 11; the first check also faults less (20398 to 17054 and 6589 to 5730 for the whole process). Not timed:

@@ -20,14 +20,14 @@ fn lookup(name: &str) -> Option<fn()> {
     TABLE.iter().find(|(n, _)| *n == name).map(|(_, f)| *f)
 }
 
-/// Runs `f` on a thread of its own with a 256 MB stack, as the worker threads have (a Windows exe's main thread has 1 MiB and
-/// this code recurses deeply). `Err` is a panic, already reported by the panic hook.
-fn run_on_thread(f: impl FnOnce() + Send + 'static) -> Result<(), ()> {
+/// Runs `f` on a thread of its own, named `name`, with the check stack, as the worker threads have (a Windows exe's main thread
+/// has 1 MiB and this code recurses deeply). `Err` is a panic, already reported by the panic hook.
+pub(crate) fn run_on_thread(name: &str, f: impl FnOnce() + Send + 'static) -> Result<(), ()> {
     std::thread::Builder::new()
-        .name("entry".into())
+        .name(name.into())
         .stack_size(tatic_kernel::CHECK_STACK)
         .spawn(f)
-        .expect("start the entry thread")
+        .expect("start the thread")
         .join()
         .map_err(|_| ())
 }
@@ -37,7 +37,7 @@ pub fn main() -> ExitCode {
     crate::driver::declare_reentry(&["worker"]);
     let arg = std::env::args().nth(1);
     match arg.as_deref().and_then(lookup) {
-        Some(f) => match run_on_thread(f) {
+        Some(f) => match run_on_thread("entry", f) {
             Ok(()) => ExitCode::SUCCESS,
             Err(()) => ExitCode::from(101),
         },
@@ -65,15 +65,17 @@ mod tests {
     }
 
     #[test]
-    fn entries_run_off_the_main_thread() {
+    fn entries_run_off_the_main_thread_with_room_to_check_in_place() {
         let caller = std::thread::current().id();
         let (tx, rx) = std::sync::mpsc::channel();
-        run_on_thread(move || tx.send(std::thread::current().id()).unwrap()).unwrap();
-        assert_ne!(rx.recv().unwrap(), caller);
+        run_on_thread("t", move || tx.send((std::thread::current().id(), tatic_kernel::has_check_room())).unwrap()).unwrap();
+        let (id, room) = rx.recv().unwrap();
+        assert_ne!(id, caller);
+        assert!(room, "a large check would take a segment on this thread");
     }
 
     #[test]
     fn a_panicking_entry_is_an_error() {
-        assert!(run_on_thread(|| panic!("expected: the entry panics")).is_err());
+        assert!(run_on_thread("t", || panic!("expected: the entry panics")).is_err());
     }
 }
