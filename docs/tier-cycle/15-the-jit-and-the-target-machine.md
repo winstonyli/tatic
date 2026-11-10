@@ -610,8 +610,9 @@ An invariant across an `if` needs a case split on the condition bit at Sort0, wh
 paragraph.
 
 **An invariant across an `if` (probe 2026-10-17, `docs/runs/2026-10-12/patches/if_invariant_probe.patch`; its pieces
-are kept since: `good_lt`, the lowering and `lowering_and_lt_witnesses_check` in `crates/church-bv/src/encoding.rs`, `choose`
-and `if_inv` in `crates/church-bv/src/wasm.rs`, next-but-one paragraph).**
+are kept since, in `crates/tatic-wasm/src/` from 2026-11-08: `good_lt` in `encoding/good.rs`, the lowering and
+`lowering_and_lt_witnesses_check` in `encoding/tests.rs`, `choose` in `wasm.rs` and `if_inv` in `wasm/laws.rs`,
+next-but-one paragraph).**
 Derivable, with no kernel change, and cheap. Three pieces, all checked:
 - **A Sort0 split from the Sort1 witness.** `GoodBool0 a = Pi P:(Bool0 -> Sort0). P true -> P false -> P a` is a
   Sort1 type, so `GoodBool a` eliminates at the motive `\b. GoodBool0 b`: `lower_bit : Pi a. GoodBool a -> GoodBool0 a`
@@ -646,7 +647,7 @@ Check times, machine at 32% CPU from other jobs, Defender real-time protection o
 
 Concrete: `choose (lt_u 0 1) x y` is `x`, `choose (lt_u 1 0) x y` is `y` and not `x`, by conversion at n=4 and 64.
 
-**Wasm programs as kernel data, kept (2026-10-17; `crates/church-bv/src/wasm.rs`, test `wasm_programs_as_kernel_data`).**
+**Wasm programs as kernel data, kept (2026-10-17; now `crates/tatic-wasm/src/wasm.rs`, test `wasm_programs_as_kernel_data` in `wasm/laws.rs`).**
 The instruction-list encoding, rebuilt a third time and now in the tree. A program is a Church-encoded instruction tree
 typed by its start and end stacks, `Prog S T = Pi F:(Sort2 -> Sort2). F T -> push -> bin -> cmp -> dup -> if -> loop
 -> store -> load -> F S`, each constructor taking the rest of the program, so `p1 ++ p2` puts `p2` at `p1`'s nil. Its
