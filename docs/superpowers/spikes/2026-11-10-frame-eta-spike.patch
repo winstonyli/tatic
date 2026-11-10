@@ -1,0 +1,237 @@
+diff --git a/crates/tatic-kernel/src/tests/conversion.rs b/crates/tatic-kernel/src/tests/conversion.rs
+index 17425c2..c836029 100644
+--- a/crates/tatic-kernel/src/tests/conversion.rs
++++ b/crates/tatic-kernel/src/tests/conversion.rs
+@@ -98,3 +98,18 @@ fn nf_and_def_eq_are_linear_on_a_stuck_spine() {
+     });
+ }
+ 
++
++/// Spike (c3): conversion has no eta. `refl f` proves `Id(A -> B, f, f)` but not
++/// `Id(A -> B, f, \x. f x)`, and `def_eq` says the two sides differ.
++#[test]
++fn conversion_has_no_eta() {
++    // ctx [A, B, f]: f = var(0), B = var(1), A = var(2)
++    let stmt = |rhs: Expr| pi(sort(0), pi(sort(0), pi(arrow(var(1), var(0)), id(arrow(var(2), var(1)), var(0), rhs))));
++    let proof = lam(sort(0), lam(sort(0), lam(arrow(var(1), var(0)), refl(var(0)))));
++    let eta = lam(var(2), app(var(1), var(0)));
++    assert!(check(&Ctx::new(), &proof, &stmt(var(0))).is_ok());
++    let err = check(&Ctx::new(), &proof, &stmt(eta)).unwrap_err();
++    eprintln!("eta rejected: {}", &err[..err.len().min(120)]);
++    let f = var(5);
++    assert!(!def_eq(&f, &lam(sort(0), app(shift(&f, 0, 1), var(0)))));
++}
+diff --git a/crates/tatic-wasm/src/wasm/laws.rs b/crates/tatic-wasm/src/wasm/laws.rs
+index b2aa4d1..97c7872 100644
+--- a/crates/tatic-wasm/src/wasm/laws.rs
++++ b/crates/tatic-wasm/src/wasm/laws.rs
+@@ -466,3 +466,209 @@ pub fn wasm_scaling() {
+         tatic_kernel::scoped(|| run_wasm_checks(Wasm { n }, n == 64))
+     }
+ }
++
++// ---- SPIKE c1: a store at an address computed at run time, a callee that writes the next cell, and a read back.
++
++/// Binds `a_0..a_(n-1) : Bool0` then `ga_i : GoodBool a_i` (the `GoodBv` step's binders) around `body(a, ga)`.
++fn bind_bits(c: &mut Cx, n: usize, acc: &mut Vec<At>, body: &mut dyn FnMut(&mut Cx, &[At], &[At]) -> Expr) -> Expr {
++    let k = acc.len();
++    if k == 2 * n {
++        let (a, ga) = acc.split_at(n);
++        let (a, ga) = (a.to_vec(), ga.to_vec());
++        return body(c, &a, &ga);
++    }
++    let ty = if k < n { bool0() } else { app(good_bool(), c.at(acc[k - n])) };
++    c.lam(ty, |c, v| {
++        acc.push(v);
++        let r = bind_bits(c, n, acc, body);
++        acc.pop();
++        r
++    })
++}
++
++/// `Pi x. GoodBv x -> Id(Bool0, lhs x, b0)`. `GoodBv`'s motive must land in Sort2 and `Id(Bool0, ..)` is in Sort1
++/// (no cumulativity), so the motive is the Leibniz form `Pi Q:(Bool0 -> Sort1). Q b0 -> Q (lhs y)`, instantiated at the
++/// end with `Q e = Id(Bool0, e, b0)`. `step(c, a, ga)` proves `Id(Bool0, lhs (mk a), b0)` under the step's binders.
++fn bool_lemma(n: usize, lhs: &dyn Fn(Expr) -> Expr, b0: Expr,
++              step: &mut dyn FnMut(&mut Cx, &[At], &[At]) -> Expr) -> (Expr, Expr) {
++    let tys: Vec<Ty> = vec![ty!(|_c, _x| bv_ty(n)), ty!(|c, x| app(good_bv(n), c.at(x[0])))];
++    let qty = arrow(bool0(), sort(1));
++    law(&tys, |c, xs| {
++        let (x, g) = (xs[0], xs[1]);
++        let motive = c.lam(bv_ty(n), |c, y| {
++            c.pi(qty, |c, q| arrow(app(c.at(q), b0), app(c.at(q), lhs(c.at(y)))))
++        });
++        let body = bind_bits(c, n, &mut vec![], &mut |c, a, ga| {
++            let p = step(c, a, ga);
++            let bits: Vec<Expr> = a.iter().map(|b| c.at(*b)).collect();
++            let l = lhs(church_tuple(&bits));
++            let (p, l) = (c.mark(p), c.mark(l));
++            c.lam(qty, |c, q| {
++                let qb = app(c.at(q), b0);
++                c.lam(qb, |c, hq| {
++                    // J at `\a b _. Q b -> Q a` takes `Q b0` to `Q (lhs (mk a))`
++                    let jm = c.lam(bool0(), |c, u| {
++                        c.lam(bool0(), |c, v| {
++                            let e = id(bool0(), c.at(u), c.at(v));
++                            c.lam(e, |c, _| arrow(app(c.at(q), c.at(v)), app(c.at(q), c.at(u))))
++                        })
++                    });
++                    let base = c.lam(bool0(), |c, u| c.lam(app(c.at(q), c.at(u)), |c, h| c.at(h)));
++                    app(jelim(jm, base, c.at(l), b0, c.at(p)), c.at(hq))
++                })
++            })
++        });
++        let qid = lam(bool0(), id(bool0(), var(0), b0));
++        let proof = apps(app2(c.at(g), motive, body), vec![qid, refl(b0)]);
++        (proof, id(bool0(), lhs(c.at(x)), b0))
++    })
++}
++
++/// `Pi x. GoodBv x -> Id(Bool0, eq x x, true)`: a bit split per bit, chained by `cong1` and `trans_proof`.
++pub fn eq_refl_lemma(n: usize) -> (Expr, Expr) {
++    let (q, _) = bit_lemma(id(bool0(), and(t(), not_(xor(var(0), var(0)))), t()), refl(t()), refl(t()));
++    bool_lemma(n, &|y| app2(eq_bv(n), y, y), t(), &mut |c, a, ga| {
++        let (mut acc, mut p) = (t(), refl(t()));
++        for i in 0..n {
++            let xi = not_(xor(c.at(a[i]), c.at(a[i])));
++            let next = and(acc, xi);
++            let fmap = lam(bool0(), and(var(0), shift(&xi, 0, 1)));
++            let cong = cong1(&bool0(), &bool0(), &fmap, acc, t(), p);
++            let qi = app2(q, c.at(a[i]), c.at(ga[i]));
++            p = trans_proof(&bool0(), &next, &and(t(), xi), &t(), cong, qi);
++            acc = next;
++        }
++        p
++    })
++}
++
++/// `Pi x. GoodBv x -> Id(Bool0, eq (x + 1) x, false)`: one split on bit 0; the rest is conversion.
++pub fn eq_succ_lemma(n: usize) -> (Expr, Expr) {
++    let lhs = move |y: Expr| app2(eq_bv(n), app2(Op::Add.term(n), y, lit(n, 1)), y);
++    bool_lemma(n, &lhs, f(), &mut |c, a, ga| {
++        let m = c.lam(bool0(), |c, b| {
++            let bits: Vec<Expr> = (0..n).map(|i| if i == 0 { c.at(b) } else { c.at(a[i]) }).collect();
++            id(bool0(), lhs(church_tuple(&bits)), f())
++        });
++        app3(c.at(ga[0]), m, refl(f()), refl(f()))
++    })
++}
++
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum Fr {
++    /// `mem[x] := 5; g x; x + mem[x]`, with `g y = (mem[y + 1] := 7; y)`
++    Ok,
++    /// the callee writes `y`, not `y + 1`
++    CalleeHitsX,
++    /// the caller reads `x + 1` after the call
++    ReadsX1,
++    /// the right program, the proof `refl`: conversion alone
++    NoLemma,
++}
++
++/// `Pi R z x. GoodBv x -> Pi h k. caller x h k = k (x + 5) (upd (x+1) 7 (upd x 5 h))`.
++pub fn frame_law(w: Wasm, fr: Fr) -> (Expr, Expr) {
++    let n = w.n;
++    let add = Op::Add.term(n);
++    let ins_add = Ins::Op(Op::Add);
++    use Ins::{Call, Dup, Load, Push, Store};
++    let g_code = if fr == Fr::CalleeHitsX {
++        vec![Dup, Push(7), Store]
++    } else {
++        vec![Dup, Push(1), ins_add.clone(), Push(7), Store]
++    };
++    let caller_code = if fr == Fr::ReadsX1 {
++        vec![Dup, Push(5), Store, Dup, Call, Push(1), ins_add.clone(), Load, ins_add.clone()]
++    } else {
++        vec![Dup, Push(5), Store, Dup, Call, Load, ins_add.clone()]
++    };
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| app(good_bv(n), c.at(x[2]))),
++        ty!(|c, x| w.mem(c, x[0])),
++        ty!(|c, x| ret_m(w, c, x[0])),
++    ];
++    let (refl_l, succ_l) = (eq_refl_lemma(n).0, eq_succ_lemma(n).0);
++    law(&tys, |c, xs| {
++        let (r, z, x, gx, h, k) = (xs[0], xs[1], xs[2], xs[3], xs[4], xs[5]);
++        let none = c.lam(w.v(), |c, _| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _| {
++                let ret = ret_m(w, c, r);
++                c.lam(ret, |c, _| c.at(z))
++            })
++        });
++        let callee = app(mach_step(w, c, r, z, &g_code), none);
++        let lhs = apps(app(mach_step(w, c, r, z, &caller_code), callee), vec![c.at(x), c.at(h), c.at(k)]);
++        let x1 = app2(add, c.at(x), lit(n, 1));
++        let h1 = w.upd(c, r, c.at(x), lit(n, 5), c.at(h));
++        let h1 = c.mark(h1);
++        let h2 = w.upd(c, r, x1, lit(n, 7), c.at(h1));
++        let h2 = c.mark(h2);
++        let tgt = app2(c.at(k), app2(add, c.at(x), lit(n, 5)), c.at(h2));
++        let tgt = c.mark(tgt);
++        let kk = c.lam(w.v(), |c, v| app2(c.at(k), app2(add, c.at(x), c.at(v)), c.at(h2)));
++        let kk = c.mark(kk);
++        let stmt = id(c.at(r), lhs, c.at(tgt));
++        if fr == Fr::NoLemma {
++            return (refl(c.at(tgt)), stmt);
++        }
++        // J at `\a b _. Q b -> Q a` over Bool0, with `Q e = Id(R, e R yes no, tgt)`
++        let rewrite = |c: &mut Cx, yes: Expr, no: Expr, a: Expr, b: Expr, p: Expr, qb: Expr| {
++            let (yes, no) = (c.mark(yes), c.mark(no));
++            let q = |c: &mut Cx, e: At| id(c.at(r), app3(c.at(e), c.at(r), c.at(yes), c.at(no)), c.at(tgt));
++            let motive = c.lam(bool0(), |c, a| {
++                c.lam(bool0(), |c, b| {
++                    let e = id(bool0(), c.at(a), c.at(b));
++                    c.lam(e, |c, _| {
++                        let qb = q(c, b);
++                        arrow(qb, q(c, a))
++                    })
++                })
++            });
++            let base = c.lam(bool0(), |c, a| {
++                let qa = q(c, a);
++                c.lam(qa, |c, hq| c.at(hq))
++            });
++            app(jelim(motive, base, a, b, p), qb)
++        };
++        let k5 = app(c.at(kk), lit(n, 5));
++        let hx = app2(c.at(h), c.at(x), c.at(kk));
++        let eqxx = app2(eq_bv(n), c.at(x), c.at(x));
++        let s1 = rewrite(c, k5, hx, eqxx, t(), app2(refl_l, c.at(x), c.at(gx)), refl(c.at(tgt)));
++        let k7 = app(c.at(kk), lit(n, 7));
++        let a1 = app2(c.at(h1), c.at(x), c.at(kk));
++        let eqs = app2(eq_bv(n), app2(add, c.at(x), lit(n, 1)), c.at(x));
++        let s2 = rewrite(c, k7, a1, eqs, f(), app2(succ_l, c.at(x), c.at(gx)), s1);
++        (s2, stmt)
++    })
++}
++
++#[test]
++pub fn frame_spike() {
++    for n in [4usize, 24, 64] {
++        tatic_kernel::scoped(|| {
++            let w = Wasm { n };
++            let timed = |name: &str, (p, s): (Expr, Expr)| {
++                let t0 = Instant::now();
++                ck(&format!("{name} n={n}"), &p, &s);
++                println!("FRAME n={n} {name}: {:?}", t0.elapsed());
++            };
++            let rejected = |name: &str, (p, s): (Expr, Expr)| {
++                let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
++                assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
++                let t0 = Instant::now();
++                let e = holds(&p, &s).expect_err(&format!("{name} must be rejected at n={n}"));
++                println!("FRAME n={n} rejected {name}: {:?} ({})", t0.elapsed(), e.chars().take(80).collect::<String>());
++            };
++            timed("eq x x = true", eq_refl_lemma(n));
++            timed("eq (x+1) x = false", eq_succ_lemma(n));
++            timed("frame law", frame_law(w, Fr::Ok));
++            rejected("frame law, callee writes x", frame_law(w, Fr::CalleeHitsX));
++            rejected("frame law, reads x + 1", frame_law(w, Fr::ReadsX1));
++            rejected("frame law, refl without the lemmas", frame_law(w, Fr::NoLemma));
++        })
++    }
++}

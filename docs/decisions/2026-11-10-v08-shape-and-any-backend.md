@@ -88,7 +88,11 @@ statement into the loop law, which removes fuel 1 and `strip_loop` (already unus
     adds `call` as a ninth constructor with load's type, built through `prog`, with the program type's level
     unchanged and the existing tatic-wasm tests and a filtered gate subset passing (scaling tests not run). A callee that writes a fixed heap cell before its call and reads it after proves
     against a source that threads the cell as state.
-  - Still open: closure records at addresses computed at run time (an invariant over a region), locals and
+  - A store at a run-time address that a callee's write at the next address leaves intact also proves, with two
+    bitvector lemmas and no induction; the call patch (the ninth constructor plus the environment threaded through the
+    interpreter) makes `wasm_scaling` retire about 1.1% more instructions (doc 15, "A store at a run-time address across a call, the cost of `call`, and eta: three follow-ups").
+  - Still open: closure records over a region whose depth is known only at run time (it needs a carry-chain lemma,
+    `eq (p + j) p = false` for symbolic `j`, which nothing in the repo proves), locals and
     per-activation frames, the table, the closure convention for the five terms that call a closure parameter, and
     proofs derived from the instruction list (all so far are hand-written per function).
 - z4 **Backend boundary only**: the row table with no new instructions.
