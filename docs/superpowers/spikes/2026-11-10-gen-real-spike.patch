@@ -1,0 +1,1681 @@
+diff --git a/crates/tatic-wasm/src/print.rs b/crates/tatic-wasm/src/print.rs
+index 5f46309..a2227b4 100644
+--- a/crates/tatic-wasm/src/print.rs
++++ b/crates/tatic-wasm/src/print.rs
+@@ -16,6 +16,7 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
+         match ins {
+             Ins::Push(v) => line(out, &format!("i64.const {v}")),
+             Ins::LocalGet(i) => line(out, &format!("local.get $p{i}")),
++            Ins::LocalSet(i) => line(out, &format!("local.set $p{i}")),
+             Ins::Op(o) => line(out, o.mnemonic()),
+             Ins::If(t, e) => {
+                 line(out, "if (result i64)");
+@@ -31,7 +32,7 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
+             }
+             Ins::Br(0) => line(out, "br $L"),
+             Ins::Raw(s) => line(out, s),
+-            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load => panic!("print_body: {ins:?} is never emitted"),
++            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load | Ins::Call => panic!("print_body: {ins:?} is never emitted"),
+         }
+     }
+ }
+diff --git a/crates/tatic-wasm/src/wasm.rs b/crates/tatic-wasm/src/wasm.rs
+index 4ebe75c..e3e7fc7 100644
+--- a/crates/tatic-wasm/src/wasm.rs
++++ b/crates/tatic-wasm/src/wasm.rs
+@@ -22,6 +22,16 @@ pub fn choose(r: Expr, w: Expr, x: Expr, y: Expr) -> Expr {
+ /// An interpreter case's body from `A`, its operator if any, `rest`, the stack and the memory.
+ type Body<'a> = dyn Fn(&mut Cx, At, Option<At>, At, At, At) -> Expr + 'a;
+ 
++/// SPIKE: what a module supplies to the interpreter. `env` runs a call on a state and a return continuation; `lab` is the
++/// restart a function's own top-level `loop` jumps to; `ch` replaces `choose` by an opaque operator `Pi R. Bv1 -> R -> R -> R`
++/// (the generator's probe).
++#[derive(Clone, Copy, Default)]
++pub struct Hooks {
++    pub env: Option<At>,
++    pub lab: Option<At>,
++    pub ch: Option<At>,
++}
++
+ /// What a stack slot holds: an n-bit word or a one-bit word (a compare's result).
+ #[derive(Clone, Copy, PartialEq, Debug)]
+ pub enum K {
+@@ -44,6 +54,10 @@ pub enum Ins {
+     Br(usize),
+     Store,
+     Load,
++    /// SPIKE: `call` of the module's one function, argument and result on the stack.
++    Call,
++    /// SPIKE: `local.set $p{i}`: pops a word into slot `i` of the activation's locals.
++    LocalSet(u32),
+     Raw(String),
+ }
+ 
+@@ -91,7 +105,8 @@ fn shape(code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Result<Option<Vec<K>
+                 return Ok(None);
+             }
+             Ins::Store => pop(&mut st, &[K::W, K::W])?,
+-            Ins::Load => {
++            Ins::LocalSet(_) => pop(&mut st, &[K::W])?,
++            Ins::Load | Ins::Call => {
+                 pop(&mut st, &[K::W])?;
+                 st.insert(0, K::W)
+             }
+@@ -150,8 +165,13 @@ impl Wasm {
+         let base = shift(&c.at(base), 0, ks.len() as i32);
+         ks.iter().rev().fold(base, |acc, k| sigma(self.word(*k), acc))
+     }
+-    /// `Mem = V -> (V -> R) -> R`.
++    /// The machine's state `Mem = Locals x Heap`, both `V -> (V -> R) -> R` (SPIKE: locals are their own component).
+     pub fn mem(&self, c: &mut Cx, r: At) -> Expr {
++        let h = self.heap(c, r);
++        prod(h, h)
++    }
++    /// `Heap = V -> (V -> R) -> R`, also the type of the locals.
++    pub fn heap(&self, c: &mut Cx, r: At) -> Expr {
+         let v = self.v();
+         c.pi(v, |c, _| {
+             let k = c.pi(v, |c, _| c.at(r));
+@@ -177,6 +197,10 @@ impl Wasm {
+                 4 => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                 5 => arrow(arrow(fa(a), fa(a)), fa(a)),
+                 6 => arrow(fa(a), fa(vva)),
++                // local.get (9) is push's type, local.set (10) pops a word
++                9 => arrow(v, arrow(fa(va), fa(a))),
++                10 => arrow(v, arrow(fa(a), fa(va))),
++                // load (7) and call (8): pop a word, push a word
+                 _ => arrow(fa(va), fa(va)),
+             }
+         })
+@@ -184,7 +208,7 @@ impl Wasm {
+     /// The eight constructor binders, each wrapped by `wrap` (`lam` or `pi`), then `body` with their variables.
+     fn ctors(&self, c: &mut Cx, f: At, wrap: fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+         let w = *self;
+-        let tys: Vec<Ty> = (0..8).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
++        let tys: Vec<Ty> = (0..11).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
+         tele(c, &tys, &mut vec![], &wrap, body)
+     }
+     /// `Prog S T`, with `S` and `T` built at each use.
+@@ -232,11 +256,13 @@ impl Wasm {
+                 let r = cont(c, with(&[K::W], 0));
+                 cons(c, 0, vec![ty(c, &st), lit(self.n, (*v as u64 as u128) & low_bits(self.n)), r])
+             }
+-            // push the slot's address, then load it
+             Ins::LocalGet(i) => {
+                 let r = cont(c, with(&[K::W], 0));
+-                let load = cons(c, 7, vec![ty(c, &st), r]);
+-                cons(c, 0, vec![ty(c, &st), lit(self.n, *i as u128), load])
++                cons(c, 9, vec![ty(c, &st), lit(self.n, *i as u128), r])
++            }
++            Ins::LocalSet(i) => {
++                let r = cont(c, below(1));
++                cons(c, 10, vec![ty(c, &below(1)), lit(self.n, *i as u128), r])
+             }
+             Ins::Op(o) => {
+                 let (i, top) = match o.kind() {
+@@ -278,6 +304,10 @@ impl Wasm {
+                 let r = cont(c, st.clone());
+                 cons(c, 7, vec![ty(c, &below(1)), r])
+             }
++            Ins::Call => {
++                let r = cont(c, st.clone());
++                cons(c, 8, vec![ty(c, &below(1)), r])
++            }
+         }
+     }
+     /// `upd a v mu = \b kk. (eq a b) R (kk v) (mu b kk)`.
+@@ -303,7 +333,7 @@ impl Wasm {
+         sigrec(motive, step, c.at(st))
+     }
+     /// The constructors' meanings.
+-    fn interp(&self, c: &mut Cx, r: At, fuel: At, z: At) -> Vec<Expr> {
++    fn interp(&self, c: &mut Cx, r: At, fuel: At, z: At, hooks: &Hooks) -> Vec<Expr> {
+         let (v, v1) = (self.v(), bv_ty(1));
+         let w = *self;
+         // `\A rest st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`
+@@ -365,7 +395,11 @@ impl Wasm {
+                         c.lam(m, |c, mu| {
+                             w.split(c, r, v1, a, st, |c, b, s| {
+                                 let (s, mu) = (c.at(s), c.at(mu));
+-                                choose(c.at(r), c.at(b), app2(c.at(th), s, mu), app2(c.at(el), s, mu))
++                                let (x, y) = (app2(c.at(th), s.clone(), mu.clone()), app2(c.at(el), s, mu));
++                                match hooks.ch {
++                                    Some(f) => apps(c.at(f), vec![c.at(r), c.at(b), x, y]),
++                                    None => choose(c.at(r), c.at(b), x, y),
++                                }
+                             })
+                         })
+                     })
+@@ -374,39 +408,137 @@ impl Wasm {
+         });
+         let loop_ = c.lam(sort(2), |c, a| {
+             let ga = w.g(c, r, c.at(a));
+-            c.lam(arrow(ga, ga), |c, body| {
+-                let timeout = c.lam(c.at(a), |c, _| {
+-                    let m = w.mem(c, r);
+-                    c.lam(m, |c, _| c.at(z))
+-                });
+-                let ga = w.g(c, r, c.at(a));
+-                apps(c.at(fuel), vec![ga, timeout, c.at(body)])
++            c.lam(arrow(ga, ga), |c, body| match hooks.lab {
++                // the function's own recursion: the label restarts the function on the current state
++                Some(restart) => {
++                    let label = c.lam(c.at(a), |c, _| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu| app(c.at(restart), c.at(mu)))
++                    });
++                    app(c.at(body), label)
++                }
++                None => {
++                    let timeout = c.lam(c.at(a), |c, _| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, _| c.at(z))
++                    });
++                    let ga = w.g(c, r, c.at(a));
++                    apps(c.at(fuel), vec![ga, timeout, c.at(body)])
++                }
+             })
+         });
+         let store = shape(c, None, &|a| a, &|a| prod(v, prod(v, a)), &|c, a, _, rest, st, mu| {
+             let below = c.mark(prod(v, c.at(a)));
+             w.split(c, r, v, below, st, |c, x, rs| {
+                 w.split(c, r, v, a, rs, |c, ad, s| {
+-                    let mu2 = w.upd(c, r, c.at(ad), c.at(x), c.at(mu));
+-                    app2(c.at(rest), c.at(s), mu2)
++                    w.split_mu(c, r, mu, |c, loc, hp| {
++                        let hp2 = w.upd(c, r, c.at(ad), c.at(x), c.at(hp));
++                        let mu2 = w.mkmu(c, r, c.at(loc), hp2);
++                        app2(c.at(rest), c.at(s), mu2)
++                    })
+                 })
+             })
+         });
+         let load = shape(c, None, &|a| prod(v, a), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
+             w.split(c, r, v, a, st, |c, ad, s| {
+-                let k = c.lam(v, |c, x| app2(c.at(rest), mkpair(c.at(a), c.at(x), c.at(s)), c.at(mu)));
+-                app2(c.at(mu), c.at(ad), k)
++                w.split_mu(c, r, mu, |c, _, hp| {
++                    let k = c.lam(v, |c, x| app2(c.at(rest), mkpair(c.at(a), c.at(x), c.at(s)), c.at(mu)));
++                    app2(c.at(hp), c.at(ad), k)
++                })
+             })
+         });
+-        vec![push, bin, cmp, dup, if_, loop_, store, load]
++        // SPIKE: `call` runs `env : Mem -> (V -> Mem -> R) -> R` on a fresh activation (the popped word in local 0, the
++        // other locals 0, the heap shared) and pushes its answer, under the caller's locals again; with no environment
++        // it answers the timeout
++        let call = shape(c, None, &|a| prod(v, a), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
++            w.split(c, r, v, a, st, |c, x, s| match hooks.env {
++                Some(e) => w.split_mu(c, r, mu, |c, loc, hp| {
++                    let kont = c.lam(v, |c, y| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu2| {
++                            w.split_mu(c, r, mu2, |c, _, hp2| {
++                                let back = w.mkmu(c, r, c.at(loc), c.at(hp2));
++                                app2(c.at(rest), mkpair(c.at(a), c.at(y), c.at(s)), back)
++                            })
++                        })
++                    });
++                    let blank = w.zero_heap(c, r);
++                    let fresh_loc = w.upd(c, r, lit(w.n, 0), c.at(x), blank);
++                    let fresh = w.mkmu(c, r, fresh_loc, c.at(hp));
++                    apps(c.at(e), vec![fresh, kont])
++                }),
++                None => c.at(z),
++            })
++        });
++        // SPIKE: `local.get i` / `local.set i` read and write the activation's locals
++        let local_get = c.lam(sort(2), |c, a| {
++            c.lam(v, |c, i| {
++                let rt = w.g(c, r, prod(v, c.at(a)));
++                c.lam(rt, |c, rest| {
++                    c.lam(c.at(a), |c, s| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu| {
++                            w.split_mu(c, r, mu, |c, loc, _| {
++                                let k = c.lam(v, |c, x| app2(c.at(rest), mkpair(c.at(a), c.at(x), c.at(s)), c.at(mu)));
++                                app2(c.at(loc), c.at(i), k)
++                            })
++                        })
++                    })
++                })
++            })
++        });
++        let local_set = c.lam(sort(2), |c, a| {
++            c.lam(v, |c, i| {
++                let rt = w.g(c, r, c.at(a));
++                c.lam(rt, |c, rest| {
++                    c.lam(prod(v, c.at(a)), |c, st| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu| {
++                            w.split(c, r, v, a, st, |c, x, s| {
++                                w.split_mu(c, r, mu, |c, loc, hp| {
++                                    let loc2 = w.upd(c, r, c.at(i), c.at(x), c.at(loc));
++                                    let mu2 = w.mkmu(c, r, loc2, c.at(hp));
++                                    app2(c.at(rest), c.at(s), mu2)
++                                })
++                            })
++                        })
++                    })
++                })
++            })
++        });
++        vec![push, bin, cmp, dup, if_, loop_, store, load, call, local_get, local_set]
+     }
+     /// `M p N R k z`, of type `G S` for `p : Prog S T` and `k : G T`.
+     pub fn meaning(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At) -> Expr {
++        self.meaning_with(c, p, fuel, r, k, z, &Hooks::default())
++    }
++    /// SPIKE: `meaning`, with the module's hooks (`Hooks`).
++    #[allow(clippy::too_many_arguments)]
++    pub fn meaning_with(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At, hooks: &Hooks) -> Expr {
+         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
+         let mut args = vec![gfam, c.at(k)];
+-        args.extend(self.interp(c, r, fuel, z));
++        args.extend(self.interp(c, r, fuel, z, hooks));
+         apps(c.at(p), args)
+     }
++    /// `sigrec` on a state `mu : Locals x Heap` into `R`: `body(c, locals, heap)`.
++    pub fn split_mu(&self, c: &mut Cx, r: At, mu: At, body: impl FnOnce(&mut Cx, At, At) -> Expr) -> Expr {
++        let h = self.heap(c, r);
++        let hat = c.mark(h);
++        self.split(c, r, h, hat, mu, body)
++    }
++    /// `(locals, heap)` as a state.
++    pub fn mkmu(&self, c: &mut Cx, r: At, loc: Expr, hp: Expr) -> Expr {
++        let h = self.heap(c, r);
++        mkpair(h, loc, hp)
++    }
++    /// `\b kk. kk 0`: locals that are all 0.
++    pub fn zero_heap(&self, c: &mut Cx, r: At) -> Expr {
++        let n = self.n;
++        c.lam(self.v(), |c, _| {
++            let kt = c.pi(self.v(), |c, _| c.at(r));
++            c.lam(kt, |c, kk| app(c.at(kk), lit(n, 0)))
++        })
++    }
+     /// `p1 ++ p2 : Prog S U` for `p1 : Prog S T`, `p2 : Prog T U`.
+     pub fn append(&self, c: &mut Cx, u: &dyn Fn(&Cx) -> Expr, p1: At, p2: At) -> Expr {
+         c.lam(F_TY(), |c, f| {
+@@ -480,6 +612,7 @@ impl Wasm {
+ }
+ 
+ pub mod laws;
++pub mod sim;
+ 
+ #[cfg(test)]
+ mod tests {
+@@ -528,11 +661,14 @@ mod tests {
+                 ty!(|_c, _x| bv_ty(n)),
+                 ty!(|_c, _x| bv_ty(n)),
+                 ty!(|c, x| c.at(x[0])),
+-                ty!(|c, x| w.mem(c, x[1])),
++                ty!(|c, x| w.heap(c, x[1])),
+             ];
++            // SPIKE (e1): the state is (locals, heap); the frame is the locals
+             let frame = |c: &mut Cx, x: &[At]| {
+                 let inner = w.upd(c, x[1], lit(n, 1), c.at(x[5]), c.at(x[7]));
+-                w.upd(c, x[1], lit(n, 0), c.at(x[4]), inner)
++                let loc = w.upd(c, x[1], lit(n, 0), c.at(x[4]), inner);
++                let blank = w.zero_heap(c, x[1]);
++                w.mkmu(c, x[1], loc, blank)
+             };
+             law(&tys, |c, x| {
+                 let p = w.prog(c, &code, &[], x[0]);
+diff --git a/crates/tatic-wasm/src/wasm/laws.rs b/crates/tatic-wasm/src/wasm/laws.rs
+index b2aa4d1..6c98396 100644
+--- a/crates/tatic-wasm/src/wasm/laws.rs
++++ b/crates/tatic-wasm/src/wasm/laws.rs
+@@ -376,7 +376,13 @@ pub fn countdown_law(w: Wasm, dec: Op) -> (Expr, Expr) {
+     })
+ }
+ 
+-/// `Pi S R k z s mu. Id(R, M p fuel R k z (start..s) mu, want)`, by `refl`: a concrete run.
++/// SPIKE (e1): the state with all-zero locals over the heap `h`.
++fn start_mu(w: Wasm, c: &mut Cx, r: At, h: Expr) -> Expr {
++    let blank = w.zero_heap(c, r);
++    w.mkmu(c, r, blank, h)
++}
++
++/// `Pi S R k z s mu. Id(R, M p fuel R k z (start..s) mu, want)`, by `refl`: a concrete run (`mu` here is the heap).
+ fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn(&mut Cx, &[At]) -> Expr) -> (Expr, Expr) {
+     let ks: Vec<K> = start.iter().map(|_| K::W).collect();
+     let out = out_stack(code, ks.clone()).unwrap();
+@@ -386,14 +392,15 @@ fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn
+         ty!(|c, x| { let t = w.sty(c, &out, x[0]); w.g(c, x[1], t) }),
+         ty!(|c, x| c.at(x[1])),
+         ty!(|c, x| c.at(x[0])),
+-        ty!(|c, x| w.mem(c, x[1])),
++        ty!(|c, x| w.heap(c, x[1])),
+     ];
+     law(&tys, |c, x| {
+         let p = w.prog(c, code, &ks, x[0]);
+         let p = c.mark(p);
+         let fuel = c.mark(nat2_lit(fuel));
+         let st = start.iter().rev().fold(c.at(x[4]), |acc, v| mkpair(c.at(x[0]), lit(w.n, *v), acc));
+-        let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), st, c.at(x[5]));
++        let mu = start_mu(w, c, x[1], c.at(x[5]));
++        let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), st, mu);
+         (refl(l), id(c.at(x[1]), l, want(c, x)))
+     })
+ }
+@@ -437,12 +444,16 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
+     timed("loop law", loop_law(w));
+     timed("countdown invariant", countdown_law(w, Op::Sub));
+     // concrete runs: the countdown from 3 exits at 0 with fuel 4 and times out with fuel 3; store then load
+-    let at = |v: u128| move |c: &mut Cx, x: &[At]| app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, v), c.at(x[4])), c.at(x[5]));
++    let at = |v: u128| move |c: &mut Cx, x: &[At]| {
++        let mu = start_mu(w, c, x[1], c.at(x[5]));
++        app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, v), c.at(x[4])), mu)
++    };
+     timed("countdown 3, fuel 4", run_by_refl(w, &countdown(Op::Sub), &[3], 4, &at(0)));
+     timed("countdown 3, fuel 3", run_by_refl(w, &countdown(Op::Sub), &[3], 3, &|c, x| c.at(x[3])));
+     let mem_prog = [Ins::Push(3), Ins::Push(5), Ins::Store, Ins::Push(3), Ins::Load];
+     let stored = |c: &mut Cx, x: &[At]| {
+-        let mu = w.upd(c, x[1], lit(n, 3), lit(n, 5), c.at(x[5]));
++        let h = w.upd(c, x[1], lit(n, 3), lit(n, 5), c.at(x[5]));
++        let mu = start_mu(w, c, x[1], h);
+         app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, 5), c.at(x[4])), mu)
+     };
+     timed("store 5@3, load 3", run_by_refl(w, &mem_prog, &[], 0, &stored));
+diff --git a/crates/tatic-wasm/src/wasm/sim.rs b/crates/tatic-wasm/src/wasm/sim.rs
+new file mode 100644
+index 0000000..ef146e4
+--- /dev/null
++++ b/crates/tatic-wasm/src/wasm/sim.rs
+@@ -0,0 +1,542 @@
++//! SPIKE (throwaway, 2026-11-10, e1): ONE generator of simulation proofs for a function body with `Loop`/`Br`/`Call`.
++//!
++//! `gen_sim(w, code, arity, temps, src)` returns `(proof, statement)` for every fuel `N` with `GoodNat N`, every `R`, `z`,
++//! arguments `x_i`, heap `h`, machine continuation `km` and source continuation `ks`:
++//!
++//! ```text
++//! (Pi a mu. km a mu = ks a) -> M_N (frame x.., h) km = S_N x.. ks
++//! ```
++//!
++//! `M_N = N H timeout Bm` runs `code` through `prog`, with `call` and the function's own top-level `loop`/`br` both
++//! going through the one environment `env : H = State -> Ret -> R`. `S_N` is the source's step unrolled by the same fuel.
++//!
++//! The proof is `GoodNat`'s induction on fuel. In the step, both sides are put in weak head normal form and walked in
++//! lockstep as kernel terms (`Sim::sim`), with no match on the instruction list or the function:
++//!   - `km a mu` against `ks a'`: the relation hypothesis;
++//!   - `CH R w t e` against `CH R w' t' e'` (`CH` is the probe standing for `choose`): J through the shared choice;
++//!   - a stuck read of a parameter's slot `loc i K`: the slot hypothesis, then on;
++//!   - the fuel variable applied to a state, a continuation (a `br` or a `call`: one rule): the induction hypothesis at
++//!     the arguments read off the source side, the state and continuation read off the machine side as built, and the
++//!     continuation relation generated by walking the two continuations under their binders.
++//! `CH` is a bound variable of the proof only: the statement uses the real `choose`, and the proof is applied to it.
++use super::*;
++use std::cell::RefCell;
++
++/// What a source builder is given: the answer sort `r`, the function's own fixpoint variable `g`, its parameters, and
++/// the probe `ch` that stands for `choose` (the statement uses the real one: `None`).
++pub struct SEnv {
++    pub n: usize,
++    pub r: At,
++    pub g: At,
++    pub params: Vec<At>,
++    pub ch: Option<At>,
++}
++
++impl SEnv {
++    /// `choose R cond t f`, through the probe in the proof.
++    pub fn choose(&self, c: &Cx, cond: Expr, t: Expr, f: Expr) -> Expr {
++        match self.ch {
++            Some(h) => apps(c.at(h), vec![c.at(self.r), cond, t, f]),
++            None => choose(c.at(self.r), cond, t, f),
++        }
++    }
++    /// A call of the function itself on `args`, its answer passed to `k`: `g args (\res. k res)`.
++    pub fn call(&self, c: &mut Cx, args: &[At], k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++        let kont = c.lam(bv_ty(self.n), |c, res| k(c, c.at(res)));
++        let mut xs: Vec<Expr> = args.iter().map(|a| c.at(*a)).collect();
++        xs.push(kont);
++        apps(c.at(self.g), xs)
++    }
++}
++
++/// The source in continuation-passing form: given the environment and the final continuation, `cps src`.
++pub type SrcFn<'a> = dyn Fn(&mut Cx, &SEnv, &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr + 'a;
++
++/// `CH : Pi R:Sort0. Bv1 -> R -> R -> R`.
++fn ch_ty() -> Expr {
++    pi(sort(0), arrow(bv_ty(1), arrow(var(0), arrow(var(0), var(0)))))
++}
++/// The real choice, `\R w x y. choose R w x y`.
++fn choose_fn() -> Expr {
++    Cx::default().lam(sort(0), |c, r| {
++        c.lam(bv_ty(1), |c, w| {
++            c.lam(c.at(r), |c, x| c.lam(c.at(r), |c, y| choose(c.at(r), c.at(w), c.at(x), c.at(y))))
++        })
++    })
++}
++
++/// `p : a = b`, `q : b = c` give `a = c`.
++fn trans(c: &mut Cx, r: At, (a, b, cc): (Expr, Expr, Expr), p: Expr, q: Expr) -> Expr {
++    let a = c.mark(a);
++    let motive = c.lam(c.at(r), |c, u| {
++        c.lam(c.at(r), |c, v| {
++            let ty = id(c.at(r), c.at(u), c.at(v));
++            c.lam(ty, |c, _| arrow(id(c.at(r), c.at(a), c.at(u)), id(c.at(r), c.at(a), c.at(v))))
++        })
++    });
++    let base = c.lam(c.at(r), |c, u| {
++        let ty = id(c.at(r), c.at(a), c.at(u));
++        c.lam(ty, |c, h| c.at(h))
++    });
++    app(jelim(motive, base, b, cc, q), p)
++}
++
++/// `Id(R, CH R w t e, CH R w t' e')` from `Id(R, t, t')` and `Id(R, e, e')`: J on each branch.
++fn cong(c: &mut Cx, r: At, ch: At, cd: At, (t, t2, pt): (Expr, Expr, Expr), (e, e2, pe): (Expr, Expr, Expr)) -> Expr {
++    let pick = |c: &Cx, x: Expr, y: Expr| apps(c.at(ch), vec![c.at(r), c.at(cd), x, y]);
++    let (e, e2, pe) = (c.mark(e), c.mark(e2), c.mark(pe));
++    let outer_m = c.lam(c.at(r), |c, a| {
++        c.lam(c.at(r), |c, b| {
++            let ty = id(c.at(r), c.at(a), c.at(b));
++            c.lam(ty, |c, _| id(c.at(r), pick(c, c.at(a), c.at(e)), pick(c, c.at(b), c.at(e2))))
++        })
++    });
++    let outer_b = c.lam(c.at(r), |c, a| {
++        let inner_m = c.lam(c.at(r), |c, y| {
++            c.lam(c.at(r), |c, y2| {
++                let ty = id(c.at(r), c.at(y), c.at(y2));
++                c.lam(ty, |c, _| id(c.at(r), pick(c, c.at(a), c.at(y)), pick(c, c.at(a), c.at(y2))))
++            })
++        });
++        let inner_b = c.lam(c.at(r), |c, y| refl(pick(c, c.at(a), c.at(y))));
++        jelim(inner_m, inner_b, c.at(e), c.at(e2), c.at(pe))
++    });
++    jelim(outer_m, outer_b, t, t2, pt)
++}
++
++fn spine(e: &Expr) -> (Expr, Vec<Expr>) {
++    let (mut args, mut cur) = (vec![], *e);
++    while let tatic_kernel::Node::App(f, a) = cur.node() {
++        args.push(a);
++        cur = f;
++    }
++    args.reverse();
++    (cur, args)
++}
++
++/// The sizes the generator works at.
++#[derive(Clone, Copy)]
++struct G {
++    w: Wasm,
++    n: usize,
++    m: usize,
++}
++
++impl G {
++    fn v(&self) -> Expr {
++        self.w.v()
++    }
++    /// `Ret = V -> State -> R`.
++    fn ret_m(&self, c: &mut Cx, r: At) -> Expr {
++        let mem = self.w.mem(c, r);
++        arrow(self.v(), arrow(mem, c.at(r)))
++    }
++    /// `H = State -> Ret -> R`.
++    fn hm(&self, c: &mut Cx, r: At) -> Expr {
++        let (mem, ret) = (self.w.mem(c, r), self.ret_m(c, r));
++        arrow(mem, arrow(ret, c.at(r)))
++    }
++    fn ret_s(&self, c: &Cx, r: At) -> Expr {
++        arrow(self.v(), c.at(r))
++    }
++    /// `Hs = V^m -> (V -> R) -> R`.
++    fn hs(&self, c: &Cx, r: At) -> Expr {
++        (0..self.m).fold(arrow(self.ret_s(c, r), c.at(r)), |acc, _| arrow(self.v(), acc))
++    }
++    fn rel_ty(&self, c: &mut Cx, r: At, km: At, ks: At) -> Expr {
++        let w = self.w;
++        // over the two components of the state, not a state variable: a `sigrec` on a variable is stuck (no eta)
++        c.pi(self.v(), |c, a| {
++            let hp = w.heap(c, r);
++            c.pi(hp, |c, loc| {
++                let hp = w.heap(c, r);
++                c.pi(hp, |c, h| {
++                    let mu = w.mkmu(c, r, c.at(loc), c.at(h));
++                    id(c.at(r), app2(c.at(km), c.at(a), mu), app(c.at(ks), c.at(a)))
++                })
++            })
++        })
++    }
++    /// `Pi K. Id(R, loc i K, K a)`: slot `i` of `loc` holds `a`.
++    fn hyp_ty(&self, c: &mut Cx, r: At, loc: At, i: usize, a: At) -> Expr {
++        let n = self.n;
++        let kt = arrow(self.v(), c.at(r));
++        c.pi(kt, |c, kk| id(c.at(r), app2(c.at(loc), lit(n, i as u128), c.at(kk)), app(c.at(kk), c.at(a))))
++    }
++    /// The parameters at slots `0..m` over locals that are all 0.
++    fn frame(&self, c: &mut Cx, r: At, args: &[At]) -> Expr {
++        let blank = self.w.zero_heap(c, r);
++        args.iter().enumerate().rev().fold(blank, |acc, (i, a)| self.w.upd(c, r, lit(self.n, i as u128), c.at(*a), acc))
++    }
++    fn tm(&self, c: &mut Cx, r: At, z: At) -> Expr {
++        let w = self.w;
++        let mem = w.mem(c, r);
++        c.lam(mem, |c, _| {
++            let ret = self.ret_m(c, r);
++            c.lam(ret, |c, _| c.at(z))
++        })
++    }
++    fn ts(&self, c: &mut Cx, r: At, z: At) -> Expr {
++        let tys: Vec<Ty> = (0..self.m).map(|_| ty!(|_c, _x| bv_ty(64))).collect();
++        let _ = tys;
++        let n = self.n;
++        let args: Vec<Ty> = (0..self.m).map(|_| ty!(|_c, _x| bv_ty(n))).collect();
++        tele(c, &args, &mut vec![], &lam, &mut |c, _| {
++            let rs = self.ret_s(c, r);
++            c.lam(rs, |c, _| c.at(z))
++        })
++    }
++    /// `Bm = \env mu k. M_env (prog code) 0 mu`, the body's answer passed to `k`.
++    fn bm(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, code: &[Ins]) -> Expr {
++        let (w, n) = (self.w, self.n);
++        let hm = self.hm(c, r);
++        c.lam(hm, |c, env| {
++            let mem = w.mem(c, r);
++            c.lam(mem, |c, mu| {
++                let rm = self.ret_m(c, r);
++                c.lam(rm, |c, k| {
++                    let base = c.mark(w.v());
++                    let p = w.prog(c, code, &[], base);
++                    let p = c.mark(p);
++                    let fuel0 = c.mark(nat2_lit(0));
++                    let st_ty = prod(w.v(), c.at(base));
++                    let kk = c.lam(st_ty, |c, st| {
++                        let mem = w.mem(c, r);
++                        c.lam(mem, |c, mu2| w.split(c, r, w.v(), base, st, |c, y, _| app2(c.at(k), c.at(y), c.at(mu2))))
++                    });
++                    let kk = c.mark(kk);
++                    let restart = {
++                        let mem = w.mem(c, r);
++                        c.lam(mem, |c, m2| app2(c.at(env), c.at(m2), c.at(k)))
++                    };
++                    let restart = c.mark(restart);
++                    let hooks = Hooks { env: Some(env), lab: Some(restart), ch };
++                    let m = w.meaning_with(c, p, fuel0, r, kk, z, &hooks);
++                    app2(m, lit(n, 0), c.at(mu))
++                })
++            })
++        })
++    }
++    /// `Bs = \g x.. ks. cps src`.
++    fn bs(&self, c: &mut Cx, r: At, ch: Option<At>, src: &SrcFn) -> Expr {
++        let n = self.n;
++        let hs = self.hs(c, r);
++        c.lam(hs, |c, g| {
++            let vs: Vec<Ty> = (0..self.m).map(|_| ty!(|_c, _x| bv_ty(n))).collect();
++            tele(c, &vs, &mut vec![], &lam, &mut |c, xs| {
++                let rs = self.ret_s(c, r);
++                c.lam(rs, |c, ks| {
++                    let env = SEnv { n, r, g, params: xs.to_vec(), ch };
++                    src(c, &env, &|c, v| app(c.at(ks), v))
++                })
++            })
++        })
++    }
++    /// The binders of the induction's motive, step and hypothesis applications, after the dummy numeral that lifts the
++    /// motive to Sort3: `d, a_0..a_{m-1}, loc, h, km, ks, rel, slot_0..slot_{m-1}`.
++    fn binders(&self, c: &mut Cx, r: At, wrap: &dyn Fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
++        let (g, n, m) = (self, self.n, self.m);
++        let mut tys: Vec<Ty> = vec![ty!(|_c, _x| nat2())];
++        tys.extend((0..m).map(|_| ty!(|_c, _x| bv_ty(n))));
++        tys.push(ty!(|c, _x| g.w.heap(c, r)));
++        tys.push(ty!(|c, _x| g.w.heap(c, r)));
++        tys.push(ty!(|c, _x| g.ret_m(c, r)));
++        tys.push(ty!(|c, _x| g.ret_s(c, r)));
++        tys.push(ty!(|c, x| g.rel_ty(c, r, x[m + 3], x[m + 4])));
++        for i in 0..m {
++            tys.push(ty!(|c, x| g.hyp_ty(c, r, x[m + 1], i, x[1 + i])));
++        }
++        tele(c, &tys, &mut vec![], wrap, body)
++    }
++}
++
++/// What `gen_sim` checks of the code before generating anything.
++fn check_code(code: &[Ins], arity: usize, temps: usize) -> Result<(), String> {
++    fn walk(code: &[Ins], locals: usize, top: bool) -> Result<(), String> {
++        for ins in code {
++            match ins {
++                Ins::Loop(b) if top && code.len() == 1 => walk(b, locals, false)?,
++                Ins::Loop(_) => return Err("a loop other than the function's one top-level loop".into()),
++                Ins::If(t, e) => {
++                    walk(t, locals, false)?;
++                    walk(e, locals, false)?
++                }
++                Ins::LocalGet(i) | Ins::LocalSet(i) if *i as usize >= locals => return Err(format!("local {i} out of range")),
++                Ins::Raw(s) => return Err(format!("raw line {s:?}")),
++                Ins::Store | Ins::Load | Ins::Dup => return Err(format!("{ins:?}: the heap is not modelled here")),
++                _ => {}
++            }
++        }
++        Ok(())
++    }
++    walk(code, arity + temps, true)?;
++    match shape(code, vec![], &[]) {
++        Ok(Some(s)) if s == vec![K::W] => Ok(()),
++        other => Err(format!("the body does not run from [] to [word]: {other:?}")),
++    }
++}
++
++/// `(proof, statement)` for `code` (a function of `arity` parameters and `temps` temporaries) against `src`, or why the
++/// two do not simulate each other. The kernel is the judge either way: an `Err` is only an early, readable reason.
++pub fn gen_sim(w: Wasm, code: &[Ins], arity: usize, temps: usize, src: &SrcFn) -> Result<(Expr, Expr), String> {
++    check_code(code, arity, temps)?;
++    let g = G { w, n: w.n, m: arity };
++    let m = arity;
++    // N gn R z x_0..x_{m-1} h km ks rel
++    let mut tys: Vec<Ty> = vec![
++        ty!(|_c, _x| nat2()),
++        ty!(|c, x| w.good_nat(c, x[0])),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[2])),
++    ];
++    tys.extend((0..m).map(|_| ty!(|_c, _x| bv_ty(w.n))));
++    tys.push(ty!(|c, x| w.heap(c, x[2])));
++    tys.push(ty!(|c, x| g.ret_m(c, x[2])));
++    tys.push(ty!(|c, x| g.ret_s(c, x[2])));
++    tys.push(ty!(|c, x| g.rel_ty(c, x[2], x[5 + m], x[6 + m])));
++
++    let stmt = tele(&mut Cx::default(), &tys, &mut vec![], &pi, &mut |c, x| {
++        let (fuel, r, z) = (x[0], x[2], x[3]);
++        let args: Vec<At> = x[4..4 + m].to_vec();
++        let (h, km, ks) = (x[4 + m], x[5 + m], x[6 + m]);
++        let (hm, hs) = (g.hm(c, r), g.hs(c, r));
++        let (tm, bm) = (g.tm(c, r, z), g.bm(c, r, z, None, code));
++        let (ts, bs) = (g.ts(c, r, z), g.bs(c, r, None, src));
++        let fr = g.frame(c, r, &args);
++        let mu = w.mkmu(c, r, fr, c.at(h));
++        let l = app2(apps(c.at(fuel), vec![hm, tm, bm]), mu, c.at(km));
++        let rhs = apps(c.at(fuel), [vec![hs, ts, bs], args.iter().map(|a| c.at(*a)).collect(), vec![c.at(ks)]].concat());
++        id(c.at(r), l, rhs)
++    });
++
++    let err: RefCell<Option<String>> = RefCell::new(None);
++    let proof = Cx::default().lam(ch_ty(), |c, ch| {
++        tele(c, &tys, &mut vec![], &lam, &mut |c, x| {
++            let (fuel, gn, r, z) = (x[0], x[1], x[2], x[3]);
++            let args: Vec<At> = x[4..4 + m].to_vec();
++            let (h, km, ks, rel) = (x[4 + m], x[5 + m], x[6 + m], x[7 + m]);
++            let _ = fuel;
++            let (hm0, hs0) = (g.hm(c, r), g.hs(c, r));
++            let (hm, hs) = (c.mark(hm0), c.mark(hs0));
++            let (tm0, bm0) = (g.tm(c, r, z), g.bm(c, r, z, Some(ch), code));
++            let (tm, bm) = (c.mark(tm0), c.mark(bm0));
++            let (ts0, bs0) = (g.ts(c, r, z), g.bs(c, r, Some(ch), src));
++            let (ts, bs) = (c.mark(ts0), c.mark(bs0));
++            // the motive at a fuel: the binders, then the two sides
++            let mot = |c: &mut Cx, mm: Expr| {
++                let mm = c.mark(mm);
++                g.binders(c, r, &pi, &mut |c, y| {
++                    let (ya, loc, hp, kmm, kss) = (&y[1..1 + m], y[1 + m], y[2 + m], y[3 + m], y[4 + m]);
++                    let mu = w.mkmu(c, r, c.at(loc), c.at(hp));
++                    let l = app2(apps(c.at(mm), vec![c.at(hm), c.at(tm), c.at(bm)]), mu, c.at(kmm));
++                    let rhs = apps(
++                        c.at(mm),
++                        [vec![c.at(hs), c.at(ts), c.at(bs)], ya.iter().map(|a| c.at(*a)).collect(), vec![c.at(kss)]].concat(),
++                    );
++                    id(c.at(r), l, rhs)
++                })
++            };
++            let motive = c.lam(nat2(), |c, mm| mot(c, c.at(mm)));
++            let hz = g.binders(c, r, &lam, &mut |c, _| refl(c.at(z)));
++            let step = c.lam(nat2(), |c, j| {
++                let ih_ty = mot(c, c.at(j));
++                c.lam(ih_ty, |c, ih| {
++                    g.binders(c, r, &lam, &mut |c, y| {
++                        let sim = Sim {
++                            g: &g,
++                            r,
++                            ch,
++                            j,
++                            ih,
++                            d: y[0],
++                            loc: y[1 + m],
++                            km: y[3 + m],
++                            ks: y[4 + m],
++                            rel: y[5 + m],
++                            args: y[1..1 + m].to_vec(),
++                            hyps: y[6 + m..6 + 2 * m].to_vec(),
++                        };
++                        let mu = w.mkmu(c, r, c.at(y[1 + m]), c.at(y[2 + m]));
++                        let mj = apps(c.at(j), vec![c.at(hm), c.at(tm), c.at(bm)]);
++                        let sj = apps(c.at(j), vec![c.at(hs), c.at(ts), c.at(bs)]);
++                        let m0 = apps(c.at(bm), vec![mj, mu, c.at(y[3 + m])]);
++                        let s0 = apps(c.at(bs), [vec![sj], sim.args.iter().map(|a| c.at(*a)).collect(), vec![c.at(y[4 + m])]].concat());
++                        match sim.sim(c, m0, s0, "body") {
++                            Ok(p) => p,
++                            Err(e) => {
++                                err.borrow_mut().get_or_insert(e);
++                                refl(m0)
++                            }
++                        }
++                    })
++                })
++            });
++            let fr = g.frame(c, r, &args);
++            let slots: Vec<Expr> = (0..m)
++                .map(|i| {
++                    let a = args[i];
++                    c.lam(arrow(w.v(), c.at(r)), |c, kk| refl(app(c.at(kk), c.at(a))))
++                })
++                .collect();
++            let mut all = vec![motive, hz, step, nat2_lit(0)];
++            all.extend(args.iter().map(|a| c.at(*a)));
++            all.extend([fr, c.at(h), c.at(km), c.at(ks), c.at(rel)]);
++            all.extend(slots);
++            apps(c.at(gn), all)
++        })
++    });
++    if let Some(e) = err.into_inner() {
++        return Err(e);
++    }
++    Ok((app(proof, choose_fn()), stmt))
++}
++
++/// One walk's fixed names.
++struct Sim<'g> {
++    g: &'g G,
++    r: At,
++    ch: At,
++    j: At,
++    ih: At,
++    d: At,
++    loc: At,
++    km: At,
++    ks: At,
++    rel: At,
++    args: Vec<At>,
++    hyps: Vec<At>,
++}
++
++impl Sim<'_> {
++    /// What a term in weak head normal form is doing, for the reasons.
++    fn kind(&self, c: &Cx, head: &Expr) -> &'static str {
++        if *head == c.at(self.km) || *head == c.at(self.ks) {
++            "returns"
++        } else if *head == c.at(self.ch) {
++            "branches"
++        } else if *head == c.at(self.j) {
++            "recurses"
++        } else if *head == c.at(self.loc) {
++            "reads a local"
++        } else {
++            "is stuck"
++        }
++    }
++
++    /// A proof of `Id(R, m, s)`.
++    fn sim(&self, c: &mut Cx, m: Expr, s: Expr, path: &str) -> Result<Expr, String> {
++        tatic_kernel::grow(|| self.sim_step(c, m, s, path))
++    }
++
++    fn sim_step(&self, c: &mut Cx, m: Expr, s: Expr, path: &str) -> Result<Expr, String> {
++        let n = self.g.n;
++        let (mw, sw) = (whnf(&m), whnf(&s));
++        let ((mh, ma), (sh, sa)) = (spine(&mw), spine(&sw));
++        let (mk, sk) = (self.kind(c, &mh), self.kind(c, &sh));
++
++        // a stuck read of a parameter's slot: rewrite by the slot hypothesis, then go on
++        if mh == c.at(self.loc) && ma.len() == 2 {
++            let Some(i) = (0..self.g.m).find(|i| def_eq(&ma[0], &lit(n, *i as u128))) else {
++                return Err(format!("{path}: reads a local that no parameter or earlier write fixes"));
++            };
++            let next = app(ma[1], c.at(self.args[i]));
++            let rest = self.sim(c, next, s, path)?;
++            let p = app(c.at(self.hyps[i]), ma[1]);
++            return Ok(trans(c, self.r, (mw, next, s), p, rest));
++        }
++        if mh == c.at(self.km) {
++            if sh != c.at(self.ks) {
++                return Err(format!("{path}: the machine {mk} but the source {sk}"));
++            }
++            if ma.len() != 2 || sa.len() != 1 || !def_eq(&ma[0], &sa[0]) {
++                return Err(format!("{path}: both return, with different values"));
++            }
++            let tatic_kernel::Node::Pair(_, loc2, h2) = ma[1].node() else {
++                return Err(format!("{path}: returns in a state that is not a pair"));
++            };
++            return Ok(apps(c.at(self.rel), vec![ma[0], loc2, h2]));
++        }
++        if mh == c.at(self.ch) {
++            if sh != c.at(self.ch) || ma.len() != 4 || sa.len() != 4 {
++                return Err(format!("{path}: the machine {mk} but the source {sk}"));
++            }
++            if !def_eq(&ma[1], &sa[1]) {
++                return Err(format!("{path}: the branch conditions differ"));
++            }
++            let pt = self.sim(c, ma[2], sa[2], &format!("{path}/then"))?;
++            let pe = self.sim(c, ma[3], sa[3], &format!("{path}/else"))?;
++            let cd = c.mark(ma[1]);
++            return Ok(cong(c, self.r, self.ch, cd, (ma[2], sa[2], pt), (ma[3], sa[3], pe)));
++        }
++        if mh == c.at(self.j) {
++            let m_args = self.g.m;
++            if sh != c.at(self.j) || ma.len() != 5 || sa.len() != 3 + m_args + 1 {
++                return Err(format!("{path}: the machine {mk} but the source {sk}"));
++            }
++            let tatic_kernel::Node::Pair(_, loc2, h2) = ma[3].node() else {
++                return Err(format!("{path}: the state at the recursion is not a pair"));
++            };
++            let (k2, ks2) = (ma[4], sa[sa.len() - 1]);
++            let src_args = &sa[3..3 + m_args];
++            // each parameter's slot must hold the source's argument
++            // (or be untouched, and the source's argument be the parameter itself)
++            let mut untouched = vec![false; src_args.len()];
++            for (i, a) in src_args.iter().enumerate() {
++                let (ok, same) = c.under(|c, _| {
++                    let (kv, l2) = (var(0), shift(&loc2, 0, 1));
++                    let got = app2(l2.clone(), lit(n, i as u128), kv.clone());
++                    let held = def_eq(&got, &app(kv.clone(), shift(a, 0, 1)));
++                    let same = def_eq(&got, &app2(c.at(self.loc), lit(n, i as u128), kv)) && def_eq(&shift(a, 0, 1), &c.at(self.args[i]));
++                    (held, same)
++                });
++                if !ok && !same {
++                    return Err(format!("{path}: at the recursion, local {i} does not hold the source's argument {i}"));
++                }
++                untouched[i] = !ok;
++            }
++            // the continuation relation, from walking the two continuations under their binders
++            let (k2m, ks2m) = (c.mark(k2), c.mark(ks2));
++            let failed: RefCell<Option<String>> = RefCell::new(None);
++            let w = self.g.w;
++            let rel2 = c.lam(self.g.v(), |c, a| {
++                let hp = w.heap(c, self.r);
++                c.lam(hp, |c, loc| {
++                    let hp = w.heap(c, self.r);
++                    c.lam(hp, |c, h| {
++                        let mu = w.mkmu(c, self.r, c.at(loc), c.at(h));
++                        let (l, r) = (app2(c.at(k2m), c.at(a), mu), app(c.at(ks2m), c.at(a)));
++                        match self.sim(c, l, r, &format!("{path}/after")) {
++                            Ok(p) => p,
++                            Err(e) => {
++                                failed.borrow_mut().get_or_insert(e);
++                                refl(l)
++                            }
++                        }
++                    })
++                })
++            });
++            if let Some(e) = failed.into_inner() {
++                return Err(e);
++            }
++            let slots: Vec<Expr> = src_args
++                .iter()
++                .enumerate()
++                .map(|(i, a)| {
++                    let a = c.mark(*a);
++                    c.lam(arrow(self.g.v(), c.at(self.r)), |c, kk| {
++                        if untouched[i] { app(c.at(self.hyps[i]), c.at(kk)) } else { refl(app(c.at(kk), c.at(a))) }
++                    })
++                })
++                .collect();
++            let mut all = vec![c.at(self.d)];
++            all.extend(src_args.iter().copied());
++            all.extend([loc2, h2, k2, ks2, rel2]);
++            all.extend(slots);
++            return Ok(apps(c.at(self.ih), all));
++        }
++        Err(format!("{path}: the machine {mk} but the source {sk}"))
++    }
++}
++
++#[cfg(test)]
++mod tests;
+diff --git a/crates/tatic-wasm/src/wasm/sim/tests.rs b/crates/tatic-wasm/src/wasm/sim/tests.rs
+new file mode 100644
+index 0000000..7ff4462
+--- /dev/null
++++ b/crates/tatic-wasm/src/wasm/sim/tests.rs
+@@ -0,0 +1,276 @@
++//! SPIKE tests for the generator: `gen_spike` (six functions, three widths) and `gen_spike_controls` (mutants).
++use super::*;
++use std::time::Instant;
++
++/// The mini source language: a mirror of what a `Term` walk produces, for these tests only (the real one is
++/// `tatic::proof::gate::Source`).
++#[derive(Clone, Debug)]
++enum Src {
++    Param(usize),
++    Lit(u128),
++    /// A word operator on two operands.
++    Prim(Op, Box<Src>, Box<Src>),
++    /// `If(cmp, a, b, then, else)`: `cmp a b` chooses.
++    If(Op, Box<Src>, Box<Src>, Box<Src>, Box<Src>),
++    /// A call of the function itself (non-tail or tail).
++    SelfCall(Vec<Src>),
++}
++
++fn cps(e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++    tatic_kernel::grow(|| match s {
++        Src::Param(i) => k(c, c.at(e.params[*i])),
++        Src::Lit(v) => k(c, lit(e.n, *v & low_bits(e.n))),
++        Src::Prim(o, a, b) => cps(e, c, a, &|c, x| {
++            let x = c.mark(x);
++            cps(e, c, b, &|c, y| k(c, app2(o.term(e.n), c.at(x), y)))
++        }),
++        Src::If(o, a, b, t, f) => cps(e, c, a, &|c, x| {
++            let x = c.mark(x);
++            cps(e, c, b, &|c, y| {
++                let cond = app2(o.term(e.n), c.at(x), y);
++                let (t2, f2) = (cps(e, c, t, k), cps(e, c, f, k));
++                e.choose(c, cond, t2, f2)
++            })
++        }),
++        Src::SelfCall(args) => call_args(e, c, args, vec![], k),
++    })
++}
++
++fn call_args(e: &SEnv, c: &mut Cx, args: &[Src], done: Vec<At>, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++    match args.split_first() {
++        None => e.call(c, &done, k),
++        Some((a, rest)) => cps(e, c, a, &|c, x| {
++            let mut d2 = done.clone();
++            d2.push(c.mark(x));
++            call_args(e, c, rest, d2, k)
++        }),
++    }
++}
++
++fn p(i: usize) -> Src {
++    Src::Param(i)
++}
++fn l(v: u128) -> Src {
++    Src::Lit(v)
++}
++fn pr(o: Op, a: Src, b: Src) -> Src {
++    Src::Prim(o, Box::new(a), Box::new(b))
++}
++fn iff(o: Op, a: Src, b: Src, t: Src, e: Src) -> Src {
++    Src::If(o, Box::new(a), Box::new(b), Box::new(t), Box::new(e))
++}
++fn lg(i: u32) -> Ins {
++    Ins::LocalGet(i)
++}
++fn ls(i: u32) -> Ins {
++    Ins::LocalSet(i)
++}
++fn op(o: Op) -> Ins {
++    Ins::Op(o)
++}
++fn pu(v: i64) -> Ins {
++    Ins::Push(v)
++}
++/// `loop { cond; if (t) else (e) }`, the function's body.
++fn func(cond: Vec<Ins>, t: Vec<Ins>, e: Vec<Ins>) -> Vec<Ins> {
++    vec![Ins::Loop([cond, vec![Ins::If(t, e)]].concat())]
++}
++
++/// name, code, arity, temps, source
++type Case = (&'static str, Vec<Ins>, usize, usize, Src);
++
++fn sum() -> Case {
++    let cond = vec![lg(0), pu(0), op(Op::LeS)];
++    let e = vec![lg(0), pu(1), op(Op::Sub), ls(2), lg(1), lg(0), op(Op::Add), ls(3), lg(2), ls(0), lg(3), ls(1), Ins::Br(0)];
++    let src = iff(Op::LeS, p(0), l(0), p(1), Src::SelfCall(vec![pr(Op::Sub, p(0), l(1)), pr(Op::Add, p(1), p(0))]));
++    ("sum", func(cond, vec![lg(1)], e), 2, 2, src)
++}
++fn fact() -> Case {
++    let e = vec![lg(0), lg(0), pu(1), op(Op::Sub), Ins::Call, op(Op::Mul)];
++    let src = iff(Op::LeS, p(0), l(0), l(1), pr(Op::Mul, p(0), Src::SelfCall(vec![pr(Op::Sub, p(0), l(1))])));
++    ("fact", func(vec![lg(0), pu(0), op(Op::LeS)], vec![pu(1)], e), 1, 0, src)
++}
++fn fib() -> Case {
++    let e = vec![lg(0), pu(1), op(Op::Sub), Ins::Call, lg(0), pu(2), op(Op::Sub), Ins::Call, op(Op::Add)];
++    let rec = |k| Src::SelfCall(vec![pr(Op::Sub, p(0), l(k))]);
++    let src = iff(Op::LeS, p(0), l(1), p(0), pr(Op::Add, rec(1), rec(2)));
++    ("fib", func(vec![lg(0), pu(1), op(Op::LeS)], vec![lg(0)], e), 1, 0, src)
++}
++fn nest() -> Case {
++    let e = vec![lg(0), pu(1), op(Op::Sub), Ins::Call, Ins::Call];
++    let src = iff(Op::LeS, p(0), l(0), p(0), Src::SelfCall(vec![Src::SelfCall(vec![pr(Op::Sub, p(0), l(1))])]));
++    ("nest", func(vec![lg(0), pu(0), op(Op::LeS)], vec![lg(0)], e), 1, 0, src)
++}
++/// unseen after the freeze: `tri x = if x<=0 then 0 else x + tri(x-1) + 1`
++fn tri() -> Case {
++    let e = vec![lg(0), lg(0), pu(1), op(Op::Sub), Ins::Call, op(Op::Add), pu(1), op(Op::Add)];
++    let rec = Src::SelfCall(vec![pr(Op::Sub, p(0), l(1))]);
++    let src = iff(Op::LeS, p(0), l(0), l(0), pr(Op::Add, pr(Op::Add, p(0), rec), l(1)));
++    ("tri", func(vec![lg(0), pu(0), op(Op::LeS)], vec![pu(0)], e), 1, 0, src)
++}
++/// unseen after the freeze: `pw n acc p = if n<=0 then acc else pw (n-1) (acc+p) (p+p)`
++fn pow2sum() -> Case {
++    let e = vec![
++        lg(0), pu(1), op(Op::Sub), ls(3), lg(1), lg(2), op(Op::Add), ls(4), lg(2), lg(2), op(Op::Add), ls(2), lg(3), ls(0), lg(4),
++        ls(1), Ins::Br(0),
++    ];
++    let src = iff(
++        Op::LeS,
++        p(0),
++        l(0),
++        p(1),
++        Src::SelfCall(vec![pr(Op::Sub, p(0), l(1)), pr(Op::Add, p(1), p(2)), pr(Op::Add, p(2), p(2))]),
++    );
++    ("pow2sum", func(vec![lg(0), pu(0), op(Op::LeS)], vec![lg(1)], e), 3, 2, src)
++}
++
++// ---- written after sim.rs was frozen (sha256 0f509c17..., 11:21): no generator change for any of these
++/// `dbl x = if x<=0 then 1 else dbl(x-1) + dbl(x-1)`
++fn dbl() -> Case {
++    let rec = || Src::SelfCall(vec![pr(Op::Sub, p(0), l(1))]);
++    let call = [lg(0), pu(1), op(Op::Sub), Ins::Call];
++    let e = [&call[..], &call[..], &[op(Op::Add)]].concat();
++    let src = iff(Op::LeS, p(0), l(0), l(1), pr(Op::Add, rec(), rec()));
++    ("dbl", func(vec![lg(0), pu(0), op(Op::LeS)], vec![pu(1)], e), 1, 0, src)
++}
++/// `mulloop n acc = if n<=0 then acc else mulloop (n-1) (acc*n)`, one temp
++fn mulloop() -> Case {
++    let e = vec![lg(0), pu(1), op(Op::Sub), ls(2), lg(1), lg(0), op(Op::Mul), ls(1), lg(2), ls(0), Ins::Br(0)];
++    let src = iff(Op::LeS, p(0), l(0), p(1), Src::SelfCall(vec![pr(Op::Sub, p(0), l(1)), pr(Op::Mul, p(1), p(0))]));
++    ("mulloop", func(vec![lg(0), pu(0), op(Op::LeS)], vec![lg(1)], e), 2, 1, src)
++}
++/// `g x = if x<=2 then x else g(g(x-2)) * x + g(x-3)`
++fn mixed() -> Case {
++    let e = vec![
++        lg(0), pu(2), op(Op::Sub), Ins::Call, Ins::Call, lg(0), op(Op::Mul), lg(0), pu(3), op(Op::Sub), Ins::Call, op(Op::Add),
++    ];
++    let rec = |k| Src::SelfCall(vec![pr(Op::Sub, p(0), l(k))]);
++    let inner = Src::SelfCall(vec![rec(2)]);
++    let src = iff(Op::LeS, p(0), l(2), p(0), pr(Op::Add, pr(Op::Mul, inner, p(0)), rec(3)));
++    ("mixed", func(vec![lg(0), pu(2), op(Op::LeS)], vec![lg(0)], e), 1, 0, src)
++}
++
++/// A proof of one function does not check against another's statement: the kernel is the judge, not the walk.
++#[test]
++fn gen_spike_kernel_rejects_a_proof_for_another_statement() {
++    std::thread::scope(|s| {
++        std::thread::Builder::new()
++            .stack_size(tatic_kernel::CHECK_STACK)
++            .spawn_scoped(s, || {
++                let ((_, a, b, c, d), (_, e, f, g, h)) = (fact(), nest());
++                let (proof, own) = gen_sim(Wasm { n: 8 }, &a, b, c, &|cx, en, k| cps(en, cx, &d, k)).unwrap();
++                let (_, other) = gen_sim(Wasm { n: 8 }, &e, f, g, &|cx, en, k| cps(en, cx, &h, k)).unwrap();
++                assert!(tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &own).is_ok());
++                let r = tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &other);
++                println!("KERNEL-NEG: {}", r.as_ref().err().map(|e| e.chars().take(100).collect::<String>()).unwrap_or_default());
++                assert!(r.is_err(), "the kernel accepted fact's proof for nest's statement");
++            })
++            .unwrap()
++            .join()
++            .unwrap()
++    })
++}
++
++/// Build and check on one `CHECK_STACK` thread (an `Expr` does not cross threads).
++fn run(n: usize, case: &Case) -> Result<(), String> {
++    std::thread::scope(|s| {
++        std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(s, || run_here(n, case)).unwrap().join().unwrap()
++    })
++}
++
++fn run_here(n: usize, case: &Case) -> Result<(), String> {
++    let (name, code, arity, temps, src) = case;
++    let t0 = Instant::now();
++    let (proof, stmt) = gen_sim(Wasm { n }, code, *arity, *temps, &|cx, en, k| cps(en, cx, src, k))?;
++    let build = t0.elapsed();
++    let t1 = Instant::now();
++    let r = tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &stmt);
++    println!(
++        "GEN n={n} {name}: build {:.1} ms, check {:.1} ms{}",
++        build.as_secs_f64() * 1e3,
++        t1.elapsed().as_secs_f64() * 1e3,
++        if r.is_ok() { "" } else { " (CHECK FAILED)" }
++    );
++    r.map_err(|e| format!("kernel: {}", e.chars().take(300).collect::<String>()))
++}
++
++#[test]
++fn gen_spike() {
++    let mut failed = vec![];
++    for n in [4, 24, 64] {
++        for case in [sum(), fact(), fib(), nest(), tri(), pow2sum(), dbl(), mulloop(), mixed()] {
++            if let Err(e) = run(n, &case) {
++                println!("GEN n={n} {}: FAIL {}", case.0, e.chars().take(300).collect::<String>());
++                failed.push((n, case.0));
++            }
++        }
++    }
++    assert!(failed.is_empty(), "failed: {failed:?}");
++}
++
++/// the body is `[Loop([cond.., If(t, e)])]`
++fn arms(code: &mut [Ins]) -> (&mut Vec<Ins>, &mut Vec<Ins>) {
++    let Ins::Loop(b) = &mut code[0] else { panic!() };
++    let Some(Ins::If(t, e)) = b.last_mut() else { panic!() };
++    (t, e)
++}
++
++fn mutate(mut c: Case, f: &dyn Fn(&mut [Ins])) -> Case {
++    f(&mut c.1);
++    c
++}
++
++/// Mutated code against the intended source: each must be rejected, by the generator's walk or the kernel.
++#[test]
++fn gen_spike_controls() {
++    let cases: Vec<(&str, Case)> = vec![
++        (
++            "operator swapped (sum: acc+n -> acc-n)",
++            mutate(sum(), &|c| {
++                let (_, e) = arms(c);
++                let k = e.iter().position(|i| *i == Ins::Op(Op::Add)).unwrap();
++                e[k] = Ins::Op(Op::Sub);
++            }),
++        ),
++        (
++            "call dropped (fact)",
++            mutate(fact(), &|c| {
++                let (_, e) = arms(c);
++                e.retain(|i| *i != Ins::Call);
++            }),
++        ),
++        (
++            "call argument off by one (fact: n-1 -> n-2)",
++            mutate(fact(), &|c| {
++                let (_, e) = arms(c);
++                let k = e.iter().position(|i| *i == Ins::Push(1)).unwrap();
++                e[k] = Ins::Push(2);
++            }),
++        ),
++        (
++            "branches swapped (fact)",
++            mutate(fact(), &|c| {
++                let (t, e) = arms(c);
++                std::mem::swap(t, e);
++            }),
++        ),
++        (
++            "wrong local.set (sum: local.set 0 -> 2)",
++            mutate(sum(), &|c| {
++                let (_, e) = arms(c);
++                let k = e.iter().position(|i| *i == Ins::LocalSet(0)).unwrap();
++                e[k] = Ins::LocalSet(2);
++            }),
++        ),
++    ];
++    let mut accepted = vec![];
++    for n in [4, 24] {
++        for (what, case) in &cases {
++            match run(n, case) {
++                Ok(()) => accepted.push((n, *what)),
++                Err(e) => println!("CONTROL n={n} {what}: rejected: {}", e.chars().take(100).collect::<String>()),
++            }
++        }
++    }
++    assert!(accepted.is_empty(), "accepted: {accepted:?}");
++}
+diff --git a/crates/tatic/src/proof/gate.rs b/crates/tatic/src/proof/gate.rs
+index a06db69..723f4d7 100644
+--- a/crates/tatic/src/proof/gate.rs
++++ b/crates/tatic/src/proof/gate.rs
+@@ -13,7 +13,8 @@
+ 
+ use hashbrown::HashSet;
+ use tatic_kernel::{app2, id, refl, scoped, sort, Expr};
+-use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, Ty};
++use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, At, Cx, Ty};
++use tatic_wasm::wasm::sim::{gen_sim, SEnv};
+ use tatic_wasm::wasm::{choose, mkpair, nat2_lit, well_formed, Ins, Wasm, K};
+ 
+ use crate::jit::compile::tree_size;
+@@ -123,55 +124,154 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
+     ];
+     tys.extend((0..m).map(|_| ty!(|_c, _x| w.v())));
+     tys.push(ty!(|c, x| c.at(x[0])));
+-    tys.push(ty!(|c, x| w.mem(c, x[1])));
++    // SPIKE (e1): the state is (locals, heap); the abstract part is the locals' base, the heap is all zeros
++    tys.push(ty!(|c, x| w.heap(c, x[1])));
+     let (s_at, mu_at) = (4 + m, 5 + m);
+     law(&tys, |c, x| {
+-        let fr = (0..m).rev().fold(c.at(x[mu_at]), |acc, j| w.upd(c, x[1], lit(N, j as u128), c.at(x[4 + j]), acc));
++        let loc = (0..m).rev().fold(c.at(x[mu_at]), |acc, j| w.upd(c, x[1], lit(N, j as u128), c.at(x[4 + j]), acc));
++        let blank = w.zero_heap(c, x[1]);
++        let fr = w.mkmu(c, x[1], loc, blank);
+         let p = w.prog(c, code, &[], x[0]);
+         let p = c.mark(p);
+         let fuel = c.mark(nat2_lit(fuel));
+         let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[s_at]), fr);
+-        let (r, k, st, s) = (c.at(x[1]), c.at(x[2]), c.at(x[0]), c.at(x[s_at]));
+-        let qs: Vec<Expr> = (0..m).map(|j| c.at(x[4 + j])).collect();
+-        let src = Source { store, qs, r };
+-        let rhs = src.cps(body, &|v| app2(k, mkpair(st, v, s), fr));
++        let r = c.at(x[1]);
++        let (k, st, s, fr) = (x[2], x[0], x[s_at], c.mark(fr));
++        let src = Source { store, qs: x[4..4 + m].to_vec(), r: x[1], n: N, sim: None };
++        let rhs = src.cps(c, body, &|c, v| app2(c.at(k), mkpair(c.at(st), v, c.at(s)), c.at(fr)));
+         (refl(l), id(r, l, rhs))
+     })
+ }
+ 
+-/// The right side's builder over the source term: parameters `qs` (q_j is `$p{j}`) and the answer type `r`.
++/// The right side's builder over the source term: parameters `qs` (q_j is `$p{j}`), the answer type `r`, the width
++/// `n`, and, when the term calls itself, the generator's environment (`sim`: the fixpoint variable and the shared
++/// `choose` hook).
+ struct Source<'a> {
+     store: &'a TermStore,
+-    qs: Vec<Expr>,
+-    r: Expr,
++    qs: Vec<At>,
++    r: At,
++    n: usize,
++    sim: Option<&'a SEnv>,
+ }
+ 
+ impl Source<'_> {
+     /// `h` in continuation-passing form with the meta-continuation `k`, evaluating operands left to right, as the
+     /// lowering emits them. An `If` copies `k` into both arms; in the fragment every `If` is in tail position, so
+-    /// nothing grows.
+-    fn cps(&self, h: Hash, k: &dyn Fn(Expr) -> Expr) -> Expr {
++    /// nothing grows (a term with a self-call is outside the fragment: `sim_check`).
++    fn cps(&self, c: &mut Cx, h: Hash, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
+         // one frame per node and continuation: run on the kernel's growable stack, as `Wasm::seq` does
+-        tatic_kernel::grow(|| self.cps_step(h, k))
++        tatic_kernel::grow(|| self.cps_step(c, h, k))
+     }
+ 
+-    fn cps_step(&self, h: Hash, k: &dyn Fn(Expr) -> Expr) -> Expr {
++    fn cps_step(&self, c: &mut Cx, h: Hash, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++        let n = self.n;
+         match self.store.resolve(h) {
+-            Term::Lit(v) => k(lit(N, (*v as u64 as u128) & low_bits(N))),
++            Term::Lit(v) => k(c, lit(n, (*v as u64 as u128) & low_bits(n))),
+             // de Bruijn 0 is the last parameter; written here, not taken from `shape::local_index`
+-            Term::Var(i) => k(self.qs[self.qs.len() - 1 - *i as usize].clone()),
++            Term::Var(i) => k(c, c.at(self.qs[self.qs.len() - 1 - *i as usize])),
+             Term::Prim(p, a, b) => {
+-                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
+-                self.cps(*a, &|x| self.cps(*b, &|y| k(app2(o.clone(), x.clone(), y))))
++                let o = op_of(*p).expect("in_fragment admits only table rows").term(n);
++                self.cps(c, *a, &|c, x| {
++                    let x = c.mark(x);
++                    self.cps(c, *b, &|c, y| k(c, app2(o.clone(), c.at(x), y)))
++                })
+             }
+-            Term::If(c, t, e) => {
+-                let Term::Prim(p, a, b) = self.store.resolve(*c) else { unreachable!("in_fragment: an If tests a Prim") };
+-                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
+-                self.cps(*a, &|x| {
+-                    self.cps(*b, &|y| choose(self.r.clone(), app2(o.clone(), x.clone(), y), self.cps(*t, k), self.cps(*e, k)))
++            Term::If(cd, t, e) => {
++                let Term::Prim(p, a, b) = self.store.resolve(*cd) else { unreachable!("in_fragment: an If tests a Prim") };
++                let o = op_of(*p).expect("in_fragment admits only table rows").term(n);
++                self.cps(c, *a, &|c, x| {
++                    let x = c.mark(x);
++                    self.cps(c, *b, &|c, y| {
++                        let cond = app2(o.clone(), c.at(x), y);
++                        let (t2, e2) = (self.cps(c, *t, k), self.cps(c, *e, k));
++                        match self.sim {
++                            Some(env) => env.choose(c, cond, t2, e2),
++                            None => choose(c.at(self.r), cond, t2, e2),
++                        }
++                    })
+                 })
+             }
+-            other => unreachable!("in_fragment admits no {other:?}"),
++            // the fixpoint variable applied to its arguments: `g args (\res. k res)`
++            Term::App(..) => {
++                let env = self.sim.expect("a self-call outside the generator");
++                let mut args = vec![];
++                let mut cur = h;
++                while let Term::App(f, a) = self.store.resolve(cur) {
++                    args.push(*a);
++                    cur = *f;
++                }
++                args.reverse();
++                self.call_args(c, env, &args, vec![], k)
++            }
++            other => unreachable!("sim_check admits no {other:?}"),
++        }
++    }
++
++    /// The arguments evaluated left to right, then the call.
++    fn call_args(&self, c: &mut Cx, env: &SEnv, args: &[Hash], done: Vec<At>, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
++        match args.split_first() {
++            None => env.call(c, &done, k),
++            Some((a, rest)) => self.cps(c, *a, &|c, x| {
++                let mut d2 = done.clone();
++                d2.push(c.mark(x));
++                self.call_args(c, env, rest, d2, k)
++            }),
++        }
++    }
++}
++
++/// The body of `h`, a function of `m` parameters (`Rec`-wrapped if it calls itself), if the generator takes it: a body
++/// of parameters, literals and table rows, with `If`s on comparisons, and saturated calls of the function itself (the
++/// self variable is `Var(m)` under the `m` `Abs`).
++pub(crate) fn sim_body(store: &TermStore, h: Hash, m: usize) -> Result<Hash, String> {
++    let mut body = match store.resolve(h) {
++        Term::Rec(inner) => *inner,
++        _ => h,
++    };
++    for _ in 0..m {
++        match store.resolve(body) {
++            Term::Abs(b) => body = *b,
++            other => return Err(format!("fewer than {m} leading lambdas: {other:?}")),
++        }
++    }
++    fn walk(store: &TermStore, h: Hash, m: usize) -> Result<(), String> {
++        match store.resolve(h) {
++            Term::Lit(_) => Ok(()),
++            Term::Var(i) if (*i as usize) < m => Ok(()),
++            Term::Var(i) => Err(format!("free variable {i}")),
++            Term::Prim(p, a, b) => match op_of(*p) {
++                Some(o) if o.kind() == K::W => walk(store, *a, m).and(walk(store, *b, m)),
++                _ => Err(format!("operator {p:?} has no word row")),
++            },
++            Term::If(c, t, e) => match store.resolve(*c) {
++                Term::Prim(p, a, b) if is_comparison(*p) => walk(store, *a, m).and(walk(store, *b, m)).and(walk(store, *t, m)).and(walk(store, *e, m)),
++                other => Err(format!("an If on {other:?}, not a comparison")),
++            },
++            Term::App(..) => {
++                let (mut args, mut cur) = (vec![], h);
++                while let Term::App(f, a) = store.resolve(cur) {
++                    args.push(*a);
++                    cur = *f;
++                }
++                match store.resolve(cur) {
++                    Term::Var(i) if *i as usize == m && args.len() == m => args.iter().try_for_each(|a| walk(store, *a, m)),
++                    other => Err(format!("an application of {other:?} that is not a saturated self-call")),
++                }
++            }
++            other => Err(format!("{other:?} is outside the generator's fragment")),
+         }
+     }
++    walk(store, body, m)?;
++    Ok(body)
+ }
++
++/// `(proof, statement)` that `code` (a function of `m` parameters and `temps` temporaries, as the machine runs it) and
++/// `h` simulate each other at width `n`, from the generator (`tatic_wasm::wasm::sim::gen_sim`) over the real term.
++pub(crate) fn sim_statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], temps: usize, n: usize) -> Result<(Expr, Expr), String> {
++    let body = sim_body(store, h, m)?;
++    gen_sim(Wasm { n }, code, m, temps, &|c, env, k| {
++        let src = Source { store, qs: env.params.clone(), r: env.r, n, sim: Some(env) };
++        src.cps(c, body, k)
++    })
++}
++
+diff --git a/crates/tatic/src/proof/tests.rs b/crates/tatic/src/proof/tests.rs
+index 9e27355..8e55148 100644
+--- a/crates/tatic/src/proof/tests.rs
++++ b/crates/tatic/src/proof/tests.rs
+@@ -28,6 +28,7 @@ fn check_instance_proof(proof: &EquivalenceProof) {
+ 
+ mod basics;
+ mod gate;
++mod gen_real;
+ mod per_instance;
+ mod universal;
+ mod closures;
+diff --git a/crates/tatic/src/proof/tests/gen_real.rs b/crates/tatic/src/proof/tests/gen_real.rs
+new file mode 100644
+index 0000000..a39a2ee
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/gen_real.rs
+@@ -0,0 +1,261 @@
++//! SPIKE (f1, 2026-11-10): the e1 generator (`tatic_wasm::wasm::sim::gen_sim`) driven from tatic's real terms and the
++//! real lowering's instruction lists, with no per-function case. `gen_real` runs the targets, `gen_real_controls` the
++//! mutants of emitted code and the kernel-level negative.
++use std::time::Instant;
++
++use tatic_wasm::ops::Op;
++use tatic_wasm::wasm::Ins;
++
++use crate::jit::compile::{compile_specialised, CompiledFragment, Item};
++use crate::lang::syntax::print;
++use crate::lang::term::{Hash, TermStore};
++use crate::proof::gate::sim_statement;
++use crate::support::samples::{capturing_closure_loop, factorial, fib, partial_application_loop, redundant_arithmetic_recursion, source, twice_inc_5};
++use crate::testing::ins_mutate::mutate;
++use crate::testing::test_corpus::let_bound_factorial_10;
++
++/// The term the gate sees (the specialised one, if `specialise` changed it) and its compiled fragment.
++fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, CompiledFragment) {
++    let mut s = TermStore::new();
++    let h = build(&mut s);
++    let c = compile_specialised(&s, h).expect("compiles");
++    match c.specialised {
++        Some((s2, h2)) => (s2, h2, c.frag),
++        None => (s, h, c.frag),
++    }
++}
++
++/// The lowering's list as the machine's: its `local.set $p{k}` / `local.get $p{k}` are `LocalSet`/`LocalGet` at `k`,
++/// its `local.set $t{k}` / `local.get $t{k}` at `arity + k` (the WAT index space: parameters first, then the declared
++/// `$t` locals), and a one-parameter
++/// `call $f` is `Call`. Every other `Raw` line stays `Raw` and is pushed to `raws`.
++fn lift(code: &[Ins], arity: usize, raws: &mut Vec<String>) -> Vec<Ins> {
++    code.iter()
++        .map(|ins| match ins {
++            Ins::Loop(b) => Ins::Loop(lift(b, arity, raws)),
++            Ins::If(t, e) => Ins::If(lift(t, arity, raws), lift(e, arity, raws)),
++            Ins::Raw(s) => {
++                let temp = |p: &str| s.strip_prefix(p).and_then(|k| k.parse::<u32>().ok());
++                if let Some(k) = temp("local.set $t") {
++                    Ins::LocalSet(arity as u32 + k)
++                } else if let Some(k) = temp("local.set $p") {
++                    Ins::LocalSet(k)
++                } else if let Some(k) = temp("local.get $p") {
++                    Ins::LocalGet(k)
++                } else if let Some(k) = temp("local.get $t") {
++                    Ins::LocalGet(arity as u32 + k)
++                } else if s == "call $f" && arity == 1 {
++                    Ins::Call
++                } else {
++                    raws.push(s.clone());
++                    ins.clone()
++                }
++            }
++            other => other.clone(),
++        })
++        .collect()
++}
++
++/// `Ok((build ms, check ms))` for `n`, or why not. On one `CHECK_STACK` thread (an `Expr` does not cross threads).
++fn prove(s: &TermStore, h: Hash, arity: usize, code: &[Ins], n: usize) -> Result<(f64, f64), String> {
++    let mut raws = vec![];
++    let machine = lift(code, arity, &mut raws);
++    if !raws.is_empty() {
++        raws.dedup();
++        return Err(format!("Raw lines with no Ins: {raws:?}"));
++    }
++    let t0 = Instant::now();
++    let (proof, stmt) = sim_statement(s, h, arity, &machine, arity, n)?;
++    let build = t0.elapsed().as_secs_f64() * 1e3;
++    let t1 = Instant::now();
++    tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &stmt).map_err(|e| format!("kernel: {}", e.chars().take(300).collect::<String>()))?;
++    Ok((build, t1.elapsed().as_secs_f64() * 1e3))
++}
++
++fn on_big_stack<R: Send>(f: impl FnOnce() -> R + Send) -> R {
++    std::thread::scope(|sc| std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn_scoped(sc, f).unwrap().join().unwrap())
++}
++
++type Target = (&'static str, fn(&mut TermStore) -> Hash);
++
++fn targets() -> Vec<Target> {
++    vec![
++        ("sum loop (capturing_closure_loop)", capturing_closure_loop),
++        ("sum loop (partial_application_loop)", partial_application_loop),
++        ("factorial", factorial),
++        ("redundant_arithmetic_recursion", redundant_arithmetic_recursion),
++        ("fib", fib),
++        ("direct call 13 (twice_inc_5)", twice_inc_5),
++        ("direct call 34 (let_bound_factorial_10)", let_bound_factorial_10),
++    ]
++}
++
++/// Terms written after `sim.rs` was hashed (d9f576fc..., 12:31): real syntax, the real specialiser and lowering.
++fn unseen() -> Vec<Target> {
++    vec![
++        ("tri", |s| source(s, "rec f n = if n <= 0 then 0 else n + f (n - 1) + 1")),
++        ("dbl", |s| source(s, "rec f n = if n <= 0 then 1 else f (n - 1) + f (n - 1)")),
++        ("mulloop", |s| source(s, "rec f n acc = if n <= 0 then acc else f (n - 1) (acc * n)")),
++        ("mixed", |s| source(s, "rec f n = if n <= 2 then n else f (f (n - 2)) * n + f (n - 3)")),
++        ("pow2sum (3 params)", |s| source(s, "rec f n acc p = if n <= 0 then acc else f (n - 1) (acc + p) (p + p)")),
++        ("eq-guarded loop (==)", |s| source(s, "rec f a b = if a == 0 then b else f (a - 1) (b + a)")),
++        ("two guards, two base cases", |s| source(s, "rec f a b = if a == 0 then b else if b == 0 then a else f (a - 1) (b - 1) + 1")),
++    ]
++}
++
++/// Every function of the module, with its parameter count and the `Raw` lines `lift` cannot map.
++fn raw_report(name: &str, frag: &CompiledFragment) {
++    for item in &frag.module {
++        if let Item::Func { name: f, header, body } = item {
++            let arity = header.matches("(param $p").count();
++            let mut raws = vec![];
++            lift(body, arity, &mut raws);
++            raws.dedup();
++            println!("RAWS {name}: ${f} ({arity} params, header {:?}): {raws:?}", header.split_whitespace().take(6).collect::<Vec<_>>().join(" "));
++        }
++    }
++}
++
++#[test]
++fn gen_real_unseen() {
++    let mut failed = vec![];
++    for (name, build) in unseen() {
++        on_big_stack(|| {
++            let (s, h, frag) = compiled(&build);
++            println!("TERM {name}: {} (arity {})", print(&s, h), frag.arity);
++            for n in [4, 24, 64] {
++                match prove(&s, h, frag.arity, frag.entry(), n) {
++                    Ok((b, k)) => println!("REAL n={n} {name}: build {b:.1} ms, check {k:.1} ms"),
++                    Err(e) => {
++                        println!("REAL n={n} {name}: FAIL {}", e.chars().take(400).collect::<String>());
++                        failed.push((n, name));
++                    }
++                }
++            }
++        });
++    }
++    println!("FAILED: {failed:?}");
++}
++
++#[test]
++fn gen_real() {
++    let mut failed = vec![];
++    for (name, build) in targets() {
++        on_big_stack(|| {
++            let (s, h, frag) = compiled(&build);
++            println!("TERM {name}: {} (arity {})", print(&s, h), frag.arity);
++            println!("CODE {name}: {:?}", frag.entry());
++            raw_report(name, &frag);
++            for n in [4, 24, 64] {
++                match prove(&s, h, frag.arity, frag.entry(), n) {
++                    Ok((b, k)) => println!("REAL n={n} {name}: build {b:.1} ms, check {k:.1} ms"),
++                    Err(e) => {
++                        println!("REAL n={n} {name}: FAIL {}", e.chars().take(400).collect::<String>());
++                        failed.push((n, name));
++                    }
++                }
++            }
++        });
++    }
++    println!("FAILED: {failed:?}");
++}
++
++fn first_in_else(code: &[Ins], f: &dyn Fn(&Ins) -> Option<Ins>) -> Vec<Ins> {
++    let Some(Ins::Loop(body)) = code.first() else { panic!("not a loop") };
++    let mut body = body.clone();
++    let Some(Ins::If(_, e)) = body.last_mut() else { panic!("no If") };
++    let mutated = mutate(e, f);
++    *e = mutated;
++    vec![Ins::Loop(body)]
++}
++
++/// Mutated emitted code against the unchanged term: each must be rejected, by the generator's walk or the kernel.
++#[test]
++fn gen_real_controls() {
++    type Mut = Box<dyn Fn(&[Ins]) -> Vec<Ins> + Sync>;
++    let sub = |o: Op, to: Op| -> Mut { Box::new(move |c| mutate(c, &|i| (*i == Ins::Op(o)).then_some(Ins::Op(to)))) };
++    let cases: Vec<(&str, Target, Mut)> = vec![
++        ("operator: factorial Mul -> Add", ("factorial", factorial), sub(Op::Mul, Op::Add)),
++        ("operator: fib Add -> Sub", ("fib", fib), sub(Op::Add, Op::Sub)),
++        ("operator: sum loop acc + n -> acc - n", ("sum", capturing_closure_loop), Box::new(|c| mutate(c, &|i| (*i == Ins::Op(Op::Add)).then_some(Ins::Op(Op::Sub))))),
++        ("condition: factorial n <= 1 -> n < 1", ("factorial", factorial), sub(Op::LeS, Op::LtS)),
++        (
++            "call argument: factorial n - 1 -> n - 2",
++            ("factorial", factorial),
++            Box::new(|c| first_in_else(c, &|i| matches!(i, Ins::Push(_)).then_some(Ins::Push(2)))),
++        ),
++        (
++            "call argument: fib n - 1 -> n - 3",
++            ("fib", fib),
++            Box::new(|c| first_in_else(c, &|i| matches!(i, Ins::Push(_)).then_some(Ins::Push(3)))),
++        ),
++        (
++            "call dropped: factorial",
++            ("factorial", factorial),
++            Box::new(|c| first_in_else(c, &|i| (*i == Ins::Raw("call $f".into())).then_some(Ins::Push(7)))),
++        ),
++        (
++            "branches swapped: factorial",
++            ("factorial", factorial),
++            Box::new(|c| mutate(c, &|i| match i { Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())), _ => None })),
++        ),
++        (
++            "branches swapped: sum loop",
++            ("sum", capturing_closure_loop),
++            Box::new(|c| mutate(c, &|i| match i { Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())), _ => None })),
++        ),
++        (
++            "wrong local.set: sum loop `local.set $p0` -> `$p1`",
++            ("sum", capturing_closure_loop),
++            Box::new(|c| mutate(c, &|i| (*i == Ins::Raw("local.set $p0".into())).then_some(Ins::Raw("local.set $p1".into())))),
++        ),
++        (
++            "base case: factorial 1 -> 2",
++            ("factorial", factorial),
++            Box::new(|c| mutate(c, &|i| match i {
++                Ins::If(t, e) if *t == vec![Ins::Push(1)] => Some(Ins::If(vec![Ins::Push(2)], e.clone())),
++                _ => None,
++            })),
++        ),
++    ];
++    let mut accepted = vec![];
++    for n in [4, 24] {
++        for (what, (name, build), f) in &cases {
++            let r = on_big_stack(|| {
++                let (s, h, frag) = compiled(build);
++                let code = frag.entry();
++                let mutated = f(code);
++                if mutated == code {
++                    return Err("MUTATION DID NOT CHANGE THE CODE".to_string());
++                }
++                prove(&s, h, frag.arity, &mutated, n).map(|_| ())
++            });
++            match r {
++                Ok(()) => accepted.push((n, *what)),
++                Err(e) if e.starts_with("MUTATION") => accepted.push((n, *what)),
++                Err(e) => println!("CONTROL n={n} {what}: rejected: {}", e.chars().take(160).collect::<String>()),
++            }
++            let _ = name;
++        }
++    }
++    assert!(accepted.is_empty(), "accepted: {accepted:?}");
++}
++
++/// A proof of one term does not check against another's statement: the kernel is the judge, not the walk.
++#[test]
++fn gen_real_kernel_rejects_a_proof_for_another_statement() {
++    on_big_stack(|| {
++        let build = |b: fn(&mut TermStore) -> Hash| {
++            let (s, h, frag) = compiled(&b);
++            let mut raws = vec![];
++            let machine = lift(frag.entry(), frag.arity, &mut raws);
++            sim_statement(&s, h, frag.arity, &machine, frag.arity, 8).unwrap()
++        };
++        let (proof, own) = build(factorial);
++        let (_, other) = build(fib);
++        assert!(tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &own).is_ok());
++        let r = tatic_kernel::check(&tatic_kernel::Ctx::new(), &proof, &other);
++        println!("KERNEL-NEG: {}", r.as_ref().err().map(|e| e.chars().take(100).collect::<String>()).unwrap_or_default());
++        assert!(r.is_err(), "the kernel accepted factorial's proof for fib's statement");
++    });
++}
