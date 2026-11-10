@@ -1,0 +1,276 @@
+diff --git a/crates/tatic-wasm/src/encoding/gates.rs b/crates/tatic-wasm/src/encoding/gates.rs
+index c494286..b3b9799 100644
+--- a/crates/tatic-wasm/src/encoding/gates.rs
++++ b/crates/tatic-wasm/src/encoding/gates.rs
+@@ -180,6 +180,10 @@ pub fn eq_bit(n: usize) -> Expr {
+ pub fn mul(n: usize) -> Expr {
+     bits_circuit(n, &move |x, y| mul_bits(n, x, y))
+ }
++/// Signed `a % b` (`wrapping_rem`, `x % 0 = x`): `rem_s_bits` as a `V -> V -> V` circuit.
++pub fn rem_s(n: usize) -> Expr {
++    bits_circuit(n, &move |x, y| rem_s_bits(n, x, y))
++}
+ /// The next carry (or borrow) of one position, given its operand bits, the incoming carry and `x = a ^ b`.
+ pub fn ripple_carry(sub: bool, a: Expr, b: Expr, c: Expr, x: Expr) -> Expr {
+     if sub {
+@@ -285,6 +289,35 @@ pub fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
+ 
+ pub type BitsFn<'a> = &'a dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
+ 
++/// `a` negated when `s` is set: `(a ^ s) + s`.
++pub fn neg_if(a: &[Expr], s: Expr) -> Vec<Expr> {
++    let xs: Vec<Expr> = a.iter().map(|&x| xor(x, s)).collect();
++    let one: Vec<Expr> = (0..a.len()).map(|i| if i == 0 { s } else { f() }).collect();
++    add_rows(&xs, &one)
++}
++
++/// Signed remainder (`wrapping_rem`; the sign of the dividend; `x % 0 = x`, where the source errors and wasm traps):
++/// restoring division of the magnitudes, one subtract-and-select row per dividend bit, MSB first.
++pub fn rem_s_bits(n: usize, a: &[Expr], b: &[Expr]) -> Vec<Expr> {
++    let (sa, sb) = (a[n - 1], b[n - 1]);
++    let (ma, mb) = (neg_if(a, sa), neg_if(b, sb));
++    let mut r: Vec<Expr> = vec![f(); n];
++    for i in (0..n).rev() {
++        // r2 = (r << 1) | ma[i]; r < mb <= 2^(n-1), so r2 < 2^n
++        let r2: Vec<Expr> = (0..n).map(|j| if j == 0 { ma[i] } else { r[j - 1] }).collect();
++        let mut borrow = f();
++        let mut diff = Vec::with_capacity(n);
++        for j in 0..n {
++            let x = xor(r2[j], mb[j]);
++            diff.push(xor(x, borrow));
++            borrow = ripple_carry(true, r2[j], mb[j], borrow, x);
++        }
++        let ge = not_(borrow);
++        r = (0..n).map(|j| mux(ge, diff[j], r2[j])).collect();
++    }
++    neg_if(&r, sa)
++}
++
+ pub fn mul_bits(n: usize, x: &[Expr], y: &[Expr]) -> Vec<Expr> {
+     let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i], x[j - i]) }).collect() };
+     (1..n).fold(row(0), |acc, i| add_rows(&acc, &row(i)))
+diff --git a/crates/tatic-wasm/src/encoding/tests.rs b/crates/tatic-wasm/src/encoding/tests.rs
+index 9360ba0..423e64b 100644
+--- a/crates/tatic-wasm/src/encoding/tests.rs
++++ b/crates/tatic-wasm/src/encoding/tests.rs
+@@ -443,3 +443,64 @@ pub fn add_of_x_and_not_x_is_all_ones() {
+ // Terms over x, y (and z) are *run* on every tuple of n-bit literals by the kernel (`normalize`); terms with
+ // the same results are conjectured equal; each conjecture is then *checked*: by the matching library
+ // generator, or by a generic builder (`bitwise_law`) that has no template for the particular lemma.
++
++/// `Op::RemS` on literals against Rust's `wrapping_rem` (and `x % 0 = x`, which `eval` rejects and wasm traps on).
++fn rem_ref(n: usize, a: u128, b: u128) -> u128 {
++    let sext = |v: u128| ((v << (128 - n)) as i128) >> (128 - n);
++    let (x, y) = (sext(a), sext(b));
++    (if y == 0 { x } else { x.wrapping_rem(y) } as u128) & low_bits(n)
++}
++
++#[test]
++pub fn rem_s_computes_on_literals_n8_sample() {
++    let n = 8;
++    let ty = pi(bv_ty(n), pi(bv_ty(n), bv_ty(n)));
++    ck("rem_s type", &rem_s(n), &ty);
++    let term = rem_s(n);
++    let vals: Vec<u128> = (0..256u128).step_by(5).chain([0, 1, 2, 127, 128, 129, 254, 255]).collect();
++    for &a in &vals {
++        for &b in &vals {
++            let got = app2(term.clone(), lit(n, a), lit(n, b));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a, b))), "rem a={a:#x} b={b:#x}");
++        }
++    }
++}
++
++#[test]
++#[ignore]
++pub fn rem_s_computes_on_literals_n8_exhaustive() {
++    let n = 8;
++    let term = rem_s(n);
++    for a in 0..256u128 {
++        for b in 0..256u128 {
++            let got = app2(term.clone(), lit(n, a), lit(n, b));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a, b))), "rem a={a:#x} b={b:#x}");
++        }
++    }
++}
++
++#[test]
++pub fn rem_s_computes_on_literals_n64_edges_and_random() {
++    let n = 64;
++    let term = rem_s(n);
++    let vals: Vec<u64> = vec![0, 1, u64::MAX, i64::MIN as u64, i64::MAX as u64, 2, 3, (-7i64) as u64, 7, 1 << 32, (1 << 32) - 1];
++    let mut x = 0x9E3779B97F4A7C15u64;
++    let mut next = || {
++        x ^= x << 13;
++        x ^= x >> 7;
++        x ^= x << 17;
++        x
++    };
++    let mut pairs: Vec<(u64, u64)> = vals.iter().flat_map(|&a| vals.iter().map(move |&b| (a, b))).collect();
++    for _ in 0..90 {
++        let (a, b) = (next(), next());
++        // vary magnitudes so quotients are neither always 0 nor always huge
++        pairs.push((a, b >> (next() % 64)));
++    }
++    tatic_kernel::scoped(|| {
++        for (a, b) in pairs {
++            let got = app2(term.clone(), lit(n, a as u128), lit(n, b as u128));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a as u128, b as u128))), "rem a={a:#x} b={b:#x}");
++        }
++    })
++}
+diff --git a/crates/tatic-wasm/src/ops.rs b/crates/tatic-wasm/src/ops.rs
+index 8c91983..034e812 100644
+--- a/crates/tatic-wasm/src/ops.rs
++++ b/crates/tatic-wasm/src/ops.rs
+@@ -11,6 +11,7 @@ pub enum Op {
+     Add,
+     Sub,
+     Mul,
++    RemS,
+     LtS,
+     LeS,
+     Eq,
+@@ -25,6 +26,7 @@ impl Op {
+             Op::Add => add,
+             Op::Sub => sub,
+             Op::Mul => mul,
++            Op::RemS => rem_s,
+             Op::LtS => lt_s,
+             Op::LeS => le_s,
+             Op::Eq => eq_bit,
+@@ -37,6 +39,7 @@ impl Op {
+             Op::Add => "i64.add",
+             Op::Sub => "i64.sub",
+             Op::Mul => "i64.mul",
++            Op::RemS => "i64.rem_s",
+             Op::LtS => "i64.lt_s",
+             Op::LeS => "i64.le_s",
+             Op::Eq => "i64.eq",
+@@ -46,7 +49,7 @@ impl Op {
+     /// What the operator leaves on the stack: a word, or a compare's one-bit word.
+     pub fn kind(self) -> K {
+         match self {
+-            Op::Add | Op::Sub | Op::Mul => K::W,
++            Op::Add | Op::Sub | Op::Mul | Op::RemS => K::W,
+             Op::LtS | Op::LeS | Op::Eq | Op::LtU => K::B,
+         }
+     }
+@@ -56,7 +59,7 @@ impl Op {
+ fn op_rows_are_closed_and_typed() {
+     let n = 8;
+     let v = bv_ty(n);
+-    for o in [Op::Add, Op::Sub, Op::Mul, Op::LtS, Op::LeS, Op::Eq, Op::LtU] {
++    for o in [Op::Add, Op::Sub, Op::Mul, Op::RemS, Op::LtS, Op::LeS, Op::Eq, Op::LtU] {
+         let want = match o.kind() {
+             K::W => arrow(v.clone(), arrow(v.clone(), v.clone())),
+             K::B => arrow(v.clone(), arrow(v.clone(), bv_ty(1))),
+diff --git a/crates/tatic/src/jit/lower_wat.rs b/crates/tatic/src/jit/lower_wat.rs
+index edd1c01..433639a 100644
+--- a/crates/tatic/src/jit/lower_wat.rs
++++ b/crates/tatic/src/jit/lower_wat.rs
+@@ -460,7 +460,6 @@ impl Lowering<'_> {
+                 self.node(cx, b, w);
+                 match *op {
+                     PrimOp::Div => emit_wrapping_div(w),
+-                    PrimOp::Mod => raw(w, "i64.rem_s"),
+                     op => {
+                         let o = op_of(op).filter(|o| o.kind() == K::W);
+                         w.push(Ins::Op(o.expect("ir::check: Arith carries an arithmetic op (shape::op_of)")))
+diff --git a/crates/tatic/src/jit/op_table_tests.rs b/crates/tatic/src/jit/op_table_tests.rs
+index 2c451da..86ac591 100644
+--- a/crates/tatic/src/jit/op_table_tests.rs
++++ b/crates/tatic/src/jit/op_table_tests.rs
+@@ -69,6 +69,9 @@ fn agree(n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
+         for (x, y) in pairs() {
+             let (x, y) = (mask(n, x), mask(n, y));
+             let (sx, sy) = (sign_extend(n, x), sign_extend(n, y));
++            if p == PrimOp::Mod && y == 0 {
++                continue; // eval errors and wasm traps; the circuit gives `x % 0 = x` (no trap channel)
++            }
+             let r_eval = mask(n, apply_term(&s, h, &[sx, sy]).expect("no division") as u64);
+             let r_wasm = mask(n, f.call(&mut store, (sx, sy)).expect("no trap") as u64);
+             assert_eq!(r_eval, r_wasm, "{o:?} at n = {n}: ({x:#x}, {y:#x}): eval {r_eval:#x} vs wasm {r_wasm:#x}");
+diff --git a/crates/tatic/src/jit/shape.rs b/crates/tatic/src/jit/shape.rs
+index 291c5e6..58a71b9 100644
+--- a/crates/tatic/src/jit/shape.rs
++++ b/crates/tatic/src/jit/shape.rs
+@@ -168,18 +168,19 @@ pub(crate) fn is_comparison(op: PrimOp) -> bool {
+ 
+ /// The one map from a source operator to its machine operator row (the
+ /// lowering, the gate's source side and the fragment predicate all read it).
+-/// `Div` and `Mod` have none: the lowering emits `i64.div_s` (inside
+-/// `emit_wrapping_div`) and `i64.rem_s` as `Raw` lines.
++/// `Div` has none: the lowering emits `i64.div_s` (inside
++/// `emit_wrapping_div`) as a `Raw` line.
+ pub fn op_of(op: PrimOp) -> Option<Op> {
+     use PrimOp::*;
+     Some(match op {
+         Add => Op::Add,
+         Sub => Op::Sub,
+         Mul => Op::Mul,
++        Mod => Op::RemS,
+         Lt => Op::LtS,
+         Le => Op::LeS,
+         Eq => Op::Eq,
+-        Div | Mod => return None,
++        Div => return None,
+     })
+ }
+ 
+diff --git a/crates/tatic/src/proof/gate.rs b/crates/tatic/src/proof/gate.rs
+index a06db69..fc455a7 100644
+--- a/crates/tatic/src/proof/gate.rs
++++ b/crates/tatic/src/proof/gate.rs
+@@ -20,7 +20,7 @@ use crate::jit::compile::tree_size;
+ use crate::jit::shape::{is_comparison, op_of};
+ use crate::lang::term::{Hash, Term, TermStore};
+ 
+-const N: usize = 64;
++pub(crate) const N: usize = 64;
+ 
+ /// The largest tree (`compile::tree_size`) the gate takes: the largest power of two under the JIT path's 0.4 s.
+ /// `doubling(12)` (8192 nodes) took 0.35-0.38 s, `doubling(13)` (16384) 0.74-0.88 s, nearly all of it the check (doc
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index 3af3395..036ca11 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -6,7 +6,7 @@ use tatic_wasm::wasm::Ins;
+ 
+ use crate::jit::compile::{compile_specialised, CompiledFragment};
+ use crate::lang::term::{Hash, PrimOp, TermStore};
+-use crate::proof::gate::{gate, in_fragment, statement};
++use crate::proof::gate::{gate, in_fragment, statement, N};
+ use crate::support::samples::{a_capturing_closure_call, a_pap_capturing, factorial, inc, source, straight_line, twice};
+ use crate::testing::ins_mutate::mutate;
+ use crate::testing::test_corpus::doubling;
+@@ -207,6 +207,30 @@ fn measure_gate_costs() {
+     }
+ }
+ 
++/// The cost of `%` through the gate beside `*`, at the gate's width `N` (edit the const to sweep it): circuit sizes
++/// (distinct nodes, tree nodes), then `name build_ms check_ms ok` best of 3.
++#[test]
++#[ignore]
++fn measure_rem_cost() {
++    for o in [Op::Mul, Op::RemS] {
++        let t0 = std::time::Instant::now();
++        let term = o.term(N);
++        let (d, tree) = tatic_kernel::term_sizes(&term);
++        println!("circuit {o:?} n={N}: {d} distinct, {tree} tree nodes, built in {:.2} ms", t0.elapsed().as_secs_f64() * 1e3);
++    }
++    for (name, src) in [
++        ("mul", r"\a b. a * b"),
++        ("rem", r"\a b. a % b"),
++        ("rem in an arm", r"\a b. if a < b then a % b else a"),
++        ("mul in an arm", r"\a b. if a < b then a * b else a"),
++    ] {
++        let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, src));
++        assert!(in_fragment(&s, h, 2), "{name} should be in the fragment");
++        let (b, k, ok) = time_gate(&s, h, 2, frag.entry(), 1, 3);
++        println!("n={N} {name} {b:.2} {k:.2} {ok}");
++    }
++}
++
+ /// `doubling(13)` (the tree cap) on a default-size 2 MB thread. Alone, since an overflow aborts the exe.
+ #[test]
+ #[ignore]
