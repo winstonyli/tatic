@@ -1,0 +1,535 @@
+diff --git a/crates/tatic-wasm/src/wasm/laws.rs b/crates/tatic-wasm/src/wasm/laws.rs
+index ed13eb4..18d5202 100644
+--- a/crates/tatic-wasm/src/wasm/laws.rs
++++ b/crates/tatic-wasm/src/wasm/laws.rs
+@@ -1028,6 +1028,10 @@ pub enum Fr {
+ 
+ /// `Pi R z x. GoodBv x -> Pi h k. caller x h k = k (x + 5) (upd (x+1) 7 (upd x 5 h))`.
+ pub fn frame_law(w: Wasm, fr: Fr) -> (Expr, Expr) {
++    frame_law_k(w, fr, 1, eq_succ_lemma(w.n).0)
++}
++/// `frame_law` with the callee writing `y + off` and `off_l` the proof of `Pi x. GoodBv x -> eq (x + off) x = false`.
++pub fn frame_law_k(w: Wasm, fr: Fr, off: i64, off_l: Expr) -> (Expr, Expr) {
+     let n = w.n;
+     let add = Op::Add.term(n);
+     let ins_add = Ins::Op(Op::Add);
+@@ -1035,10 +1039,10 @@ pub fn frame_law(w: Wasm, fr: Fr) -> (Expr, Expr) {
+     let g_code = if fr == Fr::CalleeHitsX {
+         vec![Dup, Push(7), Store]
+     } else {
+-        vec![Dup, Push(1), ins_add.clone(), Push(7), Store]
++        vec![Dup, Push(off), ins_add.clone(), Push(7), Store]
+     };
+     let caller_code = if fr == Fr::ReadsX1 {
+-        vec![Dup, Push(5), Store, Dup, Call, Push(1), ins_add.clone(), Load, ins_add.clone()]
++        vec![Dup, Push(5), Store, Dup, Call, Push(off), ins_add.clone(), Load, ins_add.clone()]
+     } else {
+         vec![Dup, Push(5), Store, Dup, Call, Load, ins_add.clone()]
+     };
+@@ -1050,7 +1054,7 @@ pub fn frame_law(w: Wasm, fr: Fr) -> (Expr, Expr) {
+         ty!(|c, x| w.mem(c, x[0])),
+         ty!(|c, x| ret_m(w, c, x[0])),
+     ];
+-    let (refl_l, succ_l) = (eq_refl_lemma(n).0, eq_succ_lemma(n).0);
++    let (refl_l, succ_l) = (eq_refl_lemma(n).0, off_l);
+     law(&tys, |c, xs| {
+         let (r, z, x, gx, h, k) = (xs[0], xs[1], xs[2], xs[3], xs[4], xs[5]);
+         let none = c.lam(w.v(), |c, _| {
+@@ -1062,7 +1066,7 @@ pub fn frame_law(w: Wasm, fr: Fr) -> (Expr, Expr) {
+         });
+         let callee = app(mach_step(w, c, r, z, &g_code), none);
+         let lhs = apps(app(mach_step(w, c, r, z, &caller_code), callee), vec![c.at(x), c.at(h), c.at(k)]);
+-        let x1 = app2(add, c.at(x), lit(n, 1));
++        let x1 = app2(add, c.at(x), lit(n, off as u128));
+         let h1 = w.upd(c, r, c.at(x), lit(n, 5), c.at(h));
+         let h1 = c.mark(h1);
+         let h2 = w.upd(c, r, x1, lit(n, 7), c.at(h1));
+@@ -1100,7 +1104,7 @@ pub fn frame_law(w: Wasm, fr: Fr) -> (Expr, Expr) {
+         let s1 = rewrite(c, k5, hx, eqxx, t(), app2(refl_l, c.at(x), c.at(gx)), refl(c.at(tgt)));
+         let k7 = app(c.at(kk), lit(n, 7));
+         let a1 = app2(c.at(h1), c.at(x), c.at(kk));
+-        let eqs = app2(eq_bv(n), app2(add, c.at(x), lit(n, 1)), c.at(x));
++        let eqs = app2(eq_bv(n), app2(add, c.at(x), lit(n, off as u128)), c.at(x));
+         let s2 = rewrite(c, k7, a1, eqs, f(), app2(succ_l, c.at(x), c.at(gx)), s1);
+         (s2, stmt)
+     })
+@@ -1132,3 +1136,479 @@ pub fn frame_spike() {
+         })
+     }
+ }
++
++// ---- SPIKE d1/d3: the region lemma `eq (p + j) p = eq j 0` for symbolic p, j, and the literal offset 2.
++
++/// Closed `Pi v_0..v_(k-1). GoodBool v_0 -> .. -> GoodBool v_(k-1) -> body(v)`, by a nested bit split on every variable;
++/// each of the `2^k` leaves is `refl` of the literal `val(bits)` that both sides of `body` (an `Id` over `Bool0`) reach.
++fn lemma_k(k: usize, body: &dyn Fn(&[Expr]) -> Expr, val: &dyn Fn(&[bool]) -> bool) -> (Expr, Expr) {
++    let mut tys: Vec<Ty> = (0..k).map(|_| ty!(|_c, _x| bool0())).collect();
++    for i in 0..k {
++        tys.push(ty!(|c, x| app(good_bool(), c.at(x[i]))));
++    }
++    fn split(c: &mut Cx, xs: &[At], k: usize, i: usize, vals: &mut Vec<bool>, body: &dyn Fn(&[Expr]) -> Expr,
++             val: &dyn Fn(&[bool]) -> bool) -> Expr {
++        if i == k {
++            return refl(bit(val(vals)));
++        }
++        let motive = c.lam(bool0(), |c, y| {
++            let vs: Vec<Expr> = (0..k).map(|j| if j < i { bit(vals[j]) } else if j == i { c.at(y) } else { c.at(xs[j]) }).collect();
++            body(&vs)
++        });
++        vals.push(true);
++        let bt = split(c, xs, k, i + 1, vals, body, val);
++        vals.pop();
++        vals.push(false);
++        let bf = split(c, xs, k, i + 1, vals, body, val);
++        vals.pop();
++        app3(c.at(xs[k + i]), motive, bt, bf)
++    }
++    law(&tys, |c, xs| {
++        let vs: Vec<Expr> = (0..k).map(|j| c.at(xs[j])).collect();
++        (split(c, xs, k, 0, &mut vec![], body, val), body(&vs))
++    })
++}
++
++/// `[B, a, b, c]`: `and B (xnor (a^b^c) a) = and B (xnor b (and B c))`.
++fn region_s1() -> (Expr, Expr) {
++    lemma_k(
++        4,
++        &|v| {
++            let (bb, a, b, c) = (v[0], v[1], v[2], v[3]);
++            id(bool0(), and(bb, not_(xor(xor(xor(a, b), c), a))), and(bb, not_(xor(b, and(bb, c)))))
++        },
++        &|v| v[0] && (v[2] == v[3]),
++    )
++}
++/// `[B, a, b, c]`: `and (and B nb) (carry a b c) = and (and B c) (and a nb)`, `nb = not (xor b false)`.
++fn region_s2() -> (Expr, Expr) {
++    lemma_k(
++        4,
++        &|v| {
++            let (bb, a, b, c) = (v[0], v[1], v[2], v[3]);
++            let nb = not_(xor(b, f()));
++            let carry = or(and(a, b), and(c, xor(a, b)));
++            id(bool0(), and(and(bb, nb), carry), and(and(bb, c), and(a, nb)))
++        },
++        &|v| v[0] && !v[2] && ((v[1] && v[2]) || (v[3] && (v[1] != v[2]))),
++    )
++}
++
++/// `Lam Q. Lam (h: Q r). J p h` for `p : Id(Bool0, l, r)`: the Leibniz form that lands in Sort2 (see `bool_lemma`).
++fn leibniz(c: &mut Cx, p: Expr, l: Expr, r: Expr) -> Expr {
++    let qty = arrow(bool0(), sort(1));
++    let (p, l, r) = (c.mark(p), c.mark(l), c.mark(r));
++    c.lam(qty, |c, q| {
++        let qb = app(c.at(q), c.at(r));
++        c.lam(qb, |c, hq| {
++            let jm = c.lam(bool0(), |c, u| {
++                c.lam(bool0(), |c, v| {
++                    let e = id(bool0(), c.at(u), c.at(v));
++                    c.lam(e, |c, _| arrow(app(c.at(q), c.at(v)), app(c.at(q), c.at(u))))
++                })
++            });
++            let base = c.lam(bool0(), |c, u| c.lam(app(c.at(q), c.at(u)), |c, h| c.at(h)));
++            app(jelim(jm, base, c.at(l), c.at(r), c.at(p)), c.at(hq))
++        })
++    })
++}
++
++/// The chain proof of `Id(Bool0, eq (mk a + mk b) (mk a), eq (mk b) 0)` over the bits, by the invariant
++/// `A_i = B_i` and `and B_i c_i = false`: `A_i`, `B_i` the prefix conjunctions of the two sides, `c_i` the carry.
++fn region_chain(c: &mut Cx, a: &[At], ga: &[At], b: &[At], gb: &[At], s1: Expr, s2: Expr, stale: bool) -> Expr {
++    let n = a.len();
++    let (g_and, _) = good2(&|x, y| and(x, y), &and_truth);
++    let (g_or, _) = good2(&|x, y| or(x, y), &or_truth);
++    let (g_xor, _) = good2(&|x, y| xor(x, y), &xor_truth);
++    let (g_and_l, _) = good_and_lemma();
++    let (g_xn, _) = good_xnor_lit(false);
++    let bb0 = bool0();
++    let (mut aa, mut bb, mut cc) = (t(), t(), f());
++    let (mut gbb, mut gcc) = (good_bit(true), good_bit(false));
++    let (mut p1, mut p2) = (refl(t()), refl(f()));
++    for i in 0..n {
++        let (ai, bi, gai, gbi) = (c.at(a[i]), c.at(b[i]), c.at(ga[i]), c.at(gb[i]));
++        let x = xor(ai, bi);
++        let xi = not_(xor(xor(x, cc), ai));
++        let nb = not_(xor(bi, f()));
++        let args = vec![bb, ai, bi, cc, gbb, gai, gbi, gcc];
++        // P1: and A xi = and B xi = and B (xnor b (and B c)) = and B (xnor b false)
++        let f1 = lam(bb0, and(var(0), shift(&xi, 0, 1)));
++        let e1 = cong1(&bb0, &bb0, &f1, aa, bb, p1);
++        let e2 = apps(s1, args.clone());
++        let mid = and(bb, not_(xor(bi, and(bb, cc))));
++        let f3 = lam(bb0, and(shift(&bb, 0, 1), not_(xor(shift(&bi, 0, 1), var(0)))));
++        let e3 = cong1(&bb0, &bb0, &f3, and(bb, cc), f(), p2);
++        let t12 = trans_proof(&bb0, &and(aa, xi), &and(bb, xi), &mid, e1, e2);
++        let p1n = trans_proof(&bb0, &and(aa, xi), &mid, &and(bb, nb), t12, e3);
++        // P2: and (and B nb) c' = and (and B c) (and a nb) = and false (and a nb)
++        let w = and(ai, nb);
++        let cc1 = or(and(ai, bi), and(cc, x));
++        let e4 = apps(s2, args);
++        let f5 = lam(bb0, and(var(0), shift(&w, 0, 1)));
++        let e5 = cong1(&bb0, &bb0, &f5, and(bb, cc), f(), p2);
++        let p2n = trans_proof(&bb0, &and(and(bb, nb), cc1), &and(and(bb, cc), w), &and(f(), w), e4, e5);
++        let p2n = if stale { refl(f()) } else { p2n };
++        // the witnesses
++        let gnb = app2(g_xn, bi, gbi);
++        let gbn = apps(g_and_l, vec![bb, nb, gbb, gnb]);
++        let gx = apps(g_xor, vec![ai, bi, gai, gbi]);
++        let gab = apps(g_and, vec![ai, bi, gai, gbi]);
++        let gcx = apps(g_and, vec![cc, x, gcc, gx]);
++        let gcn = apps(g_or, vec![and(ai, bi), and(cc, x), gab, gcx]);
++        (aa, bb, cc, gbb, gcc, p1, p2) = (and(aa, xi), and(bb, nb), cc1, gbn, gcn, p1n, p2n);
++    }
++    p1
++}
++
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum Rg {
++    Ok,
++    /// stated as `eq (p + j) p = false`
++    FalseRhs,
++    /// `sub` for `add`
++    SubStmt,
++    /// `eq (p + j) j`
++    SwapStmt,
++    /// `refl`
++    Refl,
++    /// the carry invariant not carried: `refl false` for `and B c = false` at every step
++    StaleCarry,
++}
++
++/// `Pi p j. GoodBv p -> GoodBv j -> Id(Bool0, eq (p + j) p, eq j 0)`: both vectors opened by `GoodBv` at the Leibniz motive,
++/// the bit chain `region_chain` inside.
++pub fn region_law(n: usize, ctl: Rg) -> (Expr, Expr) {
++    let add = Op::Add.term(n);
++    let (s1, s2) = (region_s1().0, region_s2().0);
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| app(good_bv(n), c.at(x[0]))),
++        ty!(|c, x| app(good_bv(n), c.at(x[1]))),
++    ];
++    let lhs = move |x: Expr, y: Expr| app2(eq_bv(n), app2(add, x, y), x);
++    let rhs = move |y: Expr| app2(eq_bv(n), y, lit(n, 0));
++    let qty = arrow(bool0(), sort(1));
++    law(&tys, |c, xs| {
++        let (j, gp, gj) = (xs[1], xs[2], xs[3]);
++        let stmt = match ctl {
++            Rg::FalseRhs => id(bool0(), lhs(c.at(xs[0]), c.at(j)), f()),
++            Rg::SubStmt => id(bool0(), app2(eq_bv(n), app2(Op::Sub.term(n), c.at(xs[0]), c.at(j)), c.at(xs[0])), rhs(c.at(j))),
++            Rg::SwapStmt => id(bool0(), app2(eq_bv(n), app2(add, c.at(xs[0]), c.at(j)), c.at(j)), rhs(c.at(j))),
++            _ => id(bool0(), lhs(c.at(xs[0]), c.at(j)), rhs(c.at(j))),
++        };
++        if ctl == Rg::Refl {
++            return (refl(rhs(c.at(j))), stmt);
++        }
++        let motive_p = c.lam(bv_ty(n), |c, x| {
++            c.pi(qty, |c, q| arrow(app(c.at(q), rhs(c.at(j))), app(c.at(q), lhs(c.at(x), c.at(j)))))
++        });
++        let step_p = bind_bits(c, n, &mut vec![], &mut |c, a, ga| {
++            let mk = |c: &Cx, bits: &[At]| church_tuple(&bits.iter().map(|b| c.at(*b)).collect::<Vec<_>>());
++            let motive_j = c.lam(bv_ty(n), |c, y| {
++                c.pi(qty, |c, q| arrow(app(c.at(q), rhs(c.at(y))), app(c.at(q), lhs(mk(c, a), c.at(y)))))
++            });
++            let step_j = bind_bits(c, n, &mut vec![], &mut |c, b, gb| {
++                let pf = region_chain(c, a, ga, b, gb, s1, s2, ctl == Rg::StaleCarry);
++                let (l, r) = (lhs(mk(c, a), mk(c, b)), rhs(mk(c, b)));
++                leibniz(c, pf, l, r)
++            });
++            app2(c.at(gj), motive_j, step_j)
++        });
++        let body = app2(c.at(gp), motive_p, step_p);
++        let qid = lam(bool0(), id(bool0(), var(0), shift(&rhs(c.at(j)), 0, 1)));
++        (apps(body, vec![qid, refl(rhs(c.at(j)))]), stmt)
++    })
++}
++
++/// `Pi x. GoodBv x -> Id(Bool0, eq (x + 2) x, false)` by splitting exactly the bits in `splits` (outermost first),
++/// each leaf `refl false`.
++pub fn eq_lit2_lemma(n: usize, splits: &'static [usize]) -> (Expr, Expr) {
++    let lhs = move |y: Expr| app2(eq_bv(n), app2(Op::Add.term(n), y, lit(n, 2)), y);
++    bool_lemma(n, &lhs, f(), &mut |c, a, ga| {
++        fn go(c: &mut Cx, a: &[At], ga: &[At], n: usize, splits: &[usize], vals: &mut Vec<bool>,
++              lhs: &dyn Fn(Expr) -> Expr) -> Expr {
++            let k = vals.len();
++            if k == splits.len() {
++                return refl(f());
++            }
++            let motive = c.lam(bool0(), |c, y| {
++                let bits: Vec<Expr> = (0..n).map(|i| match splits.iter().position(|s| *s == i) {
++                    Some(p) if p < k => bit(vals[p]),
++                    Some(p) if p == k => c.at(y),
++                    _ => c.at(a[i]),
++                }).collect();
++                id(bool0(), lhs(church_tuple(&bits)), f())
++            });
++            vals.push(true);
++            let bt = go(c, a, ga, n, splits, vals, lhs);
++            vals.pop();
++            vals.push(false);
++            let bf = go(c, a, ga, n, splits, vals, lhs);
++            vals.pop();
++            app3(c.at(ga[splits[k]]), motive, bt, bf)
++        }
++        go(c, a, ga, n, splits, &mut vec![], &lhs)
++    })
++}
++
++/// `Pi x. GoodBv x -> Id(Bool0, eq (x + 2) x, false)` from the region lemma at `j = 2`: `eq 2 0` converts to `false`.
++pub fn eq_lit2_from_region(n: usize) -> (Expr, Expr) {
++    let r = region_law(n, Rg::Ok).0;
++    let tys: Vec<Ty> = vec![ty!(|_c, _x| bv_ty(n)), ty!(|c, x| app(good_bv(n), c.at(x[0])))];
++    law(&tys, |c, xs| {
++        let x = c.at(xs[0]);
++        let stmt = id(bool0(), app2(eq_bv(n), app2(Op::Add.term(n), x, lit(n, 2)), x), f());
++        (apps(r, vec![c.at(xs[0]), lit(n, 2), c.at(xs[1]), good_lit(n, 2)]), stmt)
++    })
++}
++
++#[test]
++pub fn region_spike() {
++    for n in [4usize, 24, 64] {
++        tatic_kernel::scoped(|| {
++            let timed = |name: &str, build: &dyn Fn() -> (Expr, Expr)| {
++                let t0 = Instant::now();
++                let (p, s) = build();
++                let tb = t0.elapsed();
++                let t1 = Instant::now();
++                ck(&format!("{name} n={n}"), &p, &s);
++                println!("REGION n={n} {name}: build {:?}, check {:?}", tb, t1.elapsed());
++            };
++            let rejected = |name: &str, build: &dyn Fn() -> (Expr, Expr)| {
++                let (p, s) = build();
++                let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
++                assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
++                let t0 = Instant::now();
++                let e = holds(&p, &s).expect_err(&format!("{name} must be rejected at n={n}"));
++                println!("REGION n={n} rejected {name}: {:?} ({})", t0.elapsed(), e.chars().take(100).collect::<String>());
++            };
++            timed("S1 lemma", &region_s1);
++            timed("S2 lemma", &region_s2);
++            timed("d1 eq (p+j) p = eq j 0", &|| region_law(n, Rg::Ok));
++            rejected("d1 against eq (p+j) p = false", &|| region_law(n, Rg::FalseRhs));
++            rejected("d1 against sub for add", &|| region_law(n, Rg::SubStmt));
++            rejected("d1 against eq (p+j) j = eq j 0", &|| region_law(n, Rg::SwapStmt));
++            rejected("d1 refl", &|| region_law(n, Rg::Refl));
++            rejected("d1 chain with a stale carry invariant", &|| region_law(n, Rg::StaleCarry));
++            timed("d3 eq (x+2) x = false, split bits 0,1", &|| eq_lit2_lemma(n, &[0, 1]));
++            rejected("d3 split bit 0 only", &|| eq_lit2_lemma(n, &[0]));
++            rejected("d3 split bit 1 only", &|| eq_lit2_lemma(n, &[1]));
++            timed("d3 from the region lemma", &|| eq_lit2_from_region(n));
++            timed("frame law, callee writes y + 2, k=2 lemma", &|| frame_law_k(Wasm { n }, Fr::Ok, 2, eq_lit2_lemma(n, &[0, 1]).0));
++            timed("frame law, callee writes y + 2, region lemma", &|| frame_law_k(Wasm { n }, Fr::Ok, 2, eq_lit2_from_region(n).0));
++            rejected("frame law, k=2, callee writes x", &|| frame_law_k(Wasm { n }, Fr::CalleeHitsX, 2, eq_lit2_lemma(n, &[0, 1]).0));
++            rejected("frame law, k=2, caller reads x + 2 (the callee cell)", &|| frame_law_k(Wasm { n }, Fr::ReadsX1, 2, eq_lit2_lemma(n, &[0, 1]).0));
++            rejected("frame law, k=2 callee, k=1 lemma", &|| frame_law_k(Wasm { n }, Fr::Ok, 2, eq_succ_lemma(n).0));
++            cancel_checks_n(n);
++        })
++    }
++}
++
++// ---- SPIKE d1 stretch: cancellation `eq (p + i) (p + j) = eq i j`.
++
++/// `[B, a, i, j, ci, cj]`: `and B (xnor (a^i^ci) (a^j^cj)) = and B (xnor (i ^ and B ci) (j ^ and B cj))`.
++fn cancel_t1() -> (Expr, Expr) {
++    lemma_k(
++        6,
++        &|v| {
++            let (bb, a, i, j, ci, cj) = (v[0], v[1], v[2], v[3], v[4], v[5]);
++            id(bool0(), and(bb, not_(xor(xor(xor(a, i), ci), xor(xor(a, j), cj)))),
++                and(bb, not_(xor(xor(i, and(bb, ci)), xor(j, and(bb, cj))))))
++        },
++        &|v| v[0] && ((v[2] != v[4]) == (v[3] != v[5])),
++    )
++}
++/// `[B, i, j, K]`: `and B (xnor (i^K) (j^K)) = and B (xnor i j)`.
++fn cancel_t2() -> (Expr, Expr) {
++    lemma_k(
++        4,
++        &|v| {
++            let (bb, i, j, k) = (v[0], v[1], v[2], v[3]);
++            id(bool0(), and(bb, not_(xor(xor(i, k), xor(j, k)))), and(bb, not_(xor(i, j))))
++        },
++        &|v| v[0] && (v[1] == v[2]),
++    )
++}
++/// `[B, a, i, j, c]`: `and (and B nx) (carry a i c) = and (and B nx) (carry a i (and B c))`, `nx = xnor i j`.
++fn cancel_u1() -> (Expr, Expr) {
++    lemma_k(
++        5,
++        &|v| {
++            let (bb, a, i, j, c) = (v[0], v[1], v[2], v[3], v[4]);
++            let bn = and(bb, not_(xor(i, j)));
++            id(bool0(), and(bn, or(and(a, i), and(c, xor(a, i)))), and(bn, or(and(a, i), and(and(bb, c), xor(a, i)))))
++        },
++        &|v| v[0] && (v[2] == v[3]) && ((v[1] && v[2]) || (v[4] && (v[1] != v[2]))),
++    )
++}
++/// `[B, a, i, j, c]`: `and (and B nx) (carry a i (and B c)) = and (and B nx) (carry a j c)`.
++fn cancel_u2() -> (Expr, Expr) {
++    lemma_k(
++        5,
++        &|v| {
++            let (bb, a, i, j, c) = (v[0], v[1], v[2], v[3], v[4]);
++            let bn = and(bb, not_(xor(i, j)));
++            id(bool0(), and(bn, or(and(a, i), and(and(bb, c), xor(a, i)))), and(bn, or(and(a, j), and(c, xor(a, j)))))
++        },
++        &|v| v[0] && (v[2] == v[3]) && ((v[1] && v[2]) || (v[4] && (v[1] != v[2]))),
++    )
++}
++
++/// The chain proof of `Id(Bool0, eq (mk p + mk i) (mk p + mk j), eq (mk i) (mk j))`, by the invariant `A_k = B_k` and
++/// `and B_k ci_k = and B_k cj_k`.
++fn cancel_chain(c: &mut Cx, pa: &[At], pga: &[At], ia: &[At], iga: &[At], ja: &[At], jga: &[At], ls: [Expr; 4]) -> Expr {
++    let [t1, t2, u1, u2] = ls;
++    let n = pa.len();
++    let (g_and, _) = good2(&|x, y| and(x, y), &and_truth);
++    let (g_or, _) = good2(&|x, y| or(x, y), &or_truth);
++    let (g_xor, _) = good2(&|x, y| xor(x, y), &xor_truth);
++    let (g_xnor, _) = good2(&|x, y| not_(xor(x, y)), &|x, y| x == y);
++    let (g_and_l, _) = good_and_lemma();
++    let bb0 = bool0();
++    let (mut aa, mut bb, mut ci, mut cj) = (t(), t(), f(), f());
++    let (mut gbb, mut gci, mut gcj) = (good_bit(true), good_bit(false), good_bit(false));
++    let (mut p1, mut p2) = (refl(t()), refl(f()));
++    for k in 0..n {
++        let (a, i, j) = (c.at(pa[k]), c.at(ia[k]), c.at(ja[k]));
++        let (ga, gi, gj) = (c.at(pga[k]), c.at(iga[k]), c.at(jga[k]));
++        let (xi_, xj_) = (xor(a, i), xor(a, j));
++        let (si, sj) = (xor(xi_, ci), xor(xj_, cj));
++        let xn = not_(xor(si, sj));
++        let nx = not_(xor(i, j));
++        let kk = and(bb, cj);
++        // P1: and A xn = and B xn = and B (xnor (i ^ B ci) (j ^ B cj)) = and B (xnor (i ^ K) (j ^ K)) = and B nx
++        let f1 = lam(bb0, and(var(0), shift(&xn, 0, 1)));
++        let e1 = cong1(&bb0, &bb0, &f1, aa, bb, p1);
++        let e2 = apps(t1, vec![bb, a, i, j, ci, cj, gbb, ga, gi, gj, gci, gcj]);
++        let m1 = and(bb, not_(xor(xor(i, and(bb, ci)), xor(j, and(bb, cj)))));
++        let f3 = lam(bb0, and(shift(&bb, 0, 1), not_(xor(xor(shift(&i, 0, 1), var(0)), shift(&xor(j, kk), 0, 1)))));
++        let e3 = cong1(&bb0, &bb0, &f3, and(bb, ci), kk, p2);
++        let m2 = and(bb, not_(xor(xor(i, kk), xor(j, kk))));
++        let gk = apps(g_and_l, vec![bb, cj, gbb, gcj]);
++        let e4 = apps(t2, vec![bb, i, j, kk, gbb, gi, gj, gk]);
++        let t12 = trans_proof(&bb0, &and(aa, xn), &and(bb, xn), &m1, e1, e2);
++        let t123 = trans_proof(&bb0, &and(aa, xn), &m1, &m2, t12, e3);
++        let p1n = trans_proof(&bb0, &and(aa, xn), &m2, &and(bb, nx), t123, e4);
++        // P2: and B' ci' = and B' (carry a i (B ci)) = and B' (carry a i K) = and B' cj'
++        let bn = and(bb, nx);
++        let ci1 = or(and(a, i), and(ci, xi_));
++        let cj1 = or(and(a, j), and(cj, xj_));
++        let args = vec![bb, a, i, j, ci, gbb, ga, gi, gj, gci];
++        let h1 = apps(u1, args);
++        let f5 = lam(bb0, and(shift(&bn, 0, 1), or(and(shift(&a, 0, 1), shift(&i, 0, 1)), and(var(0), shift(&xi_, 0, 1)))));
++        let h2 = cong1(&bb0, &bb0, &f5, and(bb, ci), kk, p2);
++        let mid1 = and(bn, or(and(a, i), and(and(bb, ci), xi_)));
++        let mid2 = and(bn, or(and(a, i), and(kk, xi_)));
++        let h3 = apps(u2, vec![bb, a, i, j, cj, gbb, ga, gi, gj, gcj]);
++        let h12 = trans_proof(&bb0, &and(bn, ci1), &mid1, &mid2, h1, h2);
++        let p2n = trans_proof(&bb0, &and(bn, ci1), &mid2, &and(bn, cj1), h12, h3);
++        // the witnesses
++        let gnx = apps(g_xnor, vec![i, j, gi, gj]);
++        let gbn = apps(g_and_l, vec![bb, nx, gbb, gnx]);
++        let carry = |c0: Expr, gc0: Expr, v: Expr, gv: Expr| {
++            let x = xor(a, v);
++            let gx = apps(g_xor, vec![a, v, ga, gv]);
++            let gab = apps(g_and, vec![a, v, ga, gv]);
++            let gcx = apps(g_and, vec![c0, x, gc0, gx]);
++            apps(g_or, vec![and(a, v), and(c0, x), gab, gcx])
++        };
++        let (gci1, gcj1) = (carry(ci, gci, i, gi), carry(cj, gcj, j, gj));
++        (aa, bb, ci, cj, gbb, gci, gcj, p1, p2) = (and(aa, xn), and(bb, nx), ci1, cj1, gbn, gci1, gcj1, p1n, p2n);
++    }
++    p1
++}
++
++/// `Pi p i j. GoodBv p -> GoodBv i -> GoodBv j -> Id(Bool0, eq (p + i) (p + j), eq i j)`; `Rg::SwapStmt` states `eq (p+i) (p+j) = eq i i`... see below.
++pub fn cancel_law(n: usize, ctl: Rg) -> (Expr, Expr) {
++    let add = Op::Add.term(n);
++    let ls = [cancel_t1().0, cancel_t2().0, cancel_u1().0, cancel_u2().0];
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| app(good_bv(n), c.at(x[0]))),
++        ty!(|c, x| app(good_bv(n), c.at(x[1]))),
++        ty!(|c, x| app(good_bv(n), c.at(x[2]))),
++    ];
++    let lr = move |v: &[Expr]| {
++        (app2(eq_bv(n), app2(add, v[0], v[1]), app2(add, v[0], v[2])), app2(eq_bv(n), v[1], v[2]))
++    };
++    let qty = arrow(bool0(), sort(1));
++    type Opened = Vec<(Vec<At>, Vec<At>)>;
++    fn open(c: &mut Cx, n: usize, k: usize, xs: &[At], gs: &[At], got: &mut Opened, lr: &dyn Fn(&[Expr]) -> (Expr, Expr),
++            ls: [Expr; 4]) -> Expr {
++        let mk = |c: &Cx, bits: &[At]| church_tuple(&bits.iter().map(|b| c.at(*b)).collect::<Vec<_>>());
++        if k == 3 {
++            let vs: Vec<Expr> = got.iter().map(|(a, _)| mk(c, a)).collect();
++            let (l, r) = lr(&vs);
++            let pf = cancel_chain(c, &got[0].0, &got[0].1, &got[1].0, &got[1].1, &got[2].0, &got[2].1, ls);
++            return leibniz(c, pf, l, r);
++        }
++        let qty = arrow(bool0(), sort(1));
++        let motive = c.lam(bv_ty(n), |c, y| {
++            c.pi(qty, |c, q| {
++                let vs: Vec<Expr> = (0..3).map(|m| if m < k { mk(c, &got[m].0) } else if m == k { c.at(y) } else { c.at(xs[m]) }).collect();
++                let (l, r) = lr(&vs);
++                arrow(app(c.at(q), r), app(c.at(q), l))
++            })
++        });
++        let step = bind_bits(c, n, &mut vec![], &mut |c, a, ga| {
++            got.push((a.to_vec(), ga.to_vec()));
++            let r = open(c, n, k + 1, xs, gs, got, lr, ls);
++            got.pop();
++            r
++        });
++        app2(c.at(gs[k]), motive, step)
++    }
++    law(&tys, |c, xs| {
++        let (vs, gs) = (&xs[..3], &xs[3..]);
++        let ev: Vec<Expr> = vs.iter().map(|v| c.at(*v)).collect();
++        let (l, r) = lr(&ev);
++        let stmt = match ctl {
++            Rg::FalseRhs => id(bool0(), l, f()),
++            Rg::SwapStmt => id(bool0(), l, app2(eq_bv(n), ev[1], ev[1])),
++            _ => id(bool0(), l, r),
++        };
++        if ctl == Rg::Refl {
++            return (refl(r), stmt);
++        }
++        let _ = qty;
++        let body = open(c, n, 0, vs, gs, &mut vec![], &lr, ls);
++        let qid = lam(bool0(), id(bool0(), var(0), shift(&r, 0, 1)));
++        (apps(body, vec![qid, refl(r)]), stmt)
++    })
++}
++
++
++pub fn cancel_checks_n(n: usize) {
++    {
++        tatic_kernel::scoped(|| {
++            let timed = |name: &str, build: &dyn Fn() -> (Expr, Expr)| {
++                let t0 = Instant::now();
++                let (p, s) = build();
++                let tb = t0.elapsed();
++                let t1 = Instant::now();
++                ck(&format!("{name} n={n}"), &p, &s);
++                println!("CANCEL n={n} {name}: build {:?}, check {:?}", tb, t1.elapsed());
++            };
++            let rejected = |name: &str, build: &dyn Fn() -> (Expr, Expr)| {
++                let (p, s) = build();
++                let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
++                assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
++                let t0 = Instant::now();
++                let e = holds(&p, &s).expect_err(&format!("{name} must be rejected at n={n}"));
++                println!("CANCEL n={n} rejected {name}: {:?} ({})", t0.elapsed(), e.chars().take(100).collect::<String>());
++            };
++            timed("T1", &cancel_t1);
++            timed("T2", &cancel_t2);
++            timed("U1", &cancel_u1);
++            timed("U2", &cancel_u2);
++            timed("cancel eq (p+i) (p+j) = eq i j", &|| cancel_law(n, Rg::Ok));
++            rejected("cancel against = false", &|| cancel_law(n, Rg::FalseRhs));
++            rejected("cancel against = eq i i", &|| cancel_law(n, Rg::SwapStmt));
++            rejected("cancel refl", &|| cancel_law(n, Rg::Refl));
++        })
++    }
++}
