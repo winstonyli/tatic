@@ -1318,7 +1318,10 @@ exe does about 1.1% more work: medians 654.8 M against 647.5 M and 647.0 M, best
 (`meaning_env`), and the count covers the whole process, start-up included, so neither part's share nor the extra
 work per check is separated. One wall-time run per arm (`2026-11-10-c2-scaling-base`, `-patched`) moved in both
 directions on single checks, up to 2.6 times on one of 0.2-0.5 ms and by a quarter on ones of 3-7 ms, which is noise
-for checks this short.
+for checks this short. The other three ignored tatic-wasm tests (`a_large_check_does_not_churn_stack_segments`,
+`bv_lemma_scaling_h3_d2_good_add`, `or_disjoint_scaling`) pass on the patched tree (run
+`2026-11-10-d4-ignored-patched-2`; the first try, `-patched`, built main instead and does not count). They exercise
+only the bit-vector encoding, not the machine, so they show the patch leaves the encoding alone and say nothing more.
 
 **A store at an address computed at run time, across a call.** The caller stores at its argument's address and reads
 it back after a call whose callee writes the next cell:
