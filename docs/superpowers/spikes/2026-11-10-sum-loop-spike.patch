@@ -1,0 +1,277 @@
+diff --git a/crates/tatic-wasm/src/wasm/laws.rs b/crates/tatic-wasm/src/wasm/laws.rs
+index b2aa4d1..b4c3953 100644
+--- a/crates/tatic-wasm/src/wasm/laws.rs
++++ b/crates/tatic-wasm/src/wasm/laws.rs
+@@ -458,6 +458,272 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
+     }
+ }
+ 
++// ---- SPIKE (throwaway, 2026-11-10): the sum loop's emitted `loop`/`br` list against a source-side recursion ----
++
++/// What each control changes: the program's `add` to `sub`; the program without its temporaries (sequential
++/// assignment), against the same source; and that program against the source it does compute.
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum SumCtl {
++    Ok,
++    SubForAdd,
++    NoTemps,
++    NoTempsSeqSrc,
++}
++
++impl SumCtl {
++    fn no_temps(self) -> bool {
++        matches!(self, SumCtl::NoTemps | SumCtl::NoTempsSeqSrc)
++    }
++}
++
++/// `partial_application_loop_specialised.wat`'s loop, with `local.set i` as `push i; <value>; store`
++/// (p0 = 0, p1 = 1, t0 = 2, t1 = 3).
++pub fn sum_loop(ctl: SumCtl) -> Vec<Ins> {
++    let acc_op = if ctl == SumCtl::SubForAdd { Op::Sub } else { Op::Add };
++    let step = if ctl.no_temps() {
++        vec![
++            Ins::Push(0), Ins::LocalGet(0), Ins::Push(1), Ins::Op(Op::Sub), Ins::Store,
++            Ins::Push(1), Ins::LocalGet(1), Ins::LocalGet(0), Ins::Op(acc_op), Ins::Store,
++            Ins::Br(0),
++        ]
++    } else {
++        vec![
++            Ins::Push(2), Ins::LocalGet(0), Ins::Push(1), Ins::Op(Op::Sub), Ins::Store,
++            Ins::Push(3), Ins::LocalGet(1), Ins::LocalGet(0), Ins::Op(acc_op), Ins::Store,
++            Ins::Push(0), Ins::LocalGet(2), Ins::Store,
++            Ins::Push(1), Ins::LocalGet(3), Ins::Store,
++            Ins::Br(0),
++        ]
++    };
++    vec![Ins::Loop(vec![Ins::LocalGet(0), Ins::Push(0), Ins::Op(Op::LeS), Ins::If(vec![Ins::LocalGet(1)], step)])]
++}
++
++/// `upd 1 acc (upd 0 x mu)`.
++fn sum_frame(w: Wasm, c: &mut Cx, r: At, x: Expr, acc: Expr, mu: Expr) -> Expr {
++    let inner = w.upd(c, r, lit(w.n, 0), x, mu);
++    w.upd(c, r, lit(w.n, 1), acc, inner)
++}
++
++/// The fuel-matched simulation:
++/// `Pi S N. GoodNat N -> Pi R (k0 : V x S -> R) z s x acc mu0.
++///    Id(R, M sum N R (\st mu. k0 st) z s (frame x acc mu0), N (V -> V -> R) (\x acc. z) Bsrc x acc)`,
++/// `Bsrc = \g x acc. choose (le_s x 0) (k0 (acc, s)) (g (sub x 1) (add acc x))`: induction over fuel, one J per `br`.
++pub fn sum_law(w: Wasm, ctl: SumCtl) -> (Expr, Expr) {
++    let n = w.n;
++    let code = sum_loop(ctl);
++    let v = bv_ty(n);
++    // S N gn R k0 z s x acc mu0
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(2)),
++        ty!(|_c, _x| nat2()),
++        ty!(|c, x| w.good_nat(c, x[1])),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| { let t = w.sty(c, &[K::W], x[0]); arrow(t, c.at(x[3])) }),
++        ty!(|c, x| c.at(x[3])),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| w.mem(c, x[3])),
++    ];
++    law(&tys, |c, x| {
++        let (s_ty, fuel, gn, r, k0, z, s) = (x[0], x[1], x[2], x[3], x[4], x[5], x[6]);
++        let p = w.prog(c, &code, &[], s_ty);
++        let p = c.mark(p);
++        let out = w.sty(c, &[K::W], s_ty);
++        let k = c.lam(out, |c, st| {
++            let m = w.mem(c, r);
++            c.lam(m, |c, _| app(c.at(k0), c.at(st)))
++        });
++        let k = c.mark(k);
++        let m = w.meaning(c, p, fuel, r, k, z);
++        // `M sum` is `N (G S) timeout B`: take `B`
++        let body = match whnf(&m).node() {
++            tatic_kernel::Node::App(_, b) => c.mark(b),
++            other => panic!("the sum loop's meaning is not a fuel application: {other:?}"),
++        };
++        let next_x = |xe: Expr| app2(Op::Sub.term(n), xe, lit(n, 1));
++        let next_acc = |xe: Expr, ae: Expr| {
++            let by = if ctl == SumCtl::NoTempsSeqSrc { next_x(xe) } else { xe };
++            app2(Op::Add.term(n), ae, by)
++        };
++        let cond = |xe: Expr| app2(Op::LeS.term(n), xe, lit(n, 0));
++        let exit = |c: &mut Cx, ae: Expr| {
++            let pr = mkpair(c.at(s_ty), ae, c.at(s));
++            app(c.at(k0), pr)
++        };
++        // the machine and the source at fuel `m`
++        let mach = |c: &mut Cx, m: Expr, xe: Expr, ae: Expr, mue: Expr| {
++            let st = c.at(s_ty);
++            let g = w.g(c, r, st);
++            let to = timeout(w, c, s_ty, r, z);
++            let fr = sum_frame(w, c, r, xe, ae, mue);
++            app2(apps(m, vec![g, to, c.at(body)]), c.at(s), fr)
++        };
++        let src = |c: &mut Cx, m: Expr, xe: Expr, ae: Expr| {
++            let gsrc = arrow(v, arrow(v, c.at(r)));
++            let tsrc = c.lam(v, |c, _| c.lam(v, |c, _| c.at(z)));
++            let bsrc = c.lam(gsrc, |c, g| {
++                c.lam(v, |c, xv| {
++                    c.lam(v, |c, av| {
++                        let (xe, ae) = (c.at(xv), c.at(av));
++                        let again = app2(c.at(g), next_x(xe), next_acc(xe, ae));
++                        let ex = exit(c, ae);
++                        choose(c.at(r), cond(xe), ex, again)
++                    })
++                })
++            });
++            app2(apps(m, vec![gsrc, tsrc, bsrc]), xe, ae)
++        };
++        // a dummy `Nat2` binder lifts the motive to Sort3 (`GoodNat`'s motives are `Nat2 -> Sort3`)
++        let mot_at = |c: &mut Cx, m: Expr| {
++            let m = c.mark(m);
++            c.pi(nat2(), |c, _| {
++                c.pi(v, |c, xv| {
++                    c.pi(v, |c, av| {
++                        let mm = w.mem(c, r);
++                        c.pi(mm, |c, mu| {
++                            let (me, xe, ae, mue) = (c.at(m), c.at(xv), c.at(av), c.at(mu));
++                            let l = mach(c, me, xe, ae, mue);
++                            let rr = src(c, me, xe, ae);
++                            id(c.at(r), l, rr)
++                        })
++                    })
++                })
++            })
++        };
++        let stmt = {
++            let (xe, ae, mue, se, fe) = (c.at(x[7]), c.at(x[8]), c.at(x[9]), c.at(s), c.at(fuel));
++            let fr = sum_frame(w, c, r, xe, ae, mue);
++            let l = app2(m, se, fr);
++            let rr = src(c, fe, xe, ae);
++            id(c.at(r), l, rr)
++        };
++        let motive = c.lam(nat2(), |c, m| {
++            let me = c.at(m);
++            mot_at(c, me)
++        });
++        let hz = c.lam(nat2(), |c, _| {
++            c.lam(v, |c, _| {
++                c.lam(v, |c, _| {
++                    let mm = w.mem(c, r);
++                    c.lam(mm, |c, _| refl(c.at(z)))
++                })
++            })
++        });
++        let step = c.lam(nat2(), |c, j| {
++            let je = c.at(j);
++            let ih_ty = mot_at(c, je);
++            c.lam(ih_ty, |c, ih| {
++                c.lam(nat2(), |c, d| {
++                    c.lam(v, |c, xv| {
++                        c.lam(v, |c, av| {
++                            let mm = w.mem(c, r);
++                            c.lam(mm, |c, mu| {
++                                let (xe, ae, mue, je) = (c.at(xv), c.at(av), c.at(mu), c.at(j));
++                                let (x1, a1) = (next_x(xe), next_acc(xe, ae));
++                                let fr = sum_frame(w, c, r, xe, ae, mue);
++                                // the memory under the next frame: the two temporaries' stores, if the program has them
++                                let mu1 = if ctl.no_temps() {
++                                    fr
++                                } else {
++                                    let t0 = w.upd(c, r, lit(n, 2), x1, fr);
++                                    w.upd(c, r, lit(n, 3), a1, t0)
++                                };
++                                let l = mach(c, je, x1, a1, mu1);
++                                let rr = src(c, je, x1, a1);
++                                let ih_at = apps(c.at(ih), vec![c.at(d), x1, a1, mu1]);
++                                let cd = c.mark(cond(xe));
++                                let ex = exit(c, ae);
++                                let ex = c.mark(ex);
++                                let rt = c.at(r);
++                                let jm = c.lam(rt, |c, a| {
++                                    let rt = c.at(r);
++                                    c.lam(rt, |c, b| {
++                                        let e = id(c.at(r), c.at(a), c.at(b));
++                                        c.lam(e, |c, _| {
++                                            let ca = choose(c.at(r), c.at(cd), c.at(ex), c.at(a));
++                                            let cb = choose(c.at(r), c.at(cd), c.at(ex), c.at(b));
++                                            id(c.at(r), ca, cb)
++                                        })
++                                    })
++                                });
++                                let rt = c.at(r);
++                                let jb = c.lam(rt, |c, a| refl(choose(c.at(r), c.at(cd), c.at(ex), c.at(a))));
++                                jelim(jm, jb, l, rr, ih_at)
++                            })
++                        })
++                    })
++                })
++            })
++        });
++        let proof = apps(c.at(gn), vec![motive, hz, step, nat2_lit(0), c.at(x[7]), c.at(x[8]), c.at(x[9])]);
++        (proof, stmt)
++    })
++}
++
++/// A concrete run by `refl`: from `x`, `acc` with `fuel`, the loop answers `k0 (want, s)`, or the timeout.
++fn sum_run(w: Wasm, xv: u128, av: u128, fuel: usize, want: Option<u128>) -> (Expr, Expr) {
++    let n = w.n;
++    let code = sum_loop(SumCtl::Ok);
++    // S R k0 z s mu0
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(2)),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| { let t = w.sty(c, &[K::W], x[0]); arrow(t, c.at(x[1])) }),
++        ty!(|c, x| c.at(x[1])),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|c, x| w.mem(c, x[1])),
++    ];
++    law(&tys, |c, x| {
++        let p = w.prog(c, &code, &[], x[0]);
++        let p = c.mark(p);
++        let fuel = c.mark(nat2_lit(fuel));
++        let out = w.sty(c, &[K::W], x[0]);
++        let k = c.lam(out, |c, st| {
++            let m = w.mem(c, x[1]);
++            c.lam(m, |c, _| app(c.at(x[2]), c.at(st)))
++        });
++        let k = c.mark(k);
++        let mue = c.at(x[5]);
++        let fr = sum_frame(w, c, x[1], lit(n, xv), lit(n, av), mue);
++        let l = app2(w.meaning(c, p, fuel, x[1], k, x[3]), c.at(x[4]), fr);
++        let want = match want {
++            Some(a) => app(c.at(x[2]), mkpair(c.at(x[0]), lit(n, a), c.at(x[4]))),
++            None => c.at(x[3]),
++        };
++        (refl(l), id(c.at(x[1]), l, want))
++    })
++}
++
++#[test]
++pub fn sum_loop_spike() {
++    for n in [4usize, 24, 64] {
++        tatic_kernel::scoped(|| {
++            let w = Wasm { n };
++            let timed = |name: &str, (p, s): (Expr, Expr)| {
++                let t0 = Instant::now();
++                ck(&format!("{name} n={n}"), &p, &s);
++                println!("SUM n={n} {name}: {:?}", t0.elapsed());
++            };
++            let rejected = |name: &str, (p, s): (Expr, Expr)| {
++                let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
++                assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
++                let t0 = Instant::now();
++                assert!(holds(&p, &s).is_err(), "{name} must be rejected at n={n}");
++                println!("SUM n={n} rejected {name}: {:?}", t0.elapsed());
++            };
++            timed("sum 3 from 0, fuel 4, answers 6", sum_run(w, 3, 0, 4, Some(6)));
++            timed("sum 3 from 0, fuel 3, times out", sum_run(w, 3, 0, 3, None));
++            rejected("sum 3 from 0, fuel 4, answers 5", sum_run(w, 3, 0, 4, Some(5)));
++            rejected("sum 3 from 0, fuel 3, exits", sum_run(w, 3, 0, 3, Some(6)));
++            timed("sum simulation", sum_law(w, SumCtl::Ok));
++            timed("no-temps program, its own source", sum_law(w, SumCtl::NoTempsSeqSrc));
++            rejected("sub for add", sum_law(w, SumCtl::SubForAdd));
++            rejected("no-temps program, the sum's source", sum_law(w, SumCtl::NoTemps));
++        })
++    }
++}
++
+ /// `WASM` check times at n = 4, 16, 32, 64, with the controls at 64.
+ #[test]
+ #[ignore]
