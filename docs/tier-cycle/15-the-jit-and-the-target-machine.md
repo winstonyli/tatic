@@ -1752,3 +1752,101 @@ and no guard on either; only the table test can see those (reasoning: the domain
 (5, 0); the table test was not run with these mutants). The table test at b = 0 (`-table`) passes: the domain circuit
 equals `holds`, eval errors and wasmtime traps exactly where `holds` is false, and where defined the three agree,
 `MIN % -1` giving 0 in all.
+
+### The heap across a non-tail call, and an older record: a spike (2026-11-10)
+
+The question: the heap-state spike left two cases open, a non-tail call whose continuation reads the heap and an older
+record read after a later allocation. Do they prove with the allocation pointer in the state, and can the per-function
+cell declarations be derived? Throwaway; patch `docs/superpowers/spikes/2026-11-10-heap-continuation-spike.patch`
+(applies to `28975c2`, with the heap-state patch inside); reverted. Machine code is hand-written, not emitted.
+
+**What changed, all general.** An associativity lemma `eq ((p + i) + j) t = eq (p + (i + j)) t` (same bit-chain
+technique as cancellation) lets address decisions normalise nested sums first. The closure relation `rel` gains a
+premise per preserved cell: the returned heap still holds it; a return proves the premise, and a call pushes it as a
+fact while the continuation is walked. `HeapSpec::derive(code, arity)` reads cells (loads at `param + literal`),
+pointer parameters and preserved cells (never stored, with code after a call) off the machine code.
+
+Runs `2026-11-10-j2a-wasm-all` (tatic-wasm 40 passed) and the checker's `-chk-j2a`, `-chk-j2a-all`, `-chk-j2a-tatic`
+(76 `proof::` tests pass); build + check in ms:
+
+| case | n = 8 | n = 24 | n = 64 |
+|---|---|---|---|
+| alloc r1, alloc r2, read r1's field | | | check 183 |
+| three records, r1 read under `((hp + 16) + 24) + 8` | 21.5 + 74.3 | 65.3 + 464.7 | 319.4 + 9607.0 |
+| non-tail call, the continuation reads a cell the callee preserves | 7.8 + 16.4 | 31.2 + 41.0 | |
+
+Rejected at n = 8 and 24 by the generator: the non-tail call with no preserved-cell premise; the continuation reading
+a cell the callee wrote; a callee overwriting the preserved cell; reading the wrong record. `derive` matches the hand
+declarations in 9 of 10 cases (two of them declare nothing, so match vacuously); the exception is a pointer never
+dereferenced.
+
+What it settles, and what stays open:
+
+- **Settled:** nested address sums need one lemma, no order facts (tested to a three-term sum; deeper is reasoning).
+  A callee's preserved cells cross a non-tail call as a premise of the closure relation, the same rule as the
+  statement's own cells. Cells come from the machine code, not the source term: which source values live at which
+  offsets is the lowering's layout.
+- **Cost:** the three-term address checks in 9.6 s at n = 64 against 0.18 s for one level; the lemma's proof size is
+  what to watch.
+- **Open:** a cell the callee writes and the continuation reads (needs a postcondition naming the callee's result); a
+  record allocated before the call and read after it (the callee moves `hp`; reasoned route: `hp = p + D` plus
+  associativity, not run).
+
+### A closure record's cells inside the closure relation: a spike (2026-11-10)
+
+The question: the other heap shape the survey missed. Can the closure relation itself say the record holds the
+captured values, so callers that only pass a closure carry no layout? Throwaway; patch
+`docs/superpowers/spikes/2026-11-10-closure-relation-cells-spike.patch` (applies to `28975c2`, with the heap-state
+patch inside); reverted. Runs took seconds and were not recorded through the wrapper.
+
+**What changed.** A constructor `call_c` calls through a record pointer; the source side is `clo a v k`. The closure
+relation is a statement hypothesis: if the continuation agrees once the record is handed back intact, the machine call
+agrees with the source's `clo`. The record's invariant `Inv` is either concrete (`h (p + 8) = v`, A) or an abstract
+statement binder (B), so a function that only passes the record cannot see the offset. Returns must hand the
+invariant back (a framed return).
+
+All four cases prove at n = 4, 8, 24, 64 (single runs, shared machine): the closure body (1.2 + 5.4 ms at n = 64),
+`clo (clo y)` with abstract (1.7 + 4.2) and concrete (1.8 + 4.6) invariants, and an allocation then a call (6.7 +
+9.2). The checker's n = 64 rerun gave 3.5 + 8.0 against 2.8 + 6.0, so "same cost" is plausible, not shown. Rejected:
+a wrong captured value, a cell at the wrong offset, a wrong argument, a callee that writes the record (only the framed
+return sees it), a wrong offset read, a wrong body, a store between calls (both shapes), one call against two.
+
+What it settles, and what stays open:
+
+- **Settled:** the closure relation can carry the record's invariant. With B, a pass-through function is proved once
+  for every layout; it still carries one (abstract) invariant hypothesis, so the layout is hidden, not the hypothesis.
+- **B cannot** store, allocate or read the record between calls (no frame rule for an abstract invariant); A can store
+  if the stored value matches the source's. Neither handles a callee that mutates the record, several records, or
+  term 27's type-indexed relation.
+- **Open:** term 37's shape (a loop calling a closure each iteration) was not built; the per-function proofs were
+  checked separately, not composed into one theorem, which is where an `Inv` universe problem would show.
+
+### Modules, one call constructor and an `i32` kind: a spike (2026-11-10)
+
+The question: the S3 rung of the v0.8 decision. Do direct calls 13 and 34 install from emitted code through the
+generator once a call names its callee, the callee's law is a hypothesis, one constructor covers every arity and an
+`i32` kind carries the environment pointer? Throwaway; patch `docs/superpowers/spikes/2026-11-10-modules-i32-spike.patch`
+(applies to `28975c2`, with the no-loop patch inside); reverted.
+
+**What changed.** `Ins::Call(callee, kinds)` and `Ins::ReturnCall(callee, kinds)` are one constructor each whatever
+the arity, taking the state sort as an explicit operand (needed for the levels; no universe change); the per-arity
+constructors go. All functions share the fuel `N`; a callee's law enters the caller's proof as a hypothesis,
+discharged once by the callee's own closed proof. `K::I` with `ConstI`/`GetI` is an `i32` word told apart only by
+the shape rule; the environment sits at slot `arity`. `gen_module` and the gate's `sim_module` lift emitted `$c0..`
+and `$f` bodies.
+
+Runs `2026-11-10-s3-real2`, `-s3-real3`, `-s3-reg`, `-s3-reg2` and the checker's `-chk-j4-a` to `-c`, `-chk-j4-base`;
+build + check at n = 24, ms: term 13 (`twice_inc_5`) 3.2 + 6.8; term 34 (`let_bound_factorial_10`) 7.7 + 15.2; term
+23 (the pap self-call loop) 9.7 + 24.1; both sum loops, factorial, `redundant_arithmetic_recursion`, fib and seven
+unseen terms still prove. Rejected by the generator: the wrong callee with kinds kept (13, 34, 23), arguments swapped
+(23), a false callee law (13, 34); the wrong callee by name only by the stack check. The kernel rejects a module proof
+against another callee. The real-term tests print their verdicts and do not assert them; the checker read the output.
+
+What it settles, and what stays open:
+
+- **Settled:** one call constructor for every arity fits the kernel's levels; callee laws as hypotheses carry 13, 23
+  and 34. `fragment_bodies_contain_no_raw` and `gate_rejects_mutations` fail with the patch (they pass at clean HEAD;
+  the entry is no longer a `Loop`, as in the no-loop spike).
+- **Open:** callees are paired with `$cK` by order and arity, unverified (a swap gives a spurious rejection, never a
+  false accept); no real term with two callees ran; a callee calling another callee is rejected; whether the state
+  sort operand can be derived.

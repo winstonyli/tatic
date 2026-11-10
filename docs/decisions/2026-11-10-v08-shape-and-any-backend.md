@@ -184,9 +184,13 @@ that as a first step: it needs order facts (`a < w`) on 64-bit words that nothin
 need it, and a captured cell read each iteration (term 37) has no source value to name. One shape it missed now has a
 spike (`docs/tier-cycle/`, "Fresh addresses by construction: the allocation pointer in the state, a spike"): with
 the pointer in the state and cells as per-function hypotheses, a loop re-reading a captured cell, a record allocated
-and read by a callee, an in-place update and two allocations prove with no order facts. Still open: a non-tail call
-whose continuation reads the heap, an older record read after a later allocation, and cells declared by hand; the
-other missed shape, a record's cells inside the closure relation, is untried. Rejected by the survey: heap
+and read by a callee, an in-place update and two allocations prove with no order facts. Follow-ups
+(`docs/tier-cycle/`, "The heap across a non-tail call, and an older record: a spike" and "A closure record's cells
+inside the closure relation: a spike"): an older record read after a later allocation, and a cell a callee preserves
+read after a non-tail call, prove; cells are derived from the machine code; the closure relation can carry a record's
+invariant, hiding its layout from pass-through callers. Still open: a cell the callee writes and the continuation
+reads, a record allocated before a call and read after it, term 37's loop through a closure, and composing the
+per-function proofs. Rejected by the survey: heap
 extensionality (not derivable without eta), separation-logic frames (need splitting of function-typed heaps), a list
 heap (a machine rewrite), a counter-style invariant per cell (one hypothesis per cell). Term 27 needs a type-indexed
 closure relation in any of these.
