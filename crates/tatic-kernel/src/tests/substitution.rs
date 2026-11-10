@@ -370,6 +370,11 @@ fn uses_takes_the_slot_hit() {
         assert!(!hc_uses(&y, 0, 3), "lo >= m: the planted no, not the walk's yes");
         plant(&z, 0, 0);
         assert!(hc_uses(&z, 0, 2), "hi < m: the planted yes, not the walk's no");
+        // The boundaries are believed too: `lo == m` is a "no" (not `lo > m`), `hi == m - 1` a "yes".
+        plant(&y, 3, 3);
+        assert!(!hc_uses(&y, 0, 3), "lo == m: the planted no");
+        plant(&z, 2, 2);
+        assert!(hc_uses(&z, 0, 3), "hi == m - 1: the planted yes");
         // An entry that does not decide is not believed: the walk answers, and corrects the slot.
         plant(&y, 0, 9);
         assert!(hc_uses(&y, 0, 3));
