@@ -1047,9 +1047,12 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     verdict; faults not remeasured. Page faults per
     repeat check, f159775 against cbcc4c1 (`scripts/faults.ps1`, run `2026-11-09-m1-faults`; the process's count at
     `GATE_REPS=3` less `GATE_REPS=1`, halved; 3 runs each, equal to within 6 faults): 15104 to 0 at d = 13 and 3802 to
-    -2 at d = 11; the first check also faults less (20398 to 17054 and 6589 to 5730 for the whole process). Not timed:
-    the lease was refused for 80 minutes (59-79% load), and an untimed pair at 70% load showed nothing either way (run
-    `2026-11-09-m1-ab-untimed`: d = 13 rep 3 B - A -26.8 +- 22.9 ms of about 760, rep 1 +42.1 +- 37.7; n = 20).
+    -2 at d = 11; the first check also faults less (20398 to 17054 and 6589 to 5730 for the whole process). Timed
+    (run `2026-11-09-q2-m1-timed-1`, `scripts/ab.sh` under the CPU lease, total load 14%, n = 12 pairs): the repeat
+    check at d = 13 is 29.4 +- 5.7 ms faster (438 to 410 ms median, 6.7%); the first check at d = 13 (-1.7 +- 7.2 ms
+    of 432) and both checks at d = 11 (repeat +0.3 +- 8.9 ms of 107, first -12.5 +- 24.2) show no difference. An
+    earlier untimed pair at 70% load could not see it (run `2026-11-09-m1-ab-untimed`: d = 13 rep 3 B - A
+    -26.8 +- 22.9 ms of about 760; n = 20).
   - *One-probe interning* (`patches/h3-one-probe-intern-spike.patch`; runs `2026-11-09-h3-base`,
     `-h3-onepass-destructure`). `Space::build`'s region path with one `HashTable::entry` instead of `find` and
     `insert_unique`: instructions -0.44% at d = 13 (5279.96 M to 5256.51 M) and -0.47% at d = 11, -1.4% for building
