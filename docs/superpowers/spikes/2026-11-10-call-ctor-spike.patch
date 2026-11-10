@@ -1,0 +1,421 @@
+diff --git a/crates/tatic-wasm/src/wasm/laws.rs b/crates/tatic-wasm/src/wasm/laws.rs
+index b2aa4d1..4fe828b 100644
+--- a/crates/tatic-wasm/src/wasm/laws.rs
++++ b/crates/tatic-wasm/src/wasm/laws.rs
+@@ -458,6 +458,416 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
+     }
+ }
+ 
++// ---- SPIKE (throwaway, 2026-11-10): calls by index, the callee's meaning from an environment fixpoint ----
++
++/// The function and its controls: factorial and fib, and each with the machine changed (`sub` for `add` in fib's sum,
++/// base 0 for 1 in factorial) against the unchanged source.
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum CallFn {
++    Fact,
++    Fib,
++    FactBase0,
++    FibSub,
++}
++
++/// The machine's callee type `H = V -> Heap -> (V -> Heap -> R) -> R` (argument, heap, return continuation) and the
++/// source's `V -> (V -> R) -> R`. Locals are per activation, so no frame is in the heap.
++fn call_tys(w: Wasm, c: &mut Cx, r: At) -> (Expr, Expr, Expr) {
++    let v = bv_ty(w.n);
++    let heap = w.mem(c, r);
++    let ret = arrow(v.clone(), arrow(heap.clone(), c.at(r)));
++    let hm = arrow(v.clone(), arrow(heap, arrow(ret.clone(), c.at(r))));
++    let hs = arrow(v.clone(), arrow(arrow(v, c.at(r)), c.at(r)));
++    (ret, hm, hs)
++}
++
++/// One body for both sides: `call(f, arg, k)` is the machine's or the source's call. `machine` picks the machine's
++/// changes for the controls.
++fn call_body(w: Wasm, c: &mut Cx, r: At, f: CallFn, machine: bool, g: At, x: Expr, h: Option<At>, k: At) -> Expr {
++    let n = w.n;
++    let x = c.mark(x);
++    let ret = |c: &mut Cx, v: Expr, h: Option<At>| match h {
++        Some(h) => app2(c.at(k), v, c.at(h)),
++        None => app(c.at(k), v),
++    };
++    // a call with continuation `\a. body(a)`; the machine's continuation also takes the heap
++    let call = |c: &mut Cx, arg: Expr, h: Option<At>, body: &dyn Fn(&mut Cx, At, Option<At>) -> Expr| {
++        let v = bv_ty(n);
++        let kont = match h {
++            Some(_) => c.lam(v, |c, a| {
++                let heap = w.mem(c, r);
++                c.lam(heap, |c, h2| body(c, a, Some(h2)))
++            }),
++            None => c.lam(v, |c, a| body(c, a, None)),
++        };
++        match h {
++            Some(h) => apps(c.at(g), vec![arg, c.at(h), kont]),
++            None => app2(c.at(g), arg, kont),
++        }
++    };
++    match f {
++        CallFn::Fact | CallFn::FactBase0 => {
++            let base = if machine && f == CallFn::FactBase0 { 0 } else { 1 };
++            let cond = app2(Op::LeS.term(n), c.at(x), lit(n, 1));
++            let then = ret(c, lit(n, base), h);
++            let x1 = app2(Op::Sub.term(n), c.at(x), lit(n, 1));
++            let el = call(c, x1, h, &|c, a, h2| ret(c, app2(Op::Mul.term(n), c.at(x), c.at(a)), h2));
++            choose(c.at(r), cond, then, el)
++        }
++        CallFn::Fib | CallFn::FibSub => {
++            let op = if machine && f == CallFn::FibSub { Op::Sub } else { Op::Add };
++            let cond = app2(Op::LtS.term(n), c.at(x), lit(n, 2));
++            let then = ret(c, c.at(x), h);
++            let x1 = app2(Op::Sub.term(n), c.at(x), lit(n, 1));
++            let x2 = c.mark(app2(Op::Sub.term(n), c.at(x), lit(n, 2)));
++            let el = call(c, x1, h, &|c, a, h2| {
++                call(c, c.at(x2.clone()), h2, &|c, b, h3| ret(c, app2(op.term(n), c.at(a), c.at(b)), h3))
++            });
++            choose(c.at(r), cond, then, el)
++        }
++    }
++}
++
++/// `\g x h k. body` (machine) or `\g x k. body` (source).
++fn call_step(w: Wasm, c: &mut Cx, r: At, f: CallFn, machine: bool) -> Expr {
++    let (_, hm, hs) = call_tys(w, c, r);
++    let v = bv_ty(w.n);
++    if machine {
++        c.lam(hm, |c, g| {
++            c.lam(v.clone(), |c, x| {
++                let heap = w.mem(c, r);
++                c.lam(heap, |c, h| {
++                    let ret = call_tys(w, c, r).0;
++                    c.lam(ret, |c, k| {
++                        let xe = c.at(x);
++                        call_body(w, c, r, f, true, g, xe, Some(h), k)
++                    })
++                })
++            })
++        })
++    } else {
++        c.lam(hs, |c, g| {
++            c.lam(v.clone(), |c, x| {
++                let kt = arrow(bv_ty(w.n), c.at(r));
++                c.lam(kt, |c, k| {
++                    let xe = c.at(x);
++                    call_body(w, c, r, f, false, g, xe, None, k)
++                })
++            })
++        })
++    }
++}
++
++/// The non-tail recursion law, relational in the continuations:
++/// `Pi N. GoodNat N -> Pi R z x h km ks. (Pi a h. km a h = ks a) -> M_N x h km = S_N x ks`, where
++/// `M_N = N H (\x h k. z) Bm` and `S_N = N Hs (\x k. z) Bs`. Induction on fuel; per call site the hypothesis is
++/// applied with the continuation relation built from the outer one, then one J per branch of the `choose`.
++pub fn call_law(w: Wasm, f: CallFn) -> (Expr, Expr) {
++    let n = w.n;
++    let v = bv_ty(n);
++    // N gn R z x h km ks rel
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| nat2()),
++        ty!(|c, x| w.good_nat(c, x[0])),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[2])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| w.mem(c, x[2])),
++        ty!(|c, x| call_tys(w, c, x[2]).0),
++        ty!(|c, x| arrow(bv_ty(n), c.at(x[2]))),
++        ty!(|c, x| rel_ty(w, c, x[2], x[6], x[7])),
++    ];
++    law(&tys, |c, x| {
++        let (fuel, gn, r, z) = (x[0], x[1], x[2], x[3]);
++        let (_, hm, hs) = call_tys(w, c, r);
++        let bm = call_step(w, c, r, f, true);
++        let bm = c.mark(bm);
++        let bs = call_step(w, c, r, f, false);
++        let bs = c.mark(bs);
++        let tm = c.lam(v.clone(), |c, _| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _| {
++                let ret = call_tys(w, c, r).0;
++                c.lam(ret, |c, _| c.at(z))
++            })
++        });
++        let tm = c.mark(tm);
++        let ts = c.lam(v.clone(), |c, _| {
++            let kt = arrow(bv_ty(n), c.at(r));
++            c.lam(kt, |c, _| c.at(z))
++        });
++        let ts = c.mark(ts);
++        let (hm, hs) = (c.mark(hm), c.mark(hs));
++        let mach = |c: &mut Cx, m: Expr, xe: Expr, he: Expr, km: Expr| apps(apps(m, vec![c.at(hm), c.at(tm), c.at(bm)]), vec![xe, he, km]);
++        let src = |c: &mut Cx, m: Expr, xe: Expr, ks: Expr| apps(apps(m, vec![c.at(hs), c.at(ts), c.at(bs)]), vec![xe, ks]);
++        let mot_at = |c: &mut Cx, m: Expr| {
++            let m = c.mark(m);
++            c.pi(nat2(), |c, _| {
++                c.pi(bv_ty(n), |c, xv| {
++                    let heap = w.mem(c, r);
++                    c.pi(heap, |c, h| {
++                        let ret = call_tys(w, c, r).0;
++                        c.pi(ret, |c, km| {
++                            c.pi(arrow(bv_ty(n), c.at(r)), |c, ks| {
++                                let rt = rel_ty(w, c, r, km, ks);
++                                c.pi(rt, |c, _| {
++                                    let l = mach(c, c.at(m), c.at(xv), c.at(h), c.at(km));
++                                    let rr = src(c, c.at(m), c.at(xv), c.at(ks));
++                                    id(c.at(r), l, rr)
++                                })
++                            })
++                        })
++                    })
++                })
++            })
++        };
++        let stmt = {
++            let l = mach(c, c.at(fuel), c.at(x[4]), c.at(x[5]), c.at(x[6]));
++            let rr = src(c, c.at(fuel), c.at(x[4]), c.at(x[7]));
++            id(c.at(r), l, rr)
++        };
++        let motive = c.lam(nat2(), |c, m| {
++            let me = c.at(m);
++            mot_at(c, me)
++        });
++        let hz = c.lam(nat2(), |c, _| {
++            c.lam(bv_ty(n), |c, _| {
++                let heap = w.mem(c, r);
++                c.lam(heap, |c, _| {
++                    let ret = call_tys(w, c, r).0;
++                    c.lam(ret, |c, km| {
++                        c.lam(arrow(bv_ty(n), c.at(r)), |c, ks| {
++                            let rt = rel_ty(w, c, r, km, ks);
++                            c.lam(rt, |c, _| refl(c.at(z)))
++                        })
++                    })
++                })
++            })
++        });
++        let step = c.lam(nat2(), |c, j| {
++            let je = c.at(j);
++            let ih_ty = mot_at(c, je);
++            c.lam(ih_ty, |c, ih| {
++                c.lam(nat2(), |c, d| {
++                    c.lam(bv_ty(n), |c, xv| {
++                        let heap = w.mem(c, r);
++                        c.lam(heap, |c, h| {
++                            let ret = call_tys(w, c, r).0;
++                            c.lam(ret, |c, km| {
++                                c.lam(arrow(bv_ty(n), c.at(r)), |c, ks| {
++                                    let rt = rel_ty(w, c, r, km, ks);
++                                    c.lam(rt, |c, rel| {
++                                        let jm = c.mark(c.at(j));
++                                        let ctx = Ctxs { w, r, hm, hs, tm, ts, bm, bs, ih, d, rel, km, ks };
++                                        call_step_proof(c, &ctx, f, jm, xv, h)
++                                    })
++                                })
++                            })
++                        })
++                    })
++                })
++            })
++        });
++        let proof = apps(c.at(gn), vec![motive, hz, step, nat2_lit(0), c.at(x[4]), c.at(x[5]), c.at(x[6]), c.at(x[7]), c.at(x[8])]);
++        (proof, stmt)
++    })
++}
++
++/// `Pi a h. Id(R, km a h, ks a)`.
++fn rel_ty(w: Wasm, c: &mut Cx, r: At, km: At, ks: At) -> Expr {
++    c.pi(bv_ty(w.n), |c, a| {
++        let heap = w.mem(c, r);
++        c.pi(heap, |c, h| id(c.at(r), app2(c.at(km), c.at(a), c.at(h)), app(c.at(ks), c.at(a))))
++    })
++}
++
++struct Ctxs {
++    w: Wasm,
++    r: At,
++    hm: At,
++    hs: At,
++    tm: At,
++    ts: At,
++    bm: At,
++    bs: At,
++    ih: At,
++    d: At,
++    rel: At,
++    km: At,
++    ks: At,
++}
++
++/// `Id(R, choose c t e, choose c t' e')` from `Id(R, t, t')` and `Id(R, e, e')`: J on each branch.
++fn choose_cong(c: &mut Cx, r: At, cd: At, (t, t2, pt): (Expr, Expr, Expr), (e, e2, pe): (Expr, Expr, Expr)) -> Expr {
++    let (e, e2) = (c.mark(e), c.mark(e2));
++    let rt = c.at(r);
++    let outer_m = c.lam(rt.clone(), |c, a| {
++        c.lam(c.at(r), |c, b| {
++            let ty = id(c.at(r), c.at(a), c.at(b));
++            c.lam(ty, |c, _| id(c.at(r), choose(c.at(r), c.at(cd), c.at(a), c.at(e)), choose(c.at(r), c.at(cd), c.at(b), c.at(e2))))
++        })
++    });
++    let pe = c.mark(pe);
++    let outer_b = c.lam(rt, |c, a| {
++        let inner_m = c.lam(c.at(r), |c, y| {
++            c.lam(c.at(r), |c, y2| {
++                let ty = id(c.at(r), c.at(y), c.at(y2));
++                c.lam(ty, |c, _| id(c.at(r), choose(c.at(r), c.at(cd), c.at(a), c.at(y)), choose(c.at(r), c.at(cd), c.at(a), c.at(y2))))
++            })
++        });
++        let inner_b = c.lam(c.at(r), |c, y| refl(choose(c.at(r), c.at(cd), c.at(a), c.at(y))));
++        jelim(inner_m, inner_b, c.at(e), c.at(e2), c.at(pe))
++    });
++    jelim(outer_m, outer_b, t, t2, pt)
++}
++
++/// The step's proof at `x`, `h`: the `then` branch by `rel`, the `else` branch by the hypothesis at each call.
++fn call_step_proof(c: &mut Cx, k: &Ctxs, f: CallFn, j: At, xv: At, h: At) -> Expr {
++    let (w, r) = (k.w, k.r);
++    let n = w.n;
++    let mach = |c: &mut Cx, xe: Expr, he: Expr, km: Expr| apps(apps(c.at(j), vec![c.at(k.hm), c.at(k.tm), c.at(k.bm)]), vec![xe, he, km]);
++    let src = |c: &mut Cx, xe: Expr, ks: Expr| apps(apps(c.at(j), vec![c.at(k.hs), c.at(k.ts), c.at(k.bs)]), vec![xe, ks]);
++    // ih d x h km ks rel
++    let ih = |c: &mut Cx, xe: Expr, he: Expr, km: Expr, ks: Expr, rel: Expr| apps(c.at(k.ih), vec![c.at(k.d), xe, he, km, ks, rel]);
++    let x = c.at(xv);
++    match f {
++        CallFn::Fact | CallFn::FactBase0 => {
++            let cd = c.mark(app2(Op::LeS.term(n), x.clone(), lit(n, 1)));
++            let then_m = app2(c.at(k.km), lit(n, if f == CallFn::FactBase0 { 0 } else { 1 }), c.at(h));
++            let then_s = app(c.at(k.ks), lit(n, 1));
++            let then_p = app2(c.at(k.rel), lit(n, 1), c.at(h));
++            let x1 = app2(Op::Sub.term(n), x.clone(), lit(n, 1));
++            let mx = |c: &Cx, a: At| app2(Op::Mul.term(n), c.at(xv), c.at(a));
++            let km1 = c.lam(bv_ty(n), |c, a| {
++                let heap = w.mem(c, r);
++                c.lam(heap, |c, h2| app2(c.at(k.km), mx(c, a), c.at(h2)))
++            });
++            let ks1 = c.lam(bv_ty(n), |c, a| app(c.at(k.ks), mx(c, a)));
++            let rel1 = c.lam(bv_ty(n), |c, a| {
++                let heap = w.mem(c, r);
++                c.lam(heap, |c, h2| app2(c.at(k.rel), mx(c, a), c.at(h2)))
++            });
++            let else_m = mach(c, x1.clone(), c.at(h), km1.clone());
++            let else_s = src(c, x1.clone(), ks1.clone());
++            let he = c.at(h);
++            let else_p = ih(c, x1, he, km1, ks1, rel1);
++            choose_cong(c, r, cd, (then_m, then_s, then_p), (else_m, else_s, else_p))
++        }
++        CallFn::Fib | CallFn::FibSub => {
++            let cd = c.mark(app2(Op::LtS.term(n), x.clone(), lit(n, 2)));
++            let then_m = app2(c.at(k.km), x.clone(), c.at(h));
++            let then_s = app(c.at(k.ks), x.clone());
++            let then_p = app2(c.at(k.rel), x.clone(), c.at(h));
++            let x1 = app2(Op::Sub.term(n), x.clone(), lit(n, 1));
++            let x2 = c.mark(app2(Op::Sub.term(n), x.clone(), lit(n, 2)));
++            let op = if f == CallFn::FibSub { Op::Sub } else { Op::Add };
++            // the inner call's continuations and relation, under `a`
++            let sum = |c: &Cx, a: At, b: At, op: Op| app2(op.term(n), c.at(a), c.at(b));
++            let inner_km = |c: &mut Cx, a: At| {
++                c.lam(bv_ty(n), |c, b| {
++                    let heap = w.mem(c, r);
++                    c.lam(heap, |c, h3| app2(c.at(k.km), sum(c, a, b, op), c.at(h3)))
++                })
++            };
++            let inner_ks = |c: &mut Cx, a: At| c.lam(bv_ty(n), |c, b| app(c.at(k.ks), sum(c, a, b, Op::Add)));
++            let inner_rel = |c: &mut Cx, a: At| {
++                c.lam(bv_ty(n), |c, b| {
++                    let heap = w.mem(c, r);
++                    c.lam(heap, |c, h3| app2(c.at(k.rel), sum(c, a, b, Op::Add), c.at(h3)))
++                })
++            };
++            // the outer call's continuations: the inner call
++            let km1 = c.lam(bv_ty(n), |c, a| {
++                let heap = w.mem(c, r);
++                c.lam(heap, |c, h2| {
++                    let km2 = inner_km(c, a);
++                    mach(c, c.at(x2), c.at(h2), km2)
++                })
++            });
++            let ks1 = c.lam(bv_ty(n), |c, a| {
++                let ks2 = inner_ks(c, a);
++                src(c, c.at(x2), ks2)
++            });
++            let rel1 = c.lam(bv_ty(n), |c, a| {
++                let heap = w.mem(c, r);
++                c.lam(heap, |c, h2| {
++                    let (km2, ks2, rel2) = (inner_km(c, a), inner_ks(c, a), inner_rel(c, a));
++                    ih(c, c.at(x2), c.at(h2), km2, ks2, rel2)
++                })
++            });
++            let else_m = mach(c, x1.clone(), c.at(h), km1.clone());
++            let else_s = src(c, x1.clone(), ks1.clone());
++            let he = c.at(h);
++            let else_p = ih(c, x1, he, km1, ks1, rel1);
++            choose_cong(c, r, cd, (then_m, then_s, then_p), (else_m, else_s, else_p))
++        }
++    }
++}
++
++/// A run by `refl`: the machine at `fuel` from `x`, with `km = \a h. k0 a`, answers `k0 want` or the timeout.
++fn call_run(w: Wasm, f: CallFn, xv: u128, fuel: usize, want: Option<u128>) -> (Expr, Expr) {
++    let n = w.n;
++    // R z k0 h
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|c, x| arrow(bv_ty(n), c.at(x[0]))),
++        ty!(|c, x| w.mem(c, x[0])),
++    ];
++    law(&tys, |c, x| {
++        let r = x[0];
++        let (_, hm, _) = call_tys(w, c, r);
++        let bm = call_step(w, c, r, f, true);
++        let tm = c.lam(bv_ty(n), |c, _| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _| {
++                let ret = call_tys(w, c, r).0;
++                c.lam(ret, |c, _| c.at(x[1]))
++            })
++        });
++        let km = c.lam(bv_ty(n), |c, a| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _| app(c.at(x[2]), c.at(a)))
++        });
++        let l = apps(apps(nat2_lit(fuel), vec![hm, tm, bm]), vec![lit(n, xv), c.at(x[3]), km]);
++        let want = match want {
++            Some(a) => app(c.at(x[2]), lit(n, a)),
++            None => c.at(x[1]),
++        };
++        (refl(l.clone()), id(c.at(r), l, want))
++    })
++}
++
++#[test]
++pub fn call_spike() {
++    for n in [4usize, 24, 64] {
++        tatic_kernel::scoped(|| {
++            let w = Wasm { n };
++            let timed = |name: &str, (p, s): (Expr, Expr)| {
++                let t0 = Instant::now();
++                ck(&format!("{name} n={n}"), &p, &s);
++                println!("CALL n={n} {name}: {:?}", t0.elapsed());
++            };
++            let rejected = |name: &str, (p, s): (Expr, Expr)| {
++                let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
++                assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
++                let t0 = Instant::now();
++                assert!(holds(&p, &s).is_err(), "{name} must be rejected at n={n}");
++                println!("CALL n={n} rejected {name}: {:?}", t0.elapsed());
++            };
++            timed("fact 3, fuel 3, answers 6", call_run(w, CallFn::Fact, 3, 3, Some(6)));
++            timed("fact 3, fuel 2, times out", call_run(w, CallFn::Fact, 3, 2, None));
++            timed("fib 5, fuel 5, answers 5", call_run(w, CallFn::Fib, 5, 5, Some(5)));
++            timed("fib 5, fuel 4, times out", call_run(w, CallFn::Fib, 5, 4, None));
++            rejected("fib 5, fuel 5, answers 4", call_run(w, CallFn::Fib, 5, 5, Some(4)));
++            timed("fact law", call_law(w, CallFn::Fact));
++            timed("fib law", call_law(w, CallFn::Fib));
++            rejected("fact law, machine base 0", call_law(w, CallFn::FactBase0));
++            rejected("fib law, machine sub for add", call_law(w, CallFn::FibSub));
++        })
++    }
++}
++
+ /// `WASM` check times at n = 4, 16, 32, 64, with the controls at 64.
+ #[test]
+ #[ignore]

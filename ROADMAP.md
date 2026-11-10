@@ -10,7 +10,10 @@ file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.
 Every milestone serves at least one of these; work that serves none needs a stated reason.
 
 1. **A JIT on proved equivalence.** A higher-order term runs compiled once its compiled form is kernel-proved equal to
-   it on every input (`README.md`, top; the code in `crates/tatic/src/`).
+   it on every input (`README.md`, top; the code in `crates/tatic/src/`). Wasm is the first backend, not the only
+   one: the aim is to accelerate reasoning on any backend, from a provided formalization or from one found by
+   exploration (an untrusted proposer, as in goal 3). How that stays inside "proof or interpreter":
+   `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`.
 2. **A kernel that improves itself.** It mines rewrite rules from the laws it proves, so later proofs are cheaper, and
    grows its own vocabulary through checked definitions, since a fixed vocabulary saturates (`docs/tier-cycle/`,
    "Idea" and "Risks"; the miner in `crates/church-bv/src/`).
@@ -47,4 +50,4 @@ sends the five fragment terms to `proof/gate.rs#gate` alone (`jit/tests.rs`: `fr
 (`proof/tests/gate.rs#gate_rejects_mutations`). Its decisions are in the spec
 (`docs/superpowers/specs/2026-11-08-v07-straight-line-gate-design.md`); findings in `docs/tier-cycle/`, "v0.7's first
 steps: the census and the emit spike" and "The gate's costs, and the rules they triggered". No next milestone is
-picked yet.
+picked yet; the options and the test they must pass are in `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`.
