@@ -2,7 +2,7 @@
 
 The project's goals, then ordered milestones, each the question it answers (format: `~/.claude/VERSIONING.md`).
 `kind: experiment`: a tag marks a step and its message is the milestone sentence; tagging moves the line out of this
-file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) `v0.5.0` (2026-10-31) and `v0.6.0` (2026-10-31; `git tag -n99`). Deferred work is in
+file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) `v0.5.0` (2026-10-31), `v0.6.0` (2026-10-31) and `v0.7.0` (2026-11-10; `git tag -n99`). Deferred work is in
 `PARKED.md`. The cleanup break from v0.5 (`docs/superpowers/plans/2026-10-26-cleanup.md`) is done (2026-10-27).
 
 ## Goals
@@ -40,29 +40,11 @@ rules find no work in the JIT's programs (`PARKED.md`, "Compile hot transformati
 v0.6 (`git tag -n99 v0.6.0`; findings in `docs/tier-cycle/`, "A learned scorer over the extras", "Q2 primary run" and "Selecting the extras by straggler verdict") closed with selection by `small` as the answer; what it left is in `PARKED.md`. Goal 3 is held (above), so the next
 milestone serves goal 1 or 2.
 
-- v0.7 **Emitted code in the kernel** - for the straight-line fragment, the JIT installs a compiled form only after
-  the kernel has proved the emitted wasm instruction list, run over 64-bit words, equal to the source term on every
-  input, where today it proves a model of the compiler (`proof.rs`'s `denote`). Picked 2026-11-08 (goal 1).
-  - Done when: a corpus term's install is gated on that proof at n = 64, and a mutated instruction list is rejected.
-    Met 2026-11-08: `jit.rs#prove_install` sends the five fragment terms to `proof/gate.rs#gate` alone
-    (`jit/tests.rs`: `fragment_terms_install`, `the_gates_verdict_is_final_for_fragment_terms`); seven mutations are
-    rejected (`proof/tests/gate.rs#gate_rejects_mutations`); costs in doc 15, "The gate's costs, and the rules they
-    triggered".
-  - First steps (done 2026-11-08): the census and the emit spike, in `docs/tier-cycle/`
-    ("v0.7's first steps: the census and the emit spike"). The continuation form proves by refl at n = 64. Target
-    term: `straight_line`, the only straight-line corpus term with a branch or multiply and a parameter.
-  - Decided 2026-11-08 (the user, as recommended):
-    - Home: the encodings and `wasm.rs` move to a new crate that tatic and church-bv both depend on, so the JIT gets
-      the machine without the miner (not tatic on church-bv, nor a gate crate over both).
-    - List source: the lowering emits church-bv's `Ins`, and WAT is printed from it one-to-one; the printer is trusted
-      and must reproduce the golden WAT (not a second walk beside `lower_wat`).
-    - `Int`: the gate replaces `prove_pure_expr` for the straight-line fragment (its 5 terms: inc, doubling,
-      `straight_line`, `\v0. v0+5`, `\v0. 3+4+v0`); `Int` stays for the closure and recursive provers. No bridge
-      axioms, no second proof.
-    - Parameters: a new `LocalGet` instruction, defined as a load from a frame in memory (not `Push i; Load`, which
-      would make the printer special-case a pair).
-    - Operators: a trusted table (`lt_s`, `le_s`, `mul`, `eq` as a one-bit word), each checked against eval and
-      wasmtime exhaustively at n = 8 and on samples at n = 64; kernel lemmas wait for a spec of signed integers.
-  - Spec: `docs/superpowers/specs/2026-11-08-v07-straight-line-gate-design.md`. Its decisions D1-D3, taken
-    2026-11-08 (the user, as recommended): every function body becomes `Ins` with `Raw` lines; `Ins` carries data
-    (`Push(i64)`, `Op(Op)`); `try_install` routes fragment terms to the gate alone, whose verdict is final.
+v0.7 (`git tag -n99 v0.7.0`; goal 1) closed with the straight-line fragment's install gated on a kernel proof of the
+emitted instruction list itself, where v0.6 proved a model of the compiler. What showed it: `jit.rs#prove_install`
+sends the five fragment terms to `proof/gate.rs#gate` alone (`jit/tests.rs`: `fragment_terms_install`,
+`the_gates_verdict_is_final_for_fragment_terms`), and seven mutations are rejected
+(`proof/tests/gate.rs#gate_rejects_mutations`). Its decisions are in the spec
+(`docs/superpowers/specs/2026-11-08-v07-straight-line-gate-design.md`); findings in `docs/tier-cycle/`, "v0.7's first
+steps: the census and the emit spike" and "The gate's costs, and the rules they triggered". No next milestone is
+picked yet.
