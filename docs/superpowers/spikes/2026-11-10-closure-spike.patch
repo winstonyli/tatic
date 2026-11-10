@@ -1,0 +1,865 @@
+diff --git a/crates/tatic-wasm/src/print.rs b/crates/tatic-wasm/src/print.rs
+index a7082f6..d805359 100644
+--- a/crates/tatic-wasm/src/print.rs
++++ b/crates/tatic-wasm/src/print.rs
+@@ -31,7 +31,7 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
+             }
+             Ins::Br(0) => line(out, "br $L"),
+             Ins::Raw(s) => line(out, s),
+-            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load | Ins::Call => panic!("print_body: {ins:?} is never emitted"),
++            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load | Ins::Call | Ins::CallIndirect => panic!("print_body: {ins:?} is never emitted"),
+         }
+     }
+ }
+diff --git a/crates/tatic-wasm/src/wasm.rs b/crates/tatic-wasm/src/wasm.rs
+index 64ccdb5..44bd5c5 100644
+--- a/crates/tatic-wasm/src/wasm.rs
++++ b/crates/tatic-wasm/src/wasm.rs
+@@ -46,6 +46,9 @@ pub enum Ins {
+     Load,
+     /// SPIKE: `call` of the module's one function, argument and result on the stack.
+     Call,
++    /// SPIKE: `call_indirect` on a closure word: pops the argument (top) and the closure, splits the closure into its
++    /// table index (low n/2 bits) and env pointer (high n/2 bits), runs `table idx env arg`, pushes the answer.
++    CallIndirect,
+     Raw(String),
+ }
+ 
+@@ -93,6 +96,10 @@ fn shape(code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Result<Option<Vec<K>
+                 return Ok(None);
+             }
+             Ins::Store => pop(&mut st, &[K::W, K::W])?,
++            Ins::CallIndirect => {
++                pop(&mut st, &[K::W, K::W])?;
++                st.insert(0, K::W)
++            }
+             Ins::Load | Ins::Call => {
+                 pop(&mut st, &[K::W])?;
+                 st.insert(0, K::W)
+@@ -114,6 +121,28 @@ pub fn well_formed(code: &[Ins], st: &[K]) -> bool {
+     matches!(shape(code, st.to_vec(), &[]), Ok(Some(_)))
+ }
+ 
++/// SPIKE: a closure word's low (`hi` false) or high n/2 bits as a word (zero-extended): `\a C k. a C (\b_0..b_(n-1). k o_0 .. o_(n-1))`,
++/// the bit rewiring that `i64.shr_u 32; i32.wrap_i64` (high) and `i32.wrap_i64` (low) compute at n = 64.
++pub fn clo_half(n: usize, hi: bool) -> Expr {
++    fn build_lo(n: usize) -> Expr {
++        half_circuit(n, false)
++    }
++    fn build_hi(n: usize) -> Expr {
++        half_circuit(n, true)
++    }
++    constant_n(if hi { build_hi } else { build_lo }, n)
++}
++fn half_circuit(n: usize, hi: bool) -> Expr {
++    let h = n / 2;
++    let d = 3 + n; // ctx [a, C, k, b_0 .. b_(n-1)]
++    let outs: Vec<Expr> = (0..n).map(|j| if j < h { var((d - 1 - (3 + if hi { h + j } else { j })) as u32) } else { f() }).collect();
++    let mut body = apps(var((d - 1 - 2) as u32), outs);
++    for _ in 0..n {
++        body = lam(bool0(), body);
++    }
++    lam(bv_ty(n), lam(sort(1), lam(karrow(n), app2(var(2), var(1), body))))
++}
++
+ /// `A x B` as a `Sigma`, both at the same depth.
+ pub fn prod(a: Expr, b: Expr) -> Expr {
+     sigma(a, shift(&b, 0, 1))
+@@ -179,6 +208,8 @@ impl Wasm {
+                 4 => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                 5 => arrow(arrow(fa(a), fa(a)), fa(a)),
+                 6 => arrow(fa(a), fa(vva)),
++                // call_indirect (9): pop two words, push one
++                9 => arrow(fa(va), fa(vva)),
+                 // load (7) and call (8): pop a word, push a word
+                 _ => arrow(fa(va), fa(va)),
+             }
+@@ -187,7 +218,7 @@ impl Wasm {
+     /// The eight constructor binders, each wrapped by `wrap` (`lam` or `pi`), then `body` with their variables.
+     fn ctors(&self, c: &mut Cx, f: At, wrap: fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+         let w = *self;
+-        let tys: Vec<Ty> = (0..9).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
++        let tys: Vec<Ty> = (0..10).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
+         tele(c, &tys, &mut vec![], &wrap, body)
+     }
+     /// `Prog S T`, with `S` and `T` built at each use.
+@@ -285,6 +316,10 @@ impl Wasm {
+                 let r = cont(c, st.clone());
+                 cons(c, 8, vec![ty(c, &below(1)), r])
+             }
++            Ins::CallIndirect => {
++                let r = cont(c, with(&[K::W], 2));
++                cons(c, 9, vec![ty(c, &below(2)), r])
++            }
+         }
+     }
+     /// `upd a v mu = \b kk. (eq a b) R (kk v) (mu b kk)`.
+@@ -310,7 +345,7 @@ impl Wasm {
+         sigrec(motive, step, c.at(st))
+     }
+     /// The constructors' meanings.
+-    fn interp(&self, c: &mut Cx, r: At, fuel: At, z: At, env: Option<At>) -> Vec<Expr> {
++    fn interp(&self, c: &mut Cx, r: At, fuel: At, z: At, env: Option<At>, table: Option<At>, swap: bool) -> Vec<Expr> {
+         let (v, v1) = (self.v(), bv_ty(1));
+         let w = *self;
+         // `\A rest st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`
+@@ -419,7 +454,26 @@ impl Wasm {
+                 None => c.at(z),
+             })
+         });
+-        vec![push, bin, cmp, dup, if_, loop_, store, load, call]
++        // SPIKE: `call_indirect` pops the argument and the closure word, and runs `table (lo clo) (hi clo) arg` (the halves
++        // swapped under `swap`, a control); with no table it answers the timeout
++        let calli = shape(c, None, &|a| prod(v, a), &|a| prod(v, prod(v, a)), &|c, a, _, rest, st, mu| {
++            let below = c.mark(prod(v, c.at(a)));
++            w.split(c, r, v, below, st, |c, x, rs| {
++                w.split(c, r, v, a, rs, |c, clo, s| match table {
++                    Some(t) => {
++                        let kont = c.lam(v, |c, y| {
++                            let m = w.mem(c, r);
++                            c.lam(m, |c, mu2| app2(c.at(rest), mkpair(c.at(a), c.at(y), c.at(s)), c.at(mu2)))
++                        });
++                        let (lo, hi) = (app(clo_half(w.n, false), c.at(clo)), app(clo_half(w.n, true), c.at(clo)));
++                        let (i, e) = if swap { (hi, lo) } else { (lo, hi) };
++                        apps(c.at(t), vec![i, e, c.at(x), c.at(mu), kont])
++                    }
++                    None => c.at(z),
++                })
++            })
++        });
++        vec![push, bin, cmp, dup, if_, loop_, store, load, call, calli]
+     }
+     /// `M p N R k z`, of type `G S` for `p : Prog S T` and `k : G T`.
+     pub fn meaning(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At) -> Expr {
+@@ -428,9 +482,14 @@ impl Wasm {
+     /// SPIKE: `meaning`, with `call` running `env`.
+     #[allow(clippy::too_many_arguments)]
+     pub fn meaning_env(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At, env: Option<At>) -> Expr {
++        self.meaning_tbl(c, p, fuel, r, k, z, env, None, false)
++    }
++    /// SPIKE: `meaning_env`, with `call_indirect` running `table : V -> V -> V -> Mem -> (V -> Mem -> R) -> R`.
++    #[allow(clippy::too_many_arguments)]
++    pub fn meaning_tbl(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At, env: Option<At>, table: Option<At>, swap: bool) -> Expr {
+         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
+         let mut args = vec![gfam, c.at(k)];
+-        args.extend(self.interp(c, r, fuel, z, env));
++        args.extend(self.interp(c, r, fuel, z, env, table, swap));
+         apps(c.at(p), args)
+     }
+     /// `p1 ++ p2 : Prog S U` for `p1 : Prog S T`, `p2 : Prog T U`.
+diff --git a/crates/tatic-wasm/src/wasm/laws.rs b/crates/tatic-wasm/src/wasm/laws.rs
+index d5033d5..7ed6bc4 100644
+--- a/crates/tatic-wasm/src/wasm/laws.rs
++++ b/crates/tatic-wasm/src/wasm/laws.rs
+@@ -918,6 +918,711 @@ pub fn call_ins_spike() {
+     }
+ }
+ 
++// ---- SPIKE (throwaway, 2026-11-10): closures by table index, proved modularly (`CR`) ----
++
++/// `V -> V -> V -> Mem -> (V -> Mem -> R) -> R`: the table, by (index, env, argument).
++fn tbl_ty(w: Wasm, c: &mut Cx, r: At) -> Expr {
++    let (heap, ret) = (w.mem(c, r), ret_m(w, c, r));
++    arrow(w.v(), arrow(w.v(), arrow(w.v(), arrow(heap, arrow(ret, c.at(r))))))
++}
++/// `V -> (V -> R) -> R`: a source function in CPS.
++fn fs_ty(w: Wasm, c: &mut Cx, r: At) -> Expr {
++    arrow(w.v(), arrow(arrow(w.v(), c.at(r)), c.at(r)))
++}
++/// `Pi y h'. Id(R, km y h', ks y)`: the machine's continuation is the source's, whatever heap it is handed.
++fn kcont_ty(w: Wasm, c: &mut Cx, r: At, km: At, ks: At) -> Expr {
++    c.pi(w.v(), |c, y| {
++        let heap = w.mem(c, r);
++        c.pi(heap, |c, h2| id(c.at(r), app2(c.at(km), c.at(y), c.at(h2)), app(c.at(ks), c.at(y))))
++    })
++}
++/// `Pi y h'. Id(R, k (y, s) h', ks y)`: the same, for the machine's final continuation `k` on the stack `(y, s)`.
++fn hk_ty(w: Wasm, c: &mut Cx, r: At, sty: At, k: At, s: At, ks: At) -> Expr {
++    c.pi(w.v(), |c, y| {
++        let heap = w.mem(c, r);
++        c.pi(heap, |c, h2| {
++            id(c.at(r), app2(c.at(k), mkpair(c.at(sty), c.at(y), c.at(s)), c.at(h2)), app(c.at(ks), c.at(y)))
++        })
++    })
++}
++type FApp<'a> = &'a dyn Fn(&mut Cx, Expr, Expr) -> Expr;
++/// `CR(clo, f) := Pi a h km ks. kcont km ks -> Id(R, tbl (lo clo) (hi clo) a h km, f a ks)`, `f a ks` given by `fapp`.
++fn cr_ty(w: Wasm, c: &mut Cx, r: At, tbl: At, clo: At, fapp: FApp) -> Expr {
++    let n = w.n;
++    c.pi(w.v(), |c, a| {
++        let heap = w.mem(c, r);
++        c.pi(heap, |c, h| {
++            let ret = ret_m(w, c, r);
++            c.pi(ret, |c, km| {
++                let kt = arrow(w.v(), c.at(r));
++                c.pi(kt, |c, ks| {
++                    let hy = kcont_ty(w, c, r, km, ks);
++                    c.pi(hy, |c, _| {
++                        let (lo, hi) = (app(clo_half(n, false), c.at(clo)), app(clo_half(n, true), c.at(clo)));
++                        let lhs = apps(c.at(tbl), vec![lo, hi, c.at(a), c.at(h), c.at(km)]);
++                        let (aa, kk) = (c.at(a), c.at(ks));
++                        let rhs = fapp(c, aa, kk);
++                        id(c.at(r), lhs, rhs)
++                    })
++                })
++            })
++        })
++    })
++}
++/// The frame of a two-parameter body: `upd 0 p0 (upd 1 p1 mu)`.
++fn frame2(w: Wasm, c: &mut Cx, r: At, p0: Expr, p1: Expr, mu: Expr) -> Expr {
++    let inner = w.upd(c, r, lit(w.n, 1), p1, mu);
++    w.upd(c, r, lit(w.n, 0), p0, inner)
++}
++/// `M_code (S, fuel 0, R, k, z, table := tbl) s (frame2 clo x mu)`.
++#[allow(clippy::too_many_arguments)]
++fn clo_lhs(w: Wasm, c: &mut Cx, code: &[Ins], swap: bool, (sty, r, k, z, tbl): (At, At, At, At, At), clo: Expr, x: Expr, s: Expr, mu: Expr) -> Expr {
++    let fr = frame2(w, c, r, clo, x, mu);
++    let p = w.prog(c, code, &[], sty);
++    let p = c.mark(p);
++    let fuel = c.mark(nat2_lit(0));
++    let m = w.meaning_tbl(c, p, fuel, r, k, z, None, Some(tbl), swap);
++    app2(m, s, fr)
++}
++
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum Tw {
++    Ok,
++    /// calls `f` once
++    Once,
++    /// the second call's argument is `f x + 1`
++    WrongArg,
++    /// the table is handed (hi, lo) in place of (lo, hi)
++    Swap,
++}
++/// `twice = \f x. f (f x)` as the golden WAT's call sequence: both closure words and the argument pushed, two calls.
++fn twice_code(t: Tw) -> Vec<Ins> {
++    use Ins::{CallIndirect, LocalGet, Push};
++    match t {
++        Tw::Ok | Tw::Swap => vec![LocalGet(0), LocalGet(0), LocalGet(1), CallIndirect, CallIndirect],
++        Tw::Once => vec![LocalGet(0), LocalGet(1), CallIndirect],
++        Tw::WrongArg => vec![LocalGet(0), LocalGet(0), LocalGet(1), CallIndirect, Push(1), Ins::Op(Op::Add), CallIndirect],
++    }
++}
++
++/// The twice law, for every table and every closure word related to a source function:
++/// `Pi S R z (k : G [W]S) tbl f clo x s mu ks. CR(clo, f) -> (Pi y h'. k (y, s) h' = ks y) ->
++///    Id(R, M_twice s (frame clo x mu), f x (\y. f y ks))`.
++pub fn twice_law(w: Wasm, t: Tw) -> (Expr, Expr) {
++    let n = w.n;
++    // S R z k tbl f clo x s mu ks cr hk
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(2)),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[1])),
++        ty!(|c, x| {
++            let st = w.sty(c, &[K::W], x[0]);
++            w.g(c, x[1], st)
++        }),
++        ty!(|c, x| tbl_ty(w, c, x[1])),
++        ty!(|c, x| fs_ty(w, c, x[1])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|c, x| w.mem(c, x[1])),
++        ty!(|c, x| arrow(w.v(), c.at(x[1]))),
++        ty!(|c, x| cr_ty(w, c, x[1], x[4], x[6], &|c, a, ks| apps(c.at(x[5]), vec![a, ks]))),
++        ty!(|c, x| hk_ty(w, c, x[1], x[0], x[3], x[8], x[10])),
++    ];
++    law(&tys, |c, x| {
++        let [sty, r, z, k, tbl, f, clo, xx, s, mu, ks, cr, hk] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12].map(|i| x[i]);
++        let (cl, xe, se, me) = (c.at(clo), c.at(xx), c.at(s), c.at(mu));
++        let l = clo_lhs(w, c, &twice_code(t), t == Tw::Swap, (sty, r, k, z, tbl), cl, xe, se, me);
++        // the source: f x (\y. f y ks)
++        let ks1 = c.lam(w.v(), |c, y| apps(c.at(f), vec![c.at(y), c.at(ks)]));
++        let rhs = apps(c.at(f), vec![c.at(xx), ks1.clone()]);
++        // the machine's continuations, as it builds them
++        let kont2 = c.lam(w.v(), |c, y| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, h3| app2(c.at(k), mkpair(c.at(sty), c.at(y), c.at(s)), c.at(h3)))
++        });
++        let kont2 = c.mark(kont2);
++        let kont1 = c.lam(w.v(), |c, y| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, h2| {
++                let (lo, hi) = (app(clo_half(n, false), c.at(clo)), app(clo_half(n, true), c.at(clo)));
++                apps(c.at(tbl), vec![lo, hi, c.at(y), c.at(h2), c.at(kont2)])
++            })
++        });
++        // the inner call's relation proof is CR at the outer call
++        let hyp1 = c.lam(w.v(), |c, y| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, h2| apps(c.at(cr), vec![c.at(y), c.at(h2), c.at(kont2), c.at(ks), c.at(hk)]))
++        });
++        let (cl, xe, me) = (c.at(clo), c.at(xx), c.at(mu));
++        let fr = frame2(w, c, r, cl, xe, me);
++        let proof = apps(c.at(cr), vec![c.at(xx), fr, kont1, ks1, hyp1]);
++        (proof, id(c.at(r), l, rhs))
++    })
++}
++
++/// The concrete table: index `k` runs `body` (env in local 0, argument in local 1) on the callee's own frame over
++/// the caller's heap and hands its one answer, with the heap it ends on, to the continuation; any other index times out.
++fn tbl_concrete(w: Wasm, c: &mut Cx, r: At, z: At, body: &[Ins], k: u128, restore: bool) -> Expr {
++    let n = w.n;
++    c.lam(w.v(), |c, idx| {
++        c.lam(w.v(), |c, env| {
++            c.lam(w.v(), |c, a| {
++                let heap = w.mem(c, r);
++                c.lam(heap, |c, mu| {
++                    let ret = ret_m(w, c, r);
++                    c.lam(ret, |c, km| {
++                        let base = c.mark(bv_ty(n));
++                        let p = w.prog(c, body, &[], base);
++                        let p = c.mark(p);
++                        let fuel0 = c.mark(nat2_lit(0));
++                        let st_ty = prod(w.v(), c.at(base));
++                        let kk = c.lam(st_ty, |c, st| {
++                            let heap = w.mem(c, r);
++                            c.lam(heap, |c, mu2| {
++                                // `restore`: the callee's frame and temporaries are private, the caller's heap comes back
++                                let back = if restore { mu } else { mu2 };
++                                w.split(c, r, w.v(), base, st, |c, y, _| app2(c.at(km), c.at(y), c.at(back)))
++                            })
++                        });
++                        let kk = c.mark(kk);
++                        let m = w.meaning(c, p, fuel0, r, kk, z);
++                        let (ee, ae, me) = (c.at(env), c.at(a), c.at(mu));
++                        let fr = frame2(w, c, r, ee, ae, me);
++                        let entry = app2(m, lit(n, 0), fr);
++                        choose(c.at(r), app2(Op::Eq.term(n), c.at(idx), lit(n, k)), entry, c.at(z))
++                    })
++                })
++            })
++        })
++    })
++}
++
++/// Table index and env of the concrete closure, and its closure word `idx | env << n/2`.
++const TIDX: u128 = 1;
++const TENV: u128 = 2;
++fn clo_word(n: usize) -> u128 {
++    TIDX | (TENV << (n / 2))
++}
++/// The concrete callee `\v. v + body_add`.
++fn plus_body(body_add: i64) -> Vec<Ins> {
++    vec![Ins::LocalGet(1), Ins::Push(body_add), Ins::Op(Op::Add)]
++}
++
++/// `Pi R z. CR(clo_word, \a ks. ks (a + rel_add))` for the table holding `plus_body(body_add)` at `TIDX`.
++pub fn conc_law(w: Wasm, body_add: i64, rel_add: i64) -> (Expr, Expr) {
++    let n = w.n;
++    let tys: Vec<Ty> = vec![ty!(|_c, _x| sort(0)), ty!(|c, x| c.at(x[0]))];
++    law(&tys, |c, x| {
++        let (r, z) = (x[0], x[1]);
++        let tbl = tbl_concrete(w, c, r, z, &plus_body(body_add), TIDX, false);
++        let tbl = c.mark(tbl);
++        let clo = c.mark(lit(n, clo_word(n)));
++        let plus = move |a: Expr| app2(Op::Add.term(n), a, lit(n, rel_add as u128));
++        let stmt = cr_ty(w, c, r, tbl, clo, &move |_c, a, ks| app(ks, plus(a)));
++        let proof = c.lam(w.v(), |c, a| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, h| {
++                let ret = ret_m(w, c, r);
++                c.lam(ret, |c, km| {
++                    let kt = arrow(w.v(), c.at(r));
++                    c.lam(kt, |c, ks| {
++                        let hy = kcont_ty(w, c, r, km, ks);
++                        c.lam(hy, |c, hy| {
++                            let val = app2(Op::Add.term(n), c.at(a), lit(n, rel_add as u128));
++                            let env = app(clo_half(n, true), c.at(clo));
++                            let (ae, he) = (c.at(a), c.at(h));
++                            let fr = frame2(w, c, r, env, ae, he);
++                            apps(c.at(hy), vec![val, fr])
++                        })
++                    })
++                })
++            })
++        });
++        (proof, stmt)
++    })
++}
++
++/// The composition: the twice law at the concrete table and closure, `Pi S R z k x s mu ks. (Pi y h'. k (y, s) h' = ks y) ->
++/// Id(R, M_twice[tbl := plus 1] s (frame clo x mu), ks ((x + 1) + 1))`.
++pub fn comp_law(w: Wasm, body_add: i64) -> (Expr, Expr) {
++    let n = w.n;
++    // S R z k x s mu ks hk
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(2)),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[1])),
++        ty!(|c, x| {
++            let st = w.sty(c, &[K::W], x[0]);
++            w.g(c, x[1], st)
++        }),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|c, x| w.mem(c, x[1])),
++        ty!(|c, x| arrow(w.v(), c.at(x[1]))),
++        ty!(|c, x| hk_ty(w, c, x[1], x[0], x[3], x[5], x[7])),
++    ];
++    law(&tys, |c, y| {
++        let [sty, r, z, k, xx, s, mu, ks, hk] = [0, 1, 2, 3, 4, 5, 6, 7, 8].map(|i| y[i]);
++        let tbl = tbl_concrete(w, c, r, z, &plus_body(body_add), TIDX, false);
++        let tbl = c.mark(tbl);
++        let clo = lit(n, clo_word(n));
++        let (xe, se, me) = (c.at(xx), c.at(s), c.at(mu));
++        let l = clo_lhs(w, c, &twice_code(Tw::Ok), false, (sty, r, k, z, tbl), clo.clone(), xe, se, me);
++        let plus1 = |a: Expr| app2(Op::Add.term(n), a, lit(n, 1));
++        let rhs = app(c.at(ks), plus1(plus1(c.at(xx))));
++        let f = c.lam(w.v(), |c, a| c.lam(arrow(w.v(), c.at(r)), |c, k2| app(c.at(k2), plus1(c.at(a)))));
++        let (tp, _) = twice_law(w, Tw::Ok);
++        let (cp, _) = conc_law(w, 1, 1);
++        let cr = apps(cp, vec![c.at(r), c.at(z)]);
++        let args = vec![c.at(sty), c.at(r), c.at(z), c.at(k), c.at(tbl), f, clo, c.at(xx), c.at(s), c.at(mu), c.at(ks), cr, c.at(hk)];
++        (apps(tp, args), id(c.at(r), l, rhs))
++    })
++}
++
++#[test]
++pub fn closure_spike() {
++    for n in [4usize, 24, 64] {
++        tatic_kernel::scoped(|| {
++            let w = Wasm { n };
++            let run = |name: &str, build: &dyn Fn() -> (Expr, Expr)| {
++                let t0 = Instant::now();
++                let (p, s) = build();
++                let tb = t0.elapsed();
++                let t1 = Instant::now();
++                ck(&format!("{name} n={n}"), &p, &s);
++                println!("CLOS n={n} {name}: build {tb:?}, check {:?} (proved)", t1.elapsed());
++            };
++            let rej = |name: &str, build: &dyn Fn() -> (Expr, Expr)| {
++                let t0 = Instant::now();
++                let (p, s) = build();
++                let tb = t0.elapsed();
++                let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
++                assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
++                let t1 = Instant::now();
++                let e = holds(&p, &s).expect_err(&format!("{name} must be rejected at n={n}"));
++                println!("CLOS n={n} {name}: build {tb:?}, check {:?} (rejected: {})", t1.elapsed(), e.chars().take(100).collect::<String>());
++            };
++            let split = |swap: bool| {
++                let word = lit(n, clo_word(n));
++                let want = lit(n, TIDX);
++                (refl(want.clone()), id(w.v(), app(clo_half(n, swap), word), want))
++            };
++            run("split lo(clo) = idx", &|| split(false));
++            rej("split hi(clo) = idx", &|| split(true));
++            run("twice law", &|| twice_law(w, Tw::Ok));
++            run("concrete: plus 1 related to \\a ks. ks (a+1)", &|| conc_law(w, 1, 1));
++            run("compose: twice (plus 1) x = ks ((x+1)+1)", &|| comp_law(w, 1));
++            rej("control: twice calls f once", &|| twice_law(w, Tw::Once));
++            rej("control: inner call's argument f x + 1", &|| twice_law(w, Tw::WrongArg));
++            rej("control: halves swapped in the split", &|| twice_law(w, Tw::Swap));
++            rej("control: table entry computes v + 2, relation v + 1", &|| conc_law(w, 2, 1));
++            rej("control: compose with the v + 2 table", &|| comp_law(w, 2));
++            // stretch: iterate (17)
++            run("iterate run: 2 iterations of +1 from 5, fuel 3, answers 7", &|| iter_run(w, 2, 5, 3, Some(7)));
++            run("iterate run: fuel 2 times out", &|| iter_run(w, 2, 5, 2, None));
++            rej("iterate run: answers 8", &|| iter_run(w, 2, 5, 3, Some(8)));
++            run("concrete (pure): plus 1 related, CRp", &|| conc_pure_law(w));
++            run("iterate law (CRp)", &|| iter_law(w, It::Ok));
++            run("iterate (+1 closure) = fuel-N source", &|| iter_comp(w));
++            rej("control: iterate tests n < 0", &|| iter_law(w, It::LtNotLe));
++            rej("control: iterate calls f on n", &|| iter_law(w, It::ArgN));
++            rej("control: iterate drops the call", &|| iter_law(w, It::NoCall));
++        })
++    }
++}
++
++// ---- SPIKE stretch: `iterate` (17) against CR for pure callees (`CRp`: the callee hands the heap back) ----
++
++/// `CRp(clo, f) := Pi a h km ks. (Pi y. km y h = ks y) -> Id(R, tbl (lo clo) (hi clo) a h km, f a ks)`.
++fn crp_ty(w: Wasm, c: &mut Cx, r: At, tbl: At, clo: At, fapp: FApp) -> Expr {
++    let n = w.n;
++    c.pi(w.v(), |c, a| {
++        let heap = w.mem(c, r);
++        c.pi(heap, |c, h| {
++            let ret = ret_m(w, c, r);
++            c.pi(ret, |c, km| {
++                let kt = arrow(w.v(), c.at(r));
++                c.pi(kt, |c, ks| {
++                    let hy = c.pi(w.v(), |c, y| id(c.at(r), app2(c.at(km), c.at(y), c.at(h)), app(c.at(ks), c.at(y))));
++                    c.pi(hy, |c, _| {
++                        let (lo, hi) = (app(clo_half(n, false), c.at(clo)), app(clo_half(n, true), c.at(clo)));
++                        let lhs = apps(c.at(tbl), vec![lo, hi, c.at(a), c.at(h), c.at(km)]);
++                        let (aa, kk) = (c.at(a), c.at(ks));
++                        let rhs = fapp(c, aa, kk);
++                        id(c.at(r), lhs, rhs)
++                    })
++                })
++            })
++        })
++    })
++}
++
++/// `Pi R z. CRp(clo_word, \a ks. ks (a + 1))` for the table holding `\v. v + 1` at `TIDX` with a private callee frame.
++pub fn conc_pure_law(w: Wasm) -> (Expr, Expr) {
++    let n = w.n;
++    let tys: Vec<Ty> = vec![ty!(|_c, _x| sort(0)), ty!(|c, x| c.at(x[0]))];
++    law(&tys, |c, x| {
++        let (r, z) = (x[0], x[1]);
++        let tbl = tbl_concrete(w, c, r, z, &plus_body(1), TIDX, true);
++        let tbl = c.mark(tbl);
++        let clo = c.mark(lit(n, clo_word(n)));
++        let stmt = crp_ty(w, c, r, tbl, clo, &move |_c, a, ks| app(ks, app2(Op::Add.term(n), a, lit(n, 1))));
++        let proof = c.lam(w.v(), |c, a| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _h| {
++                let ret = ret_m(w, c, r);
++                c.lam(ret, |c, km| {
++                    let kt = arrow(w.v(), c.at(r));
++                    c.lam(kt, |c, ks| {
++                        let hy = c.pi(w.v(), |c, y| id(c.at(r), app2(c.at(km), c.at(y), c.at(_h)), app(c.at(ks), c.at(y))));
++                        c.lam(hy, |c, hy| app(c.at(hy), app2(Op::Add.term(n), c.at(a), lit(n, 1))))
++                    })
++                })
++            })
++        });
++        (proof, stmt)
++    })
++}
++
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum It {
++    Ok,
++    /// the loop tests `n < 0`
++    LtNotLe,
++    /// the call's argument is `n`
++    ArgN,
++    /// the call is dropped
++    NoCall,
++}
++/// `iterate`'s golden loop (p0 = n = 0, p1 = f = 1, p2 = x = 2, t0 = 3, t1 = 4, t2 = 5), `local.set i` as `push i; <value>; store`.
++fn iter_code(ctl: It) -> Vec<Ins> {
++    use Ins::{Br, CallIndirect, If, LocalGet, Loop, Push, Store};
++    let cmp = if ctl == It::LtNotLe { Op::LtS } else { Op::LeS };
++    let call = match ctl {
++        It::NoCall => vec![LocalGet(2)],
++        It::ArgN => vec![LocalGet(1), LocalGet(0), CallIndirect],
++        _ => vec![LocalGet(1), LocalGet(2), CallIndirect],
++    };
++    let mut els = vec![Push(3), LocalGet(0), Push(1), Ins::Op(Op::Sub), Store, Push(4), LocalGet(1), Store, Push(5)];
++    els.extend(call);
++    els.extend([Store, Push(0), LocalGet(3), Store, Push(1), LocalGet(4), Store, Push(2), LocalGet(5), Store, Br(0)]);
++    vec![Loop(vec![LocalGet(0), Push(0), Ins::Op(cmp), If(vec![LocalGet(2)], els)])]
++}
++/// `upd 2 x (upd 1 clo (upd 0 n mu))`: the order the loop's own stores leave its frame in.
++fn frame3(w: Wasm, c: &mut Cx, r: At, n0: Expr, c1: Expr, x2: Expr, mu: Expr) -> Expr {
++    let a = w.upd(c, r, lit(w.n, 0), n0, mu);
++    let b = w.upd(c, r, lit(w.n, 1), c1, a);
++    w.upd(c, r, lit(w.n, 2), x2, b)
++}
++
++/// What the machine and the source of the iterate loop share.
++struct ItX<'a> {
++    w: Wasm,
++    sty: At,
++    r: At,
++    k0: At,
++    z: At,
++    s: At,
++    tbl: At,
++    clo: At,
++    fapp: FApp<'a>,
++}
++
++impl ItX<'_> {
++    /// `B`, the loop body in the meaning `M p N R k z = N (G S) timeout B`.
++    fn body(&self, c: &mut Cx, code: &[Ins], fuel: At) -> At {
++        let (w, r, k0) = (self.w, self.r, self.k0);
++        let p = w.prog(c, code, &[], self.sty);
++        let p = c.mark(p);
++        let out = w.sty(c, &[K::W], self.sty);
++        let k = c.lam(out, |c, st| {
++            let m = w.mem(c, r);
++            c.lam(m, |c, _| app(c.at(k0), c.at(st)))
++        });
++        let k = c.mark(k);
++        let m = w.meaning_tbl(c, p, fuel, r, k, self.z, None, Some(self.tbl), false);
++        match whnf(&m).node() {
++            tatic_kernel::Node::App(_, b) => c.mark(b),
++            other => panic!("the loop's meaning is not a fuel application: {other:?}"),
++        }
++    }
++    /// `m (G S) timeout B`: the machine's loop at fuel `m`.
++    fn level(&self, c: &mut Cx, body: At, m: Expr) -> Expr {
++        let (w, r, z) = (self.w, self.r, self.z);
++        let st = c.at(self.sty);
++        let g = w.g(c, r, st);
++        let to = c.lam(c.at(self.sty), |c, _| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _| c.at(z))
++        });
++        apps(m, vec![g, to, c.at(body)])
++    }
++    fn mach(&self, c: &mut Cx, body: At, m: Expr, ne: Expr, xe: Expr, mue: Expr) -> Expr {
++        let lvl = self.level(c, body, m);
++        let ce = c.at(self.clo);
++        let fr = frame3(self.w, c, self.r, ne, ce, xe, mue);
++        app2(lvl, c.at(self.s), fr)
++    }
++    /// `m (V -> V -> R) (\n x. z) Bsrc n x`, `Bsrc g n x = choose (n <= 0) (k0 (x, s)) (f x (\y. g (n - 1) y))`.
++    fn src(&self, c: &mut Cx, m: Expr, ne: Expr, xe: Expr) -> Expr {
++        let (w, r, z, k0, s, sty) = (self.w, self.r, self.z, self.k0, self.s, self.sty);
++        let n = w.n;
++        let gsrc = arrow(w.v(), arrow(w.v(), c.at(r)));
++        let tsrc = c.lam(w.v(), |c, _| c.lam(w.v(), |c, _| c.at(z)));
++        let bsrc = c.lam(gsrc.clone(), |c, g| {
++            c.lam(w.v(), |c, nv| {
++                c.lam(w.v(), |c, xv| {
++                    let ks1 = c.lam(w.v(), |c, y| {
++                        let n1 = app2(Op::Sub.term(n), c.at(nv), lit(n, 1));
++                        app2(c.at(g), n1, c.at(y))
++                    });
++                    let (nee, xee) = (c.at(nv), c.at(xv));
++                    let again = (self.fapp)(c, xee.clone(), ks1);
++                    let ex = app(c.at(k0), mkpair(c.at(sty), xee, c.at(s)));
++                    choose(c.at(r), app2(Op::LeS.term(n), nee, lit(n, 0)), ex, again)
++                })
++            })
++        });
++        app2(apps(m, vec![gsrc, tsrc, bsrc]), ne, xe)
++    }
++    /// The statement at fuel `fuel`: `Id(R, machine, source)`.
++    fn stmt(&self, c: &mut Cx, body: At, fuel: At, n0: At, x0: At, mu: At) -> Expr {
++        let (fe, ne, xe, me) = (c.at(fuel), c.at(n0), c.at(x0), c.at(mu));
++        let l = self.mach(c, body, fe.clone(), ne.clone(), xe.clone(), me);
++        let rr = self.src(c, fe, ne, xe);
++        id(c.at(self.r), l, rr)
++    }
++    /// Induction over the fuel, with `gn : GoodNat fuel` and `cr : CRp(clo, f)`: the fuel-matched simulation.
++    fn proof(&self, c: &mut Cx, body: At, gn: At, cr: At, n0: At, x0: At, mu: At) -> Expr {
++        let (w, r, z, s, tbl, clo) = (self.w, self.r, self.z, self.s, self.tbl, self.clo);
++        let n = w.n;
++        let mot_at = |c: &mut Cx, m: Expr| {
++            let m = c.mark(m);
++            c.pi(nat2(), |c, _| {
++                c.pi(w.v(), |c, nv| {
++                    c.pi(w.v(), |c, xv| {
++                        let mm = w.mem(c, r);
++                        c.pi(mm, |c, mu| {
++                            let (me, ne, xe, mue) = (c.at(m), c.at(nv), c.at(xv), c.at(mu));
++                            let l = self.mach(c, body, me.clone(), ne.clone(), xe.clone(), mue);
++                            let rr = self.src(c, me, ne, xe);
++                            id(c.at(r), l, rr)
++                        })
++                    })
++                })
++            })
++        };
++        let motive = c.lam(nat2(), |c, m| {
++            let me = c.at(m);
++            mot_at(c, me)
++        });
++        let hz = c.lam(nat2(), |c, _| {
++            c.lam(w.v(), |c, _| {
++                c.lam(w.v(), |c, _| {
++                    let mm = w.mem(c, r);
++                    c.lam(mm, |c, _| refl(c.at(z)))
++                })
++            })
++        });
++        let step = c.lam(nat2(), |c, j| {
++            let je = c.at(j);
++            let ih_ty = mot_at(c, je);
++            c.lam(ih_ty, |c, ih| {
++                c.lam(nat2(), |c, d| {
++                    c.lam(w.v(), |c, nv| {
++                        c.lam(w.v(), |c, xv| {
++                            let mm = w.mem(c, r);
++                            c.lam(mm, |c, mu| {
++                                let (ne, xe, mue, ce) = (c.at(nv), c.at(xv), c.at(mu), c.at(clo));
++                                let h0 = frame3(w, c, r, ne.clone(), ce.clone(), xe.clone(), mue);
++                                let h0 = c.mark(h0);
++                                let n1 = app2(Op::Sub.term(n), ne.clone(), lit(n, 1));
++                                let n1 = c.mark(n1);
++                                let h3 = w.upd(c, r, lit(n, 3), c.at(n1), c.at(h0));
++                                let h3 = c.mark(h3);
++                                let hcall = w.upd(c, r, lit(n, 4), ce, c.at(h3));
++                                let hcall = c.mark(hcall);
++                                // the machine's continuation of the call: store the answer, then t0, t1, t2 into p0, p1, p2, `br`
++                                let kont = c.lam(w.v(), |c, y| {
++                                    let heap = w.mem(c, r);
++                                    c.lam(heap, |c, mu2| {
++                                        let m3 = w.upd(c, r, lit(n, 5), c.at(y), c.at(mu2));
++                                        let m3 = c.mark(m3);
++                                        let kk3 = c.lam(w.v(), |c, t0| {
++                                            let m4 = w.upd(c, r, lit(n, 0), c.at(t0), c.at(m3));
++                                            let m4 = c.mark(m4);
++                                            let kk4 = c.lam(w.v(), |c, t1| {
++                                                let m5 = w.upd(c, r, lit(n, 1), c.at(t1), c.at(m4));
++                                                let m5 = c.mark(m5);
++                                                let kk5 = c.lam(w.v(), |c, t2| {
++                                                    let m6 = w.upd(c, r, lit(n, 2), c.at(t2), c.at(m5));
++                                                    let jj = c.at(j);
++                                                    let lvl = self.level(c, body, jj);
++                                                    app2(lvl, c.at(s), m6)
++                                                });
++                                                app2(c.at(m5), lit(n, 5), kk5)
++                                            });
++                                            app2(c.at(m4), lit(n, 4), kk4)
++                                        });
++                                        app2(c.at(m3), lit(n, 3), kk3)
++                                    })
++                                });
++                                let kont = c.mark(kont);
++                                let ks1 = c.lam(w.v(), |c, y| {
++                                    let (jj, nn, yy) = (c.at(j), c.at(n1), c.at(y));
++                                    self.src(c, jj, nn, yy)
++                                });
++                                let ks1 = c.mark(ks1);
++                                // the callee returns the heap it was given, so the continuation is the loop at fuel j on the stored frame
++                                let hyp = c.lam(w.v(), |c, y| {
++                                    let m5 = w.upd(c, r, lit(n, 5), c.at(y), c.at(hcall));
++                                    apps(c.at(ih), vec![c.at(d), c.at(n1), c.at(y), m5])
++                                });
++                                let (lo, hi) = (app(clo_half(n, false), c.at(clo)), app(clo_half(n, true), c.at(clo)));
++                                let l_else = apps(c.at(tbl), vec![lo, hi, c.at(xv), c.at(hcall), c.at(kont)]);
++                                let (xe2, ks1e) = (c.at(xv), c.at(ks1));
++                                let r_else = (self.fapp)(c, xe2, ks1e);
++                                let p_else = apps(c.at(cr), vec![c.at(xv), c.at(hcall), c.at(kont), c.at(ks1), hyp]);
++                                let cd = c.mark(app2(Op::LeS.term(n), c.at(nv), lit(n, 0)));
++                                let ex = app(c.at(self.k0), mkpair(c.at(self.sty), c.at(xv), c.at(s)));
++                                let ex = c.mark(ex);
++                                let rt = c.at(r);
++                                let jm = c.lam(rt, |c, a| {
++                                    let rt = c.at(r);
++                                    c.lam(rt, |c, b| {
++                                        let e = id(c.at(r), c.at(a), c.at(b));
++                                        c.lam(e, |c, _| {
++                                            let ca = choose(c.at(r), c.at(cd), c.at(ex), c.at(a));
++                                            let cb = choose(c.at(r), c.at(cd), c.at(ex), c.at(b));
++                                            id(c.at(r), ca, cb)
++                                        })
++                                    })
++                                });
++                                let rt = c.at(r);
++                                let jb = c.lam(rt, |c, a| refl(choose(c.at(r), c.at(cd), c.at(ex), c.at(a))));
++                                jelim(jm, jb, l_else, r_else, p_else)
++                            })
++                        })
++                    })
++                })
++            })
++        });
++        apps(c.at(gn), vec![motive, hz, step, nat2_lit(0), c.at(n0), c.at(x0), c.at(mu)])
++    }
++}
++
++/// The iterate law, for every table and closure related (`CRp`) to a source function:
++/// `Pi S N gn R k0 z tbl f clo (cr : CRp(clo, f)) s n x mu. Id(R, M_iter[N] s (frame3 n clo x mu), Src_N n x)`.
++pub fn iter_law(w: Wasm, ctl: It) -> (Expr, Expr) {
++    let n = w.n;
++    // S N gn R k0 z tbl f clo cr s n x mu
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(2)),
++        ty!(|_c, _x| nat2()),
++        ty!(|c, x| w.good_nat(c, x[1])),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| {
++            let t = w.sty(c, &[K::W], x[0]);
++            arrow(t, c.at(x[3]))
++        }),
++        ty!(|c, x| c.at(x[3])),
++        ty!(|c, x| tbl_ty(w, c, x[3])),
++        ty!(|c, x| fs_ty(w, c, x[3])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| crp_ty(w, c, x[3], x[6], x[8], &|c, a, ks| apps(c.at(x[7]), vec![a, ks]))),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| w.mem(c, x[3])),
++    ];
++    law(&tys, |c, x| {
++        let [sty, fuel, gn, r, k0, z, tbl, f, clo, cr, s, n0, x0, mu] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13].map(|i| x[i]);
++        let fapp = move |c: &mut Cx, a: Expr, ks: Expr| apps(c.at(f), vec![a, ks]);
++        let ix = ItX { w, sty, r, k0, z, s, tbl, clo, fapp: &fapp };
++        let body = ix.body(c, &iter_code(ctl), fuel);
++        let stmt = ix.stmt(c, body, fuel, n0, x0, mu);
++        (ix.proof(c, body, gn, cr, n0, x0, mu), stmt)
++    })
++}
++
++/// 17 on the concrete closure: the iterate law at the private-frame table holding `\v. v + 1`.
++pub fn iter_comp(w: Wasm) -> (Expr, Expr) {
++    let n = w.n;
++    // S N gn R k0 z s n x mu
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(2)),
++        ty!(|_c, _x| nat2()),
++        ty!(|c, x| w.good_nat(c, x[1])),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| {
++            let t = w.sty(c, &[K::W], x[0]);
++            arrow(t, c.at(x[3]))
++        }),
++        ty!(|c, x| c.at(x[3])),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| w.mem(c, x[3])),
++    ];
++    law(&tys, |c, x| {
++        let [sty, fuel, gn, r, k0, z, s, n0, x0, mu] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(|i| x[i]);
++        let tbl = tbl_concrete(w, c, r, z, &plus_body(1), TIDX, true);
++        let tbl = c.mark(tbl);
++        let clo = c.mark(lit(n, clo_word(n)));
++        let fapp = move |_c: &mut Cx, a: Expr, ks: Expr| app(ks, app2(Op::Add.term(n), a, lit(n, 1)));
++        let ix = ItX { w, sty, r, k0, z, s, tbl, clo, fapp: &fapp };
++        let body = ix.body(c, &iter_code(It::Ok), fuel);
++        let stmt = ix.stmt(c, body, fuel, n0, x0, mu);
++        let f = c.lam(w.v(), |c, a| c.lam(arrow(w.v(), c.at(r)), |c, k2| app(c.at(k2), app2(Op::Add.term(n), c.at(a), lit(n, 1)))));
++        let (ip, _) = iter_law(w, It::Ok);
++        let (cp, _) = conc_pure_law(w);
++        let cr = apps(cp, vec![c.at(r), c.at(z)]);
++        let args = vec![c.at(sty), c.at(fuel), c.at(gn), c.at(r), c.at(k0), c.at(z), c.at(tbl), f, c.at(clo), cr, c.at(s), c.at(n0), c.at(x0), c.at(mu)];
++        (apps(ip, args), stmt)
++    })
++}
++
++/// A run by `refl`: `n` iterations of the concrete `+ 1` closure from `x` at `fuel`, answering `k0 (want, s)` or the timeout.
++fn iter_run(w: Wasm, nv: u128, xv: u128, fuel: usize, want: Option<u128>) -> (Expr, Expr) {
++    let n = w.n;
++    // S R k0 z s mu
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(2)),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| {
++            let t = w.sty(c, &[K::W], x[0]);
++            arrow(t, c.at(x[1]))
++        }),
++        ty!(|c, x| c.at(x[1])),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|c, x| w.mem(c, x[1])),
++    ];
++    law(&tys, |c, x| {
++        let [sty, r, k0, z, s, mu] = [0, 1, 2, 3, 4, 5].map(|i| x[i]);
++        let tbl = tbl_concrete(w, c, r, z, &plus_body(1), TIDX, true);
++        let tbl = c.mark(tbl);
++        let clo = lit(n, clo_word(n));
++        let p = w.prog(c, &iter_code(It::Ok), &[], sty);
++        let p = c.mark(p);
++        let out = w.sty(c, &[K::W], sty);
++        let k = c.lam(out, |c, st| {
++            let m = w.mem(c, r);
++            c.lam(m, |c, _| app(c.at(k0), c.at(st)))
++        });
++        let k = c.mark(k);
++        let fuel = c.mark(nat2_lit(fuel));
++        let m = w.meaning_tbl(c, p, fuel, r, k, z, None, Some(tbl), false);
++        let me = c.at(mu);
++        let fr = frame3(w, c, r, lit(n, nv), clo, lit(n, xv), me);
++        let l = app2(m, c.at(s), fr);
++        let want = match want {
++            Some(a) => app(c.at(k0), mkpair(c.at(sty), lit(n, a), c.at(s))),
++            None => c.at(z),
++        };
++        (refl(l.clone()), id(c.at(r), l, want))
++    })
++}
+ /// `WASM` check times at n = 4, 16, 32, 64, with the controls at 64.
+ #[test]
+ #[ignore]
