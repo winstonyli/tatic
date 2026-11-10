@@ -29,7 +29,7 @@ Goal 1 of `ROADMAP.md` now says so and links here.
     `lower_wat.rs`'s closure-environment convention in intent (`proof/closures.rs`).
 - **The machine is scattered.** One instruction lives in five places in `crates/tatic-wasm/src/wasm.rs`: the `Ins`
   enum, `ctor_ty`, `interp`'s vector, `seq_step` (which indexes the constructors by position) and `shape`, plus the
-  printer. `local.set`, `call`, `call_indirect` and `rem_s` have no `Ins` and are emitted as `Raw` or as WAT text.
+  printer; the call spike's `Ins::Call` also touched the constructor count in `ctors`. `local.set`, `call`, `call_indirect` and `rem_s` have no `Ins` and are emitted as `Raw` or as WAT text.
 - **The class C terms**, split by reading each one's emitted WAT in the census run `2026-11-08-b1-census` (the
   per-term split is recorded only here):
 
@@ -56,7 +56,7 @@ Goal 1 of `ROADMAP.md` now says so and links here.
 - **A provided formalization** is a table written from a spec, the way `wasm.rs` was written. Comparable systems
   treat an ISA interpreter as the formalization: Serval and Jitterbug
   (<https://unsat.cs.washington.edu/projects/jitterbug>), KWasm
-  (<https://github.com/runtimeverification/wasm-semantics>), and Sail and WasmCert, which the repo already surveys (doc 15's options table; `docs/related-work/`).
+  (<https://github.com/runtimeverification/wasm-semantics>), and Sail and WasmCert, which the repo already surveys (doc 15's options table).
 - **An explored formalization** is a table proposed by an agent that runs instructions and fits their meanings,
   like stratified synthesis
   (<https://pldi16.sigplan.org/details/pldi-2016-papers/50/Stratified-Synthesis-Automatically-Learning-the-x86-64-Instruction-Set>),
@@ -83,8 +83,12 @@ statement into the loop law, which removes fuel 1 and `strip_loop` (already unus
   - Its open risk was whether a call fits the universe levels. The call spike answers it at the meaning level
     (`docs/tier-cycle/`, "Calls by index proved against a source recursion: a spike"). The environment and the
     module's fixpoint check at Sort2, and factorial and fib each prove against their source by one fuel induction.
-    Those meanings and proofs were written by hand, so `call`'s constructor slot in the program type is untested.
     That a constructor taking a program cannot express recursion is reasoning from the sort rules, not a run.
-  - Still open: callees that read or write the heap (the spike's heap is never touched), the table, and the closure
-    convention for the five terms that call a closure parameter.
+  - A second spike (`docs/tier-cycle/`, "`call` as an instruction, and a callee that touches the heap: a spike")
+    adds `call` as a ninth constructor with load's type, built through `prog`, with the program type's level
+    unchanged and the existing tatic-wasm tests and a filtered gate subset passing (scaling tests not run). A callee that writes a fixed heap cell before its call and reads it after proves
+    against a source that threads the cell as state.
+  - Still open: closure records at addresses computed at run time (an invariant over a region), locals and
+    per-activation frames, the table, the closure convention for the five terms that call a closure parameter, and
+    proofs derived from the instruction list (all so far are hand-written per function).
 - z4 **Backend boundary only**: the row table with no new instructions.

@@ -1,0 +1,578 @@
+diff --git a/crates/tatic-wasm/src/print.rs b/crates/tatic-wasm/src/print.rs
+index 5f46309..a7082f6 100644
+--- a/crates/tatic-wasm/src/print.rs
++++ b/crates/tatic-wasm/src/print.rs
+@@ -31,7 +31,7 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
+             }
+             Ins::Br(0) => line(out, "br $L"),
+             Ins::Raw(s) => line(out, s),
+-            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load => panic!("print_body: {ins:?} is never emitted"),
++            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load | Ins::Call => panic!("print_body: {ins:?} is never emitted"),
+         }
+     }
+ }
+diff --git a/crates/tatic-wasm/src/wasm.rs b/crates/tatic-wasm/src/wasm.rs
+index 4ebe75c..64ccdb5 100644
+--- a/crates/tatic-wasm/src/wasm.rs
++++ b/crates/tatic-wasm/src/wasm.rs
+@@ -44,6 +44,8 @@ pub enum Ins {
+     Br(usize),
+     Store,
+     Load,
++    /// SPIKE: `call` of the module's one function, argument and result on the stack.
++    Call,
+     Raw(String),
+ }
+ 
+@@ -91,7 +93,7 @@ fn shape(code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Result<Option<Vec<K>
+                 return Ok(None);
+             }
+             Ins::Store => pop(&mut st, &[K::W, K::W])?,
+-            Ins::Load => {
++            Ins::Load | Ins::Call => {
+                 pop(&mut st, &[K::W])?;
+                 st.insert(0, K::W)
+             }
+@@ -177,6 +179,7 @@ impl Wasm {
+                 4 => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                 5 => arrow(arrow(fa(a), fa(a)), fa(a)),
+                 6 => arrow(fa(a), fa(vva)),
++                // load (7) and call (8): pop a word, push a word
+                 _ => arrow(fa(va), fa(va)),
+             }
+         })
+@@ -184,7 +187,7 @@ impl Wasm {
+     /// The eight constructor binders, each wrapped by `wrap` (`lam` or `pi`), then `body` with their variables.
+     fn ctors(&self, c: &mut Cx, f: At, wrap: fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+         let w = *self;
+-        let tys: Vec<Ty> = (0..8).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
++        let tys: Vec<Ty> = (0..9).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
+         tele(c, &tys, &mut vec![], &wrap, body)
+     }
+     /// `Prog S T`, with `S` and `T` built at each use.
+@@ -278,6 +281,10 @@ impl Wasm {
+                 let r = cont(c, st.clone());
+                 cons(c, 7, vec![ty(c, &below(1)), r])
+             }
++            Ins::Call => {
++                let r = cont(c, st.clone());
++                cons(c, 8, vec![ty(c, &below(1)), r])
++            }
+         }
+     }
+     /// `upd a v mu = \b kk. (eq a b) R (kk v) (mu b kk)`.
+@@ -303,7 +310,7 @@ impl Wasm {
+         sigrec(motive, step, c.at(st))
+     }
+     /// The constructors' meanings.
+-    fn interp(&self, c: &mut Cx, r: At, fuel: At, z: At) -> Vec<Expr> {
++    fn interp(&self, c: &mut Cx, r: At, fuel: At, z: At, env: Option<At>) -> Vec<Expr> {
+         let (v, v1) = (self.v(), bv_ty(1));
+         let w = *self;
+         // `\A rest st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`
+@@ -398,13 +405,32 @@ impl Wasm {
+                 app2(c.at(mu), c.at(ad), k)
+             })
+         });
+-        vec![push, bin, cmp, dup, if_, loop_, store, load]
++        // SPIKE: `call` runs `env : V -> Mem -> (V -> Mem -> R) -> R` on the popped word and pushes its answer; with
++        // no environment it answers the timeout
++        let call = shape(c, None, &|a| prod(v, a), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
++            w.split(c, r, v, a, st, |c, x, s| match env.clone() {
++                Some(e) => {
++                    let kont = c.lam(v, |c, y| {
++                        let m = w.mem(c, r);
++                        c.lam(m, |c, mu2| app2(c.at(rest), mkpair(c.at(a), c.at(y), c.at(s)), c.at(mu2)))
++                    });
++                    apps(c.at(e), vec![c.at(x), c.at(mu), kont])
++                }
++                None => c.at(z),
++            })
++        });
++        vec![push, bin, cmp, dup, if_, loop_, store, load, call]
+     }
+     /// `M p N R k z`, of type `G S` for `p : Prog S T` and `k : G T`.
+     pub fn meaning(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At) -> Expr {
++        self.meaning_env(c, p, fuel, r, k, z, None)
++    }
++    /// SPIKE: `meaning`, with `call` running `env`.
++    #[allow(clippy::too_many_arguments)]
++    pub fn meaning_env(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At, env: Option<At>) -> Expr {
+         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
+         let mut args = vec![gfam, c.at(k)];
+-        args.extend(self.interp(c, r, fuel, z));
++        args.extend(self.interp(c, r, fuel, z, env));
+         apps(c.at(p), args)
+     }
+     /// `p1 ++ p2 : Prog S U` for `p1 : Prog S T`, `p2 : Prog T U`.
+diff --git a/crates/tatic-wasm/src/wasm/laws.rs b/crates/tatic-wasm/src/wasm/laws.rs
+index b2aa4d1..d5033d5 100644
+--- a/crates/tatic-wasm/src/wasm/laws.rs
++++ b/crates/tatic-wasm/src/wasm/laws.rs
+@@ -458,6 +458,466 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
+     }
+ }
+ 
++// ---- SPIKE (throwaway, 2026-11-10): `Ins::Call` through `prog`, and a callee that touches the heap ----
++
++/// The heap cell the counter uses.
++const CELL: u128 = 3;
++
++/// The module's one function, and the controls: each changes the machine's code, the source stays.
++#[derive(Clone, Copy, PartialEq, Debug)]
++pub enum Cf {
++    /// `s x = x <= 0 ? x : x + s (x - 1)`
++    Sum,
++    /// the call's argument is `x - 2`
++    SumArg2,
++    /// the call is dropped: `x + (x - 1)`
++    SumNoCall,
++    /// `d x = x <= 0 ? x : d (d (x - 1))`
++    Nest,
++    /// one call: `d (x - 1)`
++    NestOnce,
++    /// `c x = x <= 0 ? x : (mem[A] += 1; c (x - 1) + mem[A])`
++    Cnt,
++    /// no store
++    CntNoStore,
++    /// reads cell `A + 1` after the call
++    CntWrongCell,
++}
++
++impl Cf {
++    fn base(self) -> Cf {
++        match self {
++            Cf::Sum | Cf::SumArg2 | Cf::SumNoCall => Cf::Sum,
++            Cf::Nest | Cf::NestOnce => Cf::Nest,
++            _ => Cf::Cnt,
++        }
++    }
++    /// The body, from the stack `[x]` to `[answer]`.
++    fn code(self) -> Vec<Ins> {
++        let (sub, add, les) = (Ins::Op(Op::Sub), Ins::Op(Op::Add), Ins::Op(Op::LeS));
++        use Ins::{Call, Dup, If, Load, Push, Store};
++        let a = CELL as i64;
++        let el = match self {
++            Cf::Sum => vec![Dup, Push(1), sub.clone(), Call, add.clone()],
++            Cf::SumArg2 => vec![Dup, Push(2), sub.clone(), Call, add.clone()],
++            Cf::SumNoCall => vec![Dup, Push(1), sub.clone(), add.clone()],
++            Cf::Nest => vec![Push(1), sub.clone(), Call, Call],
++            Cf::NestOnce => vec![Push(1), sub.clone(), Call],
++            Cf::Cnt | Cf::CntNoStore | Cf::CntWrongCell => {
++                let store = vec![Push(a), Push(a), Load, Push(1), add.clone(), Store];
++                let read = if self == Cf::CntWrongCell { a + 1 } else { a };
++                let call = vec![Push(1), sub.clone(), Call, Push(read), Load, add.clone()];
++                if self == Cf::CntNoStore { call } else { [store, call].concat() }
++            }
++        };
++        vec![Dup, Push(0), les.clone(), If(vec![], el)]
++    }
++}
++
++/// `V -> Mem -> R`, the machine's return continuation.
++fn ret_m(w: Wasm, c: &mut Cx, r: At) -> Expr {
++    let heap = w.mem(c, r);
++    arrow(w.v(), arrow(heap, c.at(r)))
++}
++/// `H = V -> Mem -> (V -> Mem -> R) -> R`.
++fn hm_ty(w: Wasm, c: &mut Cx, r: At) -> Expr {
++    let (heap, ret) = (w.mem(c, r), ret_m(w, c, r));
++    arrow(w.v(), arrow(heap, arrow(ret, c.at(r))))
++}
++/// `V -> V -> R`: the source's continuation takes the answer and the state (the cell's value).
++fn ret_s(w: Wasm, c: &Cx, r: At) -> Expr {
++    arrow(w.v(), arrow(w.v(), c.at(r)))
++}
++fn hs_ty(w: Wasm, c: &mut Cx, r: At) -> Expr {
++    let ret = ret_s(w, c, r);
++    arrow(w.v(), arrow(w.v(), arrow(ret, c.at(r))))
++}
++/// `Inv h st = Pi kk. h A kk = kk st`: the heap's cell holds the source's state.
++fn inv_ty(w: Wasm, c: &mut Cx, r: At, h: At, st: At) -> Expr {
++    let n = w.n;
++    c.pi(arrow(w.v(), c.at(r)), |c, kk| id(c.at(r), app2(c.at(h), lit(n, CELL), c.at(kk)), app(c.at(kk), c.at(st))))
++}
++/// `Pi a h st. Inv h st -> km a h = ks a st`.
++fn crel_ty(w: Wasm, c: &mut Cx, r: At, km: At, ks: At) -> Expr {
++    c.pi(w.v(), |c, a| {
++        let heap = w.mem(c, r);
++        c.pi(heap, |c, h| {
++            c.pi(w.v(), |c, st| {
++                let it = inv_ty(w, c, r, h, st);
++                c.pi(it, |c, _| id(c.at(r), app2(c.at(km), c.at(a), c.at(h)), app2(c.at(ks), c.at(a), c.at(st))))
++            })
++        })
++    })
++}
++
++/// `\env x h k. M_env (prog code) (x, 0) h`, the body's answer passed to `k` with its heap.
++fn mach_step(w: Wasm, c: &mut Cx, r: At, z: At, code: &[Ins]) -> Expr {
++    let n = w.n;
++    let hm = hm_ty(w, c, r);
++    c.lam(hm, |c, env| {
++        c.lam(w.v(), |c, x| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, h| {
++                let ret = ret_m(w, c, r);
++                c.lam(ret, |c, k| {
++                    let base = c.mark(bv_ty(n));
++                    let p = w.prog(c, code, &[K::W], base);
++                    let p = c.mark(p);
++                    let fuel0 = c.mark(nat2_lit(0));
++                    let st_ty = prod(w.v(), c.at(base));
++                    let kk = c.lam(st_ty, |c, st| {
++                        let heap = w.mem(c, r);
++                        c.lam(heap, |c, mu| w.split(c, r, w.v(), base, st, |c, y, _| app2(c.at(k), c.at(y), c.at(mu))))
++                    });
++                    let kk = c.mark(kk);
++                    let m = w.meaning_env(c, p, fuel0, r, kk, z, Some(env));
++                    app2(m, mkpair(c.at(base), c.at(x), lit(n, 0)), c.at(h))
++                })
++            })
++        })
++    })
++}
++
++/// The source's step, by hand: `\g x st k. choose (le_s x 0) (k x st) (else)`.
++fn src_step(w: Wasm, c: &mut Cx, r: At, f: Cf) -> Expr {
++    let n = w.n;
++    let hs = hs_ty(w, c, r);
++    c.lam(hs, |c, g| {
++        c.lam(w.v(), |c, x| {
++            c.lam(w.v(), |c, st| {
++                let rs = ret_s(w, c, r);
++                c.lam(rs, |c, k| {
++                    let x1 = app2(Op::Sub.term(n), c.at(x), lit(n, 1));
++                    let el = match f {
++                        Cf::Sum => {
++                            let kont = c.lam(w.v(), |c, a| c.lam(w.v(), |c, s2| app2(c.at(k), app2(Op::Add.term(n), c.at(x), c.at(a)), c.at(s2))));
++                            apps(c.at(g), vec![x1, c.at(st), kont])
++                        }
++                        Cf::Nest => {
++                            let kont = c.lam(w.v(), |c, a| c.lam(w.v(), |c, s2| apps(c.at(g), vec![c.at(a), c.at(s2), c.at(k)])));
++                            apps(c.at(g), vec![x1, c.at(st), kont])
++                        }
++                        _ => {
++                            let kont = c.lam(w.v(), |c, a| c.lam(w.v(), |c, s2| app2(c.at(k), app2(Op::Add.term(n), c.at(a), c.at(s2)), c.at(s2))));
++                            apps(c.at(g), vec![x1, app2(Op::Add.term(n), c.at(st), lit(n, 1)), kont])
++                        }
++                    };
++                    choose(c.at(r), app2(Op::LeS.term(n), c.at(x), lit(n, 0)), app2(c.at(k), c.at(x), c.at(st)), el)
++                })
++            })
++        })
++    })
++}
++
++/// `p : a = b`, `q : b = c` give `a = c`.
++fn trans(c: &mut Cx, r: At, (a, b, cc): (Expr, Expr, Expr), p: Expr, q: Expr) -> Expr {
++    let a = c.mark(a);
++    let motive = c.lam(c.at(r), |c, u| {
++        c.lam(c.at(r), |c, v| {
++            let ty = id(c.at(r), c.at(u), c.at(v));
++            c.lam(ty, |c, _| arrow(id(c.at(r), c.at(a), c.at(u)), id(c.at(r), c.at(a), c.at(v))))
++        })
++    });
++    let base = c.lam(c.at(r), |c, u| {
++        let ty = id(c.at(r), c.at(a), c.at(u));
++        c.lam(ty, |c, h| c.at(h))
++    });
++    app(jelim(motive, base, b, cc, q), p)
++}
++
++/// `Id(R, choose c t e, choose c t' e')` from `Id(R, t, t')` and `Id(R, e, e')`: J on each branch.
++fn cchoose_cong(c: &mut Cx, r: At, cd: At, (t, t2, pt): (Expr, Expr, Expr), (e, e2, pe): (Expr, Expr, Expr)) -> Expr {
++    let (e, e2) = (c.mark(e), c.mark(e2));
++    let outer_m = c.lam(c.at(r), |c, a| {
++        c.lam(c.at(r), |c, b| {
++            let ty = id(c.at(r), c.at(a), c.at(b));
++            c.lam(ty, |c, _| id(c.at(r), choose(c.at(r), c.at(cd), c.at(a), c.at(e)), choose(c.at(r), c.at(cd), c.at(b), c.at(e2))))
++        })
++    });
++    let pe = c.mark(pe);
++    let outer_b = c.lam(c.at(r), |c, a| {
++        let inner_m = c.lam(c.at(r), |c, y| {
++            c.lam(c.at(r), |c, y2| {
++                let ty = id(c.at(r), c.at(y), c.at(y2));
++                c.lam(ty, |c, _| id(c.at(r), choose(c.at(r), c.at(cd), c.at(a), c.at(y)), choose(c.at(r), c.at(cd), c.at(a), c.at(y2))))
++            })
++        });
++        let inner_b = c.lam(c.at(r), |c, y| refl(choose(c.at(r), c.at(cd), c.at(a), c.at(y))));
++        jelim(inner_m, inner_b, c.at(e), c.at(e2), c.at(pe))
++    });
++    jelim(outer_m, outer_b, t, t2, pt)
++}
++
++/// The module law: `Pi N. GoodNat N -> Pi R z x h st km ks. rel km ks -> Inv h st -> M_N x h km = S_N x st ks`, with
++/// `M_N = N H (\x h k. z) Bm`, `Bm` built from `f.code()` through `prog`, and `S_N` the hand-written source.
++pub fn module_law(w: Wasm, f: Cf) -> (Expr, Expr) {
++    let n = w.n;
++    let v = || bv_ty(n);
++    // N gn R z x h st km ks rel inv
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| nat2()),
++        ty!(|c, x| w.good_nat(c, x[0])),
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[2])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| w.mem(c, x[2])),
++        ty!(|_c, _x| bv_ty(n)),
++        ty!(|c, x| ret_m(w, c, x[2])),
++        ty!(|c, x| ret_s(w, c, x[2])),
++        ty!(|c, x| crel_ty(w, c, x[2], x[7], x[8])),
++        ty!(|c, x| inv_ty(w, c, x[2], x[5], x[6])),
++    ];
++    law(&tys, |c, x| {
++        let (fuel, gn, r, z) = (x[0], x[1], x[2], x[3]);
++        let hm = hm_ty(w, c, r);
++        let hm = c.mark(hm);
++        let hs = hs_ty(w, c, r);
++        let hs = c.mark(hs);
++        let bm = mach_step(w, c, r, z, &f.code());
++        let bm = c.mark(bm);
++        let bs = src_step(w, c, r, f.base());
++        let bs = c.mark(bs);
++        let tm = c.lam(v(), |c, _| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _| {
++                let ret = ret_m(w, c, r);
++                c.lam(ret, |c, _| c.at(z))
++            })
++        });
++        let tm = c.mark(tm);
++        let ts = c.lam(v(), |c, _| {
++            c.lam(v(), |c, _| {
++                let rs = ret_s(w, c, r);
++                c.lam(rs, |c, _| c.at(z))
++            })
++        });
++        let ts = c.mark(ts);
++        let ctx = Mx { w, r, hm, hs, tm, ts, bm, bs };
++        // d x h st km ks rel inv, as Pis (the motive) or lambdas
++        let binders = |c: &mut Cx, wrap: &dyn Fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr| {
++            let tys: Vec<Ty> = vec![
++                ty!(|_c, _x| nat2()),
++                ty!(|_c, _x| bv_ty(n)),
++                ty!(|c, _x| w.mem(c, r)),
++                ty!(|_c, _x| bv_ty(n)),
++                ty!(|c, _x| ret_m(w, c, r)),
++                ty!(|c, _x| ret_s(w, c, r)),
++                ty!(|c, y| crel_ty(w, c, r, y[4], y[5])),
++                ty!(|c, y| inv_ty(w, c, r, y[2], y[3])),
++            ];
++            tele(c, &tys, &mut vec![], wrap, body)
++        };
++        let mot_at = |c: &mut Cx, m: At| {
++            binders(c, &pi, &mut |c, y| {
++                let l = ctx.mach(c, m, c.at(y[1]), c.at(y[2]), c.at(y[4]));
++                let rr = ctx.src(c, m, c.at(y[1]), c.at(y[3]), c.at(y[5]));
++                id(c.at(r), l, rr)
++            })
++        };
++        let stmt = {
++            let l = ctx.mach(c, fuel, c.at(x[4]), c.at(x[5]), c.at(x[7]));
++            let rr = ctx.src(c, fuel, c.at(x[4]), c.at(x[6]), c.at(x[8]));
++            id(c.at(r), l, rr)
++        };
++        let motive = c.lam(nat2(), |c, m| mot_at(c, m));
++        let hz = binders(c, &lam, &mut |c, _| refl(c.at(z)));
++        let step = c.lam(nat2(), |c, j| {
++            let ih_ty = mot_at(c, j);
++            c.lam(ih_ty, |c, ih| binders(c, &lam, &mut |c, y| ctx.step_proof(c, f.base(), j, ih, y)))
++        });
++        let args = [x[4], x[5], x[6], x[7], x[8], x[9], x[10]].map(|a| c.at(a));
++        let proof = apps(c.at(gn), [vec![motive, hz, step, nat2_lit(0)], args.to_vec()].concat());
++        (proof, stmt)
++    })
++}
++
++struct Mx {
++    w: Wasm,
++    r: At,
++    hm: At,
++    hs: At,
++    tm: At,
++    ts: At,
++    bm: At,
++    bs: At,
++}
++
++impl Mx {
++    fn mach(&self, c: &mut Cx, m: At, x: Expr, h: Expr, km: Expr) -> Expr {
++        apps(apps(c.at(m), vec![c.at(self.hm), c.at(self.tm), c.at(self.bm)]), vec![x, h, km])
++    }
++    fn src(&self, c: &mut Cx, m: At, x: Expr, st: Expr, ks: Expr) -> Expr {
++        apps(apps(c.at(m), vec![c.at(self.hs), c.at(self.ts), c.at(self.bs)]), vec![x, st, ks])
++    }
++    /// The step at fuel `j + 1` for the binders `y = d x h st km ks rel inv`: the `then` branch by `rel`, the `else`
++    /// branch by the hypothesis at each call (and `inv` at each read of the cell), then J through the `choose`.
++    fn step_proof(&self, c: &mut Cx, f: Cf, j: At, ih: At, y: &[At]) -> Expr {
++        let (w, r) = (self.w, self.r);
++        let n = w.n;
++        let [d, x, h, st, km, ks, rel, inv] = [y[0], y[1], y[2], y[3], y[4], y[5], y[6], y[7]];
++        let ihx = |c: &mut Cx, args: Vec<Expr>| apps(c.at(ih), [vec![c.at(d)], args].concat());
++        let cd = c.mark(app2(Op::LeS.term(n), c.at(x), lit(n, 0)));
++        let then = (app2(c.at(km), c.at(x), c.at(h)), app2(c.at(ks), c.at(x), c.at(st)), apps(c.at(rel), vec![c.at(x), c.at(h), c.at(st), c.at(inv)]));
++        let x1 = c.mark(app2(Op::Sub.term(n), c.at(x), lit(n, 1)));
++        let el = match f {
++            Cf::Sum => {
++                let add_x = |c: &Cx, a: At| app2(Op::Add.term(n), c.at(x), c.at(a));
++                let km1 = c.lam(w.v(), |c, a| { let heap = w.mem(c, r); c.lam(heap, |c, h2| app2(c.at(km), add_x(c, a), c.at(h2))) });
++                let ks1 = c.lam(w.v(), |c, a| c.lam(w.v(), |c, s2| app2(c.at(ks), add_x(c, a), c.at(s2))));
++                let rel1 = c.lam(w.v(), |c, a| {
++                    let heap = w.mem(c, r);
++                    c.lam(heap, |c, h2| c.lam(w.v(), |c, s2| {
++                        let it = inv_ty(w, c, r, h2, s2);
++                        c.lam(it, |c, i2| apps(c.at(rel), vec![add_x(c, a), c.at(h2), c.at(s2), c.at(i2)]))
++                    }))
++                });
++                let em = self.mach(c, j, c.at(x1), c.at(h), km1.clone());
++                let es = self.src(c, j, c.at(x1), c.at(st), ks1.clone());
++                let p = ihx(c, vec![c.at(x1), c.at(h), c.at(st), km1, ks1, rel1, c.at(inv)]);
++                (em, es, p)
++            }
++            Cf::Nest => {
++                let (km1, ks1, rel1) = {
++                    // the machine's continuation of the inner call is `km` eta-expanded (no eta in conversion)
++                    let km_eta = c.lam(w.v(), |c, b| { let heap = w.mem(c, r); c.lam(heap, |c, h3| app2(c.at(km), c.at(b), c.at(h3))) });
++                    let km_eta = c.mark(km_eta);
++                    let km1 = c.lam(w.v(), |c, a| { let heap = w.mem(c, r); c.lam(heap, |c, h2| self.mach(c, j, c.at(a), c.at(h2), c.at(km_eta))) });
++                    let ks1 = c.lam(w.v(), |c, a| c.lam(w.v(), |c, s2| self.src(c, j, c.at(a), c.at(s2), c.at(ks))));
++                    let rel1 = c.lam(w.v(), |c, a| {
++                        let heap = w.mem(c, r);
++                        c.lam(heap, |c, h2| c.lam(w.v(), |c, s2| {
++                            let it = inv_ty(w, c, r, h2, s2);
++                            c.lam(it, |c, i2| ihx(c, vec![c.at(a), c.at(h2), c.at(s2), c.at(km_eta), c.at(ks), c.at(rel), c.at(i2)]))
++                        }))
++                    });
++                    (km1, ks1, rel1)
++                };
++                let em = self.mach(c, j, c.at(x1), c.at(h), km1.clone());
++                let es = self.src(c, j, c.at(x1), c.at(st), ks1.clone());
++                let p = ihx(c, vec![c.at(x1), c.at(h), c.at(st), km1, ks1, rel1, c.at(inv)]);
++                (em, es, p)
++            }
++            _ => {
++                let cell = lit(n, CELL);
++                // after the call: read the cell, add, return
++                let km1 = c.lam(w.v(), |c, a| {
++                    let heap = w.mem(c, r);
++                    c.lam(heap, |c, h2| {
++                        let kk = c.lam(w.v(), |c, m| app2(c.at(km), app2(Op::Add.term(n), c.at(a), c.at(m)), c.at(h2)));
++                        app2(c.at(h2), cell.clone(), kk)
++                    })
++                });
++                let km1 = c.mark(km1);
++                let ks1 = c.lam(w.v(), |c, a| c.lam(w.v(), |c, s2| app2(c.at(ks), app2(Op::Add.term(n), c.at(a), c.at(s2)), c.at(s2))));
++                let rel1 = c.lam(w.v(), |c, a| {
++                    let heap = w.mem(c, r);
++                    c.lam(heap, |c, h2| c.lam(w.v(), |c, s2| {
++                        let it = inv_ty(w, c, r, h2, s2);
++                        c.lam(it, |c, i2| {
++                            let sum = c.mark(app2(Op::Add.term(n), c.at(a), c.at(s2)));
++                            let kk = c.lam(w.v(), |c, m| app2(c.at(km), app2(Op::Add.term(n), c.at(a), c.at(m)), c.at(h2)));
++                            let lhs = app2(c.at(h2), lit(n, CELL), kk.clone());
++                            let mid = app2(c.at(km), c.at(sum), c.at(h2));
++                            let rhs = app2(c.at(ks), c.at(sum), c.at(s2));
++                            let p = app(c.at(i2), kk);
++                            let q = apps(c.at(rel), vec![c.at(sum), c.at(h2), c.at(s2), c.at(i2)]);
++                            trans(c, r, (lhs, mid, rhs), p, q)
++                        })
++                    }))
++                });
++                let st1 = c.mark(app2(Op::Add.term(n), c.at(st), lit(n, 1)));
++                let h1 = w.upd(c, r, lit(n, CELL), c.at(st1), c.at(h));
++                let h1 = c.mark(h1);
++                // the machine's else: read the cell, store it plus one, call
++                let body = c.lam(w.v(), |c, m| {
++                    let hm1 = w.upd(c, r, lit(n, CELL), app2(Op::Add.term(n), c.at(m), lit(n, 1)), c.at(h));
++                    self.mach(c, j, c.at(x1), hm1, c.at(km1))
++                });
++                let em = app2(c.at(h), lit(n, CELL), body.clone());
++                let e1 = self.mach(c, j, c.at(x1), c.at(h1), c.at(km1));
++                let es = self.src(c, j, c.at(x1), c.at(st1), ks1.clone());
++                let inv1 = c.lam(arrow(w.v(), c.at(r)), |c, kk| refl(app(c.at(kk), c.at(st1))));
++                let p1 = app(c.at(inv), body);
++                let p2 = ihx(c, vec![c.at(x1), c.at(h1), c.at(st1), c.at(km1), ks1, rel1, inv1]);
++                let p = trans(c, r, (em.clone(), e1, es.clone()), p1, p2);
++                (em, es, p)
++            }
++        };
++        cchoose_cong(c, r, cd, then, el)
++    }
++}
++
++/// A run by `refl`: the machine at `fuel` from `x`, cell `A` holding 0, `km = \a h. k0 a`: `k0 want` or the timeout.
++fn module_run(w: Wasm, f: Cf, xv: u128, fuel: usize, want: Option<u128>) -> (Expr, Expr) {
++    let n = w.n;
++    // R z k0 h0
++    let tys: Vec<Ty> = vec![
++        ty!(|_c, _x| sort(0)),
++        ty!(|c, x| c.at(x[0])),
++        ty!(|c, x| arrow(bv_ty(n), c.at(x[0]))),
++        ty!(|c, x| w.mem(c, x[0])),
++    ];
++    law(&tys, |c, x| {
++        let (r, z) = (x[0], x[1]);
++        let hm = hm_ty(w, c, r);
++        let bm = mach_step(w, c, r, z, &f.code());
++        let tm = c.lam(bv_ty(n), |c, _| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _| {
++                let ret = ret_m(w, c, r);
++                c.lam(ret, |c, _| c.at(z))
++            })
++        });
++        let km = c.lam(bv_ty(n), |c, a| {
++            let heap = w.mem(c, r);
++            c.lam(heap, |c, _| app(c.at(x[2]), c.at(a)))
++        });
++        let h0 = w.upd(c, r, lit(n, CELL), lit(n, 0), c.at(x[3]));
++        let l = apps(apps(nat2_lit(fuel), vec![hm, tm, bm]), vec![lit(n, xv), h0, km]);
++        let want = match want {
++            Some(a) => app(c.at(x[2]), lit(n, a)),
++            None => c.at(z),
++        };
++        (refl(l.clone()), id(c.at(r), l, want))
++    })
++}
++
++#[test]
++pub fn call_ins_spike() {
++    for n in [4usize, 24, 64] {
++        tatic_kernel::scoped(|| {
++            let w = Wasm { n };
++            let timed = |name: &str, (p, s): (Expr, Expr)| {
++                let t0 = Instant::now();
++                ck(&format!("{name} n={n}"), &p, &s);
++                println!("CALLINS n={n} {name}: {:?}", t0.elapsed());
++            };
++            let rejected = |name: &str, (p, s): (Expr, Expr)| {
++                let sort_of = infer(&Ctx::new(), &s).map(|t| whnf(&t));
++                assert!(matches!(sort_of.as_ref().map(|t| t.node()), Ok(tatic_kernel::Node::Sort(_))), "{name}: statement is not a type: {sort_of:?}");
++                let t0 = Instant::now();
++                let e = holds(&p, &s).expect_err(&format!("{name} must be rejected at n={n}"));
++                println!("CALLINS n={n} rejected {name}: {:?} ({})", t0.elapsed(), e.chars().take(80).collect::<String>());
++            };
++            timed("sum 3, fuel 4, answers 6", module_run(w, Cf::Sum, 3, 4, Some(6)));
++            timed("sum 3, fuel 3, times out", module_run(w, Cf::Sum, 3, 3, None));
++            timed("nest 2, fuel 3, answers 0", module_run(w, Cf::Nest, 2, 3, Some(0)));
++            timed("nest 2, fuel 2, times out", module_run(w, Cf::Nest, 2, 2, None));
++            timed("cnt 3, fuel 4, answers 9", module_run(w, Cf::Cnt, 3, 4, Some(9)));
++            timed("cnt 3, fuel 3, times out", module_run(w, Cf::Cnt, 3, 3, None));
++            rejected("cnt 3, fuel 4, answers 8", module_run(w, Cf::Cnt, 3, 4, Some(8)));
++            timed("sum law", module_law(w, Cf::Sum));
++            timed("nest law", module_law(w, Cf::Nest));
++            timed("cnt law", module_law(w, Cf::Cnt));
++            rejected("sum law, call on x - 2", module_law(w, Cf::SumArg2));
++            rejected("sum law, call dropped", module_law(w, Cf::SumNoCall));
++            rejected("nest law, one call", module_law(w, Cf::NestOnce));
++            rejected("cnt law, no store", module_law(w, Cf::CntNoStore));
++            rejected("cnt law, reads cell A + 1", module_law(w, Cf::CntWrongCell));
++        })
++    }
++}
++
+ /// `WASM` check times at n = 4, 16, 32, 64, with the controls at 64.
+ #[test]
+ #[ignore]
