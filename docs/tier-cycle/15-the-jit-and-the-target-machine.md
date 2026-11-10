@@ -1038,8 +1038,13 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     Shipped (cbcc4c1) as no segment at all where the thread has the room: `check_in` runs a large check in place when
     `stack::has_check_room()` holds, and church-bv's entry thread has a 256 MB stack (`CHECK_STACK`); a thread with
     less room takes the segment as before. church-bv's worker task threads and lanes were on default stacks and still
-    took it; since 2026-11-09 they have the check stack too (their tests assert the room; a sweep's commit and faults
-    not remeasured). Page faults per
+    took it; since 2026-11-09 they have the check stack too (their tests assert the room). A salt-1 sweep's commit,
+    ae6f369's `entry.rs` and `driver.rs` against 6f1cb06, two sweeps each (`scripts/stack_commit.sh`, run
+    `2026-11-09-q1-stack-commit`, 48-57% other load): the job's peak falls from 4537 and 4538 MB to 4490 and 4502 MB
+    (-36 to -47 MB, about 1%), and the largest process's peak is 3336 MB in all four, so the segments were not at its
+    peak. The 150 MB of the 2026-10-23 worker is not reproduced: that sweep (`cold:cmp3d`, 446-490 MB) no longer
+    exists, and today's processes are seven times larger. Job CPU 168-171 s against 175-177 s, under that load no
+    verdict; faults not remeasured. Page faults per
     repeat check, f159775 against cbcc4c1 (`scripts/faults.ps1`, run `2026-11-09-m1-faults`; the process's count at
     `GATE_REPS=3` less `GATE_REPS=1`, halved; 3 runs each, equal to within 6 faults): 15104 to 0 at d = 13 and 3802 to
     -2 at d = 11; the first check also faults less (20398 to 17054 and 6589 to 5730 for the whole process). Not timed:
