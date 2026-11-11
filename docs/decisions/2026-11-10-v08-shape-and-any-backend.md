@@ -8,9 +8,12 @@ Goal 1 of `ROADMAP.md` now says so and links here.
 ## Status
 
 - **Decided 2026-11-10:** v0.8 is z5 "Recursion once", staged S0-S4 with its own spec (below); division by zero is a
-  partial row whose trap is the no-value answer (below). The spec is not written yet; nothing is built.
-- **Open:** the heap relation for callees (below), and whether `loop`/`br` survive: the no-loop spike says they need
-  not (`docs/tier-cycle/`, "Tail self-calls as `return_call`, with no `loop` or `br`: a spike"); the spec decides.
+  partial row whose trap is the no-value answer (below); tail calls are one `Call` printed as `return_call` when
+  nothing follows it (below). The spec is a draft that has not converged
+  (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`); nothing is built.
+- **Open:** the state shape (below, pending the frame spike); the heap relation for callees (below); whether
+  `loop`/`br` survive: the no-loop spike says they need not (`docs/tier-cycle/`, "Tail self-calls as `return_call`,
+  with no `loop` or `br`: a spike"); the spec decides.
 - **Settled:** the "any backend" policy below. It extends the 2026-10-31 decision
   (`docs/decisions/2026-10-31-learned-target-model.md`) and does not change it.
 
@@ -179,9 +182,10 @@ remainder circuit answers `x`; the machine has no trap channel.
 ## Open for the spec: tail calls and the state shape (surveys, 2026-11-10)
 
 The draft spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`) did not converge in review; two of
-its shapes went to the user and were surveyed again, each checked by a second reader. Not decided.
+its shapes went to the user and were surveyed again, each checked by a second reader. Tail calls decided (n1,
+2026-11-10); the state shape is open, pending the frame spike.
 
-- **Tail calls.** The survey recommends one `Call` and a printer that writes `return_call` when nothing follows the
+- **Tail calls (decided: the survey's k2).** The survey recommends one `Call` and a printer that writes `return_call` when nothing follows the
   call (k2), tested exhaustively over small instruction lists by running each printed twice under wasmtime (tail rule
   against every call as `call`) with a callee whose skipped continuation shows as a different value. Why: the
   printer's rule fails safe (an unknown suffix prints `call`, which costs only stack depth), while a `ReturnCall`
