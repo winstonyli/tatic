@@ -52,7 +52,8 @@ sends the five fragment terms to `proof/gate.rs#gate` alone (`jit/tests.rs`: `fr
 steps: the census and the emit spike" and "The gate's costs, and the rules they triggered".
 
 - v0.8 **Recursion once** - loops and self-calls install from emitted code through one generated simulation proof, on
-  an instruction table with locals apart from the heap (staged S0-S4; picked 2026-11-10, spec a draft:
-  `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`).
-  - Done when: both sum loops and terms 1, 2, 3 install through the generator, the loop law, fuel 1 and `strip_loop`
-    are deleted, and a toy second table installs a straight-line term (the spec may refine this).
+  an instruction table with locals as a frame passed in (staged; picked 2026-11-10,
+  `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`; spec approved 2026-11-11:
+  `docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`).
+  - Done when: the spec's Goals hold (both sum loops and terms 1, 2, 3 install through the generator, the loop
+    machinery is deleted, and a toy second table passes a straight-line term through the unchanged gate, among them).

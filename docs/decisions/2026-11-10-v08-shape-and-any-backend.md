@@ -11,7 +11,7 @@ Goal 1 of `ROADMAP.md` now says so and links here.
   partial row whose trap is the no-value answer (below); tail calls are one `Call` printed as `return_call` when
   nothing follows it (below); the state shape is a frame passed in plus one opaque memory argument, with the memory
   rows deleted in v0.8 (u1, below). The spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`) was
-  rewritten to u1 on 2026-11-11 and is still a draft under review; nothing is built.
+  rewritten to u1 on 2026-11-11 and approved the same day (`status: active`); nothing is built yet.
 - **Spiked 2026-11-11, for the spec:** self-calls and callees merge into one call rule over a table of call entries
   (`docs/tier-cycle/`, "One call rule for self-calls and callees: a spike"); the kernel rejects forged proofs of every
   mutant tried, so the generator's walk checks only fail early (`docs/tier-cycle/`, "The kernel against forged proofs

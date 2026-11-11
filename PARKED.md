@@ -217,6 +217,35 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   `rewrite/rules.rs`, `prove_rule`. Status: parked.
 - **Boolean combinations of comparisons (`lt` results under `and`/`or`/`not`)** — why: machine side is cheap (spike passed) but the gain is capped at about 17% of M in the head start (measured on the cmp3d families, deleted 2026-10-23, so the cap is not a current number) and the rule side is untouched. Trigger: the kernel extending its own vocabulary (goal 2, `ROADMAP.md`; its enumerator form was decided against: "Definitions as an enumerator vocabulary", under "Proposer and loop"); restart with a half-day `prove_rule` probe, porting the spike patch by hand (`docs/superpowers/spikes/2026-10-09-boolean-comparisons-spike.patch` targets `tests/church_bv/` files that no longer exist, so it does not apply; checked 2026-11-10). Evidence: `docs/superpowers/specs/2026-10-09-boolean-comparisons-spec.md`, "Spike result (2026-10-09): PASSED". Status: parked.
 
+- **`LocalSet` and scratch locals (v0.8)** — why parked: no v0.8 target writes a local (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`). Trigger: the first
+  gate target whose body emits `local.set` or `local.tee` (wrapping division, the closure environment). Evidence:
+  `docs/tier-cycle/`, "Locals as a frame passed in, with and without the memory: a spike" (`local.set i` is a row that
+  rebuilds the concrete frame; temporaries widen the frame), verified 2026-11-11; the law telescope then gains the
+  temporaries binder (`docs/tier-cycle/`, "One call rule for self-calls and callees: a spike"). Status: parked.
+- **The partial row and gcd (after v0.8)** — why parked: the rung after v0.8 by decision
+  (`docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Decided: division and remainder by zero"). Trigger: v0.8
+  tagged. Evidence: `docs/tier-cycle/`, "The partial row's cost, and gcd through the generator", verified 2026-11-11.
+  Open: where the domain lives (`eval` depending on the JIT, a one-sided mismatch, or op and row). Status: parked.
+- **Bit rows (`wrap`, `extend`, `shl`, `or`; terms 25 and 28)** — why parked: outside v0.8's goals (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`). Trigger:
+  v0.8 tagged. Evidence: the census, `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code
+  stands", verified 2026-11-11. Status: parked.
+- **The heap relation on the frame (after v0.8)** — what: `Mem` becomes `V x Heap` and the `Store`/`Load` rows
+  return; the machine's types, call row and interpreters stay as v0.8 leaves them, and the generator binds the memory's
+  parts separately. Why parked: no v0.8 target allocates. Trigger: the first gate target that allocates or reads a
+  record (the 7 closure-record terms, term 37). Evidence: `docs/tier-cycle/`, "The heap on the frame, behind one memory
+  argument: a spike" and "A caller's cell across a call to another function: a spike"; what is shown and open is in
+  `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Open: a heap relation for callees", verified 2026-11-11.
+  Status: parked.
+- **`call_indirect` and the table** — why parked: the 11 table-call terms also need the closure convention
+  (`docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code stands"). Trigger: the heap relation
+  built (entry above), or a table-only closure target picked. Evidence: same section, verified 2026-11-11. Status:
+  parked.
+- **A distinct `i32` kind** — why parked: no v0.8 target holds an `i32` value; v0.8 removes the env word from covered
+  callees (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`, D3). Trigger: the first `i32` arithmetic in a gate target. Evidence: same spec, "Departures from the
+  decision file", verified 2026-11-11. Status: parked.
+- **Renaming `tatic-wasm`** (the crate holds the backend-independent machine after v0.8) — why parked: a rename has no
+  consumer yet. Trigger: a second real backend. Evidence: `docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`, "End-state fit", verified 2026-11-11. Status: parked.
+
 ## Kernel memos, footprint and allocation
 
 - **Whether large OS pages stay on by default (the time half of the A/B)** — what: time `proof-cost-split` and the `church_bv` test exe with large pages on and off, then decide the default in `.cargo/config.toml`. Why parked: by decision 2026-11-07, back to research; counts are done and the timed run needs a quiet machine. Trigger: a slow or unrepeatable first run blamed on the allocator, a count A/B that large pages blur, or a quiet machine with nothing better queued. Evidence: `docs/tier-cycle/`, "Why a retired-instruction count wanders" (its last bullet, 2026-11-07); scripts and inputs in `docs/runs/2026-11-07/` (`m2build.sh` leaves the `tb.exe` copy to be done by hand; `m2time.ps1` is unrun; launch it with `run.ps1 -Timed -Affinity 100 -HoldMin 20`). One timed data point since: on the gate's check large pages save 4-7% at d = 12-13 (doc 15, "Testing the survey's options (2026-11-09)"). Status: parked.

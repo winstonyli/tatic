@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # v0.8: Recursion once (one generated simulation proof over an instruction table)
@@ -570,28 +570,11 @@ generator and the one statement.
 `machine.rs`, `machine/statement.rs` and `machine/sim.rs` stay under 1000 lines (w2's `sim.rs` was 710 with the walk
 and the statement together; inference that the split keeps all under).
 
-## Parked (added to `PARKED.md` in the commit that sets this spec `active`)
+## Parked
 
-- **`LocalSet` and scratch locals.** Why: no v0.8 target writes a local. Trigger: the first gate target whose body
-  emits `local.set` or `local.tee` (wrapping division, the closure environment). Shown: `local.set i` is a row that
-  rebuilds the concrete frame, and temporaries widen M (`docs/tier-cycle/`, "Locals as a frame passed in, with and
-  without the memory: a spike"); the law telescope then gains w2's temporaries binder (D4).
-- **The partial row and gcd.** Why: the decision file makes it the rung after v0.8 ("Decided: division and remainder
-  by zero"). Trigger: v0.8 tagged. Evidence: `docs/tier-cycle/`, "The partial row's cost, and gcd through the
-  generator". Open: where the domain lives (`eval` depending on the JIT, a one-sided mismatch, or op and row).
-- **Bit rows** (`wrap`, `extend`, `shl`, `or`; terms 25, 28). Why: outside v0.8's goals. Trigger: v0.8 tagged.
-- **The heap relation.** Why: no v0.8 target allocates. Trigger: the first gate target that allocates or reads a
-  record (the 7 closure-record terms, term 37). At that rung `Mem` becomes `V x Heap` and the `Store`/`Load` rows
-  return; the machine's types, call row and interpreters stay as v0.8 leaves them, and the generator binds the
-  memory's parts separately (`docs/tier-cycle/`, "The heap on the frame, behind one memory argument: a spike").
-  What is shown and open: the decision file's "Open: a heap relation for callees" and doc 15's index
-  (`docs/tier-cycle/README.md`), w3 and w4 among them.
-- **`call_indirect` and the table.** Why: the 11 table-call terms need the closure convention besides (decision file,
-  "Where the code stands"). Trigger: the heap relation built, or a table-only closure target picked.
-- **A distinct `i32` kind.** Why: no v0.8 target holds an `i32` value (D3 removes the env word). Trigger: the first
-  `i32` arithmetic in a target.
-- **The crate's name** (`tatic-wasm` holding the backend-independent machine). Why: renaming has no consumer yet.
-  Trigger: a second real backend.
+In `PARKED.md` ("Proof shapes and compiled evaluation"), added when this spec went `active` (2026-11-11): `LocalSet`
+and scratch locals; the partial row and gcd; bit rows; the heap relation on the frame; `call_indirect` and the table;
+a distinct `i32` kind; renaming `tatic-wasm`.
 
 ## Plan inputs (for writing-plans, not design)
 
