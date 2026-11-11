@@ -27,7 +27,7 @@ status: done
 - A fragment term's install takes the gate's verdict and tries nothing else. Every other term goes to `kernel_verify`, minus `prove_pure_expr`.
 - `well_formed` rejects `Raw`, stack-shape errors and an out-of-range `Br` before `prog` is called. `prog`, `out_stack` and `seq` keep their signatures.
 - Run these guards before every commit that touches their scope, each as `bash scripts/check/<name>.sh`: `size_check`, `test_placement_check`, `tour_check`, `cite_check`, `layout_check` and `front_matter_check`. Below, "the guard loop" means `for g in size_check test_placement_check tour_check cite_check layout_check front_matter_check; do bash scripts/check/$g.sh || break; done`.
-- Runs over a minute go through `~/.claude/runs/run.ps1` (a row in `docs/runs.md`, launched from the main checkout). Findings go in doc 15 (`docs/tier-cycle/15-the-jit-and-the-target-machine.md`) with their run ids, in a new section "v0.7's build: measurements and checks" that T1 creates (its heading starts a line). ROADMAP, TOUR and PARKED cite it as `docs/tier-cycle/` ("v0.7's build: measurements and checks"), never by file name, or `cite_check` fails.
+- Runs over a minute go through `~/.claude/runs/run.ps1` (a row in `docs/runs.md`, launched from the main checkout). Findings go in doc 15 (index: `docs/tier-cycle/README.md`) with their run ids, in a new section "v0.7's build: measurements and checks" that T1 creates (its heading starts a line). ROADMAP, TOUR and PARKED cite it as `docs/tier-cycle/` ("v0.7's build: measurements and checks"), never by file name, or `cite_check` fails.
 - Never let python read stdin. Commit trailer: `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`. Never push or tag.
 
 ## Review Focus
@@ -65,7 +65,7 @@ This is D3a's precondition. A miss outside the fragment is the user's decision b
   - **If any miss is outside the fragment, stop** and bring it to the user as a Decide group.
   - Record the counts and the misses in doc 15, then run `git checkout crates/tatic/src`.
   ```bash
-  git add docs/tier-cycle/15-the-jit-and-the-target-machine.md docs/runs.md
+  git add docs/tier-cycle/15-the-jit-and-the-target-machine/ docs/runs.md
   git commit -m "docs: v0.7 check that prove_closure_expr accepts what prove_pure_expr accepted outside the fragment"
   ```
 
@@ -275,7 +275,7 @@ First split (the tripwire: `lower_wat.rs` is past 1000 lines), then convert.
   Expected: each mutation fails its own assertion, and the test passes once reverted. The n = 8 run exits 0. Record its time and the n = 64 test's time in doc 15.
 - [ ] **Step 3: Commit.**
   ```bash
-  git add crates/tatic/src/jit.rs crates/tatic/src/jit/op_table_tests.rs docs/tier-cycle/15-the-jit-and-the-target-machine.md docs/runs.md
+  git add crates/tatic/src/jit.rs crates/tatic/src/jit/op_table_tests.rs docs/tier-cycle/15-the-jit-and-the-target-machine/ docs/runs.md
   git commit -m "jit: operator table checked against eval and wasmtime (n = 64 edges; n = 8 exhaustive, ignored)"
   ```
 
@@ -345,7 +345,7 @@ The measurements run on the production gate. Their results set the bounds by sec
   Each triggered rule's change has a test that failed before it.
 - [ ] **Step 5: Guard loop** (TOUR gets `proof/gate.rs` with `in_fragment` and `gate` in the data flow), then commit.
   ```bash
-  git add crates/tatic/src/proof.rs crates/tatic/src/proof/gate.rs crates/tatic/src/proof/tests.rs crates/tatic/src/proof/tests crates/tatic/src/testing crates/tatic/src/jit/compile.rs crates/tatic-wasm docs/TOUR.md docs/tier-cycle/15-the-jit-and-the-target-machine.md docs/runs.md
+  git add crates/tatic/src/proof.rs crates/tatic/src/proof/gate.rs crates/tatic/src/proof/tests.rs crates/tatic/src/proof/tests crates/tatic/src/testing crates/tatic/src/jit/compile.rs crates/tatic-wasm docs/TOUR.md docs/tier-cycle/15-the-jit-and-the-target-machine/ docs/runs.md
   git commit -m "proof: the straight-line gate (emitted Ins proved equal to the source at n = 64), the fragment predicate, its costs"
   ```
 

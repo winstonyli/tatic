@@ -408,8 +408,8 @@ assert!(check(&Ctx::new(), &apps(proof, args_with_first_two_witnesses_swapped), 
 - Modify: `lib.rs` (`mod wnat; mod wfold;` beside `mod machine;`), `uniform.rs` (drop its two lines); imports and visibility need no
   change (Global Constraints; `pub(super)` from a child of the crate root is crate-wide), `docs/TOUR.md` (line 42 loses both `wnat`
   and `wfold`; a new top-level line after line 41 names `crates/church-bv/src/wnat.rs#ind` and `crates/church-bv/src/wfold.rs#proof`
-  in the tour's cite form), `docs/tier-cycle/15-the-jit-and-the-target-machine.md` (sections "One generator proves stream laws at
-  all widths" and "The level wall is Church's": new paths; the `Law::new`/`Law::proof` and wnat-`add` description becomes
+  in the tour's cite form), `docs/tier-cycle/`, "One generator proves stream laws at
+  all widths" and "The level wall is Church's" (doc 15's paragraphs): new paths; the `Law::new`/`Law::proof` and wnat-`add` description becomes
   `encode`/`proof`; the x2 paragraph's "still in `T`" gets "until the w1 port"), `PARKED.md` (goal D entry; the family-deletion entry
   says `T` serves only the families; the Task 4 `cases2` entry's path), comments in `uniform/mul.rs` (two `wnat.rs` mentions) and
   `crates/tatic-kernel/src/postulates.rs` (`uniform/wnat.rs`)
