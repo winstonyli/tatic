@@ -203,7 +203,14 @@ its shapes went to the user and were surveyed again, each checked by a second re
   spike ran both (`docs/tier-cycle/`, "Locals as a frame passed in, with and without the memory: a spike"): both
   prove every real target and reject every control, both delete the slot machinery, and padding to a module-wide
   width covers every call shape tried; l2 is 59 lines smaller, l3 keeps the memory opaque so the heap's return adds
-  rows rather than reopening the walk (reasoned, untested). Open for the user: l3 or l2.
+  rows rather than reopening the walk (reasoned, untested). A deeper survey (four lenses, a synthesis and a checker;
+  nothing built) adds a third arm: l3's frame and opaque memory argument with the `Store`, `Load` and `upd` rows
+  deleted, since the generator rejects them. Its case: the heap cannot be a frame word, because the heap type mentions
+  the answer type and a callee's writes must come back, so with l2 the heap's return re-threads the memory through
+  every interpreter, `rel` and the callee law. Its checker rates it a close call, not a clear first: the heap spikes
+  bind the heap's parts separately (a projection of a variable state is stuck), which is evidence against one opaque
+  argument surviving, and the row-only saving was never measured. The falsifier: port the smallest heap case onto the
+  l3 frame. Open for the user.
 
 ## Open: a heap relation for callees (2026-11-10)
 
