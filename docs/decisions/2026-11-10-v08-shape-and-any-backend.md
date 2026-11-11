@@ -11,7 +11,7 @@ Goal 1 of `ROADMAP.md` now says so and links here.
   partial row whose trap is the no-value answer (below); tail calls are one `Call` printed as `return_call` when
   nothing follows it (below). The spec is a draft that has not converged
   (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`); nothing is built.
-- **Open:** the state shape (below, pending the frame spike); the heap relation for callees (below); whether
+- **Open:** the state shape (below: a frame passed in, spiked with and without the memory; which one is the user's); the heap relation for callees (below); whether
   `loop`/`br` survive: the no-loop spike says they need not (`docs/tier-cycle/`, "Tail self-calls as `return_call`,
   with no `loop` or `br`: a spike"); the spec decides.
 - **Settled:** the "any backend" policy below. It extends the 2026-10-31 decision
@@ -183,7 +183,7 @@ remainder circuit answers `x`; the machine has no trap channel.
 
 The draft spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`) did not converge in review; two of
 its shapes went to the user and were surveyed again, each checked by a second reader. Tail calls decided (n1,
-2026-11-10); the state shape is open, pending the frame spike.
+2026-11-10); the state shape is spiked both ways and open for the user.
 
 - **Tail calls (decided: the survey's k2).** The survey recommends one `Call` and a printer that writes `return_call` when nothing follows the
   call (k2), tested exhaustively over small instruction lists by running each printed twice under wasmtime (tail rule
@@ -199,9 +199,11 @@ its shapes went to the user and were surveyed again, each checked by a second re
   passed back through a return, with today's single memory component kept (l3). Why the frame: the spiked locals are a
   continuation chain whose type depends on the answer type, which is what forces `Call`'s explicit sort operand. The
   checker found the case for keeping the memory over dropping it (the draft's l2) overstated, since adding `hp` later
-  reopens the same rules either way: a close call, to settle by one spike run with and without the memory. Open in
-  both: frames of different widths need one type (pad to a module-wide width, or a call row per callee); untried by
-  any spike.
+  reopens the same rules either way: a close call, to settle by one spike run with and without the memory. The frame
+  spike ran both (`docs/tier-cycle/`, "Locals as a frame passed in, with and without the memory: a spike"): both
+  prove every real target and reject every control, both delete the slot machinery, and padding to a module-wide
+  width covers every call shape tried; l2 is 59 lines smaller, l3 keeps the memory opaque so the heap's return adds
+  rows rather than reopening the walk (reasoned, untested). Open for the user: l3 or l2.
 
 ## Open: a heap relation for callees (2026-11-10)
 
