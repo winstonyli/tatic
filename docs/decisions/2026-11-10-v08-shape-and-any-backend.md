@@ -210,7 +210,9 @@ its shapes went to the user and were surveyed again, each checked by a second re
   every interpreter, `rel` and the callee law. Its checker rates it a close call, not a clear first: the heap spikes
   bind the heap's parts separately (a projection of a variable state is stuck), which is evidence against one opaque
   argument surviving, and the row-only saving was never measured. The falsifier: port the smallest heap case onto the
-  l3 frame. Open for the user.
+  l3 frame. It ran (`docs/tier-cycle/`, "The heap on the frame, behind one memory argument: a spike"): the machine's
+  types, call row and interpreters stay byte-identical when the memory becomes a product, while the generator binds
+  the memory's parts separately, as the counter-evidence said. Open for the user.
 
 ## Open: a heap relation for callees (2026-11-10)
 
