@@ -9,9 +9,10 @@ Goal 1 of `ROADMAP.md` now says so and links here.
 
 - **Decided 2026-11-10:** v0.8 is z5 "Recursion once", staged S0-S4 with its own spec (below); division by zero is a
   partial row whose trap is the no-value answer (below); tail calls are one `Call` printed as `return_call` when
-  nothing follows it (below). The spec is a draft that has not converged
+  nothing follows it (below); the state shape is a frame passed in plus one opaque memory argument, with the memory
+  rows deleted in v0.8 (u1, below). The spec is a draft that has not converged and whose D2 still drops the memory
   (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`); nothing is built.
-- **Open:** the state shape (below: a frame passed in, spiked with and without the memory; which one is the user's); the heap relation for callees (below); whether
+- **Open:** the heap relation for callees (below); whether
   `loop`/`br` survive: the no-loop spike says they need not (`docs/tier-cycle/`, "Tail self-calls as `return_call`,
   with no `loop` or `br`: a spike"); the spec decides.
 - **Settled:** the "any backend" policy below. It extends the 2026-10-31 decision
@@ -183,7 +184,7 @@ remainder circuit answers `x`; the machine has no trap channel.
 
 The draft spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`) did not converge in review; two of
 its shapes went to the user and were surveyed again, each checked by a second reader. Tail calls decided (n1,
-2026-11-10); the state shape is spiked both ways and open for the user.
+2026-11-10); the state shape decided (u1, 2026-11-11).
 
 - **Tail calls (decided: the survey's k2).** The survey recommends one `Call` and a printer that writes `return_call` when nothing follows the
   call (k2), tested exhaustively over small instruction lists by running each printed twice under wasmtime (tail rule
@@ -195,7 +196,14 @@ its shapes went to the user and were surveyed again, each checked by a second re
   `verify/decompile/tests.rs`), which the draft misses. Rejected: a tail flag in `Call`'s meaning, a tail fact in the
   IR emitted as `ReturnCall`, a call-then-return pair fused by the printer. Revisit k1 if `cps` comes to cover an `if`
   in operand position.
-- **State shape.** The survey recommends a frame of nested word pairs, read by `local.get` as a projection and never
+- **State shape (decided: u1).** Locals are a frame of nested word pairs, padded to the module's widest function,
+  passed into every class interpreter and never returned; beside it, one opaque memory argument
+  (`G A = Fr -> A -> Mem -> R`, `Ret = V -> Mem -> R`). v0.8 deletes the `Store`, `Load` and `upd` rows, since nothing
+  it emits uses them; the heap's rung brings them back with the memory as a product. Why: with the argument kept, the
+  heap's return leaves the machine's types, interpreters and call row unchanged (shown by the spike below), where
+  dropping it (l2) would re-thread every one; the generator's rework is owed either way. Undoing it is deleting one
+  argument. Cost: an argument nothing in v0.8 reads; its size and check-time cost unmeasured. Rejected: l2 (the
+  draft's D2), l3 as spiked (keeps rows nothing uses). History: the survey recommends a frame of nested word pairs, read by `local.get` as a projection and never
   passed back through a return, with today's single memory component kept (l3). Why the frame: the spiked locals are a
   continuation chain whose type depends on the answer type, which is what forces `Call`'s explicit sort operand. The
   checker found the case for keeping the memory over dropping it (the draft's l2) overstated, since adding `hp` later
@@ -212,7 +220,7 @@ its shapes went to the user and were surveyed again, each checked by a second re
   argument surviving, and the row-only saving was never measured. The falsifier: port the smallest heap case onto the
   l3 frame. It ran (`docs/tier-cycle/`, "The heap on the frame, behind one memory argument: a spike"): the machine's
   types, call row and interpreters stay byte-identical when the memory becomes a product, while the generator binds
-  the memory's parts separately, as the counter-evidence said. Open for the user.
+  the memory's parts separately, as the counter-evidence said.
 
 ## Open: a heap relation for callees (2026-11-10)
 
