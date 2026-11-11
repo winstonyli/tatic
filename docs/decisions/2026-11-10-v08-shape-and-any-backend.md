@@ -176,6 +176,29 @@ remainder circuit answers `x`; the machine has no trap channel.
   already checks).
 - Div's `MIN / -1` wrap still needs the lowering's wrapping sequence modelled as instructions.
 
+## Open for the spec: tail calls and the state shape (surveys, 2026-11-10)
+
+The draft spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`) did not converge in review; two of
+its shapes went to the user and were surveyed again, each checked by a second reader. Not decided.
+
+- **Tail calls.** The survey recommends one `Call` and a printer that writes `return_call` when nothing follows the
+  call (k2), tested exhaustively over small instruction lists by running each printed twice under wasmtime (tail rule
+  against every call as `call`) with a callee whose skipped continuation shows as a different value. Why: the
+  printer's rule fails safe (an unknown suffix prints `call`, which costs only stack depth), while a `ReturnCall`
+  decided by the lowering fails unsafe; and the case a wrong decision hurts, an `if` in operand position, is outside
+  what `Source::cps` covers, so a `ReturnCall` constructor (k1) would buy gate coverage that never reaches it. k2
+  deletes `SelfCall.tail` with its check and tests (`ir.rs`, `compile.rs`, `testing/ir_fuzz.rs`,
+  `verify/decompile/tests.rs`), which the draft misses. Rejected: a tail flag in `Call`'s meaning, a tail fact in the
+  IR emitted as `ReturnCall`, a call-then-return pair fused by the printer. Revisit k1 if `cps` comes to cover an `if`
+  in operand position.
+- **State shape.** The survey recommends a frame of nested word pairs, read by `local.get` as a projection and never
+  passed back through a return, with today's single memory component kept (l3). Why the frame: the spiked locals are a
+  continuation chain whose type depends on the answer type, which is what forces `Call`'s explicit sort operand. The
+  checker found the case for keeping the memory over dropping it (the draft's l2) overstated, since adding `hp` later
+  reopens the same rules either way: a close call, to settle by one spike run with and without the memory. Open in
+  both: frames of different widths need one type (pad to a module-wide width, or a call row per callee); untried by
+  any spike.
+
 ## Open: a heap relation for callees (2026-11-10)
 
 Closure records in memory, anything that allocates, and `iterate` against the gate need a relation between the heap

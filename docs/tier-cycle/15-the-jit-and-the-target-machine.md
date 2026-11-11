@@ -1849,4 +1849,75 @@ What it settles, and what stays open:
   the entry is no longer a `Loop`, as in the no-loop spike).
 - **Open:** callees are paired with `$cK` by order and arity, unverified (a swap gives a spurious rejection, never a
   false accept); no real term with two callees ran; a callee calling another callee is rejected; whether the state
-  sort operand can be derived.
+  sort operand can be derived. The first two are answered in "Callees paired by the lowering's registry: a spike".
+
+### Callees paired by the lowering's registry: a spike (2026-11-10)
+
+The question: the modules spike paired callees with `$cK` by order of first appearance and arity. Does a real term
+with several same-arity callees, called out of registration order, install, and is a swapped pairing rejected?
+Throwaway; patch `docs/superpowers/spikes/2026-11-10-callee-registry-spike.patch` (applies to `b76ba93`, with the
+modules patch inside); reverted.
+
+**What changed.** `compile.rs#build` exposes the registry it already keeps: the source function term at each
+combinator index, stored in `CompiledFragment`. The gate reads the pairing from it instead of guessing; each
+function's callees come from its own body, so a callee calling another callee needs no new rule, and the old
+rejection of that case goes. A copy of the registry's order in the gate would be wrong: it numbers head first, then
+callee bodies last in, first out. The real-term tests now assert their verdicts.
+
+Runs `2026-11-10-m2-gen-real`, `-m2-kernel4`, `-m2-full2` and the checker's `-chk-m2` (10 passed); all four terms
+below have arity-1 callees and prove at n = 4 and 24 (build + check at n = 24, ms):
+
+| term | calls in `$f` | n = 24 |
+|---|---|---|
+| two callees, called `$c1` then `$c0` | `$c1 $c0` | 14.4 + 30.4 |
+| roles exchanged | `$c1 $c0` | 14.9 + 31.5 |
+| both callees at two sites | `$c1 $c0 $c0 $c1` | 25.2 + 50.8 |
+| a callee that calls another callee | `$c0 $c2 $c0 $c1` | 38.4 + 86.8 |
+
+The checker's rerun was 3-8 times slower on a machine at 92% CPU. Every modules-spike target still proves. A swap is
+refused by the generator in all 24 cases: machine calls exchanged, registry entries exchanged, or callee bodies
+exchanged. Against the right proof, the kernel rejects the first and third on all four terms; it accepts the registry
+swap on the three flat terms, where the statement is the same proposition (the source names its callees by their
+functions, not positions), so only the generator refuses it. The specialiser inlines a pure lambda argument, so a
+callee survives only when its argument holds a self-call; all four terms are shaped that way.
+
+- **Settled:** pairing by construction from the registry, for entry-to-callee and callee-to-callee calls.
+- **Open:** pap wrappers and capturing callees are refused; mutual recursion is untested (the IR check is assumed to
+  exclude cycles); the full suite's 5 failures (3 golden files and the 2 tests the no-loop spike already lists) were
+  not rerun on the base alone.
+
+### A loop calling a closure through a fixed record, and one composed theorem: a spike (2026-11-10)
+
+The question: the closure-relation spike did not build a loop that calls a closure each iteration, nor compose the
+per-function proofs into one theorem. Throwaway; patch `docs/superpowers/spikes/2026-11-10-closure-loop-spike.patch`
+(applies to `b76ba93`, with the closure-relation and heap-state patches inside); reverted.
+
+**Term 37 is not that shape.** Its emitted code (run `2026-11-10-m3-t37-dump`) is a self-loop that re-reads the
+captured cell (the heap-state spike's shape), a pap thunk, one `call_indirect` on a packed closure word and an
+allocating entry: lifting it needs calls, an `i32` kind and bit rows for the word split. The spike hand-wrote the
+asked shape instead, `iter p n acc = if n <= 0 then acc else iter p (n - 1) (clo acc)`.
+
+Run `2026-11-10-m3-full3` and the checker's `-chk-m3`, `-chk-m3-wasm` (tatic-wasm 42 passed); single runs, shared
+machine, build + check in ms:
+
+| case | n = 8 | n = 24 | n = 64 |
+|---|---|---|---|
+| loop, abstract record invariant | 8.4 + 23.0 | 10.8 + 25.3 | 21.9 + 62.8 |
+| loop, concrete cell | 6.3 + 19.4 | 12.2 + 19.1 | 22.1 + 41.0 |
+| loop, a fresh record each iteration | 12.2 + 27.6 | 17.3 + 50.5 | 37.7 + 93.0 |
+| the composed theorem (build + kernel inference) | 7.6 + 21.9 | 8.5 + 16.5 | 13.6 + 31.7 |
+
+The loop proved against the abstract invariant composes with the closure body proved against the concrete cell into
+one theorem the kernel types, once the abstract invariant is declared at Sort2 (a concrete cell lives in Type2,
+because a word is a Church type, and the kernel has no cumulativity). Rejected at n = 8 and 24, asserted: a wrong
+captured value, the loop clobbering the record before or after the call, the closure called on the wrong argument,
+the call dropped; the kernel rejects four composition mutants (a wrong body, a wrong source, the invariant at the
+wrong offset, a body that writes the record).
+
+- **Settled:** the closure relation carries the record across iterations, and the separate proofs compose.
+- **Corrected:** a store to a cell the invariant does not name, after the call, is rejected with the concrete cell
+  too ("a cell's heap is neither the statement's heap nor a store over it"): the walk follows a store chain only down
+  to the statement's own heap, not a heap a callee returned. The closure-relation spike's "A can store" holds only
+  before a call.
+- **Open:** term 37 as emitted; a callee that calls back, several records, a type-indexed relation; the composed
+  statement is inferred, not written independently.
