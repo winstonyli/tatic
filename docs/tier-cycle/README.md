@@ -55,6 +55,9 @@ The tier-cycle findings log, one file per section (the two long sections are spl
 - [15-the-jit-and-the-target-machine/20-a-loop-calling-a-closure-through-a-fixed-record.md](15-the-jit-and-the-target-machine/20-a-loop-calling-a-closure-through-a-fixed-record.md): A loop calling a closure through a fixed record, and one composed theorem: a spike (2026-11-10)
 - [15-the-jit-and-the-target-machine/21-locals-as-a-frame-passed-in-with-and-without-the.md](15-the-jit-and-the-target-machine/21-locals-as-a-frame-passed-in-with-and-without-the.md): Locals as a frame passed in, with and without the memory: a spike (2026-11-10)
 - [15-the-jit-and-the-target-machine/22-the-heap-on-the-frame-behind-one-memory-argument.md](15-the-jit-and-the-target-machine/22-the-heap-on-the-frame-behind-one-memory-argument.md): The heap on the frame, behind one memory argument: a spike (2026-11-10)
+- [15-the-jit-and-the-target-machine/23-one-call-rule-for-self-calls-and-callees-a-spike.md](15-the-jit-and-the-target-machine/23-one-call-rule-for-self-calls-and-callees-a-spike.md): One call rule for self-calls and callees: a spike (2026-11-11)
+- [15-the-jit-and-the-target-machine/24-a-caller-s-cell-across-a-call-to-another-function.md](15-the-jit-and-the-target-machine/24-a-caller-s-cell-across-a-call-to-another-function.md): A caller's cell across a call to another function: a spike (2026-11-11)
+- [15-the-jit-and-the-target-machine/25-the-kernel-against-forged-proofs-of-mutants-a.md](15-the-jit-and-the-target-machine/25-the-kernel-against-forged-proofs-of-mutants-a.md): The kernel against forged proofs of mutants: a spike (2026-11-11)
 - [16-other-theories.md](16-other-theories.md): Other theories
 - [17-learned-and-fixed-parts.md](17-learned-and-fixed-parts.md): Learned and fixed parts
 - [18-related-work-surveyed-2026-10-10.md](18-related-work-surveyed-2026-10-10.md): Related work (surveyed 2026-10-10)

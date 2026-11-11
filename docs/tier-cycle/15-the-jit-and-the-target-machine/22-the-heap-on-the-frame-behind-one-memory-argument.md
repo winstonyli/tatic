@@ -25,3 +25,4 @@ kernel. gen_real (10 passed) and the tatic-wasm lib (38 passed, 4 ignored) keep 
   component-wise `rel` belong to the product.
 - **Open:** the allocation pointer is carried but never read (no allocation tested); only a self-call, not a call
   through the module's call row; the controls show the generator refuses, not that the kernel rejects a forged proof.
+

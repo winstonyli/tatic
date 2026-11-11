@@ -10,8 +10,12 @@ Goal 1 of `ROADMAP.md` now says so and links here.
 - **Decided 2026-11-10:** v0.8 is z5 "Recursion once", staged S0-S4 with its own spec (below); division by zero is a
   partial row whose trap is the no-value answer (below); tail calls are one `Call` printed as `return_call` when
   nothing follows it (below); the state shape is a frame passed in plus one opaque memory argument, with the memory
-  rows deleted in v0.8 (u1, below). The spec is a draft that has not converged and whose D2 still drops the memory
-  (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`); nothing is built.
+  rows deleted in v0.8 (u1, below). The spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`) was
+  rewritten to u1 on 2026-11-11 and is still a draft under review; nothing is built.
+- **Spiked 2026-11-11, for the spec:** self-calls and callees merge into one call rule over a table of call entries
+  (`docs/tier-cycle/`, "One call rule for self-calls and callees: a spike"); the kernel rejects forged proofs of every
+  mutant tried, so the generator's walk checks only fail early (`docs/tier-cycle/`, "The kernel against forged proofs
+  of mutants: a spike").
 - **Open:** the heap relation for callees (below); whether
   `loop`/`br` survive: the no-loop spike says they need not (`docs/tier-cycle/`, "Tail self-calls as `return_call`,
   with no `loop` or `br`: a spike"); the spec decides.
@@ -234,8 +238,11 @@ and read by a callee, an in-place update and two allocations prove with no order
 (`docs/tier-cycle/`, "The heap across a non-tail call, and an older record: a spike" and "A closure record's cells
 inside the closure relation: a spike"): an older record read after a later allocation, and a cell a callee preserves
 read after a non-tail call, prove; cells are derived from the machine code; the closure relation can carry a record's
-invariant, hiding its layout from pass-through callers. Still open: a cell the callee writes and the continuation
-reads, a record allocated before a call and read after it, term 37's loop through a closure, and composing the
+invariant, hiding its layout from pass-through callers. A caller's cell across a call to another function proves two
+ways, with the memory still opaque in the machine: the callee names the cell, or the callee law declares a footprint
+and `rel` gains a frame premise for every address outside it (`docs/tier-cycle/`, "A caller's cell across a call to
+another function: a spike"; recursion inside a footprinted function and a footprinted callee that itself calls stay
+open). Still open: a cell the callee writes and the continuation reads, a record allocated before a call and read after it, term 37's loop through a closure, and composing the
 per-function proofs. Rejected by the survey: heap
 extensionality (not derivable without eta), separation-logic frames (need splitting of function-typed heaps), a list
 heap (a machine rewrite), a counter-style invariant per cell (one hypothesis per cell). Term 27 needs a type-indexed
