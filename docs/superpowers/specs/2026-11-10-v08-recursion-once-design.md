@@ -56,7 +56,8 @@ From the decision file's z5 "Done when" and ROADMAP's v0.8 line, refined:
    for a call term at the `tatic` level. A statement mutant (a relation that ignores the continuation, one that drops
    the fuel quantification) makes the generator's proof of a self-call term fail in the kernel.
 5. The five v0.7 fragment terms still install and the v0.7 mutations are still rejected; every term of the baseline
-   fixture (below) installs, or fails to, as it did at `eba0891`. Its rows whose proved code (the form `try_install`
+   fixture (below) installs, or fails to, as it did at `eba0891`, except that a held-out row whose term did not install
+   there must now install (Goal 3). Its rows whose proved code (the form `try_install`
    proves) holds a `Raw` or heap line are the `Raw`-bearing class: their verdict must be `NotCovered`, so `cps`
    regresses none. The cap keeps its floor: `doubling(12)` still installs through the one statement within S2c's
    go/no-go time (Budget).
@@ -98,14 +99,14 @@ S2c fills a verdict column (`Accepted`, `Rejected`, `NotCovered`). No column rea
 - **Trust.** Trusted: the rows, the printer (with its tail rule, D1), `Source::cps` and the source closure it hands the
   builder (D4), `Call`'s meaning, the statement builder (the module fixpoint, the fuel quantification, the law
   telescope, the continuation relation), which lives in its own module apart from the untrusted walk (End-state fit),
-  and the gate's checks that decide whether and which statement exists: the code's **shape check** (its one home: the
-  body runs from `[]` to `[word]`, no `Raw`, each `local.get` below its own function's width, D2 says why, every
-  record's env count 0, D3 says why), the fragment and arity checks, and the registry pairing (D3). The kernel checks every proof against the statement; it
+  and the gate's checks that decide whether and which statement exists: the code's **shape check** (its one home,
+  `machine.rs#well_formed` over the module's records: the body runs from `[]` to `[word]`, no `Raw`, each `local.get`
+  below its own function's width, D2 says why, every record's env `Params(0)`, D3 says why), the budget check, and the registry pairing (D3). The kernel checks every proof against the statement; it
   cannot notice a vacuous or too-weak statement, so Goal 4 tests the statement with mutants. The walk's value checks
   (cell and returned values, branch conditions, frame slots, callee frame) only fail early: with them skipped, the
   kernel rejected every mutant (w4). They stay because the decision file's "Done when" wants each mutant's reason read,
-  and a kernel type mismatch names no row or call site; Goal 4's forged-proof helper is the guard that they are not
-  load-bearing. A row's meaning is checked against eval and wasmtime by `jit/op_table_tests.rs`,
+  and a kernel type mismatch names no row or call site. That they are not load-bearing rests on w4's run alone (O3);
+  Goal 4's forged-proof helper shows only that a positive proof does not transfer to a mutant's statement. A row's meaning is checked against eval and wasmtime by `jit/op_table_tests.rs`,
   never by the gate. Both sides read one row, and the right side is built from the source term, never the code (v0.7
   spec, `docs/superpowers/specs/2026-11-08-v07-straight-line-gate-design.md`, sections 4 and 6).
 - **Budget.** `proof/gate.rs#MAX_GATE_TREE` (8192 nodes; `doubling(12)` took 0.35-0.38 s) bounds straight-line cost
@@ -114,8 +115,8 @@ S2c fills a verdict column (`Accepted`, `Rejected`, `NotCovered`). No column rea
   `NotCovered`; a straight-line term's cap is unchanged. The weight is a cost knob, not a goal: S2c fits it so a
   `Call`-bearing term at the budget takes as long as the relational `doubling(12)` (at most 0.57 s), and every Goal 1
   target stays under; a Goal 2 target or held-out term over it leaves its goal. The cap may be raised on purpose,
-  never lowered below `doubling(12)` (Goal 5); its doc comment ("largest power of two under 0.4 s") is amended if the
-  cap probe passes above 0.4 s. The one go/no-go on time is S2's.
+  never lowered below `doubling(12)` (Goal 5); its doc comment ("largest power of two under 0.4 s") is amended in the
+  merge if the go/no-go's median is above 0.4 s. The one go/no-go on time is S2's.
 - **Deep builders** run under `tatic_kernel::grow`; checking threads use `tatic_kernel::CHECK_STACK`
   (`tatic-kernel/src/stack.rs`).
 - **House guards** (repo `CLAUDE.md`) pass at every commit: size (1000 lines per `.rs`), test placement, tour, cite,
@@ -224,20 +225,20 @@ form gives it no env parameter, below).
   `choose` the generator proves against and then applies to the real one (the statement uses the real `choose`,
   `None`). `Call(j)` reads record `j` for its `arity` (its stack effect) and continues into environment entry `j`,
   which the statement builder fills from the module fixpoint over fuel (`N H z B_j`, `z` the out-of-fuel answer, w2;
-  `meaning` itself takes no fuel). A module entry's record carries `arity`, the env access kind, the env count (env
-  words: 0 for the entry's `None`, 1 for `Pointer`'s `$env`, `env_len` for `Params`' `$e{k}`) and code; it holds no
+  `meaning` itself takes no fuel). A module entry's record carries `arity`, the env access (`Params(0)` for the entry,
+  `Pointer` for `$env`, `Params(k)` for `$e0..$e{k-1}`; one enum, the lowering's `EnvAccess` given its count, its `None` deleted) and code; it holds no
   source term and no name: the printer labels a function by its module position (`$c{i}`, `$f`), the numbering
   `Call(j)` prints by, so a label cannot disagree with the position proved, and `compile.rs#entry` finds the entry by
   position, not by the name `f`. **No env word:** `cps` refuses captured variables and closure values (D4), so a covered callee is
   never packed and never a partial-application root: the class `lower_wat.rs#direct_only` lowers as `Params`, but for
   its `env_len > 0` filter, which S2b drops. A closed, directly called callee then has no env parameter (today a dead
   `$env`, `i32.const 0` at the call), forwards nothing, and its width is its arity. The change reaches every module's
-  closed direct callees, covered or not, for approval with D3. The machine places no env word: the env kind and count
-  are printer-only fields; the shape check (Trust) wants env count 0, since an env parameter would shift the printed
+  closed direct callees, covered or not, for approval with D3. The machine places no env word: the env access
+  is a printer-only field; the shape check (Trust) wants `Params(0)`, since an env parameter would shift the printed
   slots off the frame's. The record is defined in `tatic-wasm` (`machine.rs`), which cannot
   name a `tatic` type; `CompiledFragment.module: Vec<Item>` stays in `tatic`, `Item::Func` pairing the record with,
   from S3, the source term, which the builder receives only through D4's source closure. The printer derives the
-  header from the record: slot names (`$p{i}`, `$env`, `$e{k}`) from the env kind, and the four scratch declarations (`$envtmp`, `$papenv`, `$diva`, `$divb`) in every function as
+  header from the record: slot names (`$p{i}`, `$env`, `$e{k}`) from the env access, and the four scratch declarations (`$envtmp`, `$papenv`, `$diva`, `$divb`) in every function as
   today, since closure and division code installed through `kernel_verify` uses them. The `header` string is deleted,
   so the proved statement and the printed function type cannot disagree. The generator (`machine/sim.rs`) proves
   against the builder's (`machine/statement.rs`) statement; `Source::cps` takes the same `ch`.
@@ -264,9 +265,9 @@ no v0.8 function has one; `LocalSet`'s rung adds them, Parked).
 
 - **Why one statement.** `Call` needs a relation: after a call the machine runs the rest on the machine and the source
   on the source, equal only by the induction hypothesis (`docs/tier-cycle/`, "Calls by index proved against a source
-  recursion: a spike"). Under D2 the types force it for straight-line code too, since the machine's return
-  continuation takes the memory and the source's does not (inference from the types). One statement for straight-line
-  code is also the anti-goal's choice.
+  recursion: a spike"). Straight-line code does not need it: refl would still type there, since the source side
+  already passes the machine's continuation the memory (`gate.rs#statement`). One statement for it is the anti-goal's
+  choice, at the cost S2's go/no-go measures.
 - **The statement.** Every covered term is the generator's simulation: fuel `N` with `GoodNat` and a continuation
   relation hypothesis; the proof applies the relation at the answer. A straight-line term is that relation applied
   once. Every law, the motive, the step and the hypothesis share one telescope, `d, a.., mu, km, ks, rel`
@@ -309,8 +310,9 @@ with a result-kind field fails: the field would be a second source for the kind 
 
 - **A `Row`** is a plain record: name, meaning builder, printer line. The leaf class fixes the stack effect and the
   result kind, so a row cannot disagree with its constructor. Three classes, the leaf arms of `wasm.rs#ctor_ty` today:
-  0 to 1 (one numeral operand; `push` and `local.get` are two rows, whose builders are `lit n` and the frame projection
-  at `n`), word-valued 2 to 1 (`V -> V -> V`, one row per arithmetic `PrimOp`) and bit-valued 2 to 1 (`V -> V ->
+  0 to 1 (one operand, a numeral today and `Fr -> V` from S2c step 1, when `local.get` joins: two rows, whose builders
+  are `\_. lit n` and the frame projection at `n`; the frame spike gave `local.get` its own constructor, the fallback
+  if the shared type fails), word-valued 2 to 1 (`V -> V -> V`, one row per arithmetic `PrimOp`) and bit-valued 2 to 1 (`V -> V ->
   Bv_1`, one row per comparison). `Op::kind()`, `shape`'s stack effects, `If`'s bit pop, `gate.rs#operand` and
   `shape::is_comparison` (also called by `ir.rs`, `compile.rs` and `proof/universal.rs`) become a lookup of the row's
   class. A later unary row (`wrap`, `extend`) adds a class, not a field. The constructor type is derived from the
@@ -403,9 +405,10 @@ generator and the one statement.
   machine's `Call` meaning to the empty-`rest` form (the tail branch and the hook removed), applies the call rule over
   the targets and records the verdicts, with controls, as a `run.ps1` run (its `docs/runs.md` row) with the probe's
   patch in `docs/superpowers/spikes/`; S2c step 4 folds it into the findings. Targets: both sum loops,
-  plus one tail loop of another step shape (say, a step of 2) built from existing rows only. Controls, each on a sum
-  loop: wrong argument order, a dropped call, and the call rule applied with a wrong `km`, `ks` or `rel`.
-- **Done when:** every target proves through `tatic_kernel::check` and each of the three controls is rejected. Until
+  plus one tail loop of another step shape (say, a step of 2) built from existing rows only, plus 13 and 34 (in w2's
+  targets) with their callee call last. Controls, each on a sum loop: wrong argument order, a dropped call, and the call
+  rule applied with a wrong `km`, `ks` or `rel`; the last also on 13's callee call.
+- **Done when:** every target, self and callee, proves through `tatic_kernel::check` and every control is rejected. Until
   it is recorded, S2b's lowering, `SelfCall.tail` and loop-machinery commits do not start. On a failure the builder
   stops and reports (O8); nothing has been deleted yet.
 - **Deletes:** nothing.
@@ -419,7 +422,7 @@ generator and the one statement.
   `Vec<Item>`) is extended, not duplicated: each `Item::Func` holds the `tatic-wasm` entry record (D3), moved there in
   this stage, from the lowering's registry (`PendingCombinator::Literal`), at the module position `Call(j)` carries
   (D3's numbering: callee `i` at `i`, the entry last); the printer prints `call $c{j}` or `call $f` and the header from
-  it (D3: slot names from the env kind, the four scratch declarations always, no `$t{i}`), and the `header` string
+  it (D3: slot names from the env access, the four scratch declarations always, no `$t{i}`), and the `header` string
   field is deleted; `well_formed` reads it, and `gate` takes it from S2c on. `SelfCall.tail` goes with
   its check and tests (D1); the printer's tail rule and its exhaustive wasmtime test land here. Until S2c gives `Call`
   a meaning, `Ins::Call` is an instruction-list entry only: `shape` and `well_formed` give it its entry's arity as its
@@ -442,13 +445,13 @@ generator and the one statement.
   (`benches/execution.rs`) has its `docs/runs.md` row (a slowdown is a finding, not a gate).
 - **Checkpoint.** If the membership column excludes any Goal 1 target, or all of 13, 34 and 23, stop and report. Goal 2
   targets excluded one by one are parked.
-- **Deletes:** the loop machinery above, `SelfCall.tail`, the `(local $t{i})` declarations, the tail staging and the
-  closed callee's dead `$env`.
+- **Deletes:** the loop machinery above, `SelfCall.tail`, the `(local $t{i})` declarations, the tail staging, the
+  closed callee's dead `$env` and `EnvAccess::None` (the entry is `Params(0)`).
 
 #### S2c The frame, the one statement, the `Call` meaning and the verdict
 
-- **Builds, in order:** (1) the frame and the memory argument (D2), with `local.get` a frame-projection row and the
-  operand-free `Call` type tried (O1); nothing emitted then reads the memory, so `Store`, `Load`, `upd` and the
+- **Builds, in order:** (1) the frame and the memory argument (D2), with `local.get` a frame-projection row (the 0-to-1 class's
+  operand becoming `Fr -> V`, D5) and the operand-free `Call` type tried (O1); nothing emitted then reads the memory, so `Store`, `Load`, `upd` and the
   store/load check go, with `wasm/laws.rs` (its laws pass fuel and its runs use `upd`) and the fuel items S2b kept;
   (2) the one statement (D4) in `machine/statement.rs` on straight-line terms, with the one law
   telescope, and the generator's straight-line walk in `machine/sim.rs` (the return and `choose`/congruence rules,
@@ -472,7 +475,7 @@ generator and the one statement.
 - **The go/no-go (S2's).** The median of 5 `run.ps1 -Timed` runs of the relational `doubling(12)` build and check is at
   most 0.57 s, 1.5 times the refl curve's 0.38 s re-measured in the same session; it runs after step 2, on the
   branch, and decides the merge. A no-go returns to the user, who amends Goal 5's cap floor; the end state has one
-  statement. Step 3 builds the budget with the `Call` weight (Budget) at 0; after it a second probe fits the weight to
+  statement. Step 3 builds the budget with the `Call` weight (Budget) at 0; after it the weight-fit probe fits the weight to
   that median on a generated family of self-recursive terms with 1, 2, 4, ... call sites, timed through `run.ps1
   -Timed`, in a commit before step 4. If the weight puts a Goal 1 target over the budget, lower it and record why; if
   a Goal 1 target alone checks slower than that median, stop and report. The linear-work guards keep their 2.05 bound.
@@ -490,7 +493,7 @@ generator and the one statement.
   `if_law` carried); per self-call site the argument index, order, a dropped or extra argument and a dropped call; the
   no-loop spike's list minus its `return_call`-for-`call` mutant, which no `Ins` list can state; w4's real-term
   controls (factorial `Mul` to `Add`, fib `Add` to `Sub`); factorial's proof against fib's statement; the statement
-  mutants of Goal 4, through O3's seam; a record with env count 1, `Rejected` by the shape check. Each test names its
+  mutants of Goal 4, through O3's seam; a record with env `Params(1)`, `Rejected` by the shape check. Each test names its
   layer; each mutant whose statement differs is also forged (Goal 4's helper).
 - **Edge cases, one test each:** a covered term's code with a `Raw` line, or ill-formed, is `Rejected` and not
   installed; the cases `cps` cannot take (`twice`, `\f. f 1`, an `If` in an operand or condition, `a / b`) are
@@ -542,9 +545,9 @@ generator and the one statement.
 | The wasm table (rows over `ops.rs`) and its tests; the wasm printer reading row printer lines (S0) | `crates/tatic-wasm/src/wasm.rs` (only the table left; size inferred well under 300 lines), `ops.rs`, `print.rs` | `Ins` leaf variants | those variants, the printer's panic arms |
 | Source pairing by name; result kind from the row's class (S0, D5) | `PrimOp::name()` in `crates/tatic/src/lang/`; the wasm-table accessor in `crates/tatic/src/jit/shape.rs` | `shape::op_of`, `is_comparison`'s per-op table | `op_of`, any row handle |
 | `conv` pair-memo guard (S0) | a test in `crates/tatic-kernel/src` | `countdown_invariant_is_not_exponential` | that test, `countdown`, `countdown_law`, `Dup` |
-| Lowering: calls as `Ins::Call`, no wrapper, one `SelfCall` arm, closed direct callees as `Params` with no env word (S2b, D1, D3) | `crates/tatic/src/jit/lower_wat.rs` | loop wrapper, tail staging, `Raw` call lines, a closed callee's dead `$env` | `$t` locals, staging code, `direct_only`'s `env_len > 0` filter |
+| Lowering: calls as `Ins::Call`, no wrapper, one `SelfCall` arm, closed direct callees as `Params` with no env word (S2b, D1, D3) | `crates/tatic/src/jit/lower_wat.rs` | loop wrapper, tail staging, `Raw` call lines, a closed callee's dead `$env` | `$t` locals, staging code, `direct_only`'s `env_len > 0` filter, `EnvAccess::None` |
 | IR without a tail fact (S2b, D1) | `crates/tatic/src/jit/ir.rs` | `SelfCall { tail }` | `tail`, its check, its tests in `ir.rs`, `compile.rs`, `testing/ir_fuzz.rs`, `verify/decompile/tests.rs` |
-| Module entry record (arity, code; env kind and count for the printer only), moved in S2b (D3) | `crates/tatic-wasm/src/machine.rs` | the fields of `Item::Func` in `tatic` | the `Item::Func` `header` string and `name` (the printer derives both, the label from the position) |
+| Module entry record (arity, code; env access, with `Params`' count, for the printer only), moved in S2b (D3) | `crates/tatic-wasm/src/machine.rs` | the fields of `Item::Func` in `tatic` | the `Item::Func` `header` string and `name` (the printer derives both, the label from the position) |
 | Module: entries from the registry (S2b); source terms (S3) | `CompiledFragment`, `crates/tatic/src/jit/compile.rs` (`Item::Func` wraps the record plus the source term) | arity inside the header string | nothing further |
 | Printer: callee names, the header from the entry record, the tail rule (S2b, D1, D3) | `crates/tatic-wasm/src/print.rs` | `Loop`/`Br` arms | those arms |
 | No loop machinery (S2b, D1; the fuel items at S2c step 1) | `machine.rs`, `gate.rs` | `Ins::Loop`, `Ins::Br`, fuel 1 | the loop machinery (S2b Deletes), the fuel items (S2c Deletes) |
@@ -553,15 +556,16 @@ generator and the one statement.
 | No hand-written machine laws (S2c step 1) | the generator, per term | `wasm/laws.rs` | that file and the helpers only it uses (S2c Deletes) |
 | The statement builder: module fixpoint over fuel (the callee environment), `GoodNat`, one law telescope, continuation relation; takes a source closure per entry (S2c, D4); trusted | `crates/tatic-wasm/src/machine/statement.rs` | refl `statement` | refl path |
 | The generator: return and `choose`/congruence rules (S2c step 2), the one call rule (step 3), three walk rules in all (D3); untrusted | `crates/tatic-wasm/src/machine/sim.rs` | nothing | nothing |
-| Gate: `&Table`, module, three-way verdict (S0-S2c) | `crates/tatic/src/proof/gate.rs` | `in_fragment` | `in_fragment` |
+| Gate: `&Table`, module, three-way verdict (S0-S2c); the budget's `Call` weight beside `MAX_GATE_TREE` (S2c); the registry-pairing check (S3); trusted | `crates/tatic/src/proof/gate.rs` | `in_fragment` | `in_fragment` |
+| Shape check (Trust): `well_formed` over the module's records, adding no `Raw`, the `local.get` bound and the env access (S2c step 3); trusted | `crates/tatic-wasm/src/machine.rs` | `well_formed` over one code list | nothing |
 | `Source::cps` through `shape::classify`, returning `Option` of the builder's source closure: self-call (S2c), closed exact-arity heads (S3) | `crates/tatic/src/proof/gate.rs` (a split past 1000 lines is mechanical) | the fragment's `unreachable!` arms | those arms |
 | Verdict wiring in `prove_install` and `try_install` (S2c) | `crates/tatic/src/jit.rs` | the `in_fragment` branch | that branch |
 | Statement-mutation seam (S2c step 3, O3) | `cfg(test)` tests inside `crates/tatic-wasm/src/machine/statement.rs`'s module, over the builder's record | nothing | nothing |
 | Baseline fixture, no-`Raw` test, held-out tests, toy table | `crates/tatic/src/proof/tests/` | nothing | nothing |
-| Deep tail loop test | `crates/tatic/src/jit/tests.rs` | nothing | nothing |
+| Deep tail loop test; the tail rule's exhaustive wasmtime test (S2b, D1) | `crates/tatic/src/jit/tests.rs`; `crates/tatic/src/jit/tail_rule_tests.rs` (new, as `op_table_tests.rs`) | nothing | nothing |
 | `kernel_verify` model claim (S2b) | headers of `proof.rs`, `proof/universal.rs`, `jit.rs` doc | "the compiled code loops" | nothing |
 | Trust doc: the three-way verdict for the `in_fragment` paragraph; the trusted list gains the tail rule and the header from the record, the frame and memory for the heap cells, and loses `loop` (S2c step 4) | `docs/proven.md` | the `in_fragment` paragraph | its `loop` and `$p0..`-header claims |
-| v0.8 findings | new section files of doc 15, indexed in `docs/tier-cycle/README.md` | nothing | nothing |
+| v0.8 findings; the weight-fit probe's script (S2c) | new section files of doc 15, indexed in `docs/tier-cycle/README.md`; `docs/runs/<date>/scripts/` | nothing | nothing |
 
 `machine.rs`, `machine/statement.rs` and `machine/sim.rs` stay under 1000 lines (w2's `sim.rs` was 710 with the walk
 and the statement together; inference that the split keeps all under).
@@ -616,8 +620,9 @@ Facts checked on `main` at `eba0891` (no `crates/` change to `fb2a284`); line nu
   `git diff` against main that already contains the frame l3 patch; applying both fails or double-applies. w3's
   `2026-11-11-callee-cell-spike.patch` and w4's `-kernel-controls-spike.patch` also contain their base; w3's footprint
   and w4's unchecked switch (not `cfg(test)`) are heap-rung and test material, not v0.8 code.
-- `cite_check.pl` and `front_matter_check.sh` skip `docs/superpowers`; check this file with
+- `cite_check.pl` skips `docs/superpowers`; check this file with
   `perl scripts/check/cite_check.pl . docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`.
+  `front_matter_check.sh` does cover specs and plans, so this file's `status:` must stay valid (`active`, then `done`).
 
 ## Review
 
@@ -629,4 +634,8 @@ locals and its slot machinery, D2's fallback, the `Nested callees` parked item t
 law-selection stop condition) and folds in w2 (one call rule, one telescope), w3 (heap rung, Parked) and w4 (the trust
 split and the forged-proof tests). Rejected findings that explain a choice: a code-side `NotCovered` stop (a mutated
 list for a covered term would install through `kernel_verify`); replacing the memo test with the `doubling` guards
-(with the memo off they still passed); merging S2b's goldens into S2c (29 goldens into the largest commit).
+(with the memo off they still passed); merging S2b's goldens into S2c (29 goldens into the largest commit). After the rewrite, rounds 14-19 (consistency, completeness and End-state fit, fewer
+concepts; Sonnet reviewers, an Opus reviser) found 15, 10, 5, 9, 4 and 6; with duplicated wording counted only when the
+copies disagree, rounds 20-24 found 1, 1, 1, 4 and 5 (among them: held-out terms against the baseline fixture, S2a
+missing a callee tail call, the front-matter guard's reach, the env record's two fields made one) and round 25 found
+nothing material. Every finding was applied; none was rejected.
