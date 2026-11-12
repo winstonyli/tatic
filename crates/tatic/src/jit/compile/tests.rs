@@ -738,7 +738,6 @@ fn no_raw(code: &[tatic_wasm::machine::Ins]) -> bool {
     code.iter().all(|i| match i {
         Ins::Raw(_) => false,
         Ins::If(t, e) => no_raw(t) && no_raw(e),
-        Ins::Loop(b) => no_raw(b),
         _ => true,
     })
 }

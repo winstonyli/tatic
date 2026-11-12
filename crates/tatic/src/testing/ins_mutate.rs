@@ -2,7 +2,7 @@
 
 use tatic_wasm::machine::Ins;
 
-/// `code` with its first instruction (pre-order, into `If` arms and `Loop` bodies) that `f` maps replaced by `f`'s
+/// `code` with its first instruction (pre-order, into `If` arms) that `f` maps replaced by `f`'s
 /// answer; unchanged when nothing matches.
 pub(crate) fn mutate(code: &[Ins], f: &dyn Fn(&Ins) -> Option<Ins>) -> Vec<Ins> {
     fn go(code: &[Ins], f: &dyn Fn(&Ins) -> Option<Ins>, done: &mut bool) -> Vec<Ins> {
@@ -20,7 +20,6 @@ pub(crate) fn mutate(code: &[Ins], f: &dyn Fn(&Ins) -> Option<Ins>) -> Vec<Ins> 
                         let t = go(t, f, done);
                         Ins::If(t, go(e, f, done))
                     }
-                    Ins::Loop(b) => Ins::Loop(go(b, f, done)),
                     other => other.clone(),
                 }
             })

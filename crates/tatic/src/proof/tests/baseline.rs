@@ -143,7 +143,6 @@ fn has_raw(code: &[tatic_wasm::machine::Ins]) -> bool {
     code.iter().any(|i| match i {
         Ins::Raw(_) => true,
         Ins::If(t, e) => has_raw(t) || has_raw(e),
-        Ins::Loop(b) => has_raw(b),
         _ => false,
     })
 }

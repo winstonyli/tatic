@@ -84,8 +84,7 @@ impl Table {
     }
 }
 
-/// An instruction of a function body (spec 2026-11-08-v07-straight-line-gate-design.md, section 2). `Br(j)` jumps to
-/// the `j`-th enclosing loop's start. `Store` and `Load` serve the machine's own laws and are never emitted;
+/// An instruction of a function body (spec 2026-11-08-v07-straight-line-gate-design.md, section 2). `Store` and `Load` serve the machine's own laws and are never emitted;
 /// `Raw` is a line the lowering emits that the machine does not model, so a body holding one is not well formed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ins {
@@ -94,8 +93,6 @@ pub enum Ins {
     /// `local.get $p{i}`: slot `i` of the frame, at address `i`.
     LocalGet(u32),
     If(Vec<Ins>, Vec<Ins>),
-    Loop(Vec<Ins>),
-    Br(usize),
     Store,
     Load,
     /// `call`/`return_call` to the module position `j` (the printer picks by its tail rule): pops the callee's
@@ -121,9 +118,8 @@ pub struct Entry {
 }
 
 /// The one stack analysis: the stack after `code` from `st` (top first), `None` if every path jumps, or why the
-/// code is ill formed. `loops` holds the entry stacks of the enclosing loops, innermost first; `arities[j]` is the
-/// number of words module position `j` pops (`None`: no such callee).
-fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>], arities: &[Option<usize>]) -> Result<Option<Vec<K>>, String> {
+/// code is ill formed. `arities[j]` is the number of words module position `j` pops (`None`: no such callee).
+fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>]) -> Result<Option<Vec<K>>, String> {
     let pop = |st: &mut Vec<K>, want: &[K]| {
         if !st.starts_with(want) {
             return Err(format!("stack {st:?} lacks {want:?}"));
@@ -144,25 +140,11 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>], arities:
             }
             Ins::If(t, e) => {
                 pop(&mut st, &[K::B])?;
-                st = match (shape(table, t, st.clone(), loops, arities)?, shape(table, e, st, loops, arities)?) {
+                st = match (shape(table, t, st.clone(), arities)?, shape(table, e, st, arities)?) {
                     (Some(a), Some(b)) if a != b => return Err(format!("if arms end on different stacks: {a:?}, {b:?}")),
                     (Some(a), _) | (None, Some(a)) => a,
                     (None, None) => return Ok(None),
                 }
-            }
-            Ins::Loop(body) => {
-                let ls = [std::slice::from_ref(&st), loops].concat();
-                match shape(table, body, st.clone(), &ls, arities)? {
-                    Some(s) => st = s,
-                    None => return Ok(None),
-                }
-            }
-            Ins::Br(j) => {
-                let Some(want) = loops.get(*j) else { return Err(format!("br {j} with {} enclosing loops", loops.len())) };
-                if want != &st {
-                    return Err(format!("br {j} with stack {st:?}, the loop's is {want:?}"));
-                }
-                return Ok(None);
             }
             Ins::Store => pop(&mut st, &[K::W, K::W])?,
             Ins::Load => {
@@ -182,14 +164,13 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>], arities:
 
 /// The stack after `code` from `st` (top first), or `None` if every path jumps; panics on ill-formed code.
 pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>, arities: &[Option<usize>]) -> Option<Vec<K>> {
-    shape(table, code, st, &[], arities).unwrap_or_else(|e| panic!("{e}"))
+    shape(table, code, st, arities).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Whether `code` from `st` is something the machine runs and falls through: no `Raw`, no unknown row or operand on a
-/// 2-to-1 row, no underflow, matching `if` arms and `br`s to an enclosing loop with its entry stack, and each
-/// `Call(j)` to a position with an arity.
+/// 2-to-1 row, no underflow, matching `if` arms, and each `Call(j)` to a position with an arity.
 pub fn well_formed(table: &Table, code: &[Ins], st: &[K], arities: &[Option<usize>]) -> bool {
-    matches!(shape(table, code, st.to_vec(), &[], arities), Ok(Some(_)))
+    matches!(shape(table, code, st.to_vec(), arities), Ok(Some(_)))
 }
 
 /// `A x B` as a `Sigma`, both at the same depth.
@@ -309,23 +290,21 @@ impl Machine<'_> {
             c.lam(nil, |c, nil| {
                 self.ctors(c, f, lam, &mut |c, ct| {
                     let ct = ct.to_vec();
-                    self.seq(c, f, &ct, base, code, ks.to_vec(), &|c, _| c.at(nil), &[])
+                    self.seq(c, f, &ct, base, code, ks.to_vec(), &|c, _| c.at(nil))
                 })
             })
         })
     }
     #[allow(clippy::too_many_arguments)]
-    fn seq(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, k: &dyn Fn(&mut Cx, Vec<K>) -> Expr,
-        labels: &[(At, Vec<K>)]) -> Expr {
+    fn seq(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, k: &dyn Fn(&mut Cx, Vec<K>) -> Expr) -> Expr {
         // one frame per instruction through `cont`: run on the kernel's growable stack (a 2 MB thread overflowed at
         // the JIT's tree cap)
-        tatic_kernel::grow(|| self.seq_step(c, f, ct, base, code, st, k, labels))
+        tatic_kernel::grow(|| self.seq_step(c, f, ct, base, code, st, k))
     }
     #[allow(clippy::too_many_arguments)]
-    fn seq_step(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, k: &dyn Fn(&mut Cx, Vec<K>) -> Expr,
-        labels: &[(At, Vec<K>)]) -> Expr {
+    fn seq_step(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, k: &dyn Fn(&mut Cx, Vec<K>) -> Expr) -> Expr {
         let Some((ins, rest)) = code.split_first() else { return k(c, st) };
-        let cont = |c: &mut Cx, st: Vec<K>| self.seq(c, f, ct, base, rest, st, k, labels);
+        let cont = |c: &mut Cx, st: Vec<K>| self.seq(c, f, ct, base, rest, st, k);
         let ty = |c: &Cx, ks: &[K]| self.sty(c, ks, base);
         let cons = |c: &Cx, i: usize, args: Vec<Expr>| apps(c.at(ct[i]), args);
         let below = |n: usize| st[n..].to_vec();
@@ -347,23 +326,9 @@ impl Machine<'_> {
             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
             Ins::Call(_) => unreachable!("Call has no meaning before S2c"),
             Ins::If(t, e) => {
-                let th = self.seq(c, f, ct, base, t, below(1), &cont, labels);
-                let el = self.seq(c, f, ct, base, e, below(1), &cont, labels);
+                let th = self.seq(c, f, ct, base, t, below(1), &cont);
+                let el = self.seq(c, f, ct, base, e, below(1), &cont);
                 cons(c, ctor_idx(Ctor::If), vec![ty(c, &below(1)), th, el])
-            }
-            Ins::Loop(body) => {
-                let a = ty(c, &st);
-                let label = app(c.at(f), a);
-                let b = c.lam(label, |c, l| {
-                    let ls = [&[(l, st.clone())], labels].concat();
-                    self.seq(c, f, ct, base, body, st.clone(), &cont, &ls)
-                });
-                cons(c, ctor_idx(Ctor::Loop), vec![a, b])
-            }
-            Ins::Br(j) => {
-                let (l, ls) = &labels[*j];
-                assert_eq!(ls, &st, "br with a stack other than the loop's");
-                c.at(*l)
             }
             Ins::Store => {
                 let r = cont(c, below(2));
@@ -600,15 +565,13 @@ mod tests {
     }
 
     #[test]
-    fn well_formed_rejects_raw_underflow_bad_br_and_mismatched_arms() {
+    fn well_formed_rejects_raw_underflow_and_mismatched_arms() {
         let t = crate::wasm::table();
         let cmp_if = |e: Vec<Ins>| vec![konst(1), konst(2), row("lt"), Ins::If(vec![konst(1)], e)];
         assert!(!well_formed(&t, &[Ins::Raw("x".into())], &[], &[]));
         assert!(!well_formed(&t, &[row("add")], &[], &[]));
-        assert!(!well_formed(&t, &[Ins::Loop(vec![Ins::Br(1)])], &[], &[]));
         assert!(!well_formed(&t, &cmp_if(vec![]), &[], &[]));
         assert!(well_formed(&t, &cmp_if(vec![konst(2)]), &[], &[]));
-        assert!(well_formed(&t, &[Ins::Loop(vec![Ins::LocalGet(0)])], &[], &[]));
     }
 
     fn konst(v: i64) -> Ins {

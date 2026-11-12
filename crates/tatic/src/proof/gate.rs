@@ -86,21 +86,11 @@ fn operand(table: &Table, store: &TermStore, h: Hash, m: usize, seen: &mut HashS
 /// Whether the kernel accepts `code` as `h` at n = 64. False for a term outside the fragment and for a list the
 /// machine does not run (`well_formed`).
 pub fn gate(table: &Table, store: &TermStore, h: Hash, arity: usize, code: &[Ins]) -> bool {
-    gate_with(table, store, h, arity, code, 1, false)
-}
-
-/// `gate` with the loop fuel given, and with `strip_loop` proving the body of the `[Loop(body)]` wrapper instead.
-pub(crate) fn gate_with(table: &Table, store: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, strip_loop: bool) -> bool {
-    let code = match (strip_loop, code) {
-        (false, _) => code,
-        (true, [Ins::Loop(body)]) => body.as_slice(),
-        (true, _) => panic!("strip_loop on a list that is not one Loop"),
-    };
     if !in_fragment(table, store, h, arity) || !well_formed(table, code, &[], &[]) {
         return false;
     }
     scoped(|| {
-        let (proof, stmt) = statement(table, store, h, arity, code, fuel);
+        let (proof, stmt) = statement(table, store, h, arity, code, 1);
         holds(&proof, &stmt).is_ok()
     })
 }

@@ -27,10 +27,9 @@ pub fn print_func(table: &Table, pos: usize, entry_pos: usize, e: &Entry, out: &
 }
 
 /// Appends `code`'s lines to `out`, each indented `depth` spaces: a row as its `line`, `If` flat (`if (result i64)` / `else` / `end`) with
-/// its arms at +2, `Loop` folded (`(loop $L (result i64)` .. `)`), `Raw` as given. A `Call(j)` prints `return_call` when
+/// its arms at +2, `Raw` as given. A `Call(j)` prints `return_call` when
 /// `tail` holds and it is the last instruction of `code` (an `If` passes `tail` and being last to both arms), `call`
-/// otherwise; `entry_pos` is the position printed `$f`. Panics on the machine-only `Store` and `Load`, and on `Br(j)`
-/// for j other than 0 (the lowering's one label is `$L`).
+/// otherwise; `entry_pos` is the position printed `$f`. Panics on the machine-only `Store` and `Load`.
 pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_pos: usize, out: &mut String) {
     let line = |out: &mut String, s: &str| {
         out.extend(std::iter::repeat_n(' ', depth));
@@ -52,15 +51,9 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
                 print_body(table, e, depth + 2, last_tail, entry_pos, out);
                 line(out, "end");
             }
-            Ins::Loop(body) => {
-                line(out, "(loop $L (result i64)");
-                print_body(table, body, depth + 2, false, entry_pos, out);
-                line(out, ")");
-            }
-            Ins::Br(0) => line(out, "br $L"),
             Ins::Call(j) => line(out, &format!("{} {}", if last_tail { "return_call" } else { "call" }, label(*j, entry_pos))),
             Ins::Raw(s) => line(out, s),
-            Ins::Br(_) | Ins::Store | Ins::Load => panic!("print_body: {ins:?} is never emitted"),
+            Ins::Store | Ins::Load => panic!("print_body: {ins:?} is never emitted"),
         }
     }
 }
@@ -69,7 +62,7 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
 fn print_body_shapes() {
     let konst = |v: i64| Ins::Row { name: "const", operand: v };
     let row = |name: &'static str| Ins::Row { name, operand: 0 };
-    let code = [Ins::Loop(vec![
+    let code = [
         Ins::LocalGet(0),
         konst(-1),
         row("add"),
@@ -77,22 +70,20 @@ fn print_body_shapes() {
         konst(1),
         row("lt"),
         Ins::If(vec![konst(1)], vec![konst(2)]),
-    ])];
+    ];
     let mut out = String::new();
     print_body(&crate::wasm::table(), &code, 4, true, 1, &mut out);
-    let want = "    (loop $L (result i64)
-      local.get $p0
-      i64.const -1
-      i64.add
-      i64.const 0
+    let want = "    local.get $p0
+    i64.const -1
+    i64.add
+    i64.const 0
+    i64.const 1
+    i64.lt_s
+    if (result i64)
       i64.const 1
-      i64.lt_s
-      if (result i64)
-        i64.const 1
-      else
-        i64.const 2
-      end
-    )
+    else
+      i64.const 2
+    end
 ";
     assert_eq!(out, want);
 }
