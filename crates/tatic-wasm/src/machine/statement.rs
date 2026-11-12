@@ -75,14 +75,34 @@ pub(super) fn widen<'t>(m: &Machine<'t>, module: &[Option<ModEntry>]) -> Machine
     Machine { fw: module.iter().flatten().map(|e| e.entry.arity).max().unwrap_or(0), ..*m }
 }
 
-/// The sizes one entry is generated at: `m` parameters over the machine `w`.
+/// The statement's two clauses a mutant may weaken (O3): how the continuation relation hypothesis is stated, and whether
+/// the fuel is quantified. Private to the machine module; the one public entry, `statement`, passes `FIXED`.
+pub(super) struct Clauses {
+    /// The relation's body for `r, km, ks, a, mu`: `Id(R, km a mu, ks a)` in `FIXED`.
+    pub relate: fn(&mut Cx, At, At, At, At, At) -> Expr,
+    /// `Pi N (GoodNat N)` in the statement (and the proof); false states it at one fixed fuel numeral.
+    pub quantify_fuel: bool,
+}
+
+fn relate_fixed(c: &mut Cx, r: At, km: At, ks: At, a: At, mu: At) -> Expr {
+    id(c.at(r), app2(c.at(km), c.at(a), c.at(mu)), app(c.at(ks), c.at(a)))
+}
+
+pub(super) const FIXED: Clauses = Clauses { relate: relate_fixed, quantify_fuel: true };
+
+/// The sizes one entry is generated at: `m` parameters over the machine `w`, and the clauses the telescope is stated with.
 #[derive(Clone, Copy)]
 pub(super) struct G<'t> {
     pub w: Machine<'t>,
     pub m: usize,
+    pub cl: &'t Clauses,
 }
 
-impl G<'_> {
+impl<'t> G<'t> {
+    /// An entry's sizes under the real (unweakened) clauses.
+    pub fn fixed(w: Machine<'t>, m: usize) -> Self {
+        G { w, m, cl: &FIXED }
+    }
     pub fn v(&self) -> Expr {
         self.w.v()
     }
@@ -105,10 +125,10 @@ impl G<'_> {
     }
     /// `Pi a mu. Id(R, km a mu, ks a)`.
     pub fn rel_ty(&self, c: &mut Cx, r: At, km: At, ks: At) -> Expr {
-        let w = self.w;
+        let (w, relate) = (self.w, self.cl.relate);
         c.pi(self.v(), |c, a| {
             let mem = w.mem(c, r);
-            c.pi(mem, |c, mu| id(c.at(r), app2(c.at(km), c.at(a), c.at(mu)), app(c.at(ks), c.at(a))))
+            c.pi(mem, |c, mu| relate(c, r, km, ks, a, mu))
         })
     }
     /// The frame holding the parameters `args`, zeros after.
@@ -231,13 +251,15 @@ pub(super) struct Ctxt<'a> {
     pub tm: At,
     /// `arities[j]`: the words position `j` pops (`None`: no entry there).
     pub arities: Vec<Option<usize>>,
+    /// The clauses the entries' telescopes are stated with (`FIXED` unless a test weakens them).
+    cl: &'a Clauses,
     memo: RefCell<Vec<Option<Real>>>,
     building: RefCell<Vec<usize>>,
 }
 
 impl<'a> Ctxt<'a> {
     pub fn new(c: &mut Cx, w: Machine<'a>, module: &'a [Option<ModEntry<'a>>], fuel: At, r: At, z: At) -> Self {
-        let g0 = G { w, m: 0 };
+        let g0 = G::fixed(w, 0);
         let hm = {
             let e = g0.hm(c, r);
             c.mark(e)
@@ -247,13 +269,13 @@ impl<'a> Ctxt<'a> {
             c.mark(e)
         };
         let arities = module.iter().map(|e| e.as_ref().map(|e| e.entry.arity)).collect();
-        Ctxt { w, module, fuel, r, z, hm, tm, arities, memo: RefCell::new(vec![None; module.len()]), building: RefCell::new(vec![]) }
+        Ctxt { w, module, fuel, r, z, hm, tm, arities, cl: &FIXED, memo: RefCell::new(vec![None; module.len()]), building: RefCell::new(vec![]) }
     }
     pub fn entry(&self, k: usize) -> &'a ModEntry<'a> {
         self.module.get(k).and_then(|e| e.as_ref()).unwrap_or_else(|| panic!("no module entry at position {k}"))
     }
     pub fn g(&self, k: usize) -> G<'a> {
-        G { w: self.w, m: self.entry(k).entry.arity }
+        G { w: self.w, m: self.entry(k).entry.arity, cl: self.cl }
     }
     /// The table of entry `k`: `\i fr mu kont. (i == k) (env fr mu kont) ((i == c) (H_c fr mu kont) .. z)` over its
     /// callees `cs`, with `env` its own fuel-unrolled step.
@@ -263,7 +285,7 @@ impl<'a> Ctxt<'a> {
             c.lam(w.fr(), |c, fr| {
                 let mem = w.mem(c, r);
                 c.lam(mem, |c, mu| {
-                    let rm = G { w, m: 0 }.ret_m(c, r);
+                    let rm = G::fixed(w, 0).ret_m(c, r);
                     c.lam(rm, |c, kont| {
                         let pick = |c: &Cx, pos: usize, yes: Expr, no: Expr| app3(app2(eq_bv(n), c.at(i), lit(n, pos as u128)), c.at(r), yes, no);
                         let mut acc = c.at(z);
@@ -347,10 +369,22 @@ pub(super) fn callees(k: usize, code: &[Ins]) -> Vec<usize> {
 /// `Pi N (GoodNat N) R z, law_entry`: entry `entry` of the module simulates its source, for every fuel. A single
 /// function is a one-entry module, whose frame width is its own arity.
 pub fn statement(m: &Machine, module: &[Option<ModEntry>], entry: usize) -> Expr {
+    statement_with(m, module, entry, &FIXED)
+}
+
+/// `statement` under the clauses `cl` (O3's seam; only `statement` passes anything but a test's weakening).
+pub(super) fn statement_with(m: &Machine, module: &[Option<ModEntry>], entry: usize, cl: &Clauses) -> Expr {
     let w = widen(m, module);
+    if !cl.quantify_fuel {
+        // `Pi R z, law_entry` at the fuel numeral 2
+        let tys = vec![ty!(|_c, _x| sort(0)), ty!(|c, x| c.at(x[0]))];
+        return tele(&mut Cx::default(), &tys, &mut vec![], &pi, &mut |c, x| {
+            let fuel = c.mark(nat2_lit(2));
+            Ctxt { cl, ..Ctxt::new(c, w, module, fuel, x[0], x[1]) }.law(c, entry)
+        });
+    }
     let tys = head_tys(w, module, &[], false);
     tele(&mut Cx::default(), &tys, &mut vec![], &pi, &mut |c, x| {
-        let cx = Ctxt::new(c, w, module, x[0], x[2], x[3]);
-        cx.law(c, entry)
+        Ctxt { cl, ..Ctxt::new(c, w, module, x[0], x[2], x[3]) }.law(c, entry)
     })
 }

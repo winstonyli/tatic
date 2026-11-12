@@ -92,7 +92,7 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
     let e = module.get(k).and_then(|e| e.as_ref()).ok_or_else(|| format!("no module entry at position {k}"))?;
     let arities: Vec<Option<usize>> = module.iter().map(|e| e.as_ref().map(|e| e.entry.arity)).collect();
     check_code(w.table, &e.entry.code, &arities)?;
-    let g = G { w, m: e.entry.arity };
+    let g = G::fixed(w, e.entry.arity);
     let m = g.m;
     let cs = callees(k, &e.entry.code);
     let err: RefCell<Option<String>> = RefCell::new(None);
@@ -182,7 +182,7 @@ fn closed(w: Machine, module: &[Option<ModEntry>], k: usize, path: &mut Vec<usiz
         let nzs: Vec<At> = x.to_vec();
         let mut all: Vec<Expr> = nzs.iter().map(|a| c.at(*a)).collect();
         for (p, cl) in cs.iter().zip(&closed_callees) {
-            let gc = G { w, m: module[*p].as_ref().expect("proof_open found the callee").entry.arity };
+            let gc = G::fixed(w, module[*p].as_ref().expect("proof_open found the callee").entry.arity);
             let law = gc.binders(c, nzs[2], &lam, &mut |c, y| {
                 apps(*cl, [nzs.iter().map(|a| c.at(*a)).collect::<Vec<_>>(), y.iter().map(|a| c.at(*a)).collect()].concat())
             });

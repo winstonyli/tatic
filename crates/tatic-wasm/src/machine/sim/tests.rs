@@ -1,7 +1,7 @@
 //! The generator on straight-line, `If` and self-call bodies: a mini source language mirrors what `tatic::proof::gate::source_fn`
 //! reads from a `Term`, so these tests need no term store.
 use super::*;
-use crate::machine::statement::{statement, SEnv};
+use crate::machine::statement::{statement, statement_with, Clauses, SEnv, FIXED};
 
 #[derive(Clone, Debug)]
 enum Src {
@@ -203,4 +203,47 @@ fn prove_takes_a_callee_by_its_closed_proof() {
     }
     let err = two_entries(8, true).expect_err("the entry passes its arguments the wrong way round");
     assert!(err.starts_with("body") && err.contains("local 0"), "{err}");
+}
+
+/// The sum loop's real proof against a statement stated under `cl`: the proof is built under the real clauses, so a
+/// weakened statement is a different proposition and the kernel must refuse it (O3).
+fn sum_loop_against(cl: &Clauses) -> Result<(), String> {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(tatic_kernel::CHECK_STACK)
+            .spawn_scoped(s, || {
+                let t = crate::wasm::table();
+                let w = Machine { n: 8, fw: 0, table: &t };
+                let (_, arity, code, src) = sum_loop();
+                let entry = Entry { arity, env: EnvAccess::Params(0), code };
+                let f = |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| cps(&w, e, c, &src, k);
+                let module = [Some(ModEntry { entry: &entry, src: &f })];
+                holds(&prove(&w, &module, 0)?, &statement_with(&w, &module, 0, cl))
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+}
+
+/// A relation that never reads the machine's continuation: `ks a = ks a`.
+fn relate_ignores_k(c: &mut Cx, r: At, _km: At, ks: At, a: At, _mu: At) -> Expr {
+    id(c.at(r), app(c.at(ks), c.at(a)), app(c.at(ks), c.at(a)))
+}
+
+#[test]
+fn the_fixed_clauses_state_what_the_proof_proves() {
+    sum_loop_against(&FIXED).expect("the sum loop's proof against the unweakened statement");
+}
+
+#[test]
+fn a_relation_that_ignores_the_continuation_breaks_the_proof() {
+    let cl = Clauses { relate: relate_ignores_k, ..FIXED };
+    sum_loop_against(&cl).expect_err("the proof is of the statement with the real relation");
+}
+
+#[test]
+fn an_unquantified_fuel_breaks_the_proof() {
+    let cl = Clauses { quantify_fuel: false, ..FIXED };
+    sum_loop_against(&cl).expect_err("the proof is of the statement for every fuel");
 }

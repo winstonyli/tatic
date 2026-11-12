@@ -12,11 +12,11 @@ use crate::support::samples::{
     a_capturing_closure_call, a_pap_capturing, capturing_closure_loop, factorial, fib, inc, partial_application_loop,
     redundant_arithmetic_recursion, source, straight_line, twice, twice_inc_5,
 };
-use crate::testing::ins_mutate::{mutate, with_entry};
+use crate::testing::ins_mutate::with_entry;
 use crate::testing::test_corpus::doubling;
 
 /// The term the gate sees (the specialised one, if `specialise` changed it) and its compiled fragment.
-fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, CompiledFragment) {
+pub(super) fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, CompiledFragment) {
     let mut s = TermStore::new();
     let h = build(&mut s);
     let c = compile_specialised(&s, h).expect("compiles");
@@ -26,18 +26,8 @@ fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, Compile
     }
 }
 
-/// A 2-to-1 row instruction.
-fn row(name: &'static str) -> Ins {
-    Ins::Row { name, operand: 0 }
-}
-
-/// A `local.get` row instruction.
-fn get(i: i64) -> Ins {
-    Ins::Row { name: "local.get", operand: i }
-}
-
 /// Goal 1's five terms, by name, with their arity.
-fn the_five() -> Vec<(&'static str, Box<dyn Fn(&mut TermStore) -> Hash>, usize)> {
+pub(super) fn the_five() -> Vec<(&'static str, Box<dyn Fn(&mut TermStore) -> Hash>, usize)> {
     vec![
         ("inc", Box::new(inc), 1),
         ("doubling_4", Box::new(|s: &mut TermStore| doubling(s, 4)), 1),
@@ -67,51 +57,6 @@ fn gate_accepts_the_fragment_table() {
         let (s, h, frag) = compiled(&*build);
         assert_eq!(frag.arity, arity, "{name}");
         assert_eq!(gate(wasm_table(), &s, h, &frag), Verdict::Accepted, "{name}: the gate should accept its emitted body");
-    }
-}
-
-#[test]
-fn gate_rejects_mutations() {
-    type Mutation = (&'static str, Box<dyn Fn(&Ins) -> Option<Ins>>, &'static [&'static str]);
-    let all: &[&str] = &["inc", "doubling_4", "straight_line", "a_capturing_closure_call", "a_pap_capturing"];
-    let mutations: Vec<Mutation> = vec![
-        ("swap if arms", Box::new(|i| match i { Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())), _ => None }), &["straight_line"]),
-        ("lt -> lt_u", Box::new(|i| (i == &row("lt")).then_some(row("lt_u"))), &["straight_line"]),
-        ("add -> sub", Box::new(|i| (i == &row("add")).then_some(row("sub"))), all),
-        ("mul -> add", Box::new(|i| (i == &row("mul")).then_some(row("add"))), &["straight_line"]),
-        (
-            "const v -> const v + 1",
-            Box::new(|i| match i {
-                Ins::Row { name: "const", operand } => Some(Ins::Row { name: "const", operand: operand.wrapping_add(1) }),
-                _ => None,
-            }),
-            &["inc", "straight_line", "a_capturing_closure_call", "a_pap_capturing"],
-        ),
-        ("local.get 0 -> 1", Box::new(|i| (i == &get(0)).then_some(get(1))), &["straight_line"]),
-        ("local.get 1 -> 0", Box::new(|i| (i == &get(1)).then_some(get(0))), &["straight_line"]),
-    ];
-    for (name, build, arity) in the_five() {
-        let (s, h, frag) = compiled(&*build);
-        let code = frag.entry().code.as_slice();
-        assert_eq!(gate(wasm_table(), &s, h, &frag), Verdict::Accepted, "{name}: the unmutated body should pass");
-        let gate_with = |code: Vec<Ins>| gate(wasm_table(), &s, h, &with_entry(compiled(&*build).2, |e| tatic_wasm::machine::Entry { code, ..e }));
-        for (what, f, applies) in &mutations {
-            // arity-1 terms are skipped for local.get: another index reads past the frame (spec Goal 2; the shape check
-            // that rejects it comes with the call rule)
-            if what.starts_with("local.get") && arity < 2 {
-                continue;
-            }
-            let mutated = mutate(code, &**f);
-            let changed = mutated != code;
-            let applies = applies.contains(&name);
-            assert_eq!(changed, applies, "{name}: '{what}' {} the body", if changed { "changed" } else { "did not change" });
-            if changed {
-                let v = gate_with(mutated.clone());
-                assert!(matches!(v, Verdict::Rejected(..)), "{name}: '{what}' gave {v:?}: {mutated:?}");
-            }
-        }
-        let with_raw = [code, &[Ins::Raw("nop".into())]].concat();
-        assert!(matches!(gate_with(with_raw), Verdict::Rejected(Layer::Shape, _)), "{name}: a Raw line should fail the shape check");
     }
 }
 
@@ -160,7 +105,7 @@ fn gate_build_work_is_linear_in_the_tree() {
 }
 
 /// `(proof, statement)` for a fragment term and its emitted body, built apart from the check.
-fn built(s: &TermStore, h: Hash, frag: &CompiledFragment) -> (tatic_kernel::Expr, tatic_kernel::Expr) {
+pub(super) fn built(s: &TermStore, h: Hash, frag: &CompiledFragment) -> (tatic_kernel::Expr, tatic_kernel::Expr) {
     let (st, p) = build(wasm_table(), s, h, frag).expect("a covered term with a well-formed body");
     (p.expect("the generator proves a fragment term"), st)
 }
@@ -299,7 +244,7 @@ fn measure_cachegrind() {
 
 
 /// `f` on a thread with the checker's stack, as the JIT's gate runs.
-fn big<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
+pub(super) fn big<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
     std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn(f).unwrap().join().unwrap()
 }
 
