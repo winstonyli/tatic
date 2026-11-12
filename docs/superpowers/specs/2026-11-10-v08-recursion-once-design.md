@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # v0.8: Recursion once (one generated simulation proof over an instruction table)

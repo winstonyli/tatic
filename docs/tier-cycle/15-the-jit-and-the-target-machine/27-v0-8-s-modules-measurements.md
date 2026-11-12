@@ -29,3 +29,18 @@ together; none leaves the goal.
 **A callee's tail loop (Review Focus 5).** `a_callee_tail_loop_runs_a_million_iterations`: the callee `$c0` of
 `\n. (rec g n acc = ..) n 0` is printed with `return_call $c0`, the gate `Accepts` it, and `jit.apply` at 10^6 returns
 `n(n+1)/2` with one compile.
+
+**Mutants of modules (T15, Goal 4).** `proof/tests/modules.rs` edits every call site of every callee in every record of
+the three Goal 2 modules (5 wrong-index, 5 dropped, 5 added argument, 1 swapped) and the registry itself. Observed
+layers, pinned in the tests: a wrong callee, a dropped or added argument and the padding read are `Rejected(Shape)`;
+swapped arguments and a false callee law (the callee's body edited under its unchanged source) are `Rejected(Walk)`,
+and the kernel rejects the positive proof against each such mutant's statement; swapped `Call` indices and swapped
+registry entries are `Walk` except where the callee calls a callee, which is `Pairing`; a cyclic registry is
+`Rejected(Pairing)` on all four modules. No mutant is `Accepted`. A swapped registry entry states the same proposition,
+so its test asserts the layer only. Workspace suite `v08-s3-workspace`: 803 passed, 0 failed, goldens unchanged.
+
+**The toy second table (T16, S4, Goal 7).** `proof/tests/toy_table.rs` hands `gate` a table whose `sub` means
+`x y. (y - x) + 1`, beside wasm's `const`, `local.get` and `lt`. The unchanged gate accepts `a - b` and
+`if a < b then a - b else b` under it and rejects the same `a - b` with the operands loaded in the other order, so the
+source reading and the machine read the table given, not wasm's. The toy has no runtime, so "installs" is the gate's
+verdict (an inference from the roadmap's wording; the user confirms). No change to `gate.rs`, `machine/` or `machine.rs`.

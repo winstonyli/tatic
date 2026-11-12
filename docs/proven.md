@@ -376,6 +376,9 @@ reported by `JitEngine::is_kernel_verified`):
     one opaque memory argument; it is more permissive than wasm validation
     (an arm may pop below its entry stack), so the gate relies on wasmtime
     having validated the module first, as `try_install` does;
+  - the registry pairing (`gate.rs#pairing`): each record's source term has the record's arity and calls the positions
+    its code calls other than its own, so a swapped registry entry or a mismatched callee is refused before any
+    statement exists (guard: `proof/tests/modules.rs`);
   - the statement builder (`machine/statement.rs`: the module fixpoint over
     fuel, the law telescope, the continuation relation), `Source::cps` and
     its source closure, `Call`'s meaning, the shape check and the budget
