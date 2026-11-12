@@ -243,12 +243,6 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   (`docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code stands"). Trigger: the heap relation
   built (entry above), or a table-only closure target picked. Evidence: same section, verified 2026-11-11. Status:
   parked.
-- **Timed reruns of v0.8's untimed gate measurements** - what: the go/no-go (T9, T10 Step 4b), the `Call` weight fit
-  (`CALL_WEIGHT` = 228) and the targets' times (T13, T14) ran untimed on CPUs `CFF` with interleaved comparison arms,
-  because every `-Timed` request was refused (a game on CPU 8). Why parked: the margins are large (relational 0.36 s
-  and call 0.41 s against a 0.57 s cap; Goal 1 targets under 55 ms against 440 ms) and the weight is a plain constant.
-  Trigger: a quiet machine, or a change to the Call-bearing path. Evidence: `docs/tier-cycle/`, "v0.8's build:
-  measurements and checks", verified 2026-11-11. Status: parked.
 - **A call budget that bounds gate time** - what: `proof/gate.rs#cost` is tree nodes plus `CALL_WEIGHT` (228) per
   call site, fitted only on `rec f n = if n <= 0 then 0 else f (n - 1) + .. + f (n - 1)` (a tiny tree). A term
   with 16 self-calls and a 1920-node straight-line tail costs 7590, under `MAX_GATE_TREE` (8192), and took about
@@ -259,8 +253,8 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   refit; or replace the weight and its fit with a cap on the kernel's deterministic work count during build
   and check (fewer concepts, but padded code could then turn `Rejected` into `NotCovered`, against the spec's
   source-only budget). Why parked: by decision (Decide c1, 2026-11-11); the stalling shapes are contrived and
-  no corpus term is near them. Trigger: a real term that is covered and takes over 0.57 s in the gate, or the
-  timed reruns above moving the fit. Evidence: `crates/tatic/src/proof/gate.rs#cost`, `#CALL_WEIGHT`, verified
+  no corpus term is near them. Trigger: a real term that is covered and takes over 0.57 s in the gate, (the timed
+  rerun refit the weight to about 223, `docs/tier-cycle/`, "v0.8's build: measurements and checks"). Evidence: `crates/tatic/src/proof/gate.rs#cost`, `#CALL_WEIGHT`, verified
   2026-11-11. Status: parked.
 - **A distinct `i32` kind** — why parked: no v0.8 target holds an `i32` value; v0.8 removes the env word from covered
   callees (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`, D3). Trigger: the first `i32` arithmetic in a gate target. Evidence: same spec, "Departures from the

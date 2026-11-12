@@ -64,6 +64,15 @@ total CPU 53%, CPU 8 at 33%, a game running). `time_targets` prints `name cost b
 Every Goal 1 target is far under `MAX_GATE_TREE` (8192) and under 55 ms for build and check together, against
 `doubling(12)`'s 0.34 s here.
 
+**Timed reruns (2026-11-11).** Run `v08-timed-reruns` (`run.ps1 -Timed`, total CPU 5%, each measurement on the exe its
+untimed run used; script `docs/runs/2026-11-11/scripts/v08-timed-reruns.sh`). Everything ran about 2.4x faster than
+untimed and every verdict holds. Go/no-go, `doubling(12)` build and check, medians of 5 interleaved rounds: relational
+182.6 ms, refl 237.9 ms (0.77x), with `Call` 180.6 ms, against the 0.57 s cap. Weight fit, medians for k = 1 .. 64:
+5.8, 6.1, 8.8, 18.6, 41.8, 134.0, 570.1 ms, `doubling(12)` 185.4 ms: the crossing is at k about 36, tree about 221, a
+weight of about 223, within 3% of the untimed 228, which stays (the larger weight is the safer side). Targets, best of
+3: Goal 1 at most 14.5 ms (`redundant_arithmetic_recursion`, build plus check), Goal 2 at most 16.2 ms (`let_bound_factorial_10`), held-out at
+most 14.9 ms, `doubling(12)` 176.1 ms.
+
 **The verdict column.** `proof/tests/baseline.rs#VERDICTS` holds the gate's verdict kind for every census and held-out
 row, measured on the form `try_install` proves. Goal 1's five targets and both held-out terms are `Accepted`; no row is
 `Rejected`; the rest (closures, `Div`/`Mod`, curried dispatch, modules with callees, the oversized term) are
