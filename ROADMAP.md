@@ -55,5 +55,9 @@ steps: the census and the emit spike" and "The gate's costs, and the rules they 
   an instruction table with locals as a frame passed in (staged; picked 2026-11-10,
   `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`; spec approved 2026-11-11:
   `docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`).
+  - Progress: S0 and S2 are built and the generator is frozen on the branch (loops and self-calls are `Call`, `loop`
+    and the memory rows are deleted, Goal 1's five targets install through the gate, `Call` weight fitted); S3
+    (modules) and S4 (a toy second table) are left. Measurements: `docs/tier-cycle/`, "v0.8's build: measurements and
+    checks".
   - Done when: the spec's Goals hold (both sum loops and terms 1, 2, 3 install through the generator, the loop
     machinery is deleted, and a toy second table passes a straight-line term through the unchanged gate, among them).

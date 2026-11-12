@@ -242,6 +242,12 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   (`docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code stands"). Trigger: the heap relation
   built (entry above), or a table-only closure target picked. Evidence: same section, verified 2026-11-11. Status:
   parked.
+- **Timed reruns of v0.8's untimed gate measurements** - what: the go/no-go (T9, T10 Step 4b), the `Call` weight fit
+  (`CALL_WEIGHT` = 228) and the targets' times (T13) ran untimed on CPUs `CFF` with interleaved comparison arms,
+  because every `-Timed` request was refused (a game on CPU 8). Why parked: the margins are large (relational 0.36 s
+  and call 0.41 s against a 0.57 s cap; Goal 1 targets under 55 ms against 440 ms) and the weight is a plain constant.
+  Trigger: a quiet machine, or a change to the Call-bearing path. Evidence: `docs/tier-cycle/`, "v0.8's build:
+  measurements and checks", verified 2026-11-11. Status: parked.
 - **A distinct `i32` kind** — why parked: no v0.8 target holds an `i32` value; v0.8 removes the env word from covered
   callees (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`, D3). Trigger: the first `i32` arithmetic in a gate target. Evidence: same spec, "Departures from the
   decision file", verified 2026-11-11. Status: parked.

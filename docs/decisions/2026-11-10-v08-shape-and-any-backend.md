@@ -11,14 +11,15 @@ Goal 1 of `ROADMAP.md` now says so and links here.
   partial row whose trap is the no-value answer (below); tail calls are one `Call` printed as `return_call` when
   nothing follows it (below); the state shape is a frame passed in plus one opaque memory argument, with the memory
   rows deleted in v0.8 (u1, below). The spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`) was
-  rewritten to u1 on 2026-11-11 and approved the same day (`status: active`); nothing is built yet.
+  rewritten to u1 on 2026-11-11 and approved the same day (`status: active`). Built on branch `v08-recursion-once`: S0 and S2 (to the generator's
+  freeze, 2026-11-11); S3 and S4 are left.
 - **Spiked 2026-11-11, for the spec:** self-calls and callees merge into one call rule over a table of call entries
   (`docs/tier-cycle/`, "One call rule for self-calls and callees: a spike"); the kernel rejects forged proofs of every
   mutant tried, so the generator's walk checks only fail early (`docs/tier-cycle/`, "The kernel against forged proofs
   of mutants: a spike").
-- **Open:** the heap relation for callees (below); whether
-  `loop`/`br` survive: the no-loop spike says they need not (`docs/tier-cycle/`, "Tail self-calls as `return_call`,
-  with no `loop` or `br`: a spike"); the spec decides.
+- **Open:** the heap relation for callees (below; parked, `PARKED.md`). Decided in the spec and built: `loop` and `br`
+  do not survive (`docs/tier-cycle/`, "Tail self-calls as `return_call`, with no `loop` or `br`: a spike"); every
+  call is `Call`, printed `return_call` by the tail rule.
 - **Settled:** the "any backend" policy below. It extends the 2026-10-31 decision
   (`docs/decisions/2026-10-31-learned-target-model.md`) and does not change it.
 

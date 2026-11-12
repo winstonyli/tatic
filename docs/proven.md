@@ -343,7 +343,7 @@ passes the samples but has no such theorem is cached as
 The last two cover different things, which is why both are required.
 The sample battery runs the WAT wasmtime actually runs. The kernel
 theorem is the only check that says anything about inputs outside the
-battery. For a straight-line fragment term it is about the emitted
+battery. For a term the gate takes it is about the emitted
 instruction list itself (`proof/gate.rs`); for every other term it is
 stated over `proof.rs`'s `denote`, which *models* the compiler
 (`build_node` and the `lower_wat` templates) rather than reading its
@@ -353,22 +353,34 @@ short of end-to-end soundness.
 What counts as "a theorem covering every input" (`kernel_verify`,
 reported by `JitEngine::is_kernel_verified`):
 
-- For a term the gate covers (`proof/gate.rs#Verdict`, not `NotCovered`),
-  the gate's theorem alone (`jit.rs#prove_install`): the emitted
-  instruction list, run on `tatic_wasm`'s machine at n = 64, equals the
-  source term for every input. This one is about the emitted body, not a
-  model of the compiler. It still trusts, unproved:
+- For a term the gate's verdict is final on (`proof/gate.rs#Verdict`:
+  `Accepted` installs, `Rejected` does not, and only `NotCovered` goes on
+  to `kernel_verify`), the gate's theorem alone (`jit.rs#prove_install`):
+  the emitted instruction list, run on `tatic_wasm`'s machine at n = 64
+  (loops and self-calls included, as `Call` with fuel), equals the source
+  term for every input. This one is about the emitted body, not a model of
+  the compiler. It still trusts, unproved:
   - the operator table: each `Op` row's kernel term against its WAT
     mnemonic, and the one `PrimOp -> Op` map both sides read, so the gate
     cannot see a wrong row (guard: `jit/op_table_tests.rs`, against eval
     and wasmtime; n = 8 exhaustive is an ignored test);
-  - the body printer, `Ins` to WAT one-to-one (guard: the golden WAT);
-  - the function scaffolding outside the body: the header's `$p0..` order,
-    locals, export, and the JIT passing `args` in order (guard: `verify`);
-  - the machine as a model of wasm `if`, `loop`, `local.get` and i64
-    arithmetic; it is more permissive than wasm validation (an arm may pop
-    below its entry stack), so the gate relies on wasmtime having
-    validated the module first, as `try_install` does;
+  - the body printer, `Ins` to WAT one-to-one (guard: the golden WAT),
+    and its tail rule: a `Call` followed by nothing prints `return_call`,
+    any other `Call` prints `call` (guard: the exhaustive tail-rule test
+    under wasmtime);
+  - the function scaffolding outside the body: the header printed from the
+    record (parameters `$p0..` from its arity, the scratch locals), export,
+    and the JIT passing `args` in order (guard: `verify`);
+  - the machine as a model of wasm `if`, `call`, `local.get` and i64
+    arithmetic, with locals as a frame passed into every interpreter and
+    one opaque memory argument; it is more permissive than wasm validation
+    (an arm may pop below its entry stack), so the gate relies on wasmtime
+    having validated the module first, as `try_install` does;
+  - the statement builder (`machine/statement.rs`: the module fixpoint over
+    fuel, the law telescope, the continuation relation), `Source::cps` and
+    its source closure, `Call`'s meaning, the shape check and the budget
+    check; the walk that proves the statement (`machine/sim.rs`) is not
+    trusted, the kernel checks what it builds;
   - for a specialised term, `h ≡ h'`, certified by `spec_check`, not the
     kernel (docs/related-work/ §37).
 - `prove_closure_expr` or

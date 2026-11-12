@@ -190,6 +190,44 @@ fn time_doubling_12() {
     println!("build_ms {b:.1} check_ms {k:.1}");
 }
 
+/// T13 step 3: `name cost build_ms check_ms` for the Goal 1 targets, the five, `doubling(12)` and the held-out terms,
+/// each best of 3 on a `CHECK_STACK` thread; `cost` is the gate's (tree plus `CALL_WEIGHT` per call site). Run timed,
+/// from a copied exe.
+#[test]
+#[ignore]
+fn time_targets() {
+    use crate::testing::test_corpus::{held_out_a, held_out_b};
+    type Build = Box<dyn Fn(&mut TermStore) -> Hash + Send>;
+    let rows: Vec<(&'static str, Build)> = vec![
+        ("capturing_closure_loop", Box::new(capturing_closure_loop)),
+        ("partial_application_loop", Box::new(partial_application_loop)),
+        ("factorial", Box::new(factorial)),
+        ("redundant_arithmetic_recursion", Box::new(redundant_arithmetic_recursion)),
+        ("fib", Box::new(fib)),
+        ("held_out_a", Box::new(held_out_a)),
+        ("held_out_b", Box::new(held_out_b)),
+        ("doubling_12", Box::new(|s| doubling(s, 12))),
+        ("inc", Box::new(inc)),
+        ("doubling_4", Box::new(|s| doubling(s, 4))),
+        ("straight_line", Box::new(straight_line)),
+        ("a_capturing_closure_call", Box::new(a_capturing_closure_call)),
+        ("a_pap_capturing", Box::new(a_pap_capturing)),
+    ];
+    for (name, b) in rows {
+        let (cost, bm, cm, ok) = big(move || {
+            let (s, h, frag) = compiled(&*b);
+            let cost = crate::jit::compile::tree_size(&s, h) + CALL_WEIGHT * crate::proof::gate::call_sites(&s, h);
+            let (bm, cm, ok) = time_gate(&s, h, &frag, 3);
+            (cost, bm, cm, ok)
+        });
+        assert!(ok, "{name} should check");
+        if name != "doubling_12" {
+            assert!(cost <= MAX_GATE_TREE, "{name}: cost {cost} is over the budget");
+        }
+        println!("{name} {cost} {bm:.1} {cm:.1}");
+    }
+}
+
 /// `doubling(13)` (the tree cap) on a default-size 2 MB thread. Alone, since an overflow aborts the exe.
 #[test]
 #[ignore]

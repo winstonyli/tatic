@@ -58,6 +58,7 @@ The tier-cycle findings log, one file per section (the two long sections are spl
 - [15-the-jit-and-the-target-machine/23-one-call-rule-for-self-calls-and-callees-a-spike.md](15-the-jit-and-the-target-machine/23-one-call-rule-for-self-calls-and-callees-a-spike.md): One call rule for self-calls and callees: a spike (2026-11-11)
 - [15-the-jit-and-the-target-machine/24-a-caller-s-cell-across-a-call-to-another-function.md](15-the-jit-and-the-target-machine/24-a-caller-s-cell-across-a-call-to-another-function.md): A caller's cell across a call to another function: a spike (2026-11-11)
 - [15-the-jit-and-the-target-machine/25-the-kernel-against-forged-proofs-of-mutants-a.md](15-the-jit-and-the-target-machine/25-the-kernel-against-forged-proofs-of-mutants-a.md): The kernel against forged proofs of mutants: a spike (2026-11-11)
+- [15-the-jit-and-the-target-machine/26-v0-8-s-build-measurements-and-checks.md](15-the-jit-and-the-target-machine/26-v0-8-s-build-measurements-and-checks.md): v0.8's build: measurements and checks (2026-11-11)
 - [16-other-theories.md](16-other-theories.md): Other theories
 - [17-learned-and-fixed-parts.md](17-learned-and-fixed-parts.md): Learned and fixed parts
 - [18-related-work-surveyed-2026-10-10.md](18-related-work-surveyed-2026-10-10.md): Related work (surveyed 2026-10-10)

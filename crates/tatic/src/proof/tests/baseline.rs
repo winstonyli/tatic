@@ -252,3 +252,118 @@ fn every_function_header_declares_the_scratch_locals() {
     }
     assert!(funcs > 30, "only {funcs} functions seen");
 }
+
+/// What `gate` says of a term, as `try_install` would see it (the verdict's kind; the message is not compared).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Kind {
+    Accepted,
+    Rejected,
+    NotCovered,
+}
+
+/// The verdict on the form `try_install` proves: the specialised term and fragment if there is one, else the term and
+/// its own fragment; a term with no fragment never reaches `prove_install` and is `NotCovered`. Also whether the
+/// fragment holds a `Raw` line or a pointer-reached environment.
+fn measure_verdict(s: &TermStore, h: Hash) -> (Kind, bool) {
+    use crate::proof::gate::{gate, Verdict};
+    let Some(c) = compile::compile_specialised(s, h) else { return (Kind::NotCovered, false) };
+    let raw = c.frag.records().iter().flatten().any(|e| has_raw(&e.code) || e.env == tatic_wasm::machine::EnvAccess::Pointer);
+    let v = match &c.specialised {
+        Some((s2, h2)) => gate(crate::jit::shape::wasm_table(), s2, *h2, &c.frag),
+        None => gate(crate::jit::shape::wasm_table(), s, h, &c.frag),
+    };
+    let k = match v {
+        Verdict::Accepted => Kind::Accepted,
+        Verdict::Rejected(..) => Kind::Rejected,
+        Verdict::NotCovered(_) => Kind::NotCovered,
+    };
+    (k, raw)
+}
+
+fn measure_verdicts() -> Vec<(&'static str, Kind, bool)> {
+    census()
+        .into_iter()
+        .map(|(name, s, h)| {
+            let (k, raw) = std::thread::Builder::new()
+                .stack_size(tatic_kernel::CHECK_STACK)
+                .spawn(move || measure_verdict(&s, h))
+                .unwrap()
+                .join()
+                .unwrap();
+            (name, k, raw)
+        })
+        .collect()
+}
+
+#[test]
+#[ignore]
+fn print_verdict_rows() {
+    for (name, k, _) in measure_verdicts() {
+        println!("    ({name:?}, Kind::{k:?}),");
+    }
+}
+
+/// The gate's verdict kind of every census and held-out row, from `print_verdict_rows`. Goal 1 targets and the held-out rows are
+/// `Accepted`; none is `Rejected` (each runs correct code: a `Rejected` row is a walk gap that loses an install).
+pub(super) const VERDICTS: &[(&'static str, Kind)] = &[
+    ("factorial", Kind::Accepted),
+    ("redundant_arithmetic_recursion", Kind::Accepted),
+    ("fib", Kind::Accepted),
+    ("gcd", Kind::NotCovered),
+    ("gcd_with_two_base_cases", Kind::NotCovered),
+    ("capturing_closure_loop", Kind::Accepted),
+    ("partial_application_loop", Kind::Accepted),
+    ("closure_typed_loop_carried_parameter_loop", Kind::NotCovered),
+    ("inconsistent_arity_loop_carried_parameter_loop", Kind::NotCovered),
+    ("straight_line", Kind::Accepted),
+    ("twice", Kind::NotCovered),
+    ("inc", Kind::Accepted),
+    ("twice_inc_5", Kind::NotCovered),
+    ("a_capturing_closure_call", Kind::Accepted),
+    ("a_pap_non_capturing", Kind::Accepted),
+    ("a_pap_capturing", Kind::Accepted),
+    ("iterate", Kind::NotCovered),
+    ("non_tail_closure_carrying_recursion", Kind::NotCovered),
+    ("branching_non_tail_closure_carrying_recursion", Kind::NotCovered),
+    ("over_application_if_between_closures", Kind::NotCovered),
+    ("over_application_pap_producing_root", Kind::Accepted),
+    ("tail_recursive_loop_with_if_between_closures_self_call_arg", Kind::NotCovered),
+    ("tail_recursive_loop_with_pap_producing_root_self_call_arg", Kind::NotCovered),
+    ("open_redex_probe", Kind::NotCovered),
+    ("oversized_source_with_a_shrinking_step", Kind::NotCovered),
+    ("doubling_d4", Kind::Accepted),
+    ("inconsistent_arity_parameter", Kind::NotCovered),
+    ("inconsistent_arity_saturating_instance", Kind::NotCovered),
+    ("inconsistent_arity_under_applying_instance", Kind::NotCovered),
+    ("inconsistent_arity_capturing_instance", Kind::NotCovered),
+    ("inconsistent_arity_runtime_chosen_instance", Kind::NotCovered),
+    ("inconsistent_arity_iterate", Kind::NotCovered),
+    ("iterate_creating_a_closure_over_g", Kind::NotCovered),
+    ("let_bound_factorial_10", Kind::NotCovered),
+    ("calls_a_capturing_closure_picked_by_if", Kind::NotCovered),
+    ("a_pap_of_a_self_recursive_combinator", Kind::NotCovered),
+    ("a_pap_of_a_capturing_self_recursive_combinator", Kind::NotCovered),
+    ("over_application_if_between_closures_of_params", Kind::NotCovered),
+    ("held_out_a", Kind::Accepted),
+    ("held_out_b", Kind::Accepted),
+];
+
+#[test]
+fn verdicts_match() {
+    let measured = measure_verdicts();
+    assert_eq!(measured.len(), VERDICTS.len());
+    for (name, kind, raw) in &measured {
+        let want = VERDICTS.iter().find(|(n, _)| n == name).unwrap_or_else(|| panic!("no verdict row for {name}")).1;
+        assert_eq!(*kind, want, "{name}");
+        assert_ne!(*kind, Kind::Rejected, "{name}: a census row must not be Rejected");
+        if *raw {
+            assert_eq!(*kind, Kind::NotCovered, "{name}: a Raw or heap line is NotCovered (Goal 5)");
+        }
+    }
+    for (name, _) in TARGETS.iter().filter(|(_, stage)| *stage == "S2c") {
+        assert_eq!(VERDICTS.iter().find(|(n, _)| n == name).unwrap().1, Kind::Accepted, "Goal 1 target {name}");
+    }
+    for name in HELD_OUT {
+        assert_eq!(VERDICTS.iter().find(|(n, _)| n == name).unwrap().1, Kind::Accepted, "held-out row {name}");
+    }
+}
