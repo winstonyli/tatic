@@ -10,7 +10,8 @@ fn label(pos: usize, entry_pos: usize) -> String {
 
 /// Appends the function `e` at module position `pos` to `out`: its header (the label, the env access's parameters,
 /// `$p{i}` parameters, the result, the four scratch declarations), its body at depth 4 (the whole body is a tail
-/// position), then `  )`.
+/// position), then `  )`. A body that holds a `Br` is wrapped in `loop $top (result i64)` / `end` (the body then at
+/// depth 6), which `br $top` names.
 pub fn print_func(table: &Table, pos: usize, entry_pos: usize, e: &Entry, out: &mut String) {
     out.push_str(&format!("  (func {}", label(pos, entry_pos)));
     match e.env {
@@ -22,12 +23,28 @@ pub fn print_func(table: &Table, pos: usize, entry_pos: usize, e: &Entry, out: &
     // Scratch locals, declared unconditionally (harmless if unused): `$envtmp` for closure environments, `$papenv`
     // for partial application and dynamic dispatch, `$diva`/`$divb` for wrapping div.
     out.push_str("    (local $envtmp i32)\n    (local $papenv i64)\n    (local $diva i64)\n    (local $divb i64)\n");
-    print_body(table, &e.code, 4, true, entry_pos, out);
+    if holds_br(&e.code) {
+        out.push_str("    loop $top (result i64)\n");
+        print_body(table, &e.code, 6, true, entry_pos, out);
+        out.push_str("    end\n");
+    } else {
+        print_body(table, &e.code, 4, true, entry_pos, out);
+    }
     out.push_str("  )\n");
 }
 
+/// Whether `code` holds a `Br` at any depth.
+fn holds_br(code: &[Ins]) -> bool {
+    code.iter().any(|i| match i {
+        Ins::Br => true,
+        Ins::If(t, e) => holds_br(t) || holds_br(e),
+        _ => false,
+    })
+}
+
 /// The tail rule: instruction `i` of a sequence of `len` is in tail position when the sequence is (`tail`) and it is
-/// the last. A body is a tail sequence, and an `If` in tail position passes it to both arms.
+/// the last. A body is a tail sequence (inside the loop wrapper too: the loop's result is the function's), and an `If`
+/// in tail position passes it to both arms.
 fn tail_at(tail: bool, i: usize, len: usize) -> bool {
     tail && i + 1 == len
 }

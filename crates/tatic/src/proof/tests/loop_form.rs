@@ -312,3 +312,22 @@ fn a_no_op_set_prelude_is_accepted() {
     let (v, _) = run(&b, &|c, o, a| [vec![get(0), set(0)], the_loop_form(c, o, a)].concat());
     assert_eq!(v, Verdict::Accepted);
 }
+
+/// Dead code after a `Br` (the stack under it and the code after it) still validates once printed: the loop wrapper
+/// gives `br $top` its label, and wasm types the code after a `br` as unreachable.
+#[test]
+fn dead_code_after_br_validates() {
+    let engine = wasmtime::Engine::default();
+    let lists = [
+        vec![get(0), konst(0), row("le"), Ins::If(vec![get(1)], vec![Ins::Br, get(0), row("add")])],
+        vec![get(0), konst(0), row("le"), Ins::If(vec![get(1)], vec![konst(1), Ins::Br, row("add")])],
+    ];
+    for code in lists {
+        let e = Entry { arity: 2, env: tatic_wasm::machine::EnvAccess::Params(0), code: code.clone() };
+        let mut wat = String::from("(module\n");
+        tatic_wasm::print::print_func(&wasm_table(), 0, 0, &e, &mut wat);
+        wat.push_str("  (export \"f\" (func $f))\n)\n");
+        let bytes = wat::parse_str(&wat).unwrap_or_else(|err| panic!("{code:?} parses: {err}\n{wat}"));
+        wasmtime::Module::new(&engine, &bytes).unwrap_or_else(|err| panic!("{code:?} validates: {err}\n{wat}"));
+    }
+}
