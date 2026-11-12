@@ -1,0 +1,1048 @@
+diff --git a/crates/tatic-wasm/src/h4_print.rs b/crates/tatic-wasm/src/h4_print.rs
+new file mode 100644
+index 0000000..93d01c4
+--- /dev/null
++++ b/crates/tatic-wasm/src/h4_print.rs
+@@ -0,0 +1,91 @@
++//! SPIKE scratch: the h4 printer-only patch (docs/runs/2026-11-12/patches/h4-printer-loop.patch) applied to print.rs at 11675d4, tests removed; setbr_wat_matches_h4 compares against it.
++//! WAT text for a function body: each `Ins` prints one fixed line shape at its depth (spec
++//! 2026-11-08-v07-straight-line-gate-design.md, section 5). Module scaffolding stays with the lowering in tatic.
++use super::*;
++use machine::{EnvAccess, Entry, Ins, Table};
++
++/// The label of module position `pos`: `$f` for the entry, `$c{pos}` otherwise.
++fn label(pos: usize, entry_pos: usize) -> String {
++    if pos == entry_pos { "$f".to_string() } else { format!("$c{pos}") }
++}
++
++/// Appends the function `e` at module position `pos` to `out`: its header (the label, the env access's parameters,
++/// `$p{i}` parameters, the result, the four scratch declarations), its body at depth 4 (the whole body is a tail
++/// position), then `  )`.
++pub fn print_func(table: &Table, pos: usize, entry_pos: usize, e: &Entry, out: &mut String) {
++    out.push_str(&format!("  (func {}", label(pos, entry_pos)));
++    match e.env {
++        EnvAccess::Params(k) => (0..k).for_each(|i| out.push_str(&format!(" (param $e{i} i64)"))),
++        EnvAccess::Pointer => out.push_str(" (param $env i32)"),
++    }
++    (0..e.arity).for_each(|i| out.push_str(&format!(" (param $p{i} i64)")));
++    out.push_str(" (result i64)\n");
++    // Scratch locals, declared unconditionally (harmless if unused): `$envtmp` for closure environments, `$papenv`
++    // for partial application and dynamic dispatch, `$diva`/`$divb` for wrapping div.
++    out.push_str("    (local $envtmp i32)\n    (local $papenv i64)\n    (local $diva i64)\n    (local $divb i64)\n");
++    // SPIKE h4: a tail self call restarts a loop around the body.
++    if tail_self(&e.code, pos, true) {
++        out.push_str("    loop $top (result i64)\n");
++        print_body_in(table, &e.code, 6, true, entry_pos, Some((pos, e)), out);
++        out.push_str("    end\n");
++    } else {
++        print_body(table, &e.code, 4, true, entry_pos, out);
++    }
++    out.push_str("  )\n");
++}
++
++fn tail_self(code: &[Ins], pos: usize, tail: bool) -> bool {
++    code.iter().enumerate().any(|(i, ins)| {
++        let last_tail = tail && i + 1 == code.len();
++        match ins {
++            Ins::If(t, e) => tail_self(t, pos, last_tail) || tail_self(e, pos, last_tail),
++            Ins::Call(j) => last_tail && *j == pos,
++            _ => false,
++        }
++    })
++}
++
++/// Appends `code`'s lines to `out`, each indented `depth` spaces: a row as its `line`, `If` flat (`if (result i64)` / `else` / `end`) with
++/// its arms at +2, `Raw` as given. A `Call(j)` prints `return_call` when
++/// `tail` holds and it is the last instruction of `code` (an `If` passes `tail` and being last to both arms), `call`
++/// otherwise; `entry_pos` is the position printed `$f`.
++pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_pos: usize, out: &mut String) {
++    print_body_in(table, code, depth, tail, entry_pos, None, out)
++}
++
++fn print_body_in(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_pos: usize, own: Option<(usize, &Entry)>, out: &mut String) {
++    let line = |out: &mut String, s: &str| {
++        out.extend(std::iter::repeat_n(' ', depth));
++        out.push_str(s);
++        out.push('\n');
++    };
++    for (i, ins) in code.iter().enumerate() {
++        let last_tail = tail && i + 1 == code.len();
++        match ins {
++            Ins::Row { name, operand } => {
++                let row = table.row(name).unwrap_or_else(|| panic!("print_body: no row {name:?}"));
++                line(out, &(row.line)(*operand))
++            }
++            Ins::If(t, e) => {
++                line(out, "if (result i64)");
++                print_body_in(table, t, depth + 2, last_tail, entry_pos, own, out);
++                line(out, "else");
++                print_body_in(table, e, depth + 2, last_tail, entry_pos, own, out);
++                line(out, "end");
++            }
++            Ins::Call(j) if last_tail && own.is_some_and(|(p, _)| p == *j) => {
++                let e = own.unwrap().1;
++                (0..e.arity).rev().for_each(|i| line(out, &format!("local.set $p{i}")));
++                match e.env {
++                    EnvAccess::Params(k) => (0..k).rev().for_each(|i| line(out, &format!("local.set $e{i}"))),
++                    EnvAccess::Pointer => line(out, "local.set $env"),
++                }
++                line(out, "br $top")
++            }
++            Ins::Call(j) => line(out, &format!("{} {}", if last_tail { "return_call" } else { "call" }, label(*j, entry_pos))),
++            Ins::Br => unreachable!("h4 printer: no Br"),
++            Ins::Raw(s) => line(out, s),
++        }
++    }
++}
++
+diff --git a/crates/tatic-wasm/src/lib.rs b/crates/tatic-wasm/src/lib.rs
+index 2da6c33..3a93c5b 100644
+--- a/crates/tatic-wasm/src/lib.rs
++++ b/crates/tatic-wasm/src/lib.rs
+@@ -10,6 +10,7 @@ pub mod encoding;
+ pub mod machine;
+ pub mod ops;
+ pub mod print;
++pub mod h4_print;
+ pub mod wasm;
+ 
+ use encoding::*;
+diff --git a/crates/tatic-wasm/src/machine.rs b/crates/tatic-wasm/src/machine.rs
+index 8455ad1..c31adc6 100644
+--- a/crates/tatic-wasm/src/machine.rs
++++ b/crates/tatic-wasm/src/machine.rs
+@@ -38,6 +38,8 @@ pub enum Class {
+     Const,
+     Word,
+     Bit,
++    /// SPIKE: pops one word and writes it to a parameter slot of the frame (operand: the slot); pushes nothing.
++    Set,
+ }
+ 
+ impl Class {
+@@ -45,13 +47,15 @@ impl Class {
+     pub fn pops(self) -> usize {
+         match self {
+             Class::Const => 0,
++            Class::Set => 1,
+             Class::Word | Class::Bit => 2,
+         }
+     }
+     /// What the row leaves on the stack.
+     pub fn kind(self) -> K {
+         match self {
+-            Class::Const | Class::Word => K::W,
++            // `Set` pushes nothing: callers branch on the class before using this
++            Class::Const | Class::Word | Class::Set => K::W,
+             Class::Bit => K::B,
+         }
+     }
+@@ -100,6 +104,9 @@ pub enum Ins {
+     /// `call`/`return_call` to the module position `j` (the printer picks by its tail rule): pops the callee's
+     /// arity in words, pushes one. Its meaning continues into the callee environment's entry `j`, then the rest.
+     Call(usize),
++    /// SPIKE: restart the function's own entry with the current frame and the activation's own return continuation
++    /// (`br $top`). Terminal: last in its sequence; an `If` arm ending in it matches any other arm.
++    Br,
+     Raw(String),
+ }
+ 
+@@ -128,8 +135,8 @@ pub fn shape_check(table: &Table, records: &[Option<&Entry>]) -> Result<(), Stri
+     fn gets(code: &[Ins], arity: usize) -> Result<(), String> {
+         for ins in code {
+             match ins {
+-                Ins::Row { name: "local.get", operand } if usize::try_from(*operand).map_or(true, |i| i >= arity) => {
+-                    return Err(format!("local.get {operand} is out of the {arity} parameters"));
++                Ins::Row { name: name @ ("local.get" | "local.set"), operand } if usize::try_from(*operand).map_or(true, |i| i >= arity) => {
++                    return Err(format!("{name} {operand} is out of the {arity} parameters"));
+                 }
+                 Ins::If(t, e) => {
+                     gets(t, arity)?;
+@@ -146,7 +153,7 @@ pub fn shape_check(table: &Table, records: &[Option<&Entry>]) -> Result<(), Stri
+             return Err(format!("position {pos}: env access {:?}, not Params(0)", e.env));
+         }
+         let end = shape(table, &e.code, vec![], &arities).map_err(|m| format!("position {pos}: {m}"))?;
+-        if end != vec![K::W] {
++        if end != Some(vec![K::W]) {
+             return Err(format!("position {pos}: the body ends on {end:?}, not one word"));
+         }
+         gets(&e.code, e.arity).map_err(|m| format!("position {pos}: {m}"))?;
+@@ -156,7 +163,7 @@ pub fn shape_check(table: &Table, records: &[Option<&Entry>]) -> Result<(), Stri
+ 
+ /// The one stack analysis: the stack after `code` from `st` (top first), or why the
+ /// code is ill formed. `arities[j]` is the number of words module position `j` pops (`None`: no such callee).
+-fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>]) -> Result<Vec<K>, String> {
++fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>]) -> Result<Option<Vec<K>>, String> {
+     let pop = |st: &mut Vec<K>, want: &[K]| {
+         if !st.starts_with(want) {
+             return Err(format!("stack {st:?} lacks {want:?}"));
+@@ -164,23 +171,38 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
+         st.drain(..want.len());
+         Ok(())
+     };
+-    for ins in code {
++    for (idx, ins) in code.iter().enumerate() {
+         match ins {
+             Ins::Row { name, operand } => {
+                 let Some(row) = table.row(name) else { return Err(format!("unknown row {name:?}")) };
+-                if row.class != Class::Const && *operand != 0 {
++                if !matches!(row.class, Class::Const | Class::Set) && *operand != 0 {
+                     return Err(format!("row {name:?} takes no operand, got {operand}"));
+                 }
+                 pop(&mut st, &[K::W, K::W][..row.class.pops()])?;
+-                st.insert(0, row.class.kind())
++                if row.class != Class::Set {
++                    st.insert(0, row.class.kind())
++                }
+             }
+             Ins::If(t, e) => {
+                 pop(&mut st, &[K::B])?;
+                 let (a, b) = (shape(table, t, st.clone(), arities)?, shape(table, e, st, arities)?);
+-                if a != b {
+-                    return Err(format!("if arms end on different stacks: {a:?}, {b:?}"));
++                match (a, b) {
++                    (None, None) => {
++                        if idx + 1 != code.len() {
++                            return Err("code after an if whose arms both end in br".into());
++                        }
++                        return Ok(None);
++                    }
++                    (Some(a), None) | (None, Some(a)) => st = a,
++                    (Some(a), Some(b)) if a == b => st = a,
++                    (a, b) => return Err(format!("if arms end on different stacks: {a:?}, {b:?}")),
++                }
++            }
++            Ins::Br => {
++                if idx + 1 != code.len() {
++                    return Err("br is not the last instruction of its sequence".into());
+                 }
+-                st = a
++                return Ok(None);
+             }
+             Ins::Call(j) => {
+                 let Some(Some(n)) = arities.get(*j) else { return Err(format!("call to position {j}, which has no arity")) };
+@@ -190,12 +212,12 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
+             Ins::Raw(s) => return Err(format!("raw line {s:?}")),
+         }
+     }
+-    Ok(st)
++    Ok(Some(st))
+ }
+ 
+-/// The stack after `code` from `st` (top first); panics on ill-formed code. `arities` as in `shape`.
++/// The stack after `code` from `st` (top first); panics on ill-formed code or code that ends in a `br`. `arities` as in `shape`.
+ pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>, arities: &[Option<usize>]) -> Vec<K> {
+-    shape(table, code, st, arities).unwrap_or_else(|e| panic!("{e}"))
++    shape(table, code, st, arities).unwrap_or_else(|e| panic!("{e}")).unwrap_or_else(|| panic!("the code ends in a br"))
+ }
+ 
+ /// Whether `code` from `st` is something the machine runs and falls through: no `Raw`, no unknown row or operand on a
+@@ -227,11 +249,12 @@ enum Ctor {
+     Leaf(Class),
+     If,
+     Call,
++    Br,
+ }
+ 
+ /// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, the count).
+-fn ctor_list() -> [Ctor; 5] {
+-    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call]
++fn ctor_list() -> [Ctor; 7] {
++    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call, Ctor::Leaf(Class::Set), Ctor::Br]
+ }
+ 
+ fn ctor_idx(k: Ctor) -> usize {
+@@ -256,6 +279,9 @@ pub struct MeaningEnv {
+     pub r: At,
+     pub ch: Option<At>,
+     pub calls: At,
++    /// SPIKE: `Fr -> Mem -> R`, the activation's own entry run again at a frame and memory with the activation's own
++    /// return continuation (`\fr mu. env fr mu k`); what a `Br` continues into.
++    pub restart: At,
+ }
+ 
+ const F_TY: fn() -> Expr = || arrow(sort(2), sort(2));
+@@ -318,6 +344,29 @@ impl Machine<'_> {
+             if i == 0 { app(c.at(cont), c.at(x)) } else { self.nth(c, i - 1, k - 1, rest, res, cont) }
+         })
+     }
++    /// A Set-class operand's type, `Fr -> V -> Fr`.
++    pub fn setter_ty(&self) -> Expr {
++        arrow(self.fr(), arrow(self.v(), self.fr()))
++    }
++    /// `fr` (of `k` slots left) with slot `i` replaced by `x`, rebuilt as a concrete nested pair.
++    fn put(&self, c: &mut Cx, i: usize, k: usize, fr: At, x: At) -> Expr {
++        assert!(i < k, "local {i} is out of the frame's width");
++        let tail_ty = self.words(k - 1, self.v());
++        let res = c.mark(self.words(k, self.v()));
++        let tail = c.mark(tail_ty.clone());
++        self.split(c, res, self.v(), tail, fr, |c, y, rest| {
++            if i == 0 {
++                mkpair(tail_ty.clone(), c.at(x), c.at(rest))
++            } else {
++                let inner = self.put(c, i - 1, k - 1, rest, x);
++                mkpair(tail_ty.clone(), c.at(y), inner)
++            }
++        })
++    }
++    /// The operand of the `local.set` row: the frame with slot `i` replaced.
++    pub fn setter(&self, c: &mut Cx, i: usize) -> Expr {
++        c.lam(self.fr(), |c, fr| c.lam(self.v(), |c, x| self.put(c, i, self.fw, fr, x)))
++    }
+     /// The operand of the `local.get` row: hands slot `i` of the frame to its continuation.
+     pub fn getter(&self, c: &mut Cx, i: usize) -> Expr {
+         c.lam(self.fr(), |c, fr| {
+@@ -339,6 +388,8 @@ impl Machine<'_> {
+                 Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(fa(va), fa(vva))),
+                 Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
+                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
++                Ctor::Leaf(Class::Set) => arrow(self.setter_ty(), arrow(fa(a), fa(va))),
++                Ctor::Br => fa(a),
+                 // `Pi S. (S -> Fr x A) -> V -> F (V, A) -> F S`: the arguments over `A` are `S`, the callee's index
+                 // a word, the rest of the program continues with the callee's answer pushed
+                 Ctor::Call => c.pi(sort(2), |c, s| {
+@@ -396,11 +447,12 @@ impl Machine<'_> {
+             Ins::Row { name, operand } => {
+                 let row = self.row(name);
+                 let (pops, i) = (row.class.pops(), ctor_idx(Ctor::Leaf(row.class)));
+-                let r = cont(c, with(&[row.class.kind()], pops));
++                let r = cont(c, if row.class == Class::Set { below(1) } else { with(&[row.class.kind()], pops) });
+                 let meaning = (row.meaning)(c, self, *operand);
+                 cons(c, i, vec![ty(c, &below(pops)), meaning, r])
+             }
+             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
++            Ins::Br => cons(c, ctor_idx(Ctor::Br), vec![ty(c, &st)]),
+             Ins::Call(j) => {
+                 let m = ar.get(*j).copied().flatten().unwrap_or_else(|| panic!("prog's out_stack rejects Call({j})"));
+                 let (s_ty, a_ty) = (ty(c, &st), ty(c, &below(m)));
+@@ -455,7 +507,7 @@ impl Machine<'_> {
+         sigrec(motive, step, c.at(st))
+     }
+     /// The constructors' meanings.
+-    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: At) -> Vec<Expr> {
++    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: At, restart: At) -> Vec<Expr> {
+         let (v, v1) = (self.v(), bv_ty(1));
+         let w = *self;
+         let fr_ty = self.fr();
+@@ -551,12 +603,30 @@ impl Machine<'_> {
+                 })
+             })
+         });
++        // `\A op rest fr st mu`: pop the word, write it to the frame through `op`, run `rest` at the new frame
++        let set = shape(c, Some(self.setter_ty()), &|a| a, &|a| prod(v, a), &|c, a, op, rest, fr, st, mu| {
++            w.split(c, r, v, a, st, |c, x, s| {
++                let fr2 = app2(c.at(op.unwrap()), c.at(fr), c.at(x));
++                app3(c.at(rest), fr2, c.at(s), c.at(mu))
++            })
++        });
++        // `\A fr st mu`: the activation's own entry again at the current frame (the stack is dropped)
++        let br = c.lam(sort(2), |c, a| {
++            c.lam(fr_ty, |c, fr| {
++                c.lam(c.at(a), |c, _st| {
++                    let m = w.mem(c, r);
++                    c.lam(m, |c, mu| app2(c.at(restart), c.at(fr), c.at(mu)))
++                })
++            })
++        });
+         let built = [
+             (Ctor::Leaf(Class::Const), konst),
+             (Ctor::Leaf(Class::Word), bin),
+             (Ctor::Leaf(Class::Bit), cmp),
+             (Ctor::If, if_),
+             (Ctor::Call, call),
++            (Ctor::Leaf(Class::Set), set),
++            (Ctor::Br, br),
+         ];
+         ctor_list().into_iter().map(|k| built.iter().find(|(b, _)| *b == k).expect("interp builds every constructor").1).collect()
+     }
+@@ -565,7 +635,7 @@ impl Machine<'_> {
+         let r = me.r;
+         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
+         let mut args = vec![gfam, c.at(k)];
+-        args.extend(self.interp(c, r, me.ch, me.calls));
++        args.extend(self.interp(c, r, me.ch, me.calls, me.restart));
+         apps(c.at(p), args)
+     }
+     /// `GoodNat N = Pi P:(Nat2 -> Sort3). P 0 -> (Pi j. P j -> P (S j)) -> P N`: induction over fuel, as a hypothesis.
+@@ -686,7 +756,12 @@ mod tests {
+                 });
+                 let none = c.mark(none);
+                 let fr = w.frame(&[c.at(x[3]), c.at(x[4])]);
+-                let me = MeaningEnv { r, ch: None, calls: none };
++                let restart = c.lam(w.fr(), |c, fr2| {
++                    let mem = w.mem(c, r);
++                    c.lam(mem, |c, mu2| app3(c.at(x[2]), c.at(fr2), mkpair(c.at(x[0]), lit(n, 0), c.at(x[5])), c.at(mu2)))
++                });
++                let restart = c.mark(restart);
++                let me = MeaningEnv { r, ch: None, calls: none, restart };
+                 let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[5]), c.at(x[6]));
+                 let (p, q) = if b_minus_a { (x[4], x[3]) } else { (x[3], x[4]) };
+                 let val = app2(sub(n), c.at(p), c.at(q));
+diff --git a/crates/tatic-wasm/src/machine/statement.rs b/crates/tatic-wasm/src/machine/statement.rs
+index f9c623d..aaade0c 100644
+--- a/crates/tatic-wasm/src/machine/statement.rs
++++ b/crates/tatic-wasm/src/machine/statement.rs
+@@ -181,7 +181,13 @@ impl<'t> G<'t> {
+                         let kk = c.mark(kk);
+                         let tbl = table(c, env);
+                         let tbl = c.mark(tbl);
+-                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: tbl });
++                        // SPIKE: a `Br` continues into the entry's own step at a frame and memory, with this activation's `k`
++                        let restart = c.lam(w.fr(), |c, fr2| {
++                            let mem = w.mem(c, r);
++                            c.lam(mem, |c, mu2| app3(c.at(env), c.at(fr2), c.at(mu2), c.at(k)))
++                        });
++                        let restart = c.mark(restart);
++                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: tbl, restart });
+                         app3(m, c.at(fr), lit(n, 0), c.at(mu))
+                     })
+                 })
+diff --git a/crates/tatic-wasm/src/ops.rs b/crates/tatic-wasm/src/ops.rs
+index 238de47..df6079e 100644
+--- a/crates/tatic-wasm/src/ops.rs
++++ b/crates/tatic-wasm/src/ops.rs
+@@ -26,6 +26,17 @@ pub fn local_get_row() -> Row {
+     }
+ }
+ 
++/// The `local.set` row (SPIKE): operand `i` is the parameter slot written; the meaning is the frame rebuilt with slot
++/// `i` replaced (`Machine::setter`), and it prints `local.set $p{i}`.
++pub fn local_set_row() -> Row {
++    Row {
++        name: "local.set",
++        class: machine::Class::Set,
++        meaning: |c, m: &Machine, i| m.setter(c, i as usize),
++        line: |i| format!("local.set $p{i}"),
++    }
++}
++
+ /// A 2-to-1 row whose meaning is the closed circuit `$build` at the machine's width (built once per width and
+ /// generation, `constant_n`) and whose line is the fixed `$line`.
+ macro_rules! circuit_row {
+diff --git a/crates/tatic-wasm/src/print.rs b/crates/tatic-wasm/src/print.rs
+index 2c9bcb1..2aa157d 100644
+--- a/crates/tatic-wasm/src/print.rs
++++ b/crates/tatic-wasm/src/print.rs
+@@ -22,10 +22,25 @@ pub fn print_func(table: &Table, pos: usize, entry_pos: usize, e: &Entry, out: &
+     // Scratch locals, declared unconditionally (harmless if unused): `$envtmp` for closure environments, `$papenv`
+     // for partial application and dynamic dispatch, `$diva`/`$divb` for wrapping div.
+     out.push_str("    (local $envtmp i32)\n    (local $papenv i64)\n    (local $diva i64)\n    (local $divb i64)\n");
+-    print_body(table, &e.code, 4, true, entry_pos, out);
++    if holds_br(&e.code) {
++        out.push_str("    loop $top (result i64)\n");
++        print_body(table, &e.code, 6, true, entry_pos, out);
++        out.push_str("    end\n");
++    } else {
++        print_body(table, &e.code, 4, true, entry_pos, out);
++    }
+     out.push_str("  )\n");
+ }
+ 
++/// Whether `code` holds a `Br` (SPIKE): the function is then wrapped in `loop $top`.
++fn holds_br(code: &[Ins]) -> bool {
++    code.iter().any(|i| match i {
++        Ins::Br => true,
++        Ins::If(t, e) => holds_br(t) || holds_br(e),
++        _ => false,
++    })
++}
++
+ /// Appends `code`'s lines to `out`, each indented `depth` spaces: a row as its `line`, `If` flat (`if (result i64)` / `else` / `end`) with
+ /// its arms at +2, `Raw` as given. A `Call(j)` prints `return_call` when
+ /// `tail` holds and it is the last instruction of `code` (an `If` passes `tail` and being last to both arms), `call`
+@@ -51,6 +66,7 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
+                 line(out, "end");
+             }
+             Ins::Call(j) => line(out, &format!("{} {}", if last_tail { "return_call" } else { "call" }, label(*j, entry_pos))),
++            Ins::Br => line(out, "br $top"),
+             Ins::Raw(s) => line(out, s),
+         }
+     }
+diff --git a/crates/tatic-wasm/src/wasm.rs b/crates/tatic-wasm/src/wasm.rs
+index 98861c9..c71e867 100644
+--- a/crates/tatic-wasm/src/wasm.rs
++++ b/crates/tatic-wasm/src/wasm.rs
+@@ -1,7 +1,7 @@
+ //! The wasm table: the `i64` rows the lowering emits and the machine runs (`ops.rs` builds them).
+ use super::*;
+ use machine::{Class, Table};
+-use ops::{circuit_row, const_row, local_get_row};
++use ops::{circuit_row, const_row, local_get_row, local_set_row};
+ 
+ /// The wasm rows: `const`, `local.get`, the word rows `add` `sub` `mul`, and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
+ /// source operator; it serves the `lt`-for-`lt_u` control only).
+@@ -9,6 +9,7 @@ pub fn table() -> Table {
+     Table::new(vec![
+         const_row(),
+         local_get_row(),
++        local_set_row(),
+         circuit_row!("add", Class::Word, add, "i64.add"),
+         circuit_row!("sub", Class::Word, sub, "i64.sub"),
+         circuit_row!("mul", Class::Word, mul, "i64.mul"),
+@@ -32,14 +33,15 @@ mod tests {
+         let t = table();
+         let m = Machine { n, fw: 2, table: &t };
+         let v = bv_ty(n);
+-        assert_eq!(t.names(), ["const", "local.get", "add", "sub", "mul", "lt", "le", "eq", "lt_u"]);
+-        let cases: [(&str, i64); 10] = [
+-            ("const", 3), ("local.get", 0), ("local.get", 1), ("add", 0), ("sub", 0), ("mul", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
++        assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "lt", "le", "eq", "lt_u"]);
++        let cases: [(&str, i64); 11] = [
++            ("const", 3), ("local.get", 0), ("local.get", 1), ("local.set", 1), ("add", 0), ("sub", 0), ("mul", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
+         ];
+         for (name, operand) in cases {
+             let row = t.row(name).unwrap_or_else(|| panic!("no row {name}"));
+             let want = match row.class {
+                 Class::Const => m.operand_ty(),
++                Class::Set => m.setter_ty(),
+                 Class::Word => arrow(v.clone(), arrow(v.clone(), v.clone())),
+                 Class::Bit => arrow(v.clone(), arrow(v.clone(), bv_ty(1))),
+             };
+diff --git a/crates/tatic/src/proof/tests.rs b/crates/tatic/src/proof/tests.rs
+index 37e63aa..519e6d2 100644
+--- a/crates/tatic/src/proof/tests.rs
++++ b/crates/tatic/src/proof/tests.rs
+@@ -36,3 +36,5 @@ mod held_out;
+ mod gate_mutants;
+ mod modules;
+ mod toy_table;
++mod setbr_spike;
++mod setbr_review;
+diff --git a/crates/tatic/src/proof/tests/setbr_review.rs b/crates/tatic/src/proof/tests/setbr_review.rs
+new file mode 100644
+index 0000000..7050518
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/setbr_review.rs
+@@ -0,0 +1,143 @@
++//! SOUNDNESS REVIEW (throwaway): extra Set/Br probes, differential against wasmtime.
++use tatic_wasm::machine::{Entry, Ins};
++
++use super::gate::{big, compiled};
++use crate::jit::compile::{CompiledFragment, Item};
++use crate::jit::shape::wasm_table;
++use crate::lang::term::{Hash, TermStore};
++use crate::proof::gate::{gate, Verdict};
++use crate::support::samples::{source, tail_recursive_loop_with_pap_producing_root_self_call_arg};
++use crate::testing::ins_mutate::with_entry;
++
++type Build = Box<dyn Fn(&mut TermStore) -> Hash + Send + Sync>;
++const SUM: &str = "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + n)";
++
++fn set(i: i64) -> Ins {
++    Ins::Row { name: "local.set", operand: i }
++}
++fn get(i: i64) -> Ins {
++    Ins::Row { name: "local.get", operand: i }
++}
++fn konst(v: i64) -> Ins {
++    Ins::Row { name: "const", operand: v }
++}
++fn row(name: &'static str) -> Ins {
++    Ins::Row { name, operand: 0 }
++}
++
++fn run_wat(entry: &Entry, own: usize, args: (i64, i64)) -> Result<i64, String> {
++    let mut f = String::new();
++    tatic_wasm::print::print_func(wasm_table(), own, own, entry, &mut f);
++    let wat = format!("(module\n{f}  (export \"f\" (func $f))\n)\n");
++    let bytes = wat::parse_str(&wat).map_err(|e| format!("wat parse: {e}"))?;
++    let engine = wasmtime::Engine::default();
++    let module = wasmtime::Module::new(&engine, &bytes).map_err(|e| format!("INVALID WASM: {e:#}"))?;
++    let mut store = wasmtime::Store::new(&engine, ());
++    let inst = wasmtime::Instance::new(&mut store, &module, &[]).map_err(|e| format!("inst: {e}"))?;
++    let func = inst.get_typed_func::<(i64, i64), i64>(&mut store, "f").map_err(|e| format!("typed: {e}"))?;
++    func.call(&mut store, args).map_err(|e| format!("trap: {e}"))
++}
++
++fn probe(label: &str, b: &Build, code: Vec<Ins>) {
++    let (s, h, frag) = compiled(&**b);
++    let (own, orig) = (frag.entry_pos, frag.entry().clone());
++    let new = Entry { code: code.clone(), ..orig.clone() };
++    let mutant = with_entry(frag, |e| Entry { code, ..e });
++    let v = big(move || gate(wasm_table(), &s, h, &mutant));
++    println!("== {label}\n   gate: {}", format!("{v:?}").chars().take(240).collect::<String>());
++    let mut f = String::new();
++    tatic_wasm::print::print_func(wasm_table(), own, own, &new, &mut f);
++    println!("{f}");
++    for args in [(0i64, 5i64), (1, 0), (4, 1), (10, 100), (7, 7)] {
++        let got = run_wat(&new, own, args);
++        let want = run_wat(&orig, own, args);
++        println!("   args {args:?}: mutant {got:?}   original {want:?}");
++    }
++    let _ = matches!(v, Verdict::Accepted);
++}
++
++#[test]
++fn review_probes() {
++    let sum: Build = Box::new(|s| source(s, SUM));
++    let else_base = vec![get(0), konst(1), row("sub"), get(1), get(0), row("add"), set(1), set(0)];
++    let cond = vec![get(0), konst(0), row("le")];
++    let mk = |pre: Vec<Ins>, then: Vec<Ins>, els: Vec<Ins>| [pre, cond.clone(), vec![Ins::If(then, els)]].concat();
++    // base (sanity)
++    probe("base", &sum, mk(vec![], vec![get(1)], [else_base.clone(), vec![Ins::Br]].concat()));
++    // R1: acc left on the OUTER stack, the then arm empty (arms read the outer stack)
++    probe(
++        "R1 outer-stack acc, then arm empty",
++        &sum,
++        [vec![get(1)], cond.clone(), vec![Ins::If(vec![], [else_base.clone(), vec![Ins::Br]].concat())]].concat(),
++    );
++    // R2: interleaved computing and Sets, acc first
++    probe(
++        "R2 interleaved sets (acc := acc+n; n := n-1)",
++        &sum,
++        mk(vec![], vec![get(1)], vec![get(1), get(0), row("add"), set(1), get(0), konst(1), row("sub"), set(0), Ins::Br]),
++    );
++    // R2b: no-op prelude pair inside arm
++    probe(
++        "R2b interleaved + noop get/set",
++        &sum,
++        mk(vec![], vec![get(1)], vec![get(1), get(0), row("add"), set(1), get(0), set(0), get(0), konst(1), row("sub"), set(0), Ins::Br]),
++    );
++    // R6: nested if with both arms Br
++    probe(
++        "R6 else arm ends in if(br,br)",
++        &sum,
++        mk(vec![], vec![get(1)], [else_base.clone(), vec![get(0), konst(0), row("eq"), Ins::If(vec![Ins::Br], vec![Ins::Br])]].concat()),
++    );
++    // R7: unrolled by two (fuel profile differs from the source)
++    probe(
++        "R7 unrolled x2 (1 restart per 2 source iterations)",
++        &sum,
++        mk(
++            vec![],
++            vec![get(1)],
++            [
++                else_base.clone(),
++                vec![get(0), konst(0), row("le"), Ins::If(vec![get(1)], [else_base.clone(), vec![Ins::Br]].concat())],
++            ]
++            .concat(),
++        ),
++    );
++    // R8: Br in then arm (base case restarts impossible) but value-equal dead restart: cond always false
++    probe(
++        "R8 dead Br arm: if (0==1) Br else <base>",
++        &sum,
++        [vec![konst(0), konst(1), row("eq"), Ins::If(vec![Ins::Br], mk(vec![], vec![get(1)], [else_base.clone(), vec![Ins::Br]].concat()))]].concat(),
++    );
++    // R9: Set to the param BEFORE reading it for the cond, restored after (frame flow through if)
++    probe(
++        "R9 temp overwrite then restore",
++        &sum,
++        [vec![get(0), konst(5), row("add"), set(0), get(0), konst(5), row("sub"), set(0)], mk(vec![], vec![get(1)], [else_base.clone(), vec![Ins::Br]].concat())].concat(),
++    );
++}
++
++/// The pre-existing analog of R1 without Br or Set: arms reading the outer stack.
++#[test]
++fn review_preexisting_outer_stack_arms() {
++    let b: Build = Box::new(|s| source(s, "rec f n acc = if n <= 0 then acc else acc"));
++    let (_, _, frag) = compiled(&*b);
++    println!("original code: {:?}", frag.entry().code);
++    probe("PRE outer-stack arms, no Br/Set", &b, vec![get(1), get(0), konst(0), row("le"), Ins::If(vec![], vec![])]);
++}
++
++/// A Br in a callee record (position 0 of the pap module): dead-guarded.
++#[test]
++fn review_callee_br() {
++    let b: Build = Box::new(tail_recursive_loop_with_pap_producing_root_self_call_arg);
++    let (s, h, mut frag) = compiled(&*b);
++    for item in &mut frag.module {
++        if let Item::Func { pos: 0, entry, .. } = item {
++            println!("callee code {:?} arity {}", entry.code, entry.arity);
++            let old = entry.code.clone();
++            entry.code = vec![konst(0), konst(0), row("eq"), Ins::If(old, vec![Ins::Br])];
++        }
++    }
++    let frag: CompiledFragment = frag;
++    let v = big(move || gate(wasm_table(), &s, h, &frag));
++    println!("callee dead-Br verdict: {}", format!("{v:?}").chars().take(300).collect::<String>());
++}
+diff --git a/crates/tatic/src/proof/tests/setbr_spike.rs b/crates/tatic/src/proof/tests/setbr_spike.rs
+new file mode 100644
+index 0000000..4712730
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/setbr_spike.rs
+@@ -0,0 +1,383 @@
++//! SPIKE (2026-11-12, throwaway): a self tail call as `Set`s and a `Br` instead of `Call(own)`, through the unchanged gate.
++use tatic_wasm::machine::{Entry, EnvAccess, Ins};
++
++use super::gate::{big, compiled};
++use crate::jit::compile::CompiledFragment;
++use crate::jit::shape::wasm_table;
++use crate::lang::term::{Hash, TermStore};
++use crate::proof::gate::{build, gate, Layer, Verdict};
++use crate::support::samples::{
++    capturing_closure_loop, factorial, fib, partial_application_loop, source, tail_recursive_loop_with_pap_producing_root_self_call_arg,
++};
++use crate::testing::ins_mutate::with_entry;
++
++type Build = Box<dyn Fn(&mut TermStore) -> Hash + Send + Sync>;
++
++const SUM: &str = "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + n)";
++/// A second sum-shaped loop with the argument order and the accumulator update swapped.
++const SUM2: &str = "rec f acc n = if n <= 0 then acc else f (acc + n) (n - 1)";
++
++fn set(i: i64) -> Ins {
++    Ins::Row { name: "local.set", operand: i }
++}
++fn get(i: i64) -> Ins {
++    Ins::Row { name: "local.get", operand: i }
++}
++fn konst(v: i64) -> Ins {
++    Ins::Row { name: "const", operand: v }
++}
++fn row(name: &'static str) -> Ins {
++    Ins::Row { name, operand: 0 }
++}
++
++/// `code` with each tail `Call(own)` replaced by `Set`s at `slots` (in order) then `Br`.
++fn restyle(code: &[Ins], own: usize, slots: &[i64], tail: bool) -> Vec<Ins> {
++    let mut out = vec![];
++    for (i, ins) in code.iter().enumerate() {
++        let last_tail = tail && i + 1 == code.len();
++        match ins {
++            Ins::If(t, e) => out.push(Ins::If(restyle(t, own, slots, last_tail), restyle(e, own, slots, last_tail))),
++            Ins::Call(j) if last_tail && *j == own => {
++                out.extend(slots.iter().map(|s| set(*s)));
++                out.push(Ins::Br)
++            }
++            other => out.push(other.clone()),
++        }
++    }
++    out
++}
++
++/// `code` with the `n`th (pre-order) `Call(own)` replaced by `repl`, the rest of its sequence dropped if `truncate`.
++fn replace_nth_call(code: &[Ins], own: usize, n: &mut usize, repl: &[Ins], truncate: bool) -> Vec<Ins> {
++    let mut out = vec![];
++    for ins in code {
++        match ins {
++            Ins::If(t, e) => out.push(Ins::If(replace_nth_call(t, own, n, repl, truncate), replace_nth_call(e, own, n, repl, truncate))),
++            Ins::Call(j) if *j == own => {
++                if *n == 0 {
++                    out.extend(repl.iter().cloned());
++                    *n = usize::MAX;
++                    if truncate {
++                        return out;
++                    }
++                } else {
++                    *n = n.wrapping_sub(1);
++                    out.push(ins.clone())
++                }
++            }
++            other => out.push(other.clone()),
++        }
++    }
++    out
++}
++
++fn rev_slots(arity: usize) -> Vec<i64> {
++    (0..arity as i64).rev().collect()
++}
++
++fn with_code(frag: CompiledFragment, code: Vec<Ins>) -> CompiledFragment {
++    with_entry(frag, |e| Entry { code, ..e })
++}
++
++fn clip(s: String) -> String {
++    s.chars().take(260).collect()
++}
++
++fn run(b: &Build, code: &dyn Fn(&[Ins], usize, usize) -> Vec<Ins>) -> (Verdict, Vec<Ins>) {
++    let (s, h, frag) = compiled(&**b);
++    let (own, arity) = (frag.entry_pos, frag.entry().arity);
++    let new = code(&frag.entry().code, own, arity);
++    let mutant = with_code(frag, new.clone());
++    (big(move || gate(wasm_table(), &s, h, &mutant)), new)
++}
++
++fn targets() -> Vec<(&'static str, Build)> {
++    vec![
++        ("capturing_closure_loop", Box::new(capturing_closure_loop)),
++        ("SUM", Box::new(|s| source(s, SUM))),
++        ("SUM2", Box::new(|s| source(s, SUM2))),
++        ("partial_application_loop", Box::new(partial_application_loop)),
++        // a module with a callee: the loop's argument comes from a call to position 0
++        ("tail_pap (callee at 0)", Box::new(tail_recursive_loop_with_pap_producing_root_self_call_arg)),
++    ]
++}
++
++#[test]
++fn setbr_targets_are_accepted() {
++    for (name, b) in targets() {
++        let (v, code) = run(&b, &|c, own, arity| restyle(c, own, &rev_slots(arity), true));
++        println!("{name}: {v:?}\n    {code:?}");
++        assert_eq!(v, Verdict::Accepted, "{name}");
++    }
++}
++
++/// Each mutant must be Rejected; prints every verdict first so an Accepted one is read, not hidden.
++#[test]
++fn setbr_mutants_are_rejected() {
++    // (label, target builder, code transformation, the layer expected if rejected)
++    type M = (String, Build, Box<dyn Fn(&[Ins], usize, usize) -> Vec<Ins>>, Option<Layer>);
++    let mut ms: Vec<M> = vec![];
++    let two_arg: Vec<(&'static str, fn() -> Build)> = vec![
++        ("capturing_closure_loop", || Box::new(capturing_closure_loop)),
++        ("SUM", || Box::new(|s| source(s, SUM))),
++        ("SUM2", || Box::new(|s| source(s, SUM2))),
++    ];
++    for (name, mk) in &two_arg {
++        let mut add = |what: &str, f: Box<dyn Fn(&[Ins], usize, usize) -> Vec<Ins>>, layer: Option<Layer>| ms.push((format!("{name}: {what}"), mk(), f, layer));
++        add("(a) Sets in forward order [0,1]", Box::new(|c, o, _| restyle(c, o, &[0, 1], true)), Some(Layer::Walk));
++        add("(b1) one Set dropped (only slot 1)", Box::new(|c, o, _| restyle(c, o, &[1], true)), Some(Layer::Walk));
++        add("(b2) one Set dropped (only slot 0)", Box::new(|c, o, _| restyle(c, o, &[0], true)), Some(Layer::Walk));
++        add("(b3/g) Br with no Sets, args changed", Box::new(|c, o, _| restyle(c, o, &[], true)), Some(Layer::Walk));
++        add("(h1) both Sets to slot 0", Box::new(|c, o, _| restyle(c, o, &[0, 0], true)), Some(Layer::Walk));
++        add("(d) Set to slot 2 >= arity 2", Box::new(|c, o, _| restyle(c, o, &[2, 0], true)), Some(Layer::Shape));
++        add("(d2) three Sets (underflow)", Box::new(|c, o, _| restyle(c, o, &[2, 1, 0], true)), Some(Layer::Shape));
++        add(
++            "(f) post-code `+1` after the if, Br in the else arm",
++            Box::new(|c, o, a| [restyle(c, o, &rev_slots(a), true), vec![konst(1), row("add")]].concat()),
++            Some(Layer::Walk),
++        );
++        add(
++            "(f3) arms swapped (Br in the then arm)",
++            Box::new(|c, o, a| {
++                let mut v = restyle(c, o, &rev_slots(a), true);
++                if let Some(Ins::If(t, e)) = v.last_mut() {
++                    std::mem::swap(t, e)
++                }
++                v
++            }),
++            Some(Layer::Walk),
++        );
++        add(
++            "(h4) a Set before the body changes a parameter the body then reads",
++            Box::new(|c, o, a| [vec![get(1), konst(1), row("add"), set(1)], restyle(c, o, &rev_slots(a), true)].concat()),
++            Some(Layer::Walk),
++        );
++        add("(g) the list is only [Br]", Box::new(|_, _, _| vec![Ins::Br]), Some(Layer::Shape));
++        add(
++            "(g2) Br first, the rest of the body after it",
++            Box::new(|c, o, a| [vec![Ins::Br], restyle(c, o, &rev_slots(a), true)].concat()),
++            Some(Layer::Shape),
++        );
++        add(
++            "(g3) both arms end in Br",
++            Box::new(|c, o, a| {
++                let mut v = restyle(c, o, &rev_slots(a), true);
++                if let Some(Ins::If(t, _)) = v.last_mut() {
++                    *t = vec![Ins::Br]
++                }
++                v
++            }),
++            Some(Layer::Shape),
++        );
++        add(
++            "(g4) a Br that is not last in its arm",
++            Box::new(|c, o, a| {
++                let mut v = restyle(c, o, &rev_slots(a), true);
++                if let Some(Ins::If(_, e)) = v.last_mut() {
++                    e.push(konst(7))
++                }
++                v
++            }),
++            Some(Layer::Shape),
++        );
++    }
++    // (c) a Br for a NON-tail self call
++    ms.push((
++        "factorial: (c1) Call(0) -> [Set0, Br], `mul` after it dropped".into(),
++        Box::new(factorial),
++        Box::new(|c, o, _| replace_nth_call(c, o, &mut 0, &[set(0), Ins::Br], true)),
++        Some(Layer::Walk),
++    ));
++    ms.push((
++        "factorial: (c2) Call(0) -> [Set0, Br], `mul` left after it".into(),
++        Box::new(factorial),
++        Box::new(|c, o, _| replace_nth_call(c, o, &mut 0, &[set(0), Ins::Br], false)),
++        Some(Layer::Shape),
++    ));
++    ms.push((
++        "factorial: (c3) Call(0) -> Br alone, rest dropped".into(),
++        Box::new(factorial),
++        Box::new(|c, o, _| replace_nth_call(c, o, &mut 0, &[Ins::Br], true)),
++        Some(Layer::Walk),
++    ));
++    for (k, which) in [(0usize, "first"), (1, "second")] {
++        ms.push((
++            format!("fib: (c4) {which} Call(0) -> [Set0, Br], rest of the arm dropped"),
++            Box::new(fib),
++            Box::new(move |c, o, _| replace_nth_call(c, o, &mut { k }, &[set(0), Ins::Br], true)),
++            Some(Layer::Walk),
++        ));
++        ms.push((
++            format!("fib: (c5) {which} Call(0) -> [Set0, Br], rest of the arm left"),
++            Box::new(fib),
++            Box::new(move |c, o, _| replace_nth_call(c, o, &mut { k }, &[set(0), Ins::Br], false)),
++            Some(Layer::Shape),
++        ));
++    }
++    // (e) Br with a callee call pending, on the module whose loop argument comes from a call to position 0
++    let tp = || -> Build { Box::new(tail_recursive_loop_with_pap_producing_root_self_call_arg) };
++    ms.push((
++        "tail_pap: (e1) both Calls dropped, [Br] after the callee's arguments (callee pending)".into(),
++        tp(),
++        Box::new(|c, o, _| replace_nth_call(&strip_call(c, 0), o, &mut 0, &[Ins::Br], true)),
++        Some(Layer::Pairing),
++    ));
++    ms.push((
++        "tail_pap: (e4) the code still calls position 0 (in the then arm, value-equal), the else arm is [.. callee args, Br]".into(),
++        tp(),
++        Box::new(|_, _, _| {
++            vec![
++                get(0),
++                konst(0),
++                row("le"),
++                Ins::If(vec![konst(0), get(0), Ins::Call(0)], vec![konst(0), get(0), konst(1), row("sub"), Ins::Br]),
++            ]
++        }),
++        Some(Layer::Walk),
++    ));
++    ms.push((
++        "tail_pap: (e2) callee Call kept, the self Call -> [Br] (no Set)".into(),
++        tp(),
++        Box::new(|c, o, _| restyle(c, o, &[], true)),
++        Some(Layer::Walk),
++    ));
++    ms.push((
++        "tail_pap: (e3) callee Call dropped, its pending args' top written by Set0, then Br (value-equal, callee skipped)".into(),
++        tp(),
++        Box::new(|c, o, _| restyle(&strip_call(c, 0), o, &[0], true)),
++        Some(Layer::Pairing),
++    ));
++    ms.push((
++        "tail_pap: (d3) Set to slot 1, a padding slot of the width-2 frame (entry arity 1), then Br: the restart would see slot 1 non-zero".into(),
++        tp(),
++        Box::new(|c, o, _| restyle(c, o, &[1], true)),
++        Some(Layer::Shape),
++    ));
++    let mut bad = vec![];
++    for (label, b, f, layer) in &ms {
++        let (v, code) = run(b, &**f);
++        println!("{label}\n    verdict {}\n    code {}", clip(format!("{v:?}")), clip(format!("{code:?}")));
++        match (&v, layer) {
++            (Verdict::Rejected(l, _), Some(want)) if l == want => {}
++            (Verdict::Rejected(l, _), Some(want)) => bad.push(format!("{label}: rejected at {l:?}, expected {want:?}")),
++            (other, _) => bad.push(format!("{label}: NOT REJECTED: {}", clip(format!("{other:?}")))),
++        }
++    }
++    println!("mutants run: {}", ms.len());
++    assert!(bad.is_empty(), "unexpected verdicts:\n{}", bad.join("\n"));
++}
++
++/// `code` with each `Call(j)` removed (the callee's call dropped).
++fn strip_call(code: &[Ins], j: usize) -> Vec<Ins> {
++    code.iter()
++        .filter(|i| **i != Ins::Call(j))
++        .map(|i| match i {
++            Ins::If(t, e) => Ins::If(strip_call(t, j), strip_call(e, j)),
++            o => o.clone(),
++        })
++        .collect()
++}
++
++/// Informational: variants that are semantically equal to the source; each verdict is printed, none asserted except the
++/// no-op prelude, which the gate must take (the Set's frame rebuild reduces).
++#[test]
++fn setbr_equal_variants_info() {
++    let sum: Build = Box::new(|s| source(s, SUM));
++    let (v, _) = run(&sum, &|c, o, a| [vec![get(0), set(0)], restyle(c, o, &rev_slots(a), true)].concat());
++    println!("no-op prelude [get 0, Set 0]: {v:?}");
++    assert_eq!(v, Verdict::Accepted, "a no-op prelude");
++    let (v, _) = run(&sum, &|c, o, a| [vec![get(1), set(1)], restyle(c, o, &rev_slots(a), true)].concat());
++    println!("no-op prelude [get 1, Set 1]: {v:?}");
++    let (v, _) = run(&sum, &|c, o, a| [restyle(c, o, &rev_slots(a), true), vec![konst(0), row("add")]].concat());
++    println!("post-code `+ 0` after the if (Br skips it, base arm adds 0): {}", clip(format!("{v:?}")));
++}
++
++/// The WAT of the rewritten capturing_closure_loop, and whether it is byte-identical to what h4's printer-only patch
++/// prints for the original `Call(own)` list (the h4 printer is `tatic_wasm::h4_print`, a spike copy).
++#[test]
++fn setbr_wat_matches_h4() {
++    for (name, b) in targets() {
++        let (_, _, frag) = compiled(&*b);
++        let (own, arity) = (frag.entry_pos, frag.entry().arity);
++        let orig = frag.entry().clone();
++        let new = Entry { code: restyle(&orig.code, own, &rev_slots(arity), true), ..orig.clone() };
++        assert_eq!(new.env, EnvAccess::Params(0));
++        let (mut a, mut h4) = (String::new(), String::new());
++        tatic_wasm::print::print_func(wasm_table(), own, own, &new, &mut a);
++        tatic_wasm::h4_print::print_func(wasm_table(), own, own, &orig, &mut h4);
++        if name == "capturing_closure_loop" {
++            println!("--- Set/Br WAT for {name}:\n{a}--- h4 WAT:\n{h4}---");
++        }
++        println!("{name}: Set/Br WAT {} h4's ({} vs {} bytes)", if a == h4 { "IDENTICAL to" } else { "DIFFERS from" }, a.len(), h4.len());
++        assert_eq!(a, h4, "{name}");
++    }
++}
++
++/// Gate build+check time, the `Call(own)` list against the Set/Br list of capturing_closure_loop, interleaved. Untimed
++/// in the sense of RUNS.md: the machine is shared, so the medians are indicative only.
++#[test]
++#[ignore]
++fn setbr_gate_time() {
++    let (s, h, frag) = compiled(&capturing_closure_loop);
++    let (_, _, frag2) = compiled(&capturing_closure_loop);
++    let (own, arity) = (frag.entry_pos, frag.entry().arity);
++    let new = with_code(frag2, restyle(&frag.entry().code, own, &rev_slots(arity), true));
++    let once = move |s: &TermStore, frag: &CompiledFragment| -> (f64, f64) {
++        tatic_kernel::scoped(|| {
++            let t0 = std::time::Instant::now();
++            let (st, p) = build(wasm_table(), s, h, frag).expect("builds");
++            let p = p.expect("proves");
++            let t1 = std::time::Instant::now();
++            assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++            ((t1 - t0).as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3)
++        })
++    };
++    let (sa, fa, fb) = (s, frag, new);
++    let (a, b) = big(move || {
++        let (mut a, mut b) = (vec![], vec![]);
++        let _ = (once(&sa, &fa), once(&sa, &fb)); // warm up
++        for _ in 0..20 {
++            a.push(once(&sa, &fa));
++            b.push(once(&sa, &fb));
++        }
++        (a, b)
++    });
++    let med = |v: &[(f64, f64)], f: fn(&(f64, f64)) -> f64| {
++        let mut x: Vec<f64> = v.iter().map(f).collect();
++        x.sort_by(|p, q| p.partial_cmp(q).unwrap());
++        (x[x.len() / 2 - 1] + x[x.len() / 2]) / 2.0
++    };
++    println!("Call(own) list: build median {:.2} ms, check median {:.2} ms", med(&a, |t| t.0), med(&a, |t| t.1));
++    println!("Set/Br   list: build median {:.2} ms, check median {:.2} ms", med(&b, |t| t.0), med(&b, |t| t.1));
++    println!("raw A: {a:?}\nraw B: {b:?}");
++}
++
++/// VERIFIER: the Set/Br WAT validates and runs under wasmtime with the right results.
++#[test]
++fn verify_setbr_wat_runs_under_wasmtime() {
++    for (name, b, args, want) in [
++        ("capturing_closure_loop", Box::new(capturing_closure_loop) as Build, (5i64, 0i64), 15i64),
++        ("capturing_closure_loop", Box::new(capturing_closure_loop) as Build, (10, 100), 155),
++        ("capturing_closure_loop", Box::new(capturing_closure_loop) as Build, (0, 7), 7),
++        ("capturing_closure_loop", Box::new(capturing_closure_loop) as Build, (100000, 0), 5000050000),
++        ("SUM", Box::new(|s: &mut TermStore| source(s, SUM)) as Build, (4, 1), 11),
++        ("SUM2", Box::new(|s: &mut TermStore| source(s, SUM2)) as Build, (1, 4), 11),
++    ] {
++        let (_, _, frag) = compiled(&*b);
++        let (own, arity) = (frag.entry_pos, frag.entry().arity);
++        let orig = frag.entry().clone();
++        let new = Entry { code: restyle(&orig.code, own, &rev_slots(arity), true), ..orig.clone() };
++        let mut f = String::new();
++        tatic_wasm::print::print_func(wasm_table(), own, own, &new, &mut f);
++        let wat = format!("(module\n{f}  (export \"f\" (func $f))\n)\n");
++        let bytes = wat::parse_str(&wat).unwrap_or_else(|e| panic!("wat: {e}\n{wat}"));
++        let engine = wasmtime::Engine::default();
++        let module = wasmtime::Module::new(&engine, &bytes).unwrap(); // validates
++        let mut store = wasmtime::Store::new(&engine, ());
++        let inst = wasmtime::Instance::new(&mut store, &module, &[]).unwrap();
++        let func = inst.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
++        let got = func.call(&mut store, args).unwrap();
++        println!("VERIFY {name} {args:?} -> {got} (want {want})");
++        assert_eq!(got, want, "{name} {args:?}");
++    }
++}

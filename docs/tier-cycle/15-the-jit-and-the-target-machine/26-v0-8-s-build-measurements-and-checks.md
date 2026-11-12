@@ -80,6 +80,45 @@ overhead.
 The fix works and is small: 15 lines in `print.rs`. Its cost is trust: the printed text of a self tail call is no
 longer the near-identity form of the proved `Call`.
 
+**A spike of the proved loop form (Set and Br, 2026-11-12; patch `docs/runs/2026-11-12/patches/setbr-spike.patch`,
+reverted).** It tests whether the loop that h4 prints can instead be proved by the gate. The machine gains a leaf class
+`Set` (pops one word, writes parameter slot i, passes the new frame on; printed `local.set $p{i}`) and a terminal `Br`
+(meaning `restart fr mu`, where `G::bm` fills a new `MeaningEnv.restart` with `\fr mu. env fr mu k`: the entry's own
+previous-fuel step with the activation's own continuation; printed `br $top`). `print_func` wraps the body in
+`loop $top (result i64)` when it holds a `Br`. `shape` returns `None` for a path that ends in `Br`, which must be last in
+its sequence, and `shape_check`'s slot bound now covers `local.set` too.
+- `sim.rs`, `gate.rs` and the kernel are unchanged. After a `Br` the machine term is `j hm tm bm fr mu km`, the same
+  head the call rule matches, so the walk proves it with no new rule.
+- With the tail `Call(own)` replaced by `[Set(k-1) .. Set(0), Br]`, five lists are `Accepted`: the specialised
+  `capturing_closure_loop`, `partial_application_loop`, both sum loops, and a two-function module whose loop argument
+  comes from a callee. The printed text is byte-identical to h4's for all five. It validates and runs under wasmtime:
+  100 000 iterations return 5000050000 with a constant stack.
+- All 54 hand-written mutants are rejected, each at its expected layer. Walk: Sets in forward order, a dropped Set,
+  both Sets to one slot, Br for a non-tail call in factorial and fib, Br with a callee call skipped or put in the wrong
+  arm, the loop unrolled by two, a dead `if` guarding a Br. Shape: a Set to a slot at or above the arity (including
+  the padding slot of a width-2 frame), a Br not last, a body made only of Br. Pairing: a callee call dropped.
+- A sound but incomplete case: `+ 0` after the `if` is rejected, since `add acc 0` and `acc` are not definitionally
+  equal.
+- Suite on the spike: 810 passed, 0 failed (`setbr-suite2`).
+- Untimed gate cost on `capturing_closure_loop` (median of 20 interleaved runs, debug profile): Set/Br 0.70 ms build,
+  3.70 ms check, against 1.14 and 2.92 ms for the `Call` list.
+- An adversarial review (`setbr-review1`) found no accepted list whose wasm validates but computes something else. It
+  did find that the gate accepts some lists whose printed wasm fails to validate. Example: an `If` arm that leaves the
+  outer stack untouched, as in `[get1, get0, const0, le, If([], [..])]`, prints an empty `then` arm that wasm rejects
+  ("expected i64 but nothing on stack"). The class predates the spike: `If([], [])` with neither `Set` nor `Br` is accepted too (the review's
+`review_preexisting_outer_stack_arms`, run on the spike tree, whose rule for two arms that do not end in `Br` is main's). The failure
+  is safe, since `Module::new` refuses the module and the JIT falls back, but `Accepted` does not imply the wasm
+  validates. `Br` adds a new way into it (an arm that ends in `Br`). The fix would be a check in `shape` that each arm
+  pushes exactly one word.
+- Not tested: a direct `prove` that skips `shape_check`, and a `Br` inside a callee whose source is itself a loop (no
+  sample module has one).
+- Gaps a build would close: the mutation generator (`testing/ins_mutate.rs`) has no `Set` or `Br` case; `Class::Set`'s
+  `kind()` returns `W` though it pushes nothing.
+
+So the loop form needs no change to the proof generator. The trusted code grows by two constructors (about 130 lines in
+`machine.rs`, `statement.rs`, `ops.rs`, `wasm.rs` and `print.rs`, by the patch), and the printed loop is proved rather
+than assumed.
+
 **The go/no-go (T9) and its rerun with `Call` (T10 Step 4b).** The relational build and check of `doubling(12)` against
 the refl path, untimed (5 interleaved runs per arm, `CFF`, BelowNormal; a timed run was refused for 45 minutes): relational
 median 0.360 s against refl 0.399 s (0.90x), limit 0.57 s (1.5x). With `Call` in the machine (runs
