@@ -225,9 +225,7 @@ fn time_targets() {
             (cost, bm, cm, ok)
         });
         assert!(ok, "{name} should check");
-        if name != "doubling_12" {
-            assert!(cost <= MAX_GATE_TREE, "{name}: cost {cost} is over the budget");
-        }
+        assert!(cost <= MAX_GATE_TREE, "{name}: cost {cost} is over the budget");
         println!("{name} {cost} {bm:.1} {cm:.1}");
     }
 }

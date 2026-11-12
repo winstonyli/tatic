@@ -16,14 +16,15 @@ use tatic_wasm::machine::statement::{callees, statement, ModEntry, SEnv, SrcFn};
 use tatic_wasm::machine::{shape_check, Class, Machine, Table};
 
 use crate::jit::compile::{tree_size, CompiledFragment};
-use crate::jit::shape::{classify, free_vars, is_comparison, peel, Shape};
+use crate::jit::shape::{classify, free_vars, peel, Shape};
 use crate::lang::term::{Hash, TermStore};
 
 const N: usize = 64;
 
-/// The largest cost (`cost`) the gate takes: the largest power of two under the JIT path's 0.4 s. `doubling(12)` (8192
-/// nodes) took 0.35-0.38 s, `doubling(13)` (16384) 0.74-0.88 s, nearly all of it the check (doc 15, "Why the build grew
-/// 2.2x per doubling").
+/// The largest cost (`cost`) the gate takes: the largest power of two under the JIT path's 0.4 s, set in v0.7 when
+/// `doubling(12)` (8192 nodes) took 0.35-0.38 s and `doubling(13)` (16384) 0.74-0.88 s (doc 15, "Why the build grew
+/// 2.2x per doubling"). Under v0.8's relational statement `doubling(12)` stays near it, untimed (doc 15, "v0.8's build:
+/// measurements and checks (2026-11-11)").
 pub(crate) const MAX_GATE_TREE: u64 = 8192;
 
 /// What one `Call` site adds to a term's cost beyond its tree nodes, in nodes (fitted in T12, see its run record).
@@ -32,7 +33,7 @@ pub const CALL_WEIGHT: u64 = 228;
 /// The layer that refused a covered term.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Layer {
-    /// The shape check over the module's records (`machine::shape_check`), or a record that is not the source's.
+    /// The shape check over the module's records (`machine::shape_check`).
     Shape,
     /// The registry's terms do not pair with the records (`pairing`): a source that is not its record's, or a callee
     /// the code calls and the source does not (or the reverse).
@@ -91,7 +92,7 @@ fn parse(rd: &Reading, h: Hash, tail: bool) -> Option<Src> {
     match classify(store, h, arity, rd.self_idx) {
         Shape::If(c, t, e) if tail => {
             let Shape::Prim(p, a, b) = classify(store, c, arity, rd.self_idx) else { return None };
-            is_comparison(p).then_some(())?;
+            rd.table.row(p.name()).is_some_and(|r| r.class == Class::Bit).then_some(())?;
             Some(Src::If(p.name(), sub(a, false)?, sub(b, false)?, sub(t, true)?, sub(e, true)?))
         }
         // de Bruijn 0 is the last parameter; written here, not taken from `shape::local_index`

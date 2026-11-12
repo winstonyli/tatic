@@ -61,7 +61,7 @@ steps: the census and the emit spike" and "The gate's costs, and the rules they 
     build: measurements and checks" and "v0.8's modules: measurements".
   - Done when: the spec's Goals hold (both sum loops and terms 1, 2, 3 install through the generator, the loop
     machinery is deleted, and a toy second table passes a straight-line term through the unchanged gate, among them).
-    Met on the branch: workspace suite `v08-s3-workspace` (803 passed, 0 failed, goldens unchanged after S2b), the
+    Met on the branch: workspace suite `v08-final-workspace` at the branch tip (805 passed, 0 failed over 21 suites; goldens unchanged after S2b), the
     Goal 1 and 2 verdict columns in `proof/tests/baseline.rs#VERDICTS`, mutants in `proof/tests/{gate_mutants,
     modules}.rs`, `held_out_terms_are_accepted` (Goal 3), `toy_table.rs` (Goal 7; "installs" read as the gate's
     verdict, since the toy has no runtime: the user confirms). Gate times were measured untimed (`PARKED.md`,

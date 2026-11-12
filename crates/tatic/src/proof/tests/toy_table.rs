@@ -69,3 +69,12 @@ fn the_toy_table_rejects_its_mutant() {
     let v = verdict(r"\a b. a - b", vec![get(1), get(0), row("sub")]);
     assert!(matches!(v, Verdict::Rejected(..)), "{v:?}");
 }
+
+/// A comparison the toy has no row for is read from the table given, so the term is not covered (it panicked when the
+/// condition was checked against wasm's table and the row looked up in the toy's).
+#[test]
+fn a_comparison_the_toy_lacks_is_not_covered() {
+    let code = vec![get(0), get(1), row("lt"), Ins::If(vec![get(0)], vec![get(1)])]; // well-formed, so the shape check passes
+    let v = verdict(r"\a b. if a <= b then a else b", code);
+    assert!(matches!(v, Verdict::NotCovered(..)), "{v:?}");
+}
