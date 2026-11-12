@@ -261,12 +261,6 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   decision file", verified 2026-11-11. Status: parked.
 - **Renaming `tatic-wasm`** (the crate holds the backend-independent machine after v0.8) — why parked: a rename has no
   consumer yet. Trigger: a second real backend. Evidence: `docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`, "End-state fit", verified 2026-11-11. Status: parked.
-- **Gate accepts some lists whose wasm does not validate** — what: `shape` lets an `If` arm read or leave the outer
-  stack, which wasm blocks forbid, so e.g. `If([], [])` is `Accepted` and prints an empty `then` arm that wasmtime
-  rejects. Why parked: it fails safe (`Module::new` refuses the module and the JIT falls back), and no emitted list has
-  such an arm. Trigger: adopting `Br` (an arm ending in `Br` is a new way in) or any proposer that emits hand-shaped
-  arms; the fix is a check in `shape` that each arm pushes exactly one word. Evidence: `docs/tier-cycle/`, "v0.8's
-  build: measurements and checks", verified 2026-11-12 on the spike tree. Status: parked.
 
 ## Kernel memos, footprint and allocation
 

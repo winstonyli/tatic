@@ -108,8 +108,9 @@ its sequence, and `shape_check`'s slot bound now covers `local.set` too.
   ("expected i64 but nothing on stack"). The class predates the spike: `If([], [])` with neither `Set` nor `Br` is accepted too (the review's
 `review_preexisting_outer_stack_arms`, run on the spike tree, whose rule for two arms that do not end in `Br` is main's). The failure
   is safe, since `Module::new` refuses the module and the JIT falls back, but `Accepted` does not imply the wasm
-  validates. `Br` adds a new way into it (an arm that ends in `Br`). The fix would be a check in `shape` that each arm
-  pushes exactly one word.
+  validates. `Br` adds a new way into it (an arm that ends in `Br`). Fixed on main the same day (q2): `shape` now runs each arm from an
+  empty stack and requires one word (`machine.rs#if_arms_start_empty_and_leave_one_word`); suite 807 passed, 0 failed
+  (`q2-arm-check-suite`).
 - Not tested: a direct `prove` that skips `shape_check`, and a `Br` inside a callee whose source is itself a loop (no
   sample module has one).
 - Gaps a build would close: the mutation generator (`testing/ins_mutate.rs`) has no `Set` or `Br` case; `Class::Set`'s

@@ -175,12 +175,15 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
                 st.insert(0, row.class.kind())
             }
             Ins::If(t, e) => {
+                // Printed as `if (result i64)`: each arm starts on an empty stack and leaves one word.
                 pop(&mut st, &[K::B])?;
-                let (a, b) = (shape(table, t, st.clone(), arities)?, shape(table, e, st, arities)?);
-                if a != b {
-                    return Err(format!("if arms end on different stacks: {a:?}, {b:?}"));
+                for (arm, c) in [("then", t), ("else", e)] {
+                    let out = shape(table, c, vec![], arities)?;
+                    if out != [K::W] {
+                        return Err(format!("the {arm} arm ends on {out:?}, not one word from an empty stack"));
+                    }
                 }
-                st = a
+                st.insert(0, K::W)
             }
             Ins::Call(j) => {
                 let Some(Some(n)) = arities.get(*j) else { return Err(format!("call to position {j}, which has no arity")) };
@@ -199,7 +202,7 @@ pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>, arities: &[Option<usiz
 }
 
 /// Whether `code` from `st` is something the machine runs and falls through: no `Raw`, no unknown row or operand on a
-/// 2-to-1 row, no underflow, matching `if` arms, and each `Call(j)` to a position with an arity.
+/// 2-to-1 row, no underflow, `if` arms that each leave one word from an empty stack, and each `Call(j)` to a position with an arity.
 pub fn well_formed(table: &Table, code: &[Ins], st: &[K], arities: &[Option<usize>]) -> bool {
     shape(table, code, st.to_vec(), arities).is_ok()
 }
@@ -619,6 +622,21 @@ mod tests {
         assert!(!well_formed(&t, &[row("add")], &[], &[]));
         assert!(!well_formed(&t, &cmp_if(vec![]), &[], &[]));
         assert!(well_formed(&t, &cmp_if(vec![konst(2)]), &[], &[]));
+    }
+
+    /// A wasm `if (result i64)` arm starts on an empty stack and leaves one word, so an arm that reads the outer stack
+    /// or leaves it as is would print text wasm rejects; the shape check holds arms to that rule.
+    #[test]
+    fn if_arms_start_empty_and_leave_one_word() {
+        let t = crate::wasm::table();
+        let under = |t_: Vec<Ins>, e: Vec<Ins>| vec![konst(7), konst(1), konst(2), row("lt"), Ins::If(t_, e)];
+        assert!(!well_formed(&t, &under(vec![], vec![]), &[], &[]), "both arms leave the outer word");
+        assert!(!well_formed(&t, &under(vec![konst(1), row("add")], vec![konst(1), row("add")]), &[], &[]), "arms read it");
+        assert!(!well_formed(&t, &under(vec![konst(1), konst(2)], vec![konst(1), konst(2)]), &[], &[]), "two words");
+        assert!(!well_formed(&t, &under(vec![konst(1), konst(2), row("lt")], vec![konst(3), konst(4), row("lt")]), &[], &[]), "a bit");
+        let ok = under(vec![konst(1)], vec![konst(2)]);
+        assert!(well_formed(&t, &ok, &[], &[]));
+        assert_eq!(out_stack(&t, &ok, vec![], &[]), vec![K::W, K::W], "the outer word stays under the arm's");
     }
 
     fn konst(v: i64) -> Ins {
