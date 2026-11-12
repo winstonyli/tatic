@@ -18,7 +18,7 @@ fn every_built_corpus_module_decompiles_to_its_source_hash() {
     // No false alarms on the real corpus: a correct compilation must
     // always pass the gate.
     for (name, s, h) in crate::support::samples::corpus() {
-        let m = crate::jit::compile::build(&s, h).unwrap_or_else(|| panic!("{name} builds"));
+        let m = crate::jit::compile::build(&s, h).unwrap_or_else(|| panic!("{name} builds")).0;
         assert!(roundtrips(&m, h), "{name} does not decompile to its source hash");
     }
 }
@@ -106,7 +106,7 @@ fn an_environment_slot_in_a_recursive_combinator_is_offset_past_its_self_binder(
     // The fixture is real: it is exactly what `compile::build` produces
     // for this source term, not just a module the decompiler happens to
     // accept.
-    assert_eq!(crate::jit::compile::build(&s, h), Some(m));
+    assert_eq!(crate::jit::compile::build(&s, h).map(|r| r.0), Some(m));
 }
 
 #[test]
@@ -333,7 +333,7 @@ fn every_single_point_mutation_of_a_built_module_is_rejected() {
     let mut applied = 0usize;
     let mut kinds_seen = HashSet::new();
     for (name, s, h) in crate::support::samples::corpus() {
-        let m = crate::jit::compile::build(&s, h).unwrap();
+        let m = crate::jit::compile::build(&s, h).unwrap().0;
         for fi in 0..m.funcs().count() {
             let nodes = preorder_len(&m.funcs().nth(fi).unwrap().body);
             for k in 0..nodes {

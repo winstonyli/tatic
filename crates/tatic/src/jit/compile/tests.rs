@@ -629,7 +629,7 @@ fn a_let_bound_self_recursive_function_compiles_and_matches_interpreter() {
 fn build_produces_the_hand_built_ir_for_each_fixture() {
     use crate::jit::ir::fixtures::{factorial, twice, twice_inc};
     for (s, h, want) in [factorial(), twice(), twice_inc()] {
-        assert_eq!(build(&s, h).expect("every fixture builds"), want);
+        assert_eq!(build(&s, h).expect("every fixture builds").0, want);
     }
 }
 

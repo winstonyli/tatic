@@ -404,7 +404,7 @@ impl Lowering<'_> {
         let cx = FnCx { pos, env };
         let mut code = Vec::new();
         self.node(&cx, &f.body, &mut code);
-        Item::Func { pos, entry: Entry { arity: f.arity, env, code } }
+        Item::Func { pos, entry: Entry { arity: f.arity, env, code }, source: None }
     }
 
     /// The table index a closure value of combinator `idx` is packed with.

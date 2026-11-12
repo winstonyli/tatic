@@ -44,8 +44,10 @@ pub enum Item {
     Text(String),
     /// A lowered function at module position `pos` (a combinator's index;
     /// the entry's is the combinator count): its record, which the printer
-    /// turns into header, body and closing paren.
-    Func { pos: usize, entry: Entry },
+    /// turns into header, body and closing paren, and `source`, the term the
+    /// registry holds at that position (the entry's is the compiled term;
+    /// `None` until `try_compile` fills it, as `lower` alone knows no terms).
+    Func { pos: usize, entry: Entry, source: Option<Hash> },
 }
 
 pub struct CompiledFragment {
@@ -75,7 +77,7 @@ impl CompiledFragment {
         for item in &self.module {
             match item {
                 Item::Text(s) => w.push_str(s),
-                Item::Func { pos, entry } => print_func(wasm_table(), *pos, self.entry_pos, entry, &mut w),
+                Item::Func { pos, entry, .. } => print_func(wasm_table(), *pos, self.entry_pos, entry, &mut w),
             }
         }
         w
@@ -91,8 +93,20 @@ impl CompiledFragment {
     pub fn records(&self) -> Vec<Option<&Entry>> {
         let mut out = vec![None; self.entry_pos + 1];
         for item in &self.module {
-            if let Item::Func { pos, entry } = item {
+            if let Item::Func { pos, entry, .. } = item {
                 out[*pos] = Some(entry);
+            }
+        }
+        out
+    }
+
+    /// The registered term at each module position (the entry's is the compiled term); `None` for a
+    /// partial-application wrapper, which has no record.
+    pub fn sources(&self) -> Vec<Option<Hash>> {
+        let mut out = vec![None; self.entry_pos + 1];
+        for item in &self.module {
+            if let Item::Func { pos, source, .. } = item {
+                out[*pos] = *source;
             }
         }
         out
@@ -225,8 +239,9 @@ impl<'a> Combinators<'a> {
 /// `$f`'s body first, then every registered combinator's body, dequeued in
 /// the LIFO order the registry fills, so each combinator's index (and
 /// therefore its table slot) is its registration order. `None` exactly
-/// where the fragment rejects a term.
-pub(crate) fn build(store: &TermStore, h: Hash) -> Option<ir::Module> {
+/// where the fragment rejects a term. The registry is read out beside the module: the source term registered at each
+/// combinator index, `None` for a partial-application wrapper.
+pub(crate) fn build(store: &TermStore, h: Hash) -> Option<(ir::Module, Vec<Option<Hash>>)> {
     let (arity, body, is_rec) = peel(store, h)?;
     let mut reg = Combinators::new(store);
     let entry = build_function(store, arity, body, is_rec, &[], &mut reg)?;
@@ -252,7 +267,15 @@ pub(crate) fn build(store: &TermStore, h: Hash) -> Option<ir::Module> {
         })
         .collect();
     let dispatch = if reg.needs_generic_dispatch { ir::Dispatch::Curried } else { ir::Dispatch::Fast };
-    Some(ir::Module { entry, combinators, dispatch })
+    let sources = reg
+        .kind
+        .iter()
+        .map(|k| match k {
+            PendingCombinator::Literal(h) => Some(*h),
+            PendingCombinator::PartialApp { .. } => None,
+        })
+        .collect();
+    Some((ir::Module { entry, combinators, dispatch }, sources))
 }
 
 /// Everything about the function being built that stays fixed across its
@@ -474,7 +497,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     if tree_size(store, h) > MAX_TREE_NODES {
         return None;
     }
-    let m = build(store, h)?;
+    let (m, sources) = build(store, h)?;
     if let Err(e) = ir::check(&m) {
         builder_bug(BuilderBug::IllFormed, || format!("the IR builder produced an ill-formed module for {h:?}: {e}"));
         return None;
@@ -491,7 +514,13 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         builder_bug(BuilderBug::Untranslated, || format!("the IR for {h:?} failed translation validation: it does not decompile back to the source term"));
         return None;
     }
-    Some(crate::jit::lower_wat::lower(&m))
+    let mut frag = crate::jit::lower_wat::lower(&m);
+    for item in &mut frag.module {
+        if let Item::Func { pos, source, .. } = item {
+            *source = if *pos == m.combinators.len() { Some(h) } else { sources[*pos] };
+        }
+    }
+    Some(frag)
 }
 
 /// What `compile_specialised` compiled.

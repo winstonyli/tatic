@@ -10,7 +10,8 @@ use crate::jit::JitEngine;
 use crate::proof::gate::{build, gate, Layer, Verdict, CALL_WEIGHT, MAX_GATE_TREE};
 use crate::support::samples::{
     a_capturing_closure_call, a_pap_capturing, capturing_closure_loop, factorial, fib, inc, partial_application_loop,
-    redundant_arithmetic_recursion, source, straight_line, twice, twice_inc_5,
+    redundant_arithmetic_recursion, source, straight_line,
+    tail_recursive_loop_with_pap_producing_root_self_call_arg, twice, twice_inc_5,
 };
 use crate::testing::ins_mutate::with_entry;
 use crate::testing::test_corpus::doubling;
@@ -190,7 +191,7 @@ fn time_doubling_12() {
     println!("build_ms {b:.1} check_ms {k:.1}");
 }
 
-/// T13 step 3: `name cost build_ms check_ms` for the Goal 1 targets, the five, `doubling(12)` and the held-out terms,
+/// T13 step 3, T14 step 3: `name cost build_ms check_ms` for the Goal 1 and Goal 2 targets, the five, `doubling(12)` and the held-out terms,
 /// each best of 3 on a `CHECK_STACK` thread; `cost` is the gate's (tree plus `CALL_WEIGHT` per call site). Run timed,
 /// from a copied exe.
 #[test]
@@ -212,11 +213,14 @@ fn time_targets() {
         ("straight_line", Box::new(straight_line)),
         ("a_capturing_closure_call", Box::new(a_capturing_closure_call)),
         ("a_pap_capturing", Box::new(a_pap_capturing)),
+        ("twice_inc_5", Box::new(twice_inc_5)),
+        ("let_bound_factorial_10", Box::new(crate::testing::test_corpus::let_bound_factorial_10)),
+        ("tail_recursive_loop_with_pap_producing_root_self_call_arg", Box::new(tail_recursive_loop_with_pap_producing_root_self_call_arg)),
     ];
     for (name, b) in rows {
         let (cost, bm, cm, ok) = big(move || {
             let (s, h, frag) = compiled(&*b);
-            let cost = crate::jit::compile::tree_size(&s, h) + CALL_WEIGHT * crate::proof::gate::call_sites(&s, h);
+            let cost = crate::proof::gate::module_cost(&s, h, &frag);
             let (bm, cm, ok) = time_gate(&s, h, &frag, 3);
             (cost, bm, cm, ok)
         });
@@ -287,7 +291,7 @@ pub(super) fn big<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> 
 }
 
 /// `jit.apply` agrees with the evaluator at each argument list.
-fn applies_like_eval(s: &TermStore, h: Hash, argss: &[&[i64]]) {
+pub(super) fn applies_like_eval(s: &TermStore, h: Hash, argss: &[&[i64]]) {
     let mut jit = JitEngine::new();
     for args in argss {
         let (got, want) = (jit.apply(s, h, args), crate::proof::eval::apply_term(s, h, args));
@@ -469,14 +473,6 @@ fn a_closed_straight_line_term_takes_the_gate() {
     let (s, h, frag) = compiled(&|s: &mut TermStore| source(s, "3 + 4"));
     assert_eq!(frag.arity, 0);
     assert_eq!(gate(wasm_table(), &s, h, &frag), Verdict::Accepted);
-}
-
-#[test]
-fn a_module_with_a_callee_is_not_covered_until_s3() {
-    let (s, h, frag) = compiled(&twice_inc_5);
-    assert!(frag.entry_pos > 0, "twice_inc_5 compiles with a callee");
-    let v = gate(wasm_table(), &s, h, &frag);
-    assert!(matches!(v, Verdict::NotCovered(_)), "{v:?}");
 }
 
 #[test]

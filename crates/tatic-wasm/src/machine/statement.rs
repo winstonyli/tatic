@@ -345,7 +345,7 @@ impl<'a> Ctxt<'a> {
 }
 
 /// The positions entry `k`'s code calls other than `k` itself, sorted and distinct.
-pub(super) fn callees(k: usize, code: &[Ins]) -> Vec<usize> {
+pub fn callees(k: usize, code: &[Ins]) -> Vec<usize> {
     fn walk(code: &[Ins], out: &mut Vec<usize>) {
         for i in code {
             match i {

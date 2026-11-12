@@ -38,7 +38,7 @@ pub(crate) fn with_entry(
     let pos = frag.entry_pos;
     let mut f = Some(f);
     for item in &mut frag.module {
-        if let Item::Func { pos: p, entry } = item {
+        if let Item::Func { pos: p, entry, .. } = item {
             if *p == pos {
                 *entry = (f.take().expect("one entry record"))(entry.clone());
             }
