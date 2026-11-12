@@ -107,7 +107,8 @@ pub enum Ins {
     /// A table row; a 2-to-1 row carries operand 0.
     Row { name: &'static str, operand: i64 },
     If(Vec<Ins>, Vec<Ins>),
-    /// `call`/`return_call` to the module position `j` (the printer picks by its tail rule): pops the callee's
+    /// `call`/`return_call` to the module position `j` (the printer picks by its tail rule; the JIT's lowering
+    /// rewrites a tail call to the function's own position to the loop form, `Set`s then `Br`): pops the callee's
     /// arity in words, pushes one. Its meaning continues into the callee environment's entry `j`, then the rest.
     Call(usize),
     /// `br $top`: restart the function's own entry on the current frame with the activation's own return continuation.

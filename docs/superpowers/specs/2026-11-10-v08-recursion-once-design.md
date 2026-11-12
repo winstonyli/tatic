@@ -136,6 +136,10 @@ other options are ruled out by the anti-goals or by a spike, and stay as one-lin
 
 ### D1 No `loop`; tail calls are one `Call`, printed `return_call` (decided: k2, 2026-11-10)
 
+Reopened 2026-11-12: a tail self call is now the proved loop form, `local.set`s of the parameters and a `Br` printed
+`br $top` (`docs/superpowers/specs/2026-11-12-proved-loop-form-design.md`), after `return_call` measured +480% on the closure loop's warm call (`docs/tier-cycle/`, "v0.8's
+build: measurements and checks"). Calls to other functions keep this decision.
+
 Searched: tried removing `loop`/`br` outright, since the lowering's only `loop` is the wrapper it puts around every
 function, there for tail self-calls (`jit/lower_wat.rs#function`; the v0.7 gate proves `[Loop(body)]` at fuel 1, and
 `strip_loop` is already dead, its one caller passing false), and the generator treats `br` and `call` as one fuel edge;

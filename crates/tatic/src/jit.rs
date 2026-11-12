@@ -288,8 +288,8 @@ impl JitEngine {
     }
 
     /// Whether `proof.rs` proves `h` equivalent to the model of its compiled
-    /// form for *every* input (the model states the IR's tail self-call as
-    /// `loop`/`br`, which stands for the emitted `return_call`). Tries the strategies in order and stops at
+    /// form for *every* input (the model is the recursion's inductive reading, `Ev` and `loop_val`; it does not
+    /// read the emitted text). Tries the strategies in order and stops at
     /// the first that applies:
     /// 1. `prove_closure_expr` -- a closed, non-recursive term built from
     ///    non-capturing ("known-call") closures gets one proof covering

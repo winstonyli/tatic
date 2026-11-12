@@ -9,7 +9,7 @@ Goal 1 of `ROADMAP.md` now says so and links here.
 
 - **Decided 2026-11-10:** v0.8 is z5 "Recursion once", staged S0-S4 with its own spec (below); division by zero is a
   partial row whose trap is the no-value answer (below); tail calls are one `Call` printed as `return_call` when
-  nothing follows it (below); the state shape is a frame passed in plus one opaque memory argument, with the memory
+  nothing follows it (below; tail self calls are the proved loop form since 2026-11-12, see Open); the state shape is a frame passed in plus one opaque memory argument, with the memory
   rows deleted in v0.8 (u1, below). The spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`) was
   rewritten to u1 on 2026-11-11 and approved the same day. Built on branch `v08-recursion-once`: S0 and S2 (to the generator's
   freeze, 2026-11-11), S3 and S4 (2026-11-11); merged into main and tagged `v0.8.0` (2026-11-11).
@@ -19,7 +19,8 @@ Goal 1 of `ROADMAP.md` now says so and links here.
   of mutants: a spike").
 - **Open:** the heap relation for callees (below; parked, `PARKED.md`). Decided in the spec and built: `loop` and `br`
   do not survive (`docs/tier-cycle/`, "Tail self-calls as `return_call`, with no `loop` or `br`: a spike"); every
-  call is `Call`, printed `return_call` by the tail rule.
+  call is `Call`, printed `return_call` by the tail rule. Reopened 2026-11-12 for tail self calls, which now install
+  as the proved loop form (`local.set`s and `br $top`, `docs/superpowers/specs/2026-11-12-proved-loop-form-design.md`); calls to other functions are unchanged.
 - **Settled:** the "any backend" policy below. It extends the 2026-10-31 decision
   (`docs/decisions/2026-10-31-learned-target-model.md`) and does not change it.
 
@@ -191,7 +192,7 @@ The draft spec (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`
 its shapes went to the user and were surveyed again, each checked by a second reader. Tail calls decided (n1,
 2026-11-10); the state shape decided (u1, 2026-11-11).
 
-- **Tail calls (decided: the survey's k2).** The survey recommends one `Call` and a printer that writes `return_call` when nothing follows the
+- **Tail calls (decided: the survey's k2; reopened for tail self calls 2026-11-12, see Open).** The survey recommends one `Call` and a printer that writes `return_call` when nothing follows the
   call (k2), tested exhaustively over small instruction lists by running each printed twice under wasmtime (tail rule
   against every call as `call`) with a callee whose skipped continuation shows as a different value. Why: the
   printer's rule fails safe (an unknown suffix prints `call`, which costs only stack depth), while a `ReturnCall`

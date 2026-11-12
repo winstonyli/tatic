@@ -357,7 +357,8 @@ reported by `JitEngine::is_kernel_verified`):
   `Accepted` installs, `Rejected` does not, and only `NotCovered` goes on
   to `kernel_verify`), the gate's theorem alone (`jit.rs#prove_install`):
   the emitted instruction list, run on `tatic_wasm`'s machine at n = 64
-  (loops and self-calls included, as `Call` with fuel), equals the source
+  (loops and self-calls included: a call as `Call` with fuel, a tail self
+  call as the loop form's `local.set`s and `Br`), equals the source
   term for every input. This one is about the emitted body, not a model of
   the compiler. It still trusts, unproved:
   - the operator table: each `Op` row's kernel term against its WAT
@@ -367,13 +368,22 @@ reported by `JitEngine::is_kernel_verified`):
   - the body printer, `Ins` to WAT one-to-one (guard: the golden WAT),
     and its tail rule: a `Call` followed by nothing prints `return_call`,
     any other `Call` prints `call` (guard: the exhaustive tail-rule test
-    under wasmtime);
+    under wasmtime); a tail self call reaches the printer already in the
+    loop form (`local.set`s, then `Br` printed `br $top`), so `return_call`
+    remains only for calls to other functions;
   - the function scaffolding outside the body: the header printed from the
-    record (parameters `$p0..` from its arity, the scratch locals), export,
+    record (parameters `$p0..` from its arity, the scratch locals), the
+    `loop $top (result i64)` wrapper around a body holding `Br`, export,
     and the JIT passing `args` in order (guard: `verify`);
-  - the machine as a model of wasm `if`, `call`, `local.get` and i64
-    arithmetic, with locals as a frame passed into every interpreter and
-    one opaque memory argument; each `if` arm runs from an empty stack and
+  - the machine as a model of wasm `if`, `call`, `local.get`, `local.set`,
+    `br` and i64 arithmetic, with locals as a frame passed into every
+    interpreter and one opaque memory argument; the shape check bounds a
+    `local.get` or `local.set` operand by the record's arity, since slot i
+    prints as `$p{i}` and only `$p0..` up to the arity are declared (the
+    `local.get` bound is older; the `local.set` one is since 2026-11-12,
+    `docs/superpowers/specs/2026-11-12-proved-loop-form-design.md`,
+    Constraints; guards: `machine/loop_tests.rs`, `proof/tests/loop_form.rs`);
+    each `if` arm runs from an empty stack and
     leaves one word, as the printed `if (result i64)` requires (since
     2026-11-12, `machine.rs#if_arms_start_empty_and_leave_one_word`), and
     the gate still runs after wasmtime has validated the module, as
@@ -382,8 +392,9 @@ reported by `JitEngine::is_kernel_verified`):
     its code calls other than its own, so a swapped registry entry or a mismatched callee is refused before any
     statement exists (guard: `proof/tests/modules.rs`);
   - the statement builder (`machine/statement.rs`: the module fixpoint over
-    fuel, the law telescope, the continuation relation), `Source::cps` and
-    its source closure, `Call`'s meaning, the shape check and the budget
+    fuel, the law telescope, the continuation relation, the restart that
+    `Br` reads), `Source::cps` and its source closure, `Call`'s and `Br`'s
+    meanings, the shape check and the budget
     check; the walk that proves the statement (`machine/sim.rs`) is not
     trusted, the kernel checks what it builds;
   - for a specialised term, `h ≡ h'`, certified by `spec_check`, not the

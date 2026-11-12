@@ -74,8 +74,8 @@ pub(crate) enum Node {
     Read(Read),
     Arith(PrimOp, Box<Node>, Box<Node>),
     If { cmp: PrimOp, a: Box<Node>, b: Box<Node>, then: Box<Node>, els: Box<Node> },
-    /// A call back into the enclosing recursive function; the printer picks
-    /// `return_call` or `call` by the tail rule.
+    /// A call back into the enclosing recursive function; in tail position it
+    /// becomes the loop form (`lower_wat.rs#loop_form`), elsewhere it prints `call`.
     SelfCall { args: Vec<Node> },
     /// A saturated call to a statically known combinator.
     CallKnown { f: usize, env: Vec<Read>, args: Vec<Node> },
