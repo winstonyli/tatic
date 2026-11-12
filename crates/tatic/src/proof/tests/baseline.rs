@@ -18,12 +18,12 @@ pub(super) struct BaseRow {
 
 /// Rows whose `installs` may go from false to true and never back (Goal 5's one exception); for these,
 /// when `installs` changed, `compiled` and `specialised` are not compared.
-pub(super) const HELD_OUT: &[&str] = &[];
+pub(super) const HELD_OUT: &[&str] = &["held_out_a", "held_out_b"];
 
 /// Census 1-23 (`samples::corpus`) then 24-38 (`test_corpus`), in the census list's order.
 pub(super) fn census() -> Vec<(&'static str, TermStore, Hash)> {
     let mut v = corpus();
-    let builders: [(&'static str, fn(&mut TermStore) -> Hash); 15] = [
+    let builders: [(&'static str, fn(&mut TermStore) -> Hash); 17] = [
         ("open_redex_probe", tc::open_redex_probe),
         ("oversized_source_with_a_shrinking_step", tc::oversized_source_with_a_shrinking_step),
         ("doubling_d4", |s| tc::doubling(s, 4)),
@@ -39,6 +39,8 @@ pub(super) fn census() -> Vec<(&'static str, TermStore, Hash)> {
         ("a_pap_of_a_self_recursive_combinator", tc::a_pap_of_a_self_recursive_combinator),
         ("a_pap_of_a_capturing_self_recursive_combinator", tc::a_pap_of_a_capturing_self_recursive_combinator),
         ("over_application_if_between_closures_of_params", tc::over_application_if_between_closures_of_params),
+        ("held_out_a", tc::held_out_a),
+        ("held_out_b", tc::held_out_b),
     ];
     for (name, build) in builders {
         let mut s = TermStore::new();
@@ -101,6 +103,8 @@ const BASELINE: &[BaseRow] = &[
     BaseRow { name: "a_pap_of_a_self_recursive_combinator", installs: true, compiled: 1, specialised: 0, tree: 24 },
     BaseRow { name: "a_pap_of_a_capturing_self_recursive_combinator", installs: true, compiled: 1, specialised: 0, tree: 27 },
     BaseRow { name: "over_application_if_between_closures_of_params", installs: true, compiled: 1, specialised: 0, tree: 27 },
+    BaseRow { name: "held_out_a", installs: true, compiled: 1, specialised: 0, tree: 28 },
+    BaseRow { name: "held_out_b", installs: true, compiled: 1, specialised: 0, tree: 19 },
 ];
 
 #[test]

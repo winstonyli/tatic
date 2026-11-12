@@ -126,3 +126,16 @@ pub(crate) fn a_pap_of_a_capturing_self_recursive_combinator(s: &mut TermStore) 
 pub(crate) fn over_application_if_between_closures_of_params(s: &mut TermStore) -> Hash {
     source(s, r"\p q r. (\a b. if 0 < a then (\c. a + b + c) else (\c. a - b + c)) p q r")
 }
+
+/// Held-out term A, written without sight of the generator: a two-parameter
+/// non-tail recursion. g(1,1)=2, g(2,2)=8, g(3,2)=15, g(0,5)=5, g(4,0)=4.
+pub(crate) fn held_out_a(s: &mut TermStore) -> Hash {
+    source(s, "rec g a b = if a <= 0 then b else if b <= 0 then a else g (a - 1) b + g a (b - 1)")
+}
+
+/// Held-out term B, written without sight of the generator: a stride-2 tail
+/// loop, acc := 3acc - k (old k). f 5 1 = -28, f 4 1 = -5, f 1 10 = 29,
+/// f 0 9 = 9, f -7 3 = 3.
+pub(crate) fn held_out_b(s: &mut TermStore) -> Hash {
+    source(s, "rec f k acc = if k <= 0 then acc else f (k - 2) ((acc * 3) - k)")
+}
