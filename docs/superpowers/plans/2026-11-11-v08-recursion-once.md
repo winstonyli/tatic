@@ -114,7 +114,7 @@ S0 lands as one change (spec S0: "Ins leaf variants become Ins::Row"): `wasm.rs`
 **Interfaces:**
 - Produces, in `tatic_wasm::machine`:
   - `pub enum Class { Const, Word, Bit }` (`Copy, Debug, PartialEq, Eq`): `Const` is 0 to 1 with a word result, `Word` 2 to 1 word-valued, `Bit` 2 to 1 bit-valued. `pub fn pops(self) -> usize` (0, 2, 2) and `pub fn kind(self) -> K` (`W`, `W`, `B`).
-  - `pub struct Row { pub name: &'static str, pub class: Class, pub meaning: fn(&mut Cx, &Machine, i64) -> Expr, pub line: fn(i64) -> String }`. `meaning(c, m, operand)` is the constructor's operand: for `Const` the word (a numeral today; `Fr -> V` from T9), for `Word`/`Bit` the closed circuit.
+  - `pub struct Row { pub name: &'static str, pub class: Class, pub meaning: fn(&mut Cx, &Machine, i64) -> Expr, pub line: fn(i64) -> String }`. `meaning(c, m, operand)` is the constructor's operand: for `Const` the word (a numeral today; from T9 `Fr -> Pi R:Sort0. (V -> R) -> R`, `Machine::operand_ty`), for `Word`/`Bit` the closed circuit.
   - `pub struct Table { rows: Vec<Row> }` with `pub fn new(rows: Vec<Row>) -> Table` (panics on a duplicate name) and `pub fn row(&self, name: &str) -> Option<&Row>`.
   - `pub struct Machine<'t> { pub n: usize, pub table: &'t Table }` (`Clone, Copy`), replacing `wasm::Wasm`; every method keeps its name and signature.
   - `pub enum Ins { Row { name: &'static str, operand: i64 }, LocalGet(u32), If(Vec<Ins>, Vec<Ins>), Loop(Vec<Ins>), Br(usize), Store, Load, Raw(String) }`. A 2-to-1 row carries operand 0; `shape` rejects a nonzero operand on a `Word`/`Bit` row and an `Ins::Row` whose name the table lacks (both `Err`, so `well_formed` is false).
@@ -289,7 +289,7 @@ Run on `git switch -c v08-s2c-frame`. Commits between Step 3 and Step 6 may be r
 - Consumes: `w2:wasm.rs` (`fr`, `frame`, `nth`, `getter`, `words`, `split_args`; not `put`, `setter`, `LocalSet`, `ConstI`, `GetI`, `K::I`, `Hooks::{lab, ret}`); `w2:wasm/sim.rs` (`SEnv`, `SrcFn`, `G`, `cong`, `spine`, `Sim::{sim, cont_rel, sim_step}` minus the call rule; `binders` minus the temporaries).
 - Produces, in `machine.rs`:
   - `Machine<'t> { pub n: usize, pub fw: usize, pub table: &'t Table }`; `pub fn fr(&self) -> Expr` (`V^fw x V`); `pub fn frame(&self, vals: &[Expr]) -> Expr` (`vals` at slots `0..`, zeros up to `fw`, a terminal zero word); `G A = Fr -> A -> Mem -> R`; `Ret = V -> Mem -> R`; `Mem` keeps today's type and nothing reads it.
-  - The `Const` class's operand is `Fr -> V`: row `const`'s meaning is `\_:Fr. lit n v`; a new row `local.get` (`Const`, meaning the frame projection at the operand, failing at or past `fw`, printed `local.get $p{i}`). `Ins::LocalGet` is deleted; the lowering's `Read::Param(li)` emits `Ins::Row { name: "local.get", operand: li }`.
+  - The `Const` class's operand is `Fr -> Pi R:Sort0. (V -> R) -> R` (T9 ruling: a plain `Fr -> V` blew up conversion): row `const` hands `lit n v` to the continuation; a new row `local.get` (`Const`, meaning the frame projection at the operand, failing at or past `fw`, printed `local.get $p{i}`). `Ins::LocalGet` is deleted; the lowering's `Read::Param(li)` emits `Ins::Row { name: "local.get", operand: li }`.
   - `pub struct MeaningEnv { pub r: At, pub ch: Option<At> }` (T10 adds the callee environment); `pub fn meaning(&self, c: &mut Cx, p: At, k: At, me: &MeaningEnv) -> Expr`, with no fuel and no `z`; an `If` uses `ch` when `Some`, else `choose`.
   - Deleted: `Ins::Store`, `Ins::Load`, their constructors, `upd`, the `Loop` constructor and interpreter, the interpreter's fuel argument (today's `nat2_lit(0)` passed to `meaning`, as in `w2:wasm/sim.rs#bm`'s `fuel0`, goes with it), `Machine::{good, append, ifp, spec}` (their only users are in `laws.rs`), `laws.rs` whole (`if_inv`/`Ctl`, `append_law`, `if_law`, `if_good`, `loop_law`, `timeout`, `run_by_refl`, `run_wasm_checks`, `wasm_programs_as_kernel_data`, `wasm_scaling`). `nat2_lit` itself stays in `machine.rs`: it is the Church-numeral builder, and T11's `quantify_fuel: false` mutant builds its fixed fuel numeral with it.
 - Produces, in `machine/statement.rs` (trusted):
@@ -314,7 +314,7 @@ Run on `git switch -c v08-s2c-frame`. Commits between Step 3 and Step 6 may be r
   // wasm.rs tests: T3's test, updated for the new Const operand and row set
   #[test] fn wasm_rows_are_closed_and_typed()
   //   table()'s rows are exactly const, local.get, add, sub, mul, lt, le, eq, lt_u; at n = 8, fw = 2: a Const row's
-  //   meaning infers Fr -> V (const at operand 3, local.get at operands 0 and 1), Word V -> V -> V, Bit V -> V -> Bv_1
+  //   meaning infers Fr -> Pi R:Sort0. (V -> R) -> R (const at operand 3, local.get at operands 0 and 1), Word V -> V -> V, Bit V -> V -> Bv_1
   ```
   Run: `cargo test -p tatic-wasm local_get_reads_the_frame`. Expected: compile error (`Machine::frame` not found). Step 2's run also covers the updated `wasm_rows_are_closed_and_typed`.
 - [ ] **Step 2: Implement step 1** (frame, memory argument, `local.get` row, the deletions). Run: `cargo test -p tatic-wasm --lib machine && cargo test -p tatic-wasm --lib wasm_rows_are_closed_and_typed`. Expected: the three tests PASS (the crate's other tests may be red until Step 4).

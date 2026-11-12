@@ -4,8 +4,8 @@
 //! A program is a Church-encoded instruction tree typed by its start and end stacks,
 //! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> const -> word -> bit -> if -> F S` (one leaf constructor per row class,
 //! in `ctor_list` order), where each
-//! constructor takes the rest of the program (`const : Pi A. (Fr -> V) -> F (V,A) -> F A`). Its meaning `M p R k`
-//! interprets `F A` as `Fr -> A -> Mem -> R` for an answer type `R : Sort0`: words are width-n Church vectors
+//! constructor takes the rest of the program (`const : Pi A. Op -> F (V,A) -> F A`, with the operand
+//! `Op = Fr -> Pi R:Sort0. (V -> R) -> R` handing its word to a continuation). Its meaning `M p R k` interprets `F A` as `Fr -> A -> Mem -> R` for an answer type `R : Sort0`: words are width-n Church vectors
 //! (`encoding.rs`), stacks are nested `Sigma` pairs, the locals are a frame `Fr = V^fw x V` of nested word pairs
 //! passed into every interpreter and never returned (a `const`-class operand projects it), memory is the opaque
 //! `Mem = V -> (V -> R) -> R` that nothing reads, and an `if` chooses between its two continuations by its one-bit
@@ -58,8 +58,9 @@ impl Class {
 }
 
 /// One leaf instruction: its name, class, kernel meaning and printed line. `meaning(c, m, operand)` is the
-/// constructor's operand: for `Const` a function of the frame (`Fr -> V`: a constant word, or a projection of the
-/// frame), for `Word`/`Bit` the closed circuit (`operand` is 0).
+/// constructor's operand: for `Const` a function of the frame that hands its word (a constant, or a projection of the
+/// frame) to a continuation (`Machine::operand_ty`; a plain `Fr -> V` left the redex `op fr` in every stack value, and
+/// conversion blew up), for `Word`/`Bit` the closed circuit (`operand` is 0).
 pub struct Row {
     pub name: &'static str,
     pub class: Class,
