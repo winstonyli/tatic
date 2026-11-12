@@ -179,7 +179,7 @@ impl<'t> G<'t> {
                         let kk = c.mark(kk);
                         let tbl = table(c, env);
                         let tbl = c.mark(tbl);
-                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: Some(tbl) });
+                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: tbl });
                         app3(m, c.at(fr), lit(n, 0), c.at(mu))
                     })
                 })

@@ -250,13 +250,12 @@ pub struct Machine<'t> {
 /// What `meaning` is given beside the program and its continuation: the answer type `r`; for the generator's proofs,
 /// `ch`, an opaque `choose` (`Pi R:Sort0. Bv_1 -> R -> R -> R`) an `If` uses in place of the real one; and `calls`, the
 /// callee environment `V -> Fr -> Mem -> Ret -> R` (`Ret = V -> Mem -> R`) a `Call(j)` continues into at `j`, which the
-/// statement builder fills from the module fixpoint over fuel. `None` is the environment of no functions: a call
-/// answers 0 at the memory it was given.
+/// statement builder fills from the module fixpoint over fuel.
 #[derive(Clone, Copy)]
 pub struct MeaningEnv {
     pub r: At,
     pub ch: Option<At>,
-    pub calls: Option<At>,
+    pub calls: At,
 }
 
 const F_TY: fn() -> Expr = || arrow(sort(2), sort(2));
@@ -456,7 +455,7 @@ impl Machine<'_> {
         sigrec(motive, step, c.at(st))
     }
     /// The constructors' meanings.
-    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: Option<At>) -> Vec<Expr> {
+    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: At) -> Vec<Expr> {
         let (v, v1) = (self.v(), bv_ty(1));
         let w = *self;
         let fr_ty = self.fr();
@@ -542,10 +541,7 @@ impl Machine<'_> {
                                                 let mm = w.mem(c, r);
                                                 c.lam(mm, |c, mu2| app3(c.at(rest), c.at(fr), mkpair(c.at(a), c.at(y), c.at(below)), c.at(mu2)))
                                             });
-                                            match calls {
-                                                Some(t) => app(app3(c.at(t), c.at(idx), c.at(fr2), c.at(mu)), kont),
-                                                None => app2(kont, lit(w.n, 0), c.at(mu)),
-                                            }
+                                            app(app3(c.at(calls), c.at(idx), c.at(fr2), c.at(mu)), kont)
                                         })
                                     })
                                 })
@@ -677,8 +673,20 @@ mod tests {
             law(&tys, |c, x| {
                 let p = w.prog(c, &code, &[], x[0], &[]);
                 let p = c.mark(p);
+                // the environment of no functions: a call answers 0 at the memory it was given
+                let r = x[1];
+                let none = c.lam(w.v(), |c, _j| {
+                    c.lam(w.fr(), |c, _fr| {
+                        let mem = w.mem(c, r);
+                        c.lam(mem, |c, mu| {
+                            let ret = arrow(w.v(), arrow(w.mem(c, r), c.at(r)));
+                            c.lam(ret, |c, k| app2(c.at(k), lit(n, 0), c.at(mu)))
+                        })
+                    })
+                });
+                let none = c.mark(none);
                 let fr = w.frame(&[c.at(x[3]), c.at(x[4])]);
-                let me = MeaningEnv { r: x[1], ch: None, calls: None };
+                let me = MeaningEnv { r, ch: None, calls: none };
                 let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[5]), c.at(x[6]));
                 let (p, q) = if b_minus_a { (x[4], x[3]) } else { (x[3], x[4]) };
                 let val = app2(sub(n), c.at(p), c.at(q));
