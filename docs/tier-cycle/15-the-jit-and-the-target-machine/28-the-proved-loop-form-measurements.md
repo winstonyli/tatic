@@ -10,19 +10,20 @@ entry on the current frame, so the loop is proved, not assumed. Run ids are in `
 **The bench (A B A, T5).** The `execution` bench's `jit` rows for the closure loop and gcd, main (`7ad2f0a`) against
 the branch, each arm a copy of its exe (`docs/runs/2026-11-12/scripts/pfl-bench.sh`, criterion's 1 s warm-up and 3 s
 measurement). A1 and B1 ran timed on CPU 8 (`pfl-bench-a1`, `-b1`). A2 was refused twice by the quiet check (CPU 8 at
-12.5% and 28.1%; `pfl-bench-a2`, `-a2b`), so it ran untimed on `CFF` (`pfl-bench-a2-untimed`).
+12.5% and 28.1%; `pfl-bench-a2`, `-a2b`), so it ran untimed on `CFF` (`pfl-bench-a2-untimed`), then timed on a later
+try (`pfl-bench-a2-timed1`).
 
-| row | A1 main (timed) | B1 loop form (timed) | A2 main (untimed) |
-|---|---|---|---|
-| closure loop, warm | 25.89 us | 4.416 us | 27.19 us |
-| closure loop, cold | 4.763 ms | 4.717 ms | 5.856 ms |
-| gcd, warm | 126.4 ns | 127.2 ns | 146.3 ns |
-| gcd, cold | 598.7 us | 557.9 us | 657.7 us |
+| row | A1 main (timed) | B1 loop form (timed) | A2 main (timed) | A2 main (untimed) |
+|---|---|---|---|---|
+| closure loop, warm | 25.89 us | 4.416 us | 25.57 us | 27.19 us |
+| closure loop, cold | 4.763 ms | 4.717 ms | 4.380 ms | 5.856 ms |
+| gcd, warm | 126.4 ns | 127.2 ns | 125.8 ns | 146.3 ns |
+| gcd, cold | 598.7 us | 557.9 us | 550.2 us | 657.7 us |
 
 - The closure loop's warm call is back at the v0.7 loop's 4.4 us (4.357 us before v0.8), 5.9 times faster than
-  `return_call`. Both A arms read 26 to 27 us, so the gap is the form, not the machine. This meets the ROADMAP v0.9
+  `return_call`. Every A run reads 25.6 to 27.2 us, so the gap is the form, not the machine. This meets the ROADMAP v0.9
   check.
-- Cold compile and verify is unchanged (4.72 against 4.76 ms; the plan's bound was 1.5 times main's). The cold rows
+- Cold compile and verify is unchanged (4.72 against 4.76 and 4.38 ms; the plan's bound was 1.5 times main's). The cold rows
   are about 4.7 ms, not the 604 us of v0.8's S2b table, on both arms, while gcd's still match it; the cause is not
   established (not checked).
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
