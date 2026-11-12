@@ -1,4 +1,4 @@
-//! The machine's laws (append, if, loop, the countdown invariant) and concrete runs, each with controls that must be
+//! The machine's laws (append, if, loop) and concrete runs, each with controls that must be
 //! rejected (docs/tier-cycle/, "Wasm programs as kernel data, kept").
 use super::*;
 
@@ -269,113 +269,6 @@ fn timeout(w: Wasm, c: &mut Cx, a: At, r: At, z: At) -> Expr {
     })
 }
 
-/// `loop L { dup; push 1; lt; if {} {push 1; <dec>; br L} }`: count the top word down to 0 (`dec` = `sub`).
-pub fn countdown(dec: Op) -> Vec<Ins> {
-    vec![Ins::Loop(vec![Ins::Dup, Ins::Push(1), Ins::Op(Op::LtU), Ins::If(vec![], vec![Ins::Push(1), Ins::Op(dec), Ins::Br(0)])])]
-}
-
-/// An `if` inside a loop: for every fuel with `GoodNat` and every start word with `GoodBv`, the countdown answers
-/// `Q` if the timeout does and the exit continuation does on every good word:
-/// `Pi S N. GoodNat N -> Pi R Q k z. Q z -> (Pi x s mu. GoodBv x -> Q (k (x,s) mu)) -> Pi x s mu. GoodBv x -> Q (M cd ..)`.
-/// The invariant carries `GoodBv` of the counter, which the `if` needs and `good_sub` keeps. `dec` replaces the
-/// decrement in the program only (a control).
-pub fn countdown_law(w: Wasm, dec: Op) -> (Expr, Expr) {
-    let n = w.n;
-    let code = countdown(dec);
-    // S N gn R Q k z hz hk x s mu gx
-    let tys: Vec<Ty> = vec![
-        ty!(|_c, _x| sort(2)),
-        ty!(|_c, _x| nat2()),
-        ty!(|c, x| w.good_nat(c, x[1])),
-        ty!(|_c, _x| sort(0)),
-        ty!(|c, x| arrow(c.at(x[3]), sort(0))),
-        ty!(|c, x| { let t = w.sty(c, &[K::W], x[0]); w.g(c, x[3], t) }),
-        ty!(|c, x| c.at(x[3])),
-        ty!(|c, x| app(c.at(x[4]), c.at(x[6]))),
-        ty!(|c, x| {
-            c.pi(w.v(), |c, xv| {
-                c.pi(c.at(x[0]), |c, s| {
-                    let m = w.mem(c, x[3]);
-                    c.pi(m, |c, mu| {
-                        let ans = app2(c.at(x[5]), mkpair(c.at(x[0]), c.at(xv), c.at(s)), c.at(mu));
-                        arrow(app(good_bv(n), c.at(xv)), app(c.at(x[4]), ans))
-                    })
-                })
-            })
-        }),
-        ty!(|_c, _x| bv_ty(n)),
-        ty!(|c, x| c.at(x[0])),
-        ty!(|c, x| w.mem(c, x[3])),
-        ty!(|c, x| app(good_bv(n), c.at(x[9]))),
-    ];
-    law(&tys, |c, x| {
-        let p = w.prog(c, &code, &[K::W], x[0]);
-        let p = c.mark(p);
-        let m = w.meaning(c, p, x[1], x[3], x[5], x[6]);
-        let stmt = app(c.at(x[4]), app2(m, mkpair(c.at(x[0]), c.at(x[9]), c.at(x[10])), c.at(x[11])));
-        let proof = {
-            let (s_ty, r, q, k) = (x[0], x[3], x[4], x[5]);
-            // `M cd` is `N (G A) timeout B`: take `B`
-            let body = match whnf(&m).node() {
-                tatic_kernel::Node::App(_, b) => c.mark(b),
-                other => panic!("countdown's meaning is not a fuel application: {other:?}"),
-            };
-            let a = c.mark(w.sty(c, &[K::W], s_ty));
-            let inv = c.lam(c.at(a), |c, st| {
-                let motive = c.lam(c.at(a), |_c, _| sort(3));
-                let step = c.lam(w.v(), |c, xv| c.lam(c.at(s_ty), |c, _| app(good_bv(n), c.at(xv))));
-                sigrec(motive, step, c.at(st))
-            });
-            let inv = c.mark(inv);
-            let hz = c.lam(c.at(a), |c, s| {
-                let m = w.mem(c, r);
-                c.lam(m, |c, _| c.lam(app(c.at(inv), c.at(s)), |c, _| c.at(x[7])))
-            });
-            let g = w.g(c, r, c.at(a));
-            let hs = c.lam(g, |c, f| {
-                let gf = w.good(c, a, r, inv, q, f);
-                c.lam(gf, |c, ih| {
-                    c.lam(c.at(a), |c, st| {
-                        let motive = c.lam(c.at(a), |c, st| {
-                            let m = w.mem(c, r);
-                            c.pi(m, |c, mu| {
-                                let ans = apps(c.at(body), vec![c.at(f), c.at(st), c.at(mu)]);
-                                arrow(app(c.at(inv), c.at(st)), app(c.at(q), ans))
-                            })
-                        });
-                        let step = c.lam(w.v(), |c, xv| {
-                            c.lam(c.at(s_ty), |c, s| {
-                                let m = w.mem(c, r);
-                                c.lam(m, |c, mu| {
-                                    let i = app(c.at(inv), mkpair(c.at(s_ty), c.at(xv), c.at(s)));
-                                    c.lam(i, |c, gx| {
-                                        let (xe, se, mue) = (c.at(xv), c.at(s), c.at(mu));
-                                        let one = lit(n, 1);
-                                        let cond = app2(lt_u(n), xe, one);
-                                        let g_cond = apps(good_lt(n).0, vec![xe, one, c.at(gx), good_lit(n, 1)]);
-                                        let dec = app2(sub(n), xe, one);
-                                        let g_dec = apps(good_sub(n).0, vec![xe, one, c.at(gx), good_lit(n, 1)]);
-                                        let exit = app2(c.at(k), mkpair(c.at(s_ty), xe, se), mue);
-                                        let again = app2(c.at(f), mkpair(c.at(s_ty), dec, se), mue);
-                                        let h_exit = apps(c.at(x[8]), vec![xe, se, mue, c.at(gx)]);
-                                        let h_again = apps(c.at(ih), vec![mkpair(c.at(s_ty), dec, se), mue, g_dec]);
-                                        apps(if_inv(Ctl::Ok).0, vec![c.at(r), c.at(q), cond, g_cond, exit, again, h_exit, h_again])
-                                    })
-                                })
-                            })
-                        });
-                        sigrec(motive, step, c.at(st))
-                    })
-                })
-            });
-            let args = vec![c.at(a), c.at(r), c.at(inv), c.at(q), c.at(x[6]), c.at(body), c.at(x[1]), c.at(x[2]), hz, hs,
-                mkpair(c.at(s_ty), c.at(x[9]), c.at(x[10])), c.at(x[11]), c.at(x[12])];
-            apps(loop_law(w).0, args)
-        };
-        (proof, stmt)
-    })
-}
-
 /// `Pi S R k z s mu. Id(R, M p fuel R k z (start..s) mu, want)`, by `refl`: a concrete run.
 fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn(&mut Cx, &[At]) -> Expr) -> (Expr, Expr) {
     let ks: Vec<K> = start.iter().map(|_| K::W).collect();
@@ -403,19 +296,6 @@ pub fn wasm_programs_as_kernel_data() {
     tatic_kernel::scoped(|| run_wasm_checks(Wasm { n: 4 }, true))
 }
 
-/// The countdown invariant at n=24 stays fast. Without `conv`'s pair memo it walked a shared case tree once per path
-/// (docs/tier-cycle/, "The countdown invariant was exponential"; n=32 took over 600 s).
-#[test]
-pub fn countdown_invariant_is_not_exponential() {
-    let n = 24;
-    tatic_kernel::scoped(|| {
-        let (p, s) = countdown_law(Wasm { n }, Op::Sub);
-        let t0 = Instant::now();
-        ck("countdown invariant n=24", &p, &s);
-        assert!(t0.elapsed().as_secs_f64() < 2.0, "countdown invariant took {:?}", t0.elapsed());
-    })
-}
-
 /// Every law and run, with controls; prints check times (`WASM` lines).
 pub fn run_wasm_checks(w: Wasm, controls: bool) {
     let n = w.n;
@@ -435,11 +315,7 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
     timed("if law", if_law(w, false));
     timed("if invariant", if_good(w, false));
     timed("loop law", loop_law(w));
-    timed("countdown invariant", countdown_law(w, Op::Sub));
-    // concrete runs: the countdown from 3 exits at 0 with fuel 4 and times out with fuel 3; store then load
-    let at = |v: u128| move |c: &mut Cx, x: &[At]| app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, v), c.at(x[4])), c.at(x[5]));
-    timed("countdown 3, fuel 4", run_by_refl(w, &countdown(Op::Sub), &[3], 4, &at(0)));
-    timed("countdown 3, fuel 3", run_by_refl(w, &countdown(Op::Sub), &[3], 3, &|c, x| c.at(x[3])));
+    // a concrete run: store then load
     let mem_prog = [Ins::Push(3), Ins::Push(5), Ins::Store, Ins::Push(3), Ins::Load];
     let stored = |c: &mut Cx, x: &[At]| {
         let mu = w.upd(c, x[1], lit(n, 3), lit(n, 5), c.at(x[5]));
@@ -452,9 +328,6 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
         rejected("if_inv, claims Q x", if_inv(Ctl::ClaimsX));
         rejected("if law, arms swapped", if_law(w, true));
         rejected("if invariant, arms swapped", if_good(w, true));
-        rejected("countdown with add for sub", countdown_law(w, Op::Add));
-        rejected("countdown 3, fuel 4, answers 1", run_by_refl(w, &countdown(Op::Sub), &[3], 4, &at(1)));
-        rejected("countdown 3, fuel 3, exits", run_by_refl(w, &countdown(Op::Sub), &[3], 3, &at(0)));
     }
 }
 

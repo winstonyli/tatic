@@ -4,7 +4,7 @@ use super::*;
 use wasm::Ins;
 
 /// Appends `code`'s lines to `out`, each indented `depth` spaces: `If` flat (`if (result i64)` / `else` / `end`) with
-/// its arms at +2, `Loop` folded (`(loop $L (result i64)` .. `)`), `Raw` as given. Panics on the machine-only `Dup`,
+/// its arms at +2, `Loop` folded (`(loop $L (result i64)` .. `)`), `Raw` as given. Panics on the machine-only
 /// `Store` and `Load`, and on `Br(j)` for j other than 0 (the lowering's one label is `$L`).
 pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
     let line = |out: &mut String, s: &str| {
@@ -31,7 +31,7 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
             }
             Ins::Br(0) => line(out, "br $L"),
             Ins::Raw(s) => line(out, s),
-            Ins::Br(_) | Ins::Dup | Ins::Store | Ins::Load => panic!("print_body: {ins:?} is never emitted"),
+            Ins::Br(_) | Ins::Store | Ins::Load => panic!("print_body: {ins:?} is never emitted"),
         }
     }
 }

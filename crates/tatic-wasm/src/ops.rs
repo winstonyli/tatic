@@ -5,7 +5,7 @@
 use super::*;
 use wasm::K;
 
-/// A wasm `i64` binary operator. `LtU` has no source op; it serves the countdown law and the `LtS`-for-`LtU` control.
+/// A wasm `i64` binary operator. `LtU` has no source op; it serves the `LtS`-for-`LtU` control only.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Op {
     Add,

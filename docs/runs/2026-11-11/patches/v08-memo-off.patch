@@ -1,0 +1,13 @@
+diff --git a/crates/tatic-kernel/src/reduce.rs b/crates/tatic-kernel/src/reduce.rs
+index 74acce6..fd74262 100644
+--- a/crates/tatic-kernel/src/reduce.rs
++++ b/crates/tatic-kernel/src/reduce.rs
+@@ -300,7 +300,7 @@ fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
+         return true;
+     }
+     let pair = (s.key(a) as u64) << 32 | s.key(b) as u64;
+-    if EQUAL.with(|m| m.borrow().contains(&pair)) {
++    if false && EQUAL.with(|m| m.borrow().contains(&pair)) {
+         return true;
+     }
+     let equal = conv_whnf(s, &whnf_in(s, a), &whnf_in(s, b));

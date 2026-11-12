@@ -1,7 +1,7 @@
 //! Wasm programs as kernel data (docs/tier-cycle/, "Wasm programs as kernel data, kept"; option B of "Formalizing the target machine" there).
 //!
 //! A program is a Church-encoded instruction tree typed by its start and end stacks,
-//! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> push -> bin -> cmp -> dup -> if -> loop -> store -> load -> F S`, where each
+//! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> push -> bin -> cmp -> if -> loop -> store -> load -> F S`, where each
 //! constructor takes the rest of the program (`push : Pi A. V -> F (V,A) -> F A`), so appending puts one program at the
 //! other's nil and holds by beta. Its meaning `M p N R k z` interprets `F A` as `A -> Mem -> R` for an answer type
 //! `R : Sort0`: words are width-n Church vectors (`encoding.rs`), stacks are nested `Sigma` pairs, memory is
@@ -30,7 +30,7 @@ pub enum K {
 }
 
 /// An instruction of a function body (spec 2026-11-08-v07-straight-line-gate-design.md, section 2). `Br(j)` jumps to
-/// the `j`-th enclosing loop's start. `Dup`, `Store` and `Load` serve the machine's own laws and are never emitted;
+/// the `j`-th enclosing loop's start. `Store` and `Load` serve the machine's own laws and are never emitted;
 /// `Raw` is a line the lowering emits that the machine does not model, so a body holding one is not well formed.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Ins {
@@ -38,7 +38,6 @@ pub enum Ins {
     /// `local.get $p{i}`: slot `i` of the frame, at address `i`.
     LocalGet(u32),
     Op(Op),
-    Dup,
     If(Vec<Ins>, Vec<Ins>),
     Loop(Vec<Ins>),
     Br(usize),
@@ -63,10 +62,6 @@ fn shape(code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Result<Option<Vec<K>
             Ins::Op(o) => {
                 pop(&mut st, &[K::W, K::W])?;
                 st.insert(0, o.kind())
-            }
-            Ins::Dup => {
-                pop(&mut st, &[K::W])?;
-                st.splice(0..0, [K::W, K::W]);
             }
             Ins::If(t, e) => {
                 pop(&mut st, &[K::B])?;
@@ -173,18 +168,17 @@ impl Wasm {
                 0 => arrow(v, arrow(fa(va), fa(a))),
                 1 => arrow(arrow(v, arrow(v, v)), arrow(fa(va), fa(vva))),
                 2 => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
-                3 => arrow(fa(vva), fa(va)),
-                4 => arrow(fa(a), arrow(fa(a), fa(v1a))),
-                5 => arrow(arrow(fa(a), fa(a)), fa(a)),
-                6 => arrow(fa(a), fa(vva)),
+                3 => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                4 => arrow(arrow(fa(a), fa(a)), fa(a)),
+                5 => arrow(fa(a), fa(vva)),
                 _ => arrow(fa(va), fa(va)),
             }
         })
     }
-    /// The eight constructor binders, each wrapped by `wrap` (`lam` or `pi`), then `body` with their variables.
+    /// The seven constructor binders, each wrapped by `wrap` (`lam` or `pi`), then `body` with their variables.
     fn ctors(&self, c: &mut Cx, f: At, wrap: fn(Expr, Expr) -> Expr, body: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
         let w = *self;
-        let tys: Vec<Ty> = (0..8).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
+        let tys: Vec<Ty> = (0..7).map(|i| ty!(|c, _x| w.ctor_ty(c, f, i))).collect();
         tele(c, &tys, &mut vec![], &wrap, body)
     }
     /// `Prog S T`, with `S` and `T` built at each use.
@@ -235,7 +229,7 @@ impl Wasm {
             // push the slot's address, then load it
             Ins::LocalGet(i) => {
                 let r = cont(c, with(&[K::W], 0));
-                let load = cons(c, 7, vec![ty(c, &st), r]);
+                let load = cons(c, 6, vec![ty(c, &st), r]);
                 cons(c, 0, vec![ty(c, &st), lit(self.n, *i as u128), load])
             }
             Ins::Op(o) => {
@@ -247,14 +241,10 @@ impl Wasm {
                 cons(c, i, vec![ty(c, &below(2)), o.term(self.n), r])
             }
             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
-            Ins::Dup => {
-                let r = cont(c, with(&[K::W, K::W], 1));
-                cons(c, 3, vec![ty(c, &below(1)), r])
-            }
             Ins::If(t, e) => {
                 let th = self.seq(c, f, ct, base, t, below(1), &cont, labels);
                 let el = self.seq(c, f, ct, base, e, below(1), &cont, labels);
-                cons(c, 4, vec![ty(c, &below(1)), th, el])
+                cons(c, 3, vec![ty(c, &below(1)), th, el])
             }
             Ins::Loop(body) => {
                 let a = ty(c, &st);
@@ -263,7 +253,7 @@ impl Wasm {
                     let ls = [&[(l, st.clone())], labels].concat();
                     self.seq(c, f, ct, base, body, st.clone(), &cont, &ls)
                 });
-                cons(c, 5, vec![a, b])
+                cons(c, 4, vec![a, b])
             }
             Ins::Br(j) => {
                 let (l, ls) = &labels[*j];
@@ -272,11 +262,11 @@ impl Wasm {
             }
             Ins::Store => {
                 let r = cont(c, below(2));
-                cons(c, 6, vec![ty(c, &below(2)), r])
+                cons(c, 5, vec![ty(c, &below(2)), r])
             }
             Ins::Load => {
                 let r = cont(c, st.clone());
-                cons(c, 7, vec![ty(c, &below(1)), r])
+                cons(c, 6, vec![ty(c, &below(1)), r])
             }
         }
     }
@@ -349,12 +339,6 @@ impl Wasm {
         };
         let bin = binop(c, v);
         let cmp = binop(c, v1);
-        let dup = shape(c, None, &|a| prod(v, prod(v, a)), &|a| prod(v, a), &|c, a, _, rest, st, mu| {
-            w.split(c, r, v, a, st, |c, x, s| {
-                let inner = mkpair(c.at(a), c.at(x), c.at(s));
-                app2(c.at(rest), mkpair(prod(v, c.at(a)), c.at(x), inner), c.at(mu))
-            })
-        });
         let if_ = c.lam(sort(2), |c, a| {
             let ga = w.g(c, r, c.at(a));
             c.lam(ga, |c, th| {
@@ -398,7 +382,7 @@ impl Wasm {
                 app2(c.at(mu), c.at(ad), k)
             })
         });
-        vec![push, bin, cmp, dup, if_, loop_, store, load]
+        vec![push, bin, cmp, if_, loop_, store, load]
     }
     /// `M p N R k z`, of type `G S` for `p : Prog S T` and `k : G T`.
     pub fn meaning(&self, c: &mut Cx, p: At, fuel: At, r: At, k: At, z: At) -> Expr {
@@ -428,7 +412,7 @@ impl Wasm {
                 self.ctors(c, f, lam, &mut |c, ct| {
                     let ctors: Vec<Expr> = ct.iter().map(|x| c.at(*x)).collect();
                     let arm = |c: &Cx, p: At| apps(c.at(p), [vec![c.at(f), c.at(nil)], ctors.clone()].concat());
-                    apps(c.at(ct[4]), vec![c.at(s), arm(c, th), arm(c, el)])
+                    apps(c.at(ct[3]), vec![c.at(s), arm(c, th), arm(c, el)])
                 })
             })
         })
