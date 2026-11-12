@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # The proved loop form: implementation plan

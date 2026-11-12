@@ -26,6 +26,17 @@ pub fn local_get_row() -> Row {
     }
 }
 
+/// The `local.set` row: operand `i` is the parameter slot written; the meaning is the frame rebuilt with slot `i`
+/// replaced (`Machine::setter`), and it prints `local.set $p{i}`.
+pub fn local_set_row() -> Row {
+    Row {
+        name: "local.set",
+        class: machine::Class::Set,
+        meaning: |c, m: &Machine, i| m.setter(c, i as usize),
+        line: |i| format!("local.set $p{i}"),
+    }
+}
+
 /// A 2-to-1 row whose meaning is the closed circuit `$build` at the machine's width (built once per width and
 /// generation, `constant_n`) and whose line is the fixed `$line`.
 macro_rules! circuit_row {

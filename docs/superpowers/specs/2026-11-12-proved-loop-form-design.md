@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # The proved loop form: a restart instruction in the machine

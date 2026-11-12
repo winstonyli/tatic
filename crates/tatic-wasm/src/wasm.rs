@@ -1,14 +1,15 @@
 //! The wasm table: the `i64` rows the lowering emits and the machine runs (`ops.rs` builds them).
 use super::*;
 use machine::{Class, Table};
-use ops::{circuit_row, const_row, local_get_row};
+use ops::{circuit_row, const_row, local_get_row, local_set_row};
 
-/// The wasm rows: `const`, `local.get`, the word rows `add` `sub` `mul`, and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
+/// The wasm rows: `const`, `local.get`, `local.set`, the word rows `add` `sub` `mul`, and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
 /// source operator; it serves the `lt`-for-`lt_u` control only).
 pub fn table() -> Table {
     Table::new(vec![
         const_row(),
         local_get_row(),
+        local_set_row(),
         circuit_row!("add", Class::Word, add, "i64.add"),
         circuit_row!("sub", Class::Word, sub, "i64.sub"),
         circuit_row!("mul", Class::Word, mul, "i64.mul"),
@@ -32,14 +33,15 @@ mod tests {
         let t = table();
         let m = Machine { n, fw: 2, table: &t };
         let v = bv_ty(n);
-        assert_eq!(t.names(), ["const", "local.get", "add", "sub", "mul", "lt", "le", "eq", "lt_u"]);
-        let cases: [(&str, i64); 10] = [
-            ("const", 3), ("local.get", 0), ("local.get", 1), ("add", 0), ("sub", 0), ("mul", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
+        assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "lt", "le", "eq", "lt_u"]);
+        let cases: [(&str, i64); 11] = [
+            ("const", 3), ("local.get", 0), ("local.get", 1), ("local.set", 1), ("add", 0), ("sub", 0), ("mul", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
         ];
         for (name, operand) in cases {
             let row = t.row(name).unwrap_or_else(|| panic!("no row {name}"));
             let want = match row.class {
                 Class::Const => m.operand_ty(),
+                Class::Set => m.setter_ty(),
                 Class::Word => arrow(v.clone(), arrow(v.clone(), v.clone())),
                 Class::Bit => arrow(v.clone(), arrow(v.clone(), bv_ty(1))),
             };

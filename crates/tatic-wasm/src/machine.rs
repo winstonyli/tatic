@@ -2,12 +2,13 @@
 //! over a `Table` of rows (`wasm::table` is the wasm one).
 //!
 //! A program is a Church-encoded instruction tree typed by its start and end stacks,
-//! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> const -> word -> bit -> if -> F S` (one leaf constructor per row class,
-//! in `ctor_list` order), where each
+//! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> const -> word -> bit -> if -> call -> set -> F S` (one leaf constructor
+//! per row class, in `ctor_list` order), where each
 //! constructor takes the rest of the program (`const : Pi A. Op -> F (V,A) -> F A`, with the operand
 //! `Op = Fr -> Pi R:Sort0. (V -> R) -> R` handing its word to a continuation). Its meaning `M p R k` interprets `F A` as `Fr -> A -> Mem -> R` for an answer type `R : Sort0`: words are width-n Church vectors
 //! (`encoding.rs`), stacks are nested `Sigma` pairs, the locals are a frame `Fr = V^fw x V` of nested word pairs
-//! passed into every interpreter and never returned (a `const`-class operand projects it), memory is the opaque
+//! passed into every interpreter and on to the rest of the program (a `const`-class operand projects it; a
+//! `set`-class operand rebuilds it with one slot replaced), memory is the opaque
 //! `Mem = V -> (V -> R) -> R` that nothing reads, and an `if` chooses between its two continuations by its one-bit
 //! condition (`choose`, as only the taken branch runs). Nothing is postulated.
 use super::*;
@@ -38,6 +39,8 @@ pub enum Class {
     Const,
     Word,
     Bit,
+    /// Pops one word and writes it to a parameter slot of the frame (operand: the slot); pushes nothing.
+    Set,
 }
 
 impl Class {
@@ -45,22 +48,29 @@ impl Class {
     pub fn pops(self) -> usize {
         match self {
             Class::Const => 0,
+            Class::Set => 1,
             Class::Word | Class::Bit => 2,
         }
     }
-    /// What the row leaves on the stack.
-    pub fn kind(self) -> K {
+    /// What the row leaves on the stack, if anything.
+    pub fn push(self) -> Option<K> {
         match self {
-            Class::Const | Class::Word => K::W,
-            Class::Bit => K::B,
+            Class::Const | Class::Word => Some(K::W),
+            Class::Bit => Some(K::B),
+            Class::Set => None,
         }
+    }
+    /// Whether the row reads its operand (a constant or a slot); the others take 0.
+    pub fn takes_operand(self) -> bool {
+        matches!(self, Class::Const | Class::Set)
     }
 }
 
 /// One leaf instruction: its name, class, kernel meaning and printed line. `meaning(c, m, operand)` is the
 /// constructor's operand: for `Const` a function of the frame that hands its word (a constant, or a projection of the
 /// frame) to a continuation (`Machine::operand_ty`; a plain `Fr -> V` left the redex `op fr` in every stack value, and
-/// conversion blew up), for `Word`/`Bit` the closed circuit (`operand` is 0).
+/// conversion blew up), for `Set` the frame with the operand's slot replaced (`Machine::setter`), for `Word`/`Bit` the
+/// closed circuit (`operand` is 0).
 pub struct Row {
     pub name: &'static str,
     pub class: Class,
@@ -120,7 +130,8 @@ pub struct Entry {
 }
 
 /// The shape check (trusted; the gate runs it before any statement exists): every record's body runs from `[]` to
-/// `[word]`, holds no `Raw` and no unknown row, reads each `local.get` below its own record's arity, calls only
+/// `[word]`, holds no `Raw` and no unknown row, reads and writes (`local.get`, `local.set`) only slots below its own
+/// record's arity, calls only
 /// positions that have a record, and every record's env is `Params(0)` (an env parameter would shift the printed
 /// parameter slots off the frame's). `records` is by module position; `None` is scaffolding with no body.
 pub fn shape_check(table: &Table, records: &[Option<&Entry>]) -> Result<(), String> {
@@ -128,8 +139,10 @@ pub fn shape_check(table: &Table, records: &[Option<&Entry>]) -> Result<(), Stri
     fn gets(code: &[Ins], arity: usize) -> Result<(), String> {
         for ins in code {
             match ins {
-                Ins::Row { name: "local.get", operand } if usize::try_from(*operand).map_or(true, |i| i >= arity) => {
-                    return Err(format!("local.get {operand} is out of the {arity} parameters"));
+                Ins::Row { name: name @ ("local.get" | "local.set"), operand }
+                    if usize::try_from(*operand).map_or(true, |i| i >= arity) =>
+                {
+                    return Err(format!("{name} {operand} is out of the {arity} parameters"));
                 }
                 Ins::If(t, e) => {
                     gets(t, arity)?;
@@ -168,11 +181,13 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
         match ins {
             Ins::Row { name, operand } => {
                 let Some(row) = table.row(name) else { return Err(format!("unknown row {name:?}")) };
-                if row.class != Class::Const && *operand != 0 {
+                if !row.class.takes_operand() && *operand != 0 {
                     return Err(format!("row {name:?} takes no operand, got {operand}"));
                 }
                 pop(&mut st, &[K::W, K::W][..row.class.pops()])?;
-                st.insert(0, row.class.kind())
+                if let Some(k) = row.class.push() {
+                    st.insert(0, k)
+                }
             }
             Ins::If(t, e) => {
                 // Printed as `if (result i64)`: each arm starts on an empty stack and leaves one word.
@@ -233,8 +248,8 @@ enum Ctor {
 }
 
 /// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, the count).
-fn ctor_list() -> [Ctor; 5] {
-    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call]
+fn ctor_list() -> [Ctor; 6] {
+    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call, Ctor::Leaf(Class::Set)]
 }
 
 fn ctor_idx(k: Ctor) -> usize {
@@ -321,6 +336,29 @@ impl Machine<'_> {
             if i == 0 { app(c.at(cont), c.at(x)) } else { self.nth(c, i - 1, k - 1, rest, res, cont) }
         })
     }
+    /// A Set-class operand's type, `Fr -> V -> Fr`.
+    pub fn setter_ty(&self) -> Expr {
+        arrow(self.fr(), arrow(self.v(), self.fr()))
+    }
+    /// `fr` (of `k` slots left) with slot `i` replaced by `x`, rebuilt as a concrete nested pair.
+    fn put(&self, c: &mut Cx, i: usize, k: usize, fr: At, x: At) -> Expr {
+        assert!(i < k, "local {i} is out of the frame's width");
+        let tail_ty = self.words(k - 1, self.v());
+        let res = c.mark(self.words(k, self.v()));
+        let tail = c.mark(tail_ty.clone());
+        self.split(c, res, self.v(), tail, fr, |c, y, rest| {
+            if i == 0 {
+                mkpair(tail_ty.clone(), c.at(x), c.at(rest))
+            } else {
+                let inner = self.put(c, i - 1, k - 1, rest, x);
+                mkpair(tail_ty.clone(), c.at(y), inner)
+            }
+        })
+    }
+    /// The operand of the `local.set` row: the frame with slot `i` replaced.
+    pub fn setter(&self, c: &mut Cx, i: usize) -> Expr {
+        c.lam(self.fr(), |c, fr| c.lam(self.v(), |c, x| self.put(c, i, self.fw, fr, x)))
+    }
     /// The operand of the `local.get` row: hands slot `i` of the frame to its continuation.
     pub fn getter(&self, c: &mut Cx, i: usize) -> Expr {
         c.lam(self.fr(), |c, fr| {
@@ -342,6 +380,7 @@ impl Machine<'_> {
                 Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(fa(va), fa(vva))),
                 Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                Ctor::Leaf(Class::Set) => arrow(self.setter_ty(), arrow(fa(a), fa(va))),
                 // `Pi S. (S -> Fr x A) -> V -> F (V, A) -> F S`: the arguments over `A` are `S`, the callee's index
                 // a word, the rest of the program continues with the callee's answer pushed
                 Ctor::Call => c.pi(sort(2), |c, s| {
@@ -399,7 +438,10 @@ impl Machine<'_> {
             Ins::Row { name, operand } => {
                 let row = self.row(name);
                 let (pops, i) = (row.class.pops(), ctor_idx(Ctor::Leaf(row.class)));
-                let r = cont(c, with(&[row.class.kind()], pops));
+                let r = cont(c, match row.class.push() {
+                    Some(k) => with(&[k], pops),
+                    None => below(pops),
+                });
                 let meaning = (row.meaning)(c, self, *operand);
                 cons(c, i, vec![ty(c, &below(pops)), meaning, r])
             }
@@ -554,12 +596,20 @@ impl Machine<'_> {
                 })
             })
         });
+        // `\A op rest fr st mu`: pop the word, write it to the frame through `op`, run `rest` at the new frame
+        let set = shape(c, Some(self.setter_ty()), &|a| a, &|a| prod(v, a), &|c, a, op, rest, fr, st, mu| {
+            w.split(c, r, v, a, st, |c, x, s| {
+                let fr2 = app2(c.at(op.expect("set takes an operand")), c.at(fr), c.at(x));
+                app3(c.at(rest), fr2, c.at(s), c.at(mu))
+            })
+        });
         let built = [
             (Ctor::Leaf(Class::Const), konst),
             (Ctor::Leaf(Class::Word), bin),
             (Ctor::Leaf(Class::Bit), cmp),
             (Ctor::If, if_),
             (Ctor::Call, call),
+            (Ctor::Leaf(Class::Set), set),
         ];
         ctor_list().into_iter().map(|k| built.iter().find(|(b, _)| *b == k).expect("interp builds every constructor").1).collect()
     }
@@ -593,6 +643,9 @@ impl Machine<'_> {
 
 pub mod sim;
 pub mod statement;
+
+#[cfg(test)]
+mod loop_tests;
 
 #[cfg(test)]
 mod tests {
@@ -639,10 +692,10 @@ mod tests {
         assert_eq!(out_stack(&t, &ok, vec![], &[]), vec![K::W, K::W], "the outer word stays under the arm's");
     }
 
-    fn konst(v: i64) -> Ins {
+    pub(super) fn konst(v: i64) -> Ins {
         Ins::Row { name: "const", operand: v }
     }
-    fn row(name: &'static str) -> Ins {
+    pub(super) fn row(name: &'static str) -> Ins {
         Ins::Row { name, operand: 0 }
     }
 
