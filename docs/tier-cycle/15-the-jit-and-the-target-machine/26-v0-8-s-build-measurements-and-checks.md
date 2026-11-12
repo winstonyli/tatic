@@ -55,6 +55,31 @@ is emitted on entry to every function and skipped only on Pulley.
 Replacing these explicit checks with guard pages is upstream issue bytecodealliance/wasmtime#8135, open since
 2024-03, with an unmerged work-in-progress branch. The probe's run records are under `claude-runs\wp`.
 
+**A spike of the printer-only fix (h4, 2026-11-12; patch `docs/runs/2026-11-12/patches/h4-printer-loop.patch`,
+reverted).** The kernel, the machine, the statement, the generator and the gate are unchanged, so the proved list still
+ends in `Call(own)`. Only the trusted printer changes: it prints a self call in tail position as `local.set` of each
+parameter in reverse order and then `br $top`, and `print_func` wraps the body in `loop $top (result i64)` when it holds
+such a call.
+
+The workspace suite (`h4-spike-suite`) fails 5 tests, all of them checks on the printed text:
+- the two golden tests, `every_benchmark_term_lowers_to_its_golden_wat` and
+  `specialised_benchmark_terms_lower_to_their_golden_wat`;
+- `print::call_prints_by_the_tail_rule`;
+- `tail_rule_prints_both_forms_in_one_body`;
+- `a_tail_loop_of_a_million_iterations_installs_and_runs`, which asserts `return_call $f` in the text after its run of a
+  million iterations has returned the right sum.
+
+Every behavioural test passes: the differential compile fuzz, the tail-rule differential, the gate tests and the JIT
+tests.
+
+The `jit_warm_cache_hit` bench, with two interleaved rounds per arm, ran on a busy machine (55-75% CPU) and is not
+timed. `capturing_closure_loop` takes 34.6 and 33.7 us on main against 9.5 and 7.9 us with the spike, about 4x. gcd
+moves within noise (201 and 225 ns on main against 230 and 240 ns), since its few iterations are swamped by the call
+overhead.
+
+The fix works and is small: 15 lines in `print.rs`. Its cost is trust: the printed text of a self tail call is no
+longer the near-identity form of the proved `Call`.
+
 **The go/no-go (T9) and its rerun with `Call` (T10 Step 4b).** The relational build and check of `doubling(12)` against
 the refl path, untimed (5 interleaved runs per arm, `CFF`, BelowNormal; a timed run was refused for 45 minutes): relational
 median 0.360 s against refl 0.399 s (0.90x), limit 0.57 s (1.5x). With `Call` in the machine (runs

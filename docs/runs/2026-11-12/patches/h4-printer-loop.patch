@@ -1,0 +1,66 @@
+diff --git a/crates/tatic-wasm/src/print.rs b/crates/tatic-wasm/src/print.rs
+index 2c9bcb1..10ca90e 100644
+--- a/crates/tatic-wasm/src/print.rs
++++ b/crates/tatic-wasm/src/print.rs
+@@ -22,15 +22,37 @@ pub fn print_func(table: &Table, pos: usize, entry_pos: usize, e: &Entry, out: &
+     // Scratch locals, declared unconditionally (harmless if unused): `$envtmp` for closure environments, `$papenv`
+     // for partial application and dynamic dispatch, `$diva`/`$divb` for wrapping div.
+     out.push_str("    (local $envtmp i32)\n    (local $papenv i64)\n    (local $diva i64)\n    (local $divb i64)\n");
+-    print_body(table, &e.code, 4, true, entry_pos, out);
++    // SPIKE h4: a tail self call restarts a loop around the body.
++    if tail_self(&e.code, pos, true) {
++        out.push_str("    loop $top (result i64)\n");
++        print_body_in(table, &e.code, 6, true, entry_pos, Some((pos, e)), out);
++        out.push_str("    end\n");
++    } else {
++        print_body(table, &e.code, 4, true, entry_pos, out);
++    }
+     out.push_str("  )\n");
+ }
+ 
++fn tail_self(code: &[Ins], pos: usize, tail: bool) -> bool {
++    code.iter().enumerate().any(|(i, ins)| {
++        let last_tail = tail && i + 1 == code.len();
++        match ins {
++            Ins::If(t, e) => tail_self(t, pos, last_tail) || tail_self(e, pos, last_tail),
++            Ins::Call(j) => last_tail && *j == pos,
++            _ => false,
++        }
++    })
++}
++
+ /// Appends `code`'s lines to `out`, each indented `depth` spaces: a row as its `line`, `If` flat (`if (result i64)` / `else` / `end`) with
+ /// its arms at +2, `Raw` as given. A `Call(j)` prints `return_call` when
+ /// `tail` holds and it is the last instruction of `code` (an `If` passes `tail` and being last to both arms), `call`
+ /// otherwise; `entry_pos` is the position printed `$f`.
+ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_pos: usize, out: &mut String) {
++    print_body_in(table, code, depth, tail, entry_pos, None, out)
++}
++
++fn print_body_in(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_pos: usize, own: Option<(usize, &Entry)>, out: &mut String) {
+     let line = |out: &mut String, s: &str| {
+         out.extend(std::iter::repeat_n(' ', depth));
+         out.push_str(s);
+@@ -45,11 +67,20 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
+             }
+             Ins::If(t, e) => {
+                 line(out, "if (result i64)");
+-                print_body(table, t, depth + 2, last_tail, entry_pos, out);
++                print_body_in(table, t, depth + 2, last_tail, entry_pos, own, out);
+                 line(out, "else");
+-                print_body(table, e, depth + 2, last_tail, entry_pos, out);
++                print_body_in(table, e, depth + 2, last_tail, entry_pos, own, out);
+                 line(out, "end");
+             }
++            Ins::Call(j) if last_tail && own.is_some_and(|(p, _)| p == *j) => {
++                let e = own.unwrap().1;
++                (0..e.arity).rev().for_each(|i| line(out, &format!("local.set $p{i}")));
++                match e.env {
++                    EnvAccess::Params(k) => (0..k).rev().for_each(|i| line(out, &format!("local.set $e{i}"))),
++                    EnvAccess::Pointer => line(out, "local.set $env"),
++                }
++                line(out, "br $top")
++            }
+             Ins::Call(j) => line(out, &format!("{} {}", if last_tail { "return_call" } else { "call" }, label(*j, entry_pos))),
+             Ins::Raw(s) => line(out, s),
+         }
