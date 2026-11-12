@@ -120,6 +120,25 @@ So the loop form needs no change to the proof generator. The trusted code grows 
 `machine.rs`, `statement.rs`, `ops.rs`, `wasm.rs` and `print.rs`, by the patch), and the printed loop is proved rather
 than assumed.
 
+**`Br` typed like a `Call` (O3, 2026-11-12; patch `docs/runs/2026-11-12/patches/o3-br-spike.patch`, reverted).** The
+spike above on main's arm rule (each `If` arm from an empty stack, leaving one word), with `Br` retyped from the
+terminal `Pi A. F A` to `Pi A. F (V, A) -> F A`, the type of a call with no arguments: `shape` treats it as pushing one
+word, and its meaning `\A rest fr st mu. restart fr mu` ignores `rest`. Since the printed `br $top` never falls through,
+the code after it is dead in the wasm too. `shape` loses its `Option`, the "Br last" and "both arms end in Br" rules,
+and `out_stack`'s panic on a `Br` path.
+- All six targets are `Accepted` (the five above and `held_out_b`); all 54 mutants are rejected (`o3-spike-tests`).
+  The suite of `tatic-wasm` and `tatic --lib` passes: 349 passed, 0 failed (`o3-regress`).
+- 25 mutants change layer, none to `Accepted`. Walk to Shape (14): a dropped Set or a `Br` with no Sets on the three
+  two-argument loops, and a `Br` for a non-tail call whose surplus word now fails the one-word arm rule (factorial c1
+  and c3, fib's second c4, `tail_pap` e2 and e4). Pairing to Shape (2): `tail_pap` e1 and e3, the callee's arguments
+  left on the stack. Shape to Walk (9): a body or both arms made only of `Br` (g, g3 on three loops) and a `Br` with the
+  rest of its sequence left after it (factorial c2, fib's c5 twice), which are now well shaped and fail on meaning.
+  A `Br` not last (g2, g4) stays Shape, through the one-word rule instead of its own.
+- Untimed gate cost on `capturing_closure_loop` (as above, two runs `o3-gatetime-1`, `-2`): 0.69 and 0.71 ms build,
+  3.75 and 3.70 ms check, against A1's 0.70 and 3.70 ms. The `rest` a `Br` carries costs nothing measurable.
+
+So O3 proves the same lists at the same cost with fewer rules in the trusted `shape`.
+
 **The go/no-go (T9) and its rerun with `Call` (T10 Step 4b).** The relational build and check of `doubling(12)` against
 the refl path, untimed (5 interleaved runs per arm, `CFF`, BelowNormal; a timed run was refused for 45 minutes): relational
 median 0.360 s against refl 0.399 s (0.90x), limit 0.57 s (1.5x). With `Call` in the machine (runs
