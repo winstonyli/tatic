@@ -4,13 +4,25 @@
 use super::*;
 use machine::{Machine, Row};
 
-/// The `const` row: operand `v` is the word, masked to the machine's width, and prints `i64.const {v}`.
+/// The `const` row: operand `v` is the word, masked to the machine's width, constant in the frame (`\_:Fr. v`), and
+/// prints `i64.const {v}`.
 pub fn const_row() -> Row {
     Row {
         name: "const",
         class: machine::Class::Const,
-        meaning: |_c, m: &Machine, v| lit(m.n, (v as u64 as u128) & low_bits(m.n)),
+        meaning: |c, m: &Machine, v| c.lam(m.fr(), |_, _| lit(m.n, (v as u64 as u128) & low_bits(m.n))),
         line: |v| format!("i64.const {v}"),
+    }
+}
+
+/// The `local.get` row: operand `i` is the frame slot, the meaning is the frame's projection at `i` (it fails at or
+/// past the frame's width), and it prints `local.get $p{i}`.
+pub fn local_get_row() -> Row {
+    Row {
+        name: "local.get",
+        class: machine::Class::Const,
+        meaning: |c, m: &Machine, i| m.getter(c, i as usize),
+        line: |i| format!("local.get $p{i}"),
     }
 }
 

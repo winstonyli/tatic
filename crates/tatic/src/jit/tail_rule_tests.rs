@@ -16,7 +16,7 @@ fn row(name: &'static str) -> Ins {
 
 /// The atoms every arm and body is built from.
 fn atoms() -> Vec<Ins> {
-    vec![konst(1), Ins::LocalGet(0), row("add"), Ins::Call(0)]
+    vec![konst(1), Ins::Row { name: "local.get", operand: 0 }, row("add"), Ins::Call(0)]
 }
 
 /// Whether `code` runs from an empty stack beside a one-argument callee at position 0.
@@ -93,7 +93,7 @@ fn instantiate(wat: &str) -> (wasmtime::Store<()>, wasmtime::Instance) {
 #[test]
 fn tail_rule_matches_call_everywhere_under_wasmtime() {
     let t = wasm_table();
-    let callee = Entry { arity: 1, env: EnvAccess::Params(0), code: vec![Ins::LocalGet(0), konst(100), row("add")] };
+    let callee = Entry { arity: 1, env: EnvAccess::Params(0), code: vec![Ins::Row { name: "local.get", operand: 0 }, konst(100), row("add")] };
     let mut wat = String::from("(module\n");
     print_func(t, 0, usize::MAX, &callee, &mut wat);
     let mut differing = 0;

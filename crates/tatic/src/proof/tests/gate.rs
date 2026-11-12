@@ -27,6 +27,11 @@ fn row(name: &'static str) -> Ins {
     Ins::Row { name, operand: 0 }
 }
 
+/// A `local.get` row instruction.
+fn get(i: i64) -> Ins {
+    Ins::Row { name: "local.get", operand: i }
+}
+
 /// Goal 1's five terms, by name, with their arity.
 fn the_five() -> Vec<(&'static str, Box<dyn Fn(&mut TermStore) -> Hash>, usize)> {
     vec![
@@ -78,16 +83,17 @@ fn gate_rejects_mutations() {
             }),
             &["inc", "straight_line", "a_capturing_closure_call", "a_pap_capturing"],
         ),
-        ("LocalGet 0 -> 1", Box::new(|i| (i == &Ins::LocalGet(0)).then_some(Ins::LocalGet(1))), &["straight_line"]),
-        ("LocalGet 1 -> 0", Box::new(|i| (i == &Ins::LocalGet(1)).then_some(Ins::LocalGet(0))), &["straight_line"]),
+        ("local.get 0 -> 1", Box::new(|i| (i == &get(0)).then_some(get(1))), &["straight_line"]),
+        ("local.get 1 -> 0", Box::new(|i| (i == &get(1)).then_some(get(0))), &["straight_line"]),
     ];
     for (name, build, arity) in the_five() {
         let (s, h, frag) = compiled(&*build);
         let code = frag.entry().code.as_slice();
         assert!(gate(wasm_table(), &s, h, arity, code), "{name}: the unmutated body should pass");
         for (what, f, applies) in &mutations {
-            // arity-1 terms are skipped for LocalGet: another index reads an unbound frame slot (spec Goal 2)
-            if what.starts_with("LocalGet") && arity < 2 {
+            // arity-1 terms are skipped for local.get: another index reads past the frame (spec Goal 2; the shape check
+            // that rejects it comes with the call rule)
+            if what.starts_with("local.get") && arity < 2 {
                 continue;
             }
             let mutated = mutate(code, &**f);
