@@ -31,10 +31,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use hashbrown::HashMap;
 
 use crate::jit::ir;
-use crate::jit::shape::{ArityUse, Shape, classify, free_vars, infer_closure_arities, is_comparison, local_index, peel};
+use crate::jit::shape::{ArityUse, Shape, classify, free_vars, infer_closure_arities, is_comparison, local_index, peel, wasm_table};
 use crate::lang::term::{Hash, Term, TermStore};
 use tatic_wasm::print::print_body;
-use tatic_wasm::wasm::Ins;
+use tatic_wasm::machine::Ins;
 
 /// One piece of a compiled module, in print order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -74,7 +74,7 @@ impl CompiledFragment {
                 Item::Text(s) => w.push_str(s),
                 Item::Func { header, body, .. } => {
                     w.push_str(header);
-                    print_body(body, 4, &mut w);
+                    print_body(wasm_table(), body, 4, &mut w);
                     w.push_str("  )\n");
                 }
             }
@@ -288,7 +288,7 @@ fn build_node(ctx: &BuildCtx, reg: &mut Combinators, h: Hash, tail: bool) -> Opt
     Some(match classify(ctx.store, h, ctx.arity, ctx.self_idx) {
         Shape::If(c, t, e) => {
             // The condition must be a direct comparison, a source op that
-            // `shape::op_of` maps to a bit-result row.
+            // `PrimOp::name` maps to a bit-result row.
             let Term::Prim(cmp, a, b) = ctx.store.resolve(c) else { return None };
             let (cmp, a, b) = (*cmp, *a, *b);
             if !is_comparison(cmp) {

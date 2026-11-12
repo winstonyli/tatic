@@ -1,6 +1,6 @@
 //! Mutations of an emitted body, for the gate's rejection tests.
 
-use tatic_wasm::wasm::Ins;
+use tatic_wasm::machine::Ins;
 
 /// `code` with its first instruction (pre-order, into `If` arms and `Loop` bodies) that `f` maps replaced by `f`'s
 /// answer; unchanged when nothing matches.

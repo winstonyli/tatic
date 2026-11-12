@@ -23,6 +23,22 @@ pub enum PrimOp {
     Eq = 7,
 }
 
+impl PrimOp {
+    /// The name of the machine row that runs this operator (`jit::shape::wasm_table`); `div` and `mod` have no row.
+    pub fn name(self) -> &'static str {
+        match self {
+            PrimOp::Add => "add",
+            PrimOp::Sub => "sub",
+            PrimOp::Mul => "mul",
+            PrimOp::Lt => "lt",
+            PrimOp::Le => "le",
+            PrimOp::Eq => "eq",
+            PrimOp::Div => "div",
+            PrimOp::Mod => "mod",
+        }
+    }
+}
+
 /// A node in the term graph. Children are referenced by content hash, not
 /// by pointer, so structurally-equal subterms are automatically shared.
 ///

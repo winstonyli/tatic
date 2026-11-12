@@ -277,9 +277,9 @@ impl JitEngine {
     /// theorem about `h`'s model would hold. Every other term goes to
     /// `kernel_verify`, whose theorems are about `proof.rs`'s model of the
     /// compiler, not the code that runs (`docs/related-work/` 28).
-    fn prove_install(terms: &TermStore, h: Hash, arity: usize, code: &[tatic_wasm::wasm::Ins]) -> bool {
-        if proof::gate::in_fragment(terms, h, arity) {
-            proof::gate::gate(terms, h, arity, code)
+    fn prove_install(terms: &TermStore, h: Hash, arity: usize, code: &[tatic_wasm::machine::Ins]) -> bool {
+        if proof::gate::in_fragment(shape::wasm_table(), terms, h, arity) {
+            proof::gate::gate(shape::wasm_table(), terms, h, arity, code)
         } else {
             Self::kernel_verify(terms, h, arity)
         }

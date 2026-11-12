@@ -1,12 +1,12 @@
 //! WAT text for a function body: each `Ins` prints one fixed line shape at its depth (spec
 //! 2026-11-08-v07-straight-line-gate-design.md, section 5). Module scaffolding stays with the lowering in tatic.
 use super::*;
-use wasm::Ins;
+use machine::{Ins, Table};
 
-/// Appends `code`'s lines to `out`, each indented `depth` spaces: `If` flat (`if (result i64)` / `else` / `end`) with
+/// Appends `code`'s lines to `out`, each indented `depth` spaces: a row as its `line`, `If` flat (`if (result i64)` / `else` / `end`) with
 /// its arms at +2, `Loop` folded (`(loop $L (result i64)` .. `)`), `Raw` as given. Panics on the machine-only
 /// `Store` and `Load`, and on `Br(j)` for j other than 0 (the lowering's one label is `$L`).
-pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
+pub fn print_body(table: &Table, code: &[Ins], depth: usize, out: &mut String) {
     let line = |out: &mut String, s: &str| {
         out.extend(std::iter::repeat_n(' ', depth));
         out.push_str(s);
@@ -14,19 +14,21 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
     };
     for ins in code {
         match ins {
-            Ins::Push(v) => line(out, &format!("i64.const {v}")),
+            Ins::Row { name, operand } => {
+                let row = table.row(name).unwrap_or_else(|| panic!("print_body: no row {name:?}"));
+                line(out, &(row.line)(*operand))
+            }
             Ins::LocalGet(i) => line(out, &format!("local.get $p{i}")),
-            Ins::Op(o) => line(out, o.mnemonic()),
             Ins::If(t, e) => {
                 line(out, "if (result i64)");
-                print_body(t, depth + 2, out);
+                print_body(table, t, depth + 2, out);
                 line(out, "else");
-                print_body(e, depth + 2, out);
+                print_body(table, e, depth + 2, out);
                 line(out, "end");
             }
             Ins::Loop(body) => {
                 line(out, "(loop $L (result i64)");
-                print_body(body, depth + 2, out);
+                print_body(table, body, depth + 2, out);
                 line(out, ")");
             }
             Ins::Br(0) => line(out, "br $L"),
@@ -38,17 +40,19 @@ pub fn print_body(code: &[Ins], depth: usize, out: &mut String) {
 
 #[test]
 fn print_body_shapes() {
+    let konst = |v: i64| Ins::Row { name: "const", operand: v };
+    let row = |name: &'static str| Ins::Row { name, operand: 0 };
     let code = [Ins::Loop(vec![
         Ins::LocalGet(0),
-        Ins::Push(-1),
-        Ins::Op(Op::Add),
-        Ins::Push(0),
-        Ins::Push(1),
-        Ins::Op(Op::LtS),
-        Ins::If(vec![Ins::Push(1)], vec![Ins::Push(2)]),
+        konst(-1),
+        row("add"),
+        konst(0),
+        konst(1),
+        row("lt"),
+        Ins::If(vec![konst(1)], vec![konst(2)]),
     ])];
     let mut out = String::new();
-    print_body(&code, 4, &mut out);
+    print_body(&crate::wasm::table(), &code, 4, &mut out);
     let want = "    (loop $L (result i64)
       local.get $p0
       i64.const -1

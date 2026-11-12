@@ -192,11 +192,11 @@
 
 use hashbrown::{HashMap, HashSet};
 
-use tatic_wasm::wasm::{Ins, K};
+use tatic_wasm::machine::{Class, Ins};
 
 use crate::jit::compile::{CompiledFragment, Item};
 use crate::jit::ir::{Combinator, Dispatch, Func, Module, Node, Read};
-use crate::jit::shape::op_of;
+use crate::jit::shape::wasm_table;
 use crate::lang::term::PrimOp;
 
 mod templates;
@@ -453,7 +453,7 @@ impl Lowering<'_> {
 
     fn node(&mut self, cx: &FnCx, n: &Node, w: &mut Vec<Ins>) {
         match n {
-            Node::Lit(v) => w.push(Ins::Push(*v)),
+            Node::Lit(v) => w.push(konst(*v)),
             Node::Read(r) => read(cx, *r, w),
             Node::Arith(op, a, b) => {
                 self.node(cx, a, w);
@@ -461,17 +461,13 @@ impl Lowering<'_> {
                 match *op {
                     PrimOp::Div => emit_wrapping_div(w),
                     PrimOp::Mod => raw(w, "i64.rem_s"),
-                    op => {
-                        let o = op_of(op).filter(|o| o.kind() == K::W);
-                        w.push(Ins::Op(o.expect("ir::check: Arith carries an arithmetic op (shape::op_of)")))
-                    }
+                    op => w.push(row_of(op, Class::Word, "ir::check: Arith carries an arithmetic op (wasm_table)")),
                 }
             }
             Node::If { cmp, a, b, then, els } => {
                 self.node(cx, a, w);
                 self.node(cx, b, w);
-                let o = op_of(*cmp).filter(|o| o.kind() == K::B);
-                w.push(Ins::Op(o.expect("ir::check: If carries a comparison (shape::op_of)")));
+                w.push(row_of(*cmp, Class::Bit, "ir::check: If carries a comparison (wasm_table)"));
                 let (mut t, mut e) = (Vec::new(), Vec::new());
                 self.node(cx, then, &mut t);
                 self.node(cx, els, &mut e);
@@ -651,13 +647,24 @@ fn push_closure_env(cx: &FnCx, env: &[Read], w: &mut Vec<Ins>) {
     raw(w, "local.get $envtmp");
 }
 
+/// The `const` row with operand `v`.
+fn konst(v: i64) -> Ins {
+    Ins::Row { name: "const", operand: v }
+}
+
+/// The table row of `op`, which must be of class `class`; `what` is the panic message otherwise.
+fn row_of(op: PrimOp, class: Class, what: &str) -> Ins {
+    let row = wasm_table().row(op.name()).filter(|r| r.class == class).expect(what);
+    Ins::Row { name: row.name, operand: 0 }
+}
+
 /// A line the machine does not model (`Ins::Raw`), printed as given.
 fn raw(w: &mut Vec<Ins>, s: &str) {
     w.push(Ins::Raw(s.to_string()));
 }
 
 /// Emits `Div`'s own operator, in place of a bare `i64.div_s` (`Div` has
-/// no `shape::op_of` row) -- that single instruction traps on exactly one input
+/// no `wasm_table` row) -- that single instruction traps on exactly one input
 /// (`i64::MIN / -1`, the one case where the mathematical quotient
 /// overflows `i64`), per the WebAssembly spec, while `eval.rs`'s
 /// reference semantics use `wrapping_div` there, silently wrapping back
@@ -678,17 +685,17 @@ fn raw(w: &mut Vec<Ins>, s: &str) {
 fn emit_wrapping_div(w: &mut Vec<Ins>) {
     raw(w, "local.set $divb");
     raw(w, "local.tee $diva");
-    w.push(Ins::Push(i64::MIN));
+    w.push(konst(i64::MIN));
     raw(w, "i64.eq");
     raw(w, "local.get $divb");
-    w.push(Ins::Push(-1));
+    w.push(konst(-1));
     raw(w, "i64.eq");
     raw(w, "i32.and");
     let mut e = Vec::new();
     raw(&mut e, "local.get $diva");
     raw(&mut e, "local.get $divb");
     raw(&mut e, "i64.div_s");
-    w.push(Ins::If(vec![Ins::Push(i64::MIN)], e));
+    w.push(Ins::If(vec![konst(i64::MIN)], e));
 }
 
 #[cfg(test)]

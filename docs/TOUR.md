@@ -38,7 +38,7 @@ The kernel and proofs. The kernel (`tatic-kernel`), the seeded generator (`tatic
 
 The encodings and target machine (`crates/tatic-wasm/src/`, a crate on the kernel alone that `church-bv` and `tatic` both build on; `lib.rs` holds the `mod` lines, the prelude and the test allocator):
 - `encoding/` (parent `encoding.rs` re-exports the pieces): `cx` (the binder-depth builder `Cx`/`At`, telescopes `tele`, and `law`, which walks one telescope for a proof's lambdas and its statement's Pis together), `gates` (Church Bool and vector terms, gate builders), `good` (the "good" witnesses), `division` (equality, wrapping division), `proofs` (add identity, commutativity, associativity), `tables` (truth-table and BDD builders), `tests`.
-- `wasm.rs`: the formal target machine (`Ins`, the stack check `out_stack` and its non-panicking form `well_formed`, the program encoding `prog` and its meaning); `wasm/laws.rs`: its laws and concrete runs, with controls; `ops.rs`: the operator table `Op` (kernel term, result kind, WAT mnemonic); `print.rs`: prints a body of `Ins` as WAT text (`print_body`).
+- `machine.rs`: the formal target machine, backend-independent and driven by a `Table` of rows (`Ins`, the stack check `out_stack` and its non-panicking form `well_formed`, the program encoding `prog` and its meaning); `machine/laws.rs`: its laws and concrete runs, with controls; `wasm.rs`: the wasm `table()`; `ops.rs`: the wasm rows' meaning builders and lines; `print.rs`: prints a body of `Ins` as WAT text (`print_body`, each row by its `line`).
 
 The bit-vector library (`crates/church-bv/src/`; `lib.rs` holds the `mod` lines, shared aliases and the test allocator; `main.rs` is the `church-bv` binary; `encoding_scaling.rs`: the encoding's scaling tests that need a `Setup`):
 - `machine.rs`: the carry automaton and machine proofs. "Why did a law fall back to the machine?"
@@ -173,12 +173,12 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Lemma cache**: on-disk cache of already-checked lemma statements shared by processes of one build. `crates/church-bv/src/lemma_cache.rs#Cache`
 - **Lawfile**: text file of `lhs = rhs` lines handed to a worker task. `crates/church-bv/src/driver.rs#write_laws`
 - **Loop**: serve a batch, mine, serve the next batch under the new rules. `crates/church-bv/src/driver.rs#run_loop`
-- **LocalGet**: the `Ins` that reads parameter slot i of the frame (address i); the machine runs it as a push of i then a load. `crates/tatic-wasm/src/wasm.rs#Ins`
+- **LocalGet**: the `Ins` that reads parameter slot i of the frame (address i); the machine runs it as a push of i then a load. `crates/tatic-wasm/src/machine.rs#Ins`
 - **M**: per batch, the laws that needed a whole-term machine proof or were not proved; laws closed by the bounded join are not counted; lower is better. `docs/tier-cycle/#Metrics`
 - **Machine**: a term turned into a bit-serial automaton whose state is a carry vector. `crates/church-bv/src/machine.rs#Machine`
 - **Mined rules**: rules chosen at run time by the miner, tried after the fixed rules. `crates/church-bv/src/rewrite/rules.rs#run_order`
 - **Mine**: one run of the rule miner on a lawfile. `crates/church-bv/src/miner.rs#mine`
-- **Op (operator table)**: a wasm `i64` operator with its kernel circuit, result kind (word or one-bit) and WAT mnemonic; the lowering prints the mnemonic and the machine runs the circuit. `crates/tatic-wasm/src/ops.rs#Op`
+- **Row / Table / Class**: a row is one leaf instruction (name, class, kernel meaning, printed line); a table is a backend's rows by name; a class (`Const`, `Word`, `Bit`) fixes a row's stack effect and its constructor. The lowering emits `Ins::Row { name, operand }` and prints the row's line; the machine runs its meaning; `PrimOp::name` pairs a source operator with its row. `crates/tatic-wasm/src/machine.rs#Row`, `crates/tatic-wasm/src/machine.rs#Table`, `crates/tatic-wasm/src/machine.rs#Class`, `crates/tatic-wasm/src/wasm.rs#table`, `crates/tatic/src/jit/shape.rs#wasm_table`
 - **Per-instance proof**: a proof that follows one concrete execution; allowed only at arity 0. `crates/tatic/src/proof/per_instance.rs#prove_closure_expr_instance`
 - **Peel**: splits a term into parameter count, body and whether it is recursive. `crates/tatic/src/jit/shape.rs#peel`
 - **Phase**: a residue class of the stream sequence. `crates/church-bv/src/streams.rs#residue`
@@ -202,7 +202,7 @@ The whole gate order is written down in `crates/tatic/src/jit.rs#try_install`.
 - **Transfer**: whether rules mined on one set of laws help laws they never saw (the held-out bands). `docs/tier-cycle/#Held-out M and transfer for v0.5`
 - **Twin**: an extra whose normalized key equals a served or held-out law's; the extras filter drops it. `docs/tier-cycle/#Metrics`
 - **Verdict (kernel to model)**: the per-proposal answer of the cycle's interface: parse error, refuted, trivial, duplicate, known, novel, and cheap or hard. `docs/tier-cycle/#Interface`
-- **Wasm model**: wasm-like programs as Church-encoded kernel data with laws about append, if and loop; separate from the JIT. `crates/tatic-wasm/src/wasm.rs#Wasm`
+- **Wasm model**: wasm-like programs as Church-encoded kernel data with laws about append, if and loop; separate from the JIT. `crates/tatic-wasm/src/machine.rs#Machine`
 - **Work counts**: deterministic counters at four sites, a load-independent cost signal. `crates/church-bv/src/work.rs#Site`
 - **Worker**: a persistent child process that runs serve and mine tasks. `crates/church-bv/src/driver.rs#run_worker`
 

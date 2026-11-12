@@ -733,8 +733,8 @@ fn an_oversized_source_compiles_without_consulting_the_checker() {
 }
 
 /// No `Ins` at any depth of `code` is `Raw`.
-fn no_raw(code: &[tatic_wasm::wasm::Ins]) -> bool {
-    use tatic_wasm::wasm::Ins;
+fn no_raw(code: &[tatic_wasm::machine::Ins]) -> bool {
+    use tatic_wasm::machine::Ins;
     code.iter().all(|i| match i {
         Ins::Raw(_) => false,
         Ins::If(t, e) => no_raw(t) && no_raw(e),
@@ -762,7 +762,7 @@ fn fragment_bodies_contain_no_raw() {
         frags.push(c.frag);
     }
     for frag in &frags {
-        assert!(matches!(frag.entry(), [tatic_wasm::wasm::Ins::Loop(_)]), "{:?}", frag.entry());
+        assert!(matches!(frag.entry(), [tatic_wasm::machine::Ins::Loop(_)]), "{:?}", frag.entry());
         assert!(no_raw(frag.entry()), "{:?}", frag.entry());
     }
 }

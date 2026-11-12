@@ -729,7 +729,7 @@ fn fragment_terms() -> Vec<(&'static str, fn(&mut TermStore) -> Hash, Vec<i64>)>
 
 #[test]
 fn the_gates_verdict_is_final_for_fragment_terms() {
-    use tatic_wasm::wasm::Ins;
+    use tatic_wasm::machine::Ins;
     let mut s = TermStore::new();
     let h = crate::support::samples::straight_line(&mut s);
     let crate::jit::compile::Compiled { frag, specialised } =
@@ -762,7 +762,7 @@ fn fragment_terms_install() {
 fn an_operand_if_installs_through_the_chain() {
     let mut s = TermStore::new();
     let h = crate::support::samples::source(&mut s, r"\a b. 1 + (if a < b then a else b)");
-    assert!(!crate::proof::gate::in_fragment(&s, h, 2));
+    assert!(!crate::proof::gate::in_fragment(crate::jit::shape::wasm_table(), &s, h, 2));
     let mut jit = JitEngine::new();
     for args in [[1, 2], [5, 3], [-4, -4]] {
         assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "args={args:?}");

@@ -8,16 +8,16 @@
 //!
 //! proved by `refl`. `frame` puts parameter `q_j` at address `j` (`LocalGet j` reads it); fuel 1 lets the `loop $L`
 //! wrapper with no `br` run its body once. `rhs` is built from the source term, never from `code` (`cps`), so a
-//! lowering bug cannot cancel itself. Both sides read operators from the one table (`shape::op_of`, `Op::term`), so a
+//! lowering bug cannot cancel itself. Both sides read operators from the one table (`shape::wasm_table`, the row's `meaning`), so a
 //! wrong row is the table check's to catch (`jit/op_table_tests.rs`), not the gate's.
 
 use hashbrown::HashSet;
 use tatic_kernel::{app2, id, refl, scoped, sort, Expr};
-use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, Ty};
-use tatic_wasm::wasm::{choose, mkpair, nat2_lit, well_formed, Ins, Wasm, K};
+use tatic_wasm::encoding::{holds, law, lit, low_bits, ty, Cx, Ty};
+use tatic_wasm::machine::{choose, mkpair, nat2_lit, well_formed, Class, Ins, Machine, Table, K};
 
 use crate::jit::compile::tree_size;
-use crate::jit::shape::{is_comparison, op_of};
+use crate::jit::shape::is_comparison;
 use crate::lang::term::{Hash, Term, TermStore};
 
 const N: usize = 64;
@@ -30,7 +30,7 @@ const MAX_GATE_TREE: u64 = 8192;
 /// Whether `h` is in the gate's fragment (D3a): `arity` ≥ 1 leading `Abs`, then a body of parameters, literals and
 /// table rows, where every `If` is in tail position and tests a comparison of operands, and comparisons appear
 /// nowhere else; and at most `MAX_GATE_TREE` nodes as a tree.
-pub fn in_fragment(store: &TermStore, h: Hash, arity: usize) -> bool {
+pub fn in_fragment(table: &Table, store: &TermStore, h: Hash, arity: usize) -> bool {
     if arity == 0 || tree_size(store, h) > MAX_GATE_TREE {
         return false;
     }
@@ -41,29 +41,29 @@ pub fn in_fragment(store: &TermStore, h: Hash, arity: usize) -> bool {
             _ => return false,
         }
     }
-    tail(store, body, arity, &mut HashSet::new())
+    tail(table, store, body, arity, &mut HashSet::new())
 }
 
 /// A tail position: an `If` on a comparison of operands with tail arms, or an operand.
-fn tail(store: &TermStore, h: Hash, m: usize, seen: &mut HashSet<Hash>) -> bool {
+fn tail(table: &Table, store: &TermStore, h: Hash, m: usize, seen: &mut HashSet<Hash>) -> bool {
     match store.resolve(h) {
         Term::If(c, t, e) => match store.resolve(*c) {
             Term::Prim(p, a, b) => {
                 is_comparison(*p)
-                    && operand(store, *a, m, seen)
-                    && operand(store, *b, m, seen)
-                    && tail(store, *t, m, seen)
-                    && tail(store, *e, m, seen)
+                    && operand(table, store, *a, m, seen)
+                    && operand(table, store, *b, m, seen)
+                    && tail(table, store, *t, m, seen)
+                    && tail(table, store, *e, m, seen)
             }
             _ => false,
         },
-        _ => operand(store, h, m, seen),
+        _ => operand(table, store, h, m, seen),
     }
 }
 
 /// An operand: a parameter, a literal, or a word-result row of operands. `seen` holds operands already accepted, so
 /// a shared subterm is checked once.
-fn operand(store: &TermStore, h: Hash, m: usize, seen: &mut HashSet<Hash>) -> bool {
+fn operand(table: &Table, store: &TermStore, h: Hash, m: usize, seen: &mut HashSet<Hash>) -> bool {
     if seen.contains(&h) {
         return true;
     }
@@ -71,7 +71,9 @@ fn operand(store: &TermStore, h: Hash, m: usize, seen: &mut HashSet<Hash>) -> bo
         Term::Var(i) => (*i as usize) < m,
         Term::Lit(_) => true,
         Term::Prim(p, a, b) => {
-            op_of(*p).is_some_and(|o| o.kind() == K::W) && operand(store, *a, m, seen) && operand(store, *b, m, seen)
+            table.row(p.name()).is_some_and(|r| r.class == Class::Word)
+                && operand(table, store, *a, m, seen)
+                && operand(table, store, *b, m, seen)
         }
         _ => false,
     };
@@ -83,35 +85,35 @@ fn operand(store: &TermStore, h: Hash, m: usize, seen: &mut HashSet<Hash>) -> bo
 
 /// Whether the kernel accepts `code` as `h` at n = 64. False for a term outside the fragment and for a list the
 /// machine does not run (`well_formed`).
-pub fn gate(store: &TermStore, h: Hash, arity: usize, code: &[Ins]) -> bool {
-    gate_with(store, h, arity, code, 1, false)
+pub fn gate(table: &Table, store: &TermStore, h: Hash, arity: usize, code: &[Ins]) -> bool {
+    gate_with(table, store, h, arity, code, 1, false)
 }
 
 /// `gate` with the loop fuel given, and with `strip_loop` proving the body of the `[Loop(body)]` wrapper instead.
-pub(crate) fn gate_with(store: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, strip_loop: bool) -> bool {
+pub(crate) fn gate_with(table: &Table, store: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, strip_loop: bool) -> bool {
     let code = match (strip_loop, code) {
         (false, _) => code,
         (true, [Ins::Loop(body)]) => body.as_slice(),
         (true, _) => panic!("strip_loop on a list that is not one Loop"),
     };
-    if !in_fragment(store, h, arity) || !well_formed(code, &[]) {
+    if !in_fragment(table, store, h, arity) || !well_formed(table, code, &[]) {
         return false;
     }
     scoped(|| {
-        let (proof, stmt) = statement(store, h, arity, code, fuel);
+        let (proof, stmt) = statement(table, store, h, arity, code, fuel);
         holds(&proof, &stmt).is_ok()
     })
 }
 
 /// `(refl lhs, Pi S R k z q.. s mu. Id(R, lhs, rhs))` for `h`, a fragment term of `m` parameters, and a well-formed
 /// `code` (the measurements time it apart from the check).
-pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel: usize) -> (Expr, Expr) {
+pub(crate) fn statement(table: &Table, store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel: usize) -> (Expr, Expr) {
     let mut body = h;
     for _ in 0..m {
         let Term::Abs(b) = store.resolve(body) else { unreachable!("in_fragment checks the leading Abs") };
         body = *b;
     }
-    let w = Wasm { n: N };
+    let w = Machine { n: N, table };
     let mut tys: Vec<Ty> = vec![
         ty!(|_c, _x| sort(2)),
         ty!(|_c, _x| sort(0)),
@@ -133,7 +135,7 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
         let l = app2(w.meaning(c, p, fuel, x[1], x[2], x[3]), c.at(x[s_at]), fr);
         let (r, k, st, s) = (c.at(x[1]), c.at(x[2]), c.at(x[0]), c.at(x[s_at]));
         let qs: Vec<Expr> = (0..m).map(|j| c.at(x[4 + j])).collect();
-        let src = Source { store, qs, r };
+        let src = Source { table, store, qs, r };
         let rhs = src.cps(body, &|v| app2(k, mkpair(st, v, s), fr));
         (refl(l), id(r, l, rhs))
     })
@@ -141,6 +143,7 @@ pub(crate) fn statement(store: &TermStore, h: Hash, m: usize, code: &[Ins], fuel
 
 /// The right side's builder over the source term: parameters `qs` (q_j is `$p{j}`) and the answer type `r`.
 struct Source<'a> {
+    table: &'a Table,
     store: &'a TermStore,
     qs: Vec<Expr>,
     r: Expr,
@@ -151,8 +154,15 @@ impl Source<'_> {
     /// lowering emits them. An `If` copies `k` into both arms; in the fragment every `If` is in tail position, so
     /// nothing grows.
     fn cps(&self, h: Hash, k: &dyn Fn(Expr) -> Expr) -> Expr {
-        // one frame per node and continuation: run on the kernel's growable stack, as `Wasm::seq` does
+        // one frame per node and continuation: run on the kernel's growable stack, as `Machine::seq` does
         tatic_kernel::grow(|| self.cps_step(h, k))
+    }
+
+    /// The meaning of `p`'s row at width `N`. A 2-to-1 row's meaning is a closed circuit, so it needs no binder context
+    /// (`Cx::default()`).
+    fn row_term(&self, p: crate::lang::term::PrimOp) -> Expr {
+        let row = self.table.row(p.name()).expect("in_fragment admits only table rows");
+        (row.meaning)(&mut Cx::default(), &Machine { n: N, table: self.table }, 0)
     }
 
     fn cps_step(&self, h: Hash, k: &dyn Fn(Expr) -> Expr) -> Expr {
@@ -161,12 +171,12 @@ impl Source<'_> {
             // de Bruijn 0 is the last parameter; written here, not taken from `shape::local_index`
             Term::Var(i) => k(self.qs[self.qs.len() - 1 - *i as usize].clone()),
             Term::Prim(p, a, b) => {
-                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
+                let o = self.row_term(*p);
                 self.cps(*a, &|x| self.cps(*b, &|y| k(app2(o.clone(), x.clone(), y))))
             }
             Term::If(c, t, e) => {
                 let Term::Prim(p, a, b) = self.store.resolve(*c) else { unreachable!("in_fragment: an If tests a Prim") };
-                let o = op_of(*p).expect("in_fragment admits only table rows").term(N);
+                let o = self.row_term(*p);
                 self.cps(*a, &|x| {
                     self.cps(*b, &|y| choose(self.r.clone(), app2(o.clone(), x.clone(), y), self.cps(*t, k), self.cps(*e, k)))
                 })

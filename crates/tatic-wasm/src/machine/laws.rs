@@ -45,7 +45,7 @@ pub fn if_inv(ctl: Ctl) -> (Expr, Expr) {
 }
 
 /// `Pi Sa Sb Sc (p1 : Prog Sa Sb) (p2 : Prog Sb Sc) N R k z. Id(G Sa, M (p1 ++ p2) .. k z, M p1 .. (M p2 .. k z) z)`, by `refl`.
-pub fn append_law(w: Wasm) -> (Expr, Expr) {
+pub fn append_law(w: Machine) -> (Expr, Expr) {
     let tys: Vec<Ty> = vec![
         ty!(|_c, _x| sort(2)),
         ty!(|_c, _x| sort(2)),
@@ -71,7 +71,7 @@ pub fn append_law(w: Wasm) -> (Expr, Expr) {
 
 /// The If law and its invariant, over one telescope:
 /// `cc m (sp : Spec(cc, m)) [gm : GoodBv m] S T (t e : Prog S T) N R [Q] k z s mu [qt qe]`.
-fn if_tele(w: Wasm, inv: bool) -> Vec<Ty<'static>> {
+fn if_tele<'t>(w: Machine<'t>, inv: bool) -> Vec<Ty<'t>> {
     let mut tys: Vec<Ty> = vec![
         ty!(|c, _x| w.code_ty(c, K::B)),
         ty!(|_c, _x| bv_ty(1)),
@@ -153,7 +153,7 @@ fn if_names(x: &[At], inv: bool) -> IfX {
 }
 impl IfX {
     /// `M (cc S ++ if t e) N R k z s mu`; `swap` gives `if e t`.
-    fn lhs(&self, w: Wasm, c: &mut Cx, swap: bool) -> Expr {
+    fn lhs(&self, w: Machine, c: &mut Cx, swap: bool) -> Expr {
         let (th, el) = if swap { (self.el, self.th) } else { (self.th, self.el) };
         let p1 = c.mark(app(c.at(self.cc), c.at(self.s_ty)));
         let p2 = w.ifp(c, self.s_ty, self.t_ty, th, el);
@@ -162,17 +162,17 @@ impl IfX {
         let p = c.mark(p);
         app2(w.meaning(c, p, self.fuel, self.r, self.k, self.z), c.at(self.s), c.at(self.mu))
     }
-    fn arm(&self, w: Wasm, c: &mut Cx, p: At) -> Expr {
+    fn arm(&self, w: Machine, c: &mut Cx, p: At) -> Expr {
         app2(w.meaning(c, p, self.fuel, self.r, self.k, self.z), c.at(self.s), c.at(self.mu))
     }
     /// `choose m (M t .. s mu) (M e .. s mu)`; `swap` exchanges the arms.
-    fn rhs(&self, w: Wasm, c: &mut Cx, swap: bool) -> Expr {
+    fn rhs(&self, w: Machine, c: &mut Cx, swap: bool) -> Expr {
         let (a, b) = (self.arm(w, c, self.th), self.arm(w, c, self.el));
         let (a, b) = if swap { (b, a) } else { (a, b) };
         choose(c.at(self.r), c.at(self.m), a, b)
     }
     /// The If law's proof: `sp` at the continuation `M (if t e) N R k z`.
-    fn law_proof(&self, w: Wasm, c: &mut Cx) -> Expr {
+    fn law_proof(&self, w: Machine, c: &mut Cx) -> Expr {
         let p2 = w.ifp(c, self.s_ty, self.t_ty, self.th, self.el);
         let p2 = c.mark(p2);
         let k2 = w.meaning(c, p2, self.fuel, self.r, self.k, self.z);
@@ -182,7 +182,7 @@ impl IfX {
 }
 
 /// `Spec(cc, m) -> M (cc S ++ if t e) N R k z s mu = choose m (M t .. s mu) (M e .. s mu)`; `swap` states the arms swapped.
-pub fn if_law(w: Wasm, swap: bool) -> (Expr, Expr) {
+pub fn if_law(w: Machine, swap: bool) -> (Expr, Expr) {
     let tys = if_tele(w, false);
     law(&tys, |c, x| {
         let n = if_names(x, false);
@@ -193,7 +193,7 @@ pub fn if_law(w: Wasm, swap: bool) -> (Expr, Expr) {
 
 /// `Spec(cc, m) -> GoodBv m -> Q (M t .. s mu) -> Q (M e .. s mu) -> Q (M (cc S ++ if t e) .. s mu)`: the If law,
 /// transported, of `if_inv`. `swap` states it for `if e t`.
-pub fn if_good(w: Wasm, swap: bool) -> (Expr, Expr) {
+pub fn if_good(w: Machine, swap: bool) -> (Expr, Expr) {
     let tys = if_tele(w, true);
     law(&tys, |c, x| {
         let n = if_names(x, true);
@@ -220,7 +220,7 @@ pub fn if_good(w: Wasm, swap: bool) -> (Expr, Expr) {
 
 /// `GoodNat N -> (Pi s mu. I s -> Q z) -> (Pi f. Good f -> Good (B f)) -> Good (N (G A) (\s mu. z) B)`: fixpoint
 /// induction over fuel, for an invariant `I : A -> Sort3` and a postcondition `Q : R -> Sort0`.
-pub fn loop_law(w: Wasm) -> (Expr, Expr) {
+pub fn loop_law(w: Machine) -> (Expr, Expr) {
     // A R I Q z B N gn hz hs
     let tys: Vec<Ty> = vec![
         ty!(|_c, _x| sort(2)),
@@ -262,7 +262,7 @@ pub fn loop_law(w: Wasm) -> (Expr, Expr) {
         (apps(c.at(x[7]), vec![motive, c.at(x[8]), step]), stmt)
     })
 }
-fn timeout(w: Wasm, c: &mut Cx, a: At, r: At, z: At) -> Expr {
+fn timeout(w: Machine, c: &mut Cx, a: At, r: At, z: At) -> Expr {
     c.lam(c.at(a), |c, _| {
         let m = w.mem(c, r);
         c.lam(m, |c, _| c.at(z))
@@ -270,9 +270,9 @@ fn timeout(w: Wasm, c: &mut Cx, a: At, r: At, z: At) -> Expr {
 }
 
 /// `Pi S R k z s mu. Id(R, M p fuel R k z (start..s) mu, want)`, by `refl`: a concrete run.
-fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn(&mut Cx, &[At]) -> Expr) -> (Expr, Expr) {
+fn run_by_refl(w: Machine, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn(&mut Cx, &[At]) -> Expr) -> (Expr, Expr) {
     let ks: Vec<K> = start.iter().map(|_| K::W).collect();
-    let out = out_stack(code, ks.clone()).unwrap();
+    let out = out_stack(w.table, code, ks.clone()).unwrap();
     let tys: Vec<Ty> = vec![
         ty!(|_c, _x| sort(2)),
         ty!(|_c, _x| sort(0)),
@@ -293,11 +293,12 @@ fn run_by_refl(w: Wasm, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn
 
 #[test]
 pub fn wasm_programs_as_kernel_data() {
-    tatic_kernel::scoped(|| run_wasm_checks(Wasm { n: 4 }, true))
+    let t = crate::wasm::table();
+    tatic_kernel::scoped(|| run_wasm_checks(Machine { n: 4, table: &t }, true))
 }
 
 /// Every law and run, with controls; prints check times (`WASM` lines).
-pub fn run_wasm_checks(w: Wasm, controls: bool) {
+pub fn run_wasm_checks(w: Machine, controls: bool) {
     let n = w.n;
     let timed = |name: &str, (p, s): (Expr, Expr)| {
         let t0 = Instant::now();
@@ -316,7 +317,8 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
     timed("if invariant", if_good(w, false));
     timed("loop law", loop_law(w));
     // a concrete run: store then load
-    let mem_prog = [Ins::Push(3), Ins::Push(5), Ins::Store, Ins::Push(3), Ins::Load];
+    let konst = |v: i64| Ins::Row { name: "const", operand: v };
+    let mem_prog = [konst(3), konst(5), Ins::Store, konst(3), Ins::Load];
     let stored = |c: &mut Cx, x: &[At]| {
         let mu = w.upd(c, x[1], lit(n, 3), lit(n, 5), c.at(x[5]));
         app2(c.at(x[2]), mkpair(c.at(x[0]), lit(n, 5), c.at(x[4])), mu)
@@ -335,7 +337,8 @@ pub fn run_wasm_checks(w: Wasm, controls: bool) {
 #[test]
 #[ignore]
 pub fn wasm_scaling() {
+    let t = crate::wasm::table();
     for n in [4usize, 16, 32, 64] {
-        tatic_kernel::scoped(|| run_wasm_checks(Wasm { n }, n == 64))
+        tatic_kernel::scoped(|| run_wasm_checks(Machine { n, table: &t }, n == 64))
     }
 }
