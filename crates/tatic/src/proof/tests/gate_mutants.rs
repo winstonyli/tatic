@@ -17,7 +17,7 @@ use Layer::{Shape, Walk};
 
 type Build = Box<dyn Fn(&mut TermStore) -> Hash>;
 /// The term the gate sees, its hash and its compiled fragment, built afresh at each call.
-type Subject<'a> = &'a dyn Fn() -> (TermStore, Hash, CompiledFragment);
+pub(super) type Subject<'a> = &'a dyn Fn() -> (TermStore, Hash, CompiledFragment);
 type Edit = Box<dyn Fn(&Ins) -> Option<Ins>>;
 
 /// A 2-to-1 row instruction.
@@ -26,21 +26,21 @@ fn row(name: &'static str) -> Ins {
 }
 
 /// A `local.get` row instruction.
-fn get(i: i64) -> Ins {
+pub(super) fn get(i: i64) -> Ins {
     Ins::Row { name: "local.get", operand: i }
 }
 
 /// A `const` row instruction.
-fn konst(v: i64) -> Ins {
+pub(super) fn konst(v: i64) -> Ins {
     Ins::Row { name: "const", operand: v }
 }
 
-fn clip(s: String) -> String {
+pub(super) fn clip(s: String) -> String {
     s.chars().take(300).collect()
 }
 
 /// `v` is `Rejected` at `layer`.
-fn rejected_by(v: Verdict, layer: Layer, what: &str) {
+pub(super) fn rejected_by(v: Verdict, layer: Layer, what: &str) {
     match &v {
         Verdict::Rejected(l, why) if *l == layer => println!("{what}: {l:?}: {}", clip(why.clone())),
         other => panic!("{what}: wanted Rejected({layer:?}), got {}", clip(format!("{other:?}"))),
@@ -49,7 +49,7 @@ fn rejected_by(v: Verdict, layer: Layer, what: &str) {
 
 /// The positive case's proof does not prove the mutant's statement. Only for a mutant `build` gives a statement of its
 /// own: a mutant `build` refuses has nothing to forge against and is asserted with `rejected_by(.., Layer::Shape, ..)`.
-fn forged_rejected(table: &Table, pos: (&TermStore, Hash, &CompiledFragment), mutant: (&TermStore, Hash, &CompiledFragment)) {
+pub(super) fn forged_rejected(table: &Table, pos: (&TermStore, Hash, &CompiledFragment), mutant: (&TermStore, Hash, &CompiledFragment)) {
     scoped(|| {
         let (stmt, proof) = build(table, pos.0, pos.1, pos.2).expect("the positive case builds");
         let proof = proof.expect("the generator proves the positive case");
@@ -62,15 +62,20 @@ fn forged_rejected(table: &Table, pos: (&TermStore, Hash, &CompiledFragment), mu
 /// One mutant of the subject's entry body: `Rejected` at `layer` by the gate, and forged-rejected where `build` gives it
 /// a statement (a mutant `build` refuses must be a shape rejection).
 fn check(label: &str, subject: Subject, code: Vec<Ins>, layer: Layer) {
+    check_frag(label, subject, with_entry(subject().2, |e| Entry { code, ..e }), layer)
+}
+
+/// `check` for a mutant module (any record or source edited), given whole. A mutant `build` refuses at the shape or
+/// pairing check has no statement to forge against.
+pub(super) fn check_frag(label: &str, subject: Subject, mutant: CompiledFragment, layer: Layer) {
     let (s, h, frag) = subject();
-    let mutant = with_entry(subject().2, |e| Entry { code, ..e });
     let label = label.to_string();
     big(move || {
         let table = wasm_table();
         rejected_by(gate(table, &s, h, &mutant), layer, &label);
         match scoped(|| build(table, &s, h, &mutant).map(|_| ())) {
             Ok(()) => forged_rejected(table, (&s, h, &frag), (&s, h, &mutant)),
-            Err(Verdict::Rejected(Shape, _)) => assert_eq!(layer, Shape, "{label}"),
+            Err(Verdict::Rejected(l @ (Shape | Layer::Pairing), _)) => assert_eq!(layer, l, "{label}"),
             Err(other) => panic!("{label}: build refused with {}", clip(format!("{other:?}"))),
         }
     })
@@ -149,7 +154,7 @@ fn src(text: &'static str) -> Build {
 const SUM: &str = "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + n)";
 
 /// An edit of one call site: the block, the call's index and the argument ranges; false when it does not apply.
-type SiteEdit<'a> = &'a dyn Fn(&mut Vec<Ins>, usize, &[std::ops::Range<usize>]) -> bool;
+pub(super) type SiteEdit<'a> = &'a dyn Fn(&mut Vec<Ins>, usize, &[std::ops::Range<usize>]) -> bool;
 
 /// Each site of `Call(0)` in the subject's body edited by `edit` (where it applies) is `Rejected` at `layer`; returns
 /// how many sites it applied to.
@@ -176,7 +181,7 @@ fn arg_local_get_changed(b: &mut Vec<Ins>, _call: usize, args: &[std::ops::Range
     true
 }
 
-fn args_swapped(b: &mut Vec<Ins>, _call: usize, args: &[std::ops::Range<usize>]) -> bool {
+pub(super) fn args_swapped(b: &mut Vec<Ins>, _call: usize, args: &[std::ops::Range<usize>]) -> bool {
     let [first, second, ..] = args else { return false };
     let (x, y) = (b[first.clone()].to_vec(), b[second.clone()].to_vec());
     assert_eq!(first.end, second.start, "adjacent arguments");
@@ -184,12 +189,12 @@ fn args_swapped(b: &mut Vec<Ins>, _call: usize, args: &[std::ops::Range<usize>])
     true
 }
 
-fn arg_instruction_dropped(b: &mut Vec<Ins>, _call: usize, args: &[std::ops::Range<usize>]) -> bool {
+pub(super) fn arg_instruction_dropped(b: &mut Vec<Ins>, _call: usize, args: &[std::ops::Range<usize>]) -> bool {
     b.remove(args.last().expect("an argument").end - 1);
     true
 }
 
-fn arg_instruction_added(b: &mut Vec<Ins>, call: usize, _args: &[std::ops::Range<usize>]) -> bool {
+pub(super) fn arg_instruction_added(b: &mut Vec<Ins>, call: usize, _args: &[std::ops::Range<usize>]) -> bool {
     b.insert(call, konst(0));
     true
 }
