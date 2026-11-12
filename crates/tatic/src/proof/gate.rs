@@ -24,8 +24,8 @@ const N: usize = 64;
 /// 2.2x per doubling").
 pub(crate) const MAX_GATE_TREE: u64 = 8192;
 
-/// What one `Call` site adds to a term's cost beyond its tree nodes (fitted in T12; 0 until then).
-pub const CALL_WEIGHT: u64 = 0;
+/// What one `Call` site adds to a term's cost beyond its tree nodes, in nodes (fitted in T12, see its run record).
+pub const CALL_WEIGHT: u64 = 228;
 
 /// The layer that refused a covered term.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

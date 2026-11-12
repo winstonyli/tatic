@@ -410,21 +410,20 @@ fn a_term_over_the_budget_is_not_covered() {
     let h = doubling(&mut s, 13);
     applies_like_eval(&s, h, &[&[3]]);
     // the weight term of `cost`: a self-call term whose tree fits and whose tree plus the call weight does not
-    if CALL_WEIGHT > 0 {
-        let mut found = false;
-        for k in 1..4000usize {
-            let src = format!("rec f n = if n <= 0 then 0 else {}", vec!["f (n - 1)"; k].join(" + "));
-            let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
-            let tree = crate::jit::compile::tree_size(&s, h);
-            let sites = crate::proof::gate::call_sites(&s, h);
-            if tree <= MAX_GATE_TREE && tree + CALL_WEIGHT * sites > MAX_GATE_TREE {
-                assert!(matches!(gate(wasm_table(), &s, h, &frag), Verdict::NotCovered(_)), "k={k}");
-                found = true;
-                break;
-            }
+    assert!(CALL_WEIGHT > 0, "the fitted weight is a finding for T13 if 0");
+    let mut found = false;
+    for k in 1..4000usize {
+        let src = format!("rec f n = if n <= 0 then 0 else {}", vec!["f (n - 1)"; k].join(" + "));
+        let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
+        let tree = crate::jit::compile::tree_size(&s, h);
+        let sites = crate::proof::gate::call_sites(&s, h);
+        if tree <= MAX_GATE_TREE && tree + CALL_WEIGHT * sites > MAX_GATE_TREE {
+            assert!(matches!(gate(wasm_table(), &s, h, &frag), Verdict::NotCovered(_)), "k={k}");
+            found = true;
+            break;
         }
-        assert!(found, "no call family member sits between the tree bound and the weighted one");
     }
+    assert!(found, "no call family member sits between the tree bound and the weighted one");
 }
 
 #[test]
@@ -455,5 +454,31 @@ fn extra_calls_in_covered_code_are_rejected_not_uncovered() {
         let v = gate(wasm_table(), &s, h, &f);
         assert!(matches!(v, Verdict::Rejected(..)), "{what}: {v:?}");
         assert!(!JitEngine::prove_install(&s, h, &f), "{what} was installed");
+    }
+}
+
+/// The `Call` weight's measurement (plan T12): `rec f n = if n <= 0 then 0 else f (n-1) + .. + f (n-1)` with `k` call
+/// sites, `k` in 1, 2, 4 .. 64; prints `k tree_size build_ms check_ms` per `k`. Run from a copied exe through
+/// `docs/runs/2026-11-11/scripts/v08-weight-fit.sh`.
+#[test]
+#[ignore]
+fn time_call_family() {
+    let mut k = 1usize;
+    while k <= 64 {
+        let src = format!("rec f n = if n <= 0 then 0 else {}", vec!["f (n - 1)"; k].join(" + "));
+        let (tree, sites, b, c, ok) = std::thread::Builder::new()
+            .stack_size(tatic_kernel::CHECK_STACK)
+            .spawn(move || {
+                let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
+                let (b, c, ok) = time_gate(&s, h, &frag, 1);
+                (crate::jit::compile::tree_size(&s, h), crate::proof::gate::call_sites(&s, h), b, c, ok)
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(sites, k as u64, "call_sites counts the f applications built");
+        assert!(ok, "k={k} should check");
+        println!("{k} {tree} {b:.1} {c:.1}");
+        k *= 2;
     }
 }
