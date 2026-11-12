@@ -194,8 +194,8 @@ enum Ctor {
 }
 
 /// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, `ifp`, the count).
-fn ctor_list() -> Vec<Ctor> {
-    vec![Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Loop, Ctor::Store, Ctor::Load]
+fn ctor_list() -> [Ctor; 7] {
+    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Loop, Ctor::Store, Ctor::Load]
 }
 
 fn ctor_idx(k: Ctor) -> usize {
