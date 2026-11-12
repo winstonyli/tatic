@@ -272,7 +272,7 @@ fn timeout(w: Machine, c: &mut Cx, a: At, r: At, z: At) -> Expr {
 /// `Pi S R k z s mu. Id(R, M p fuel R k z (start..s) mu, want)`, by `refl`: a concrete run.
 fn run_by_refl(w: Machine, code: &[Ins], start: &[u128], fuel: usize, want: &dyn Fn(&mut Cx, &[At]) -> Expr) -> (Expr, Expr) {
     let ks: Vec<K> = start.iter().map(|_| K::W).collect();
-    let out = out_stack(w.table, code, ks.clone(), &[]).unwrap();
+    let out = out_stack(w.table, code, ks.clone(), &[]);
     let tys: Vec<Ty> = vec![
         ty!(|_c, _x| sort(2)),
         ty!(|_c, _x| sort(0)),

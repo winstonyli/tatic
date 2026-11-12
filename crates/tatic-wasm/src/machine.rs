@@ -117,9 +117,9 @@ pub struct Entry {
     pub code: Vec<Ins>,
 }
 
-/// The one stack analysis: the stack after `code` from `st` (top first), `None` if every path jumps, or why the
+/// The one stack analysis: the stack after `code` from `st` (top first), or why the
 /// code is ill formed. `arities[j]` is the number of words module position `j` pops (`None`: no such callee).
-fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>]) -> Result<Option<Vec<K>>, String> {
+fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>]) -> Result<Vec<K>, String> {
     let pop = |st: &mut Vec<K>, want: &[K]| {
         if !st.starts_with(want) {
             return Err(format!("stack {st:?} lacks {want:?}"));
@@ -140,11 +140,11 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
             }
             Ins::If(t, e) => {
                 pop(&mut st, &[K::B])?;
-                st = match (shape(table, t, st.clone(), arities)?, shape(table, e, st, arities)?) {
-                    (Some(a), Some(b)) if a != b => return Err(format!("if arms end on different stacks: {a:?}, {b:?}")),
-                    (Some(a), _) | (None, Some(a)) => a,
-                    (None, None) => return Ok(None),
+                let (a, b) = (shape(table, t, st.clone(), arities)?, shape(table, e, st, arities)?);
+                if a != b {
+                    return Err(format!("if arms end on different stacks: {a:?}, {b:?}"));
                 }
+                st = a
             }
             Ins::Store => pop(&mut st, &[K::W, K::W])?,
             Ins::Load => {
@@ -159,18 +159,18 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
             Ins::Raw(s) => return Err(format!("raw line {s:?}")),
         }
     }
-    Ok(Some(st))
+    Ok(st)
 }
 
-/// The stack after `code` from `st` (top first), or `None` if every path jumps; panics on ill-formed code.
-pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>, arities: &[Option<usize>]) -> Option<Vec<K>> {
+/// The stack after `code` from `st` (top first); panics on ill-formed code.
+pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>, arities: &[Option<usize>]) -> Vec<K> {
     shape(table, code, st, arities).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Whether `code` from `st` is something the machine runs and falls through: no `Raw`, no unknown row or operand on a
 /// 2-to-1 row, no underflow, matching `if` arms, and each `Call(j)` to a position with an arity.
 pub fn well_formed(table: &Table, code: &[Ins], st: &[K], arities: &[Option<usize>]) -> bool {
-    matches!(shape(table, code, st.to_vec(), arities), Ok(Some(_)))
+    shape(table, code, st.to_vec(), arities).is_ok()
 }
 
 /// `A x B` as a `Sigma`, both at the same depth.
@@ -284,7 +284,7 @@ impl Machine<'_> {
     }
     /// `code` as a program from `ks` over `base`.
     pub fn prog(&self, c: &mut Cx, code: &[Ins], ks: &[K], base: At) -> Expr {
-        let out = out_stack(self.table, code, ks.to_vec(), &[]).expect("a program that falls through");
+        let out = out_stack(self.table, code, ks.to_vec(), &[]);
         c.lam(F_TY(), |c, f| {
             let nil = app(c.at(f), self.sty(c, &out, base));
             c.lam(nil, |c, nil| {
@@ -595,7 +595,7 @@ mod tests {
         let t = crate::wasm::table();
         let ar = [Some(2), None, Some(0)];
         assert!(well_formed(&t, &[konst(1), konst(2), Ins::Call(0)], &[], &ar));
-        assert_eq!(out_stack(&t, &[konst(1), konst(2), Ins::Call(0)], vec![], &ar), Some(vec![K::W]));
+        assert_eq!(out_stack(&t, &[konst(1), konst(2), Ins::Call(0)], vec![], &ar), vec![K::W]);
         assert!(well_formed(&t, &[Ins::Call(2)], &[], &ar));
         assert!(!well_formed(&t, &[konst(1), Ins::Call(0)], &[], &ar), "underflow");
         assert!(!well_formed(&t, &[Ins::Call(1)], &[], &ar), "no arity");

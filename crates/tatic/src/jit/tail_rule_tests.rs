@@ -26,7 +26,7 @@ fn runs(code: &[Ins]) -> bool {
 
 /// Whether `code` runs and leaves exactly one word.
 fn ends_on_word(code: &[Ins]) -> bool {
-    runs(code) && out_stack(wasm_table(), code, vec![], &[Some(1)]) == Some(vec![K::W])
+    runs(code) && out_stack(wasm_table(), code, vec![], &[Some(1)]) == vec![K::W]
 }
 
 /// Arms that run alone under `if (result i64)`: from an empty stack to one word, at most 2 atoms.
