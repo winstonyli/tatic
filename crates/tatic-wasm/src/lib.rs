@@ -2,6 +2,7 @@
 //! `encoding` holds the words, gates and their proofs, `machine` the instruction machine and its meaning, `wasm` the wasm table. church-bv (the miner)
 //! and tatic (the JIT) both build on it.
 
+#[cfg(test)]
 use std::time::Instant;
 use tatic_kernel::*;
 

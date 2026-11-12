@@ -25,7 +25,7 @@ const SOURCE_OPS: [PrimOp; 8] =
 
 /// A 2-to-1 row's circuit at width `n`.
 fn circuit(row: &Row, n: usize) -> tatic_kernel::Expr {
-    (row.meaning)(&mut Cx::default(), &Machine { n, table: wasm_table() }, 0)
+    (row.meaning)(&mut Cx::default(), &Machine { n, fw: 0, table: wasm_table() }, 0)
 }
 
 fn mask(n: usize, v: u64) -> u64 {

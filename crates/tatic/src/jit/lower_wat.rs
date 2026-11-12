@@ -569,7 +569,7 @@ impl Lowering<'_> {
 
 fn read(cx: &FnCx, r: Read, w: &mut Vec<Ins>) {
     match (r, cx.env) {
-        (Read::Param(li), _) => w.push(Ins::LocalGet(li)),
+        (Read::Param(li), _) => w.push(Ins::Row { name: "local.get", operand: i64::from(li) }),
         (Read::Env(k), EnvAccess::Params(_)) => raw(w, &format!("local.get $e{k}")),
         (Read::Env(k), _) => {
             raw(w, "local.get $env");

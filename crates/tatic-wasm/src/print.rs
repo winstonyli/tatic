@@ -29,7 +29,7 @@ pub fn print_func(table: &Table, pos: usize, entry_pos: usize, e: &Entry, out: &
 /// Appends `code`'s lines to `out`, each indented `depth` spaces: a row as its `line`, `If` flat (`if (result i64)` / `else` / `end`) with
 /// its arms at +2, `Raw` as given. A `Call(j)` prints `return_call` when
 /// `tail` holds and it is the last instruction of `code` (an `If` passes `tail` and being last to both arms), `call`
-/// otherwise; `entry_pos` is the position printed `$f`. Panics on the machine-only `Store` and `Load`.
+/// otherwise; `entry_pos` is the position printed `$f`.
 pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_pos: usize, out: &mut String) {
     let line = |out: &mut String, s: &str| {
         out.extend(std::iter::repeat_n(' ', depth));
@@ -43,7 +43,6 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
                 let row = table.row(name).unwrap_or_else(|| panic!("print_body: no row {name:?}"));
                 line(out, &(row.line)(*operand))
             }
-            Ins::LocalGet(i) => line(out, &format!("local.get $p{i}")),
             Ins::If(t, e) => {
                 line(out, "if (result i64)");
                 print_body(table, t, depth + 2, last_tail, entry_pos, out);
@@ -53,7 +52,6 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
             }
             Ins::Call(j) => line(out, &format!("{} {}", if last_tail { "return_call" } else { "call" }, label(*j, entry_pos))),
             Ins::Raw(s) => line(out, s),
-            Ins::Store | Ins::Load => panic!("print_body: {ins:?} is never emitted"),
         }
     }
 }
@@ -63,7 +61,7 @@ fn print_body_shapes() {
     let konst = |v: i64| Ins::Row { name: "const", operand: v };
     let row = |name: &'static str| Ins::Row { name, operand: 0 };
     let code = [
-        Ins::LocalGet(0),
+        Ins::Row { name: "local.get", operand: 0 },
         konst(-1),
         row("add"),
         konst(0),

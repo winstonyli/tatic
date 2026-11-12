@@ -6,7 +6,7 @@ use tatic_wasm::machine::Ins;
 use crate::jit::compile::{compile_specialised, CompiledFragment};
 use crate::jit::shape::wasm_table;
 use crate::lang::term::{Hash, PrimOp, TermStore};
-use crate::proof::gate::{gate, in_fragment, statement};
+use crate::proof::gate::{build, gate, in_fragment};
 use crate::support::samples::{a_capturing_closure_call, a_pap_capturing, factorial, inc, source, straight_line, twice};
 use crate::testing::ins_mutate::mutate;
 use crate::testing::test_corpus::doubling;
@@ -25,6 +25,11 @@ fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, Compile
 /// A 2-to-1 row instruction.
 fn row(name: &'static str) -> Ins {
     Ins::Row { name, operand: 0 }
+}
+
+/// A `local.get` row instruction.
+fn get(i: i64) -> Ins {
+    Ins::Row { name: "local.get", operand: i }
 }
 
 /// Goal 1's five terms, by name, with their arity.
@@ -78,16 +83,17 @@ fn gate_rejects_mutations() {
             }),
             &["inc", "straight_line", "a_capturing_closure_call", "a_pap_capturing"],
         ),
-        ("LocalGet 0 -> 1", Box::new(|i| (i == &Ins::LocalGet(0)).then_some(Ins::LocalGet(1))), &["straight_line"]),
-        ("LocalGet 1 -> 0", Box::new(|i| (i == &Ins::LocalGet(1)).then_some(Ins::LocalGet(0))), &["straight_line"]),
+        ("local.get 0 -> 1", Box::new(|i| (i == &get(0)).then_some(get(1))), &["straight_line"]),
+        ("local.get 1 -> 0", Box::new(|i| (i == &get(1)).then_some(get(0))), &["straight_line"]),
     ];
     for (name, build, arity) in the_five() {
         let (s, h, frag) = compiled(&*build);
         let code = frag.entry().code.as_slice();
         assert!(gate(wasm_table(), &s, h, arity, code), "{name}: the unmutated body should pass");
         for (what, f, applies) in &mutations {
-            // arity-1 terms are skipped for LocalGet: another index reads an unbound frame slot (spec Goal 2)
-            if what.starts_with("LocalGet") && arity < 2 {
+            // arity-1 terms are skipped for local.get: another index reads past the frame (spec Goal 2; the shape check
+            // that rejects it comes with the call rule)
+            if what.starts_with("local.get") && arity < 2 {
                 continue;
             }
             let mutated = mutate(code, &**f);
@@ -112,7 +118,7 @@ fn gate_check_work_is_linear_in_the_tree() {
     let work = |d: u32| {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
         tatic_kernel::scoped(|| {
-            let (p, st) = statement(wasm_table(), &s, h, 1, frag.entry().code.as_slice(), 1);
+            let (p, st) = built(&s, h, 1, frag.entry().code.as_slice());
             let w0 = tatic_kernel::work();
             assert!(tatic_wasm::encoding::holds(&p, &st).is_ok(), "doubling_{d} should check");
             tatic_kernel::work() - w0
@@ -135,7 +141,7 @@ fn gate_build_work_is_linear_in_the_tree() {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
         tatic_kernel::scoped(|| {
             let w0 = tatic_kernel::work();
-            let _ = statement(wasm_table(), &s, h, 1, frag.entry().code.as_slice(), 1);
+            let _ = built(&s, h, 1, frag.entry().code.as_slice());
             tatic_kernel::work() - w0
         })
     };
@@ -147,13 +153,19 @@ fn gate_build_work_is_linear_in_the_tree() {
     }
 }
 
+/// `(proof, statement)` for a fragment term and its emitted body, built apart from the check.
+fn built(s: &TermStore, h: Hash, arity: usize, code: &[Ins]) -> (tatic_kernel::Expr, tatic_kernel::Expr) {
+    let (st, p) = build(wasm_table(), s, h, arity, code).expect("a fragment term with a well-formed body");
+    (p.expect("the generator proves a fragment term"), st)
+}
+
 /// `(build ms, check ms, accepted)` for one gate run, best of `reps`.
-fn time_gate(s: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, reps: usize) -> (f64, f64, bool) {
+fn time_gate(s: &TermStore, h: Hash, arity: usize, code: &[Ins], reps: usize) -> (f64, f64, bool) {
     let mut best = (f64::MAX, f64::MAX, true);
     for _ in 0..reps {
         let (b, c, ok) = tatic_kernel::scoped(|| {
             let t0 = std::time::Instant::now();
-            let (p, st) = statement(wasm_table(), s, h, arity, code, fuel);
+            let (p, st) = built(s, h, arity, code);
             let t1 = std::time::Instant::now();
             let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
             ((t1 - t0).as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3, ok)
@@ -169,14 +181,14 @@ fn time_gate(s: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, re
 #[ignore]
 fn measure_gate_costs() {
     let (s, h, frag) = compiled(&inc);
-    let (b, k, ok) = time_gate(&s, h, 1, &frag.entry().code, 1, 5);
+    let (b, k, ok) = time_gate(&s, h, 1, &frag.entry().code, 5);
     println!("inc {b:.2} {k:.2} {ok}");
     for d in 1..=13u32 {
         let r = std::thread::Builder::new()
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn(move || {
                 let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
-                time_gate(&s, h, 1, frag.entry().code.as_slice(), 1, 3)
+                time_gate(&s, h, 1, frag.entry().code.as_slice(), 3)
             })
             .unwrap()
             .join()
@@ -201,7 +213,7 @@ fn measure_gate_costs() {
     for (name, src) in muls {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
         assert!(in_fragment(wasm_table(), &s, h, 2), "{name} should be in the fragment");
-        let (b, k, ok) = time_gate(&s, h, 2, frag.entry().code.as_slice(), 1, 1);
+        let (b, k, ok) = time_gate(&s, h, 2, frag.entry().code.as_slice(), 1);
         println!("{name} {b:.2} {k:.2} {ok}");
         if b + k > 60_000.0 {
             println!("mul: skipped the rest after {name} (over 60 s)");
@@ -219,7 +231,7 @@ fn time_doubling_12() {
         .stack_size(tatic_kernel::CHECK_STACK)
         .spawn(|| {
             let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 12));
-            time_gate(&s, h, 1, frag.entry().code.as_slice(), 1, 1)
+            time_gate(&s, h, 1, frag.entry().code.as_slice(), 1)
         })
         .unwrap()
         .join()
@@ -236,7 +248,7 @@ fn measure_stack_2mb() {
         .stack_size(2 << 20)
         .spawn(|| {
             let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 13));
-            time_gate(&s, h, 1, frag.entry().code.as_slice(), 1, 1)
+            time_gate(&s, h, 1, frag.entry().code.as_slice(), 1)
         })
         .unwrap()
         .join()
@@ -266,7 +278,7 @@ fn measure_cachegrind() {
             for _ in 0..reps {
                 tatic_kernel::scoped(|| {
                     let (w, t) = (tatic_kernel::work(), std::time::Instant::now());
-                    let (p, st) = statement(wasm_table(), &s, h, 1, frag.entry().code.as_slice(), 1);
+                    let (p, st) = built(&s, h, 1, frag.entry().code.as_slice());
                     if check {
                         assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
                     }
