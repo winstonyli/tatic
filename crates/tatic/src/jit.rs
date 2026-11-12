@@ -34,7 +34,7 @@
 //! The sample battery runs the WAT wasmtime actually runs; the kernel
 //! theorem is the only check that says anything about inputs outside the
 //! battery. For a term in the straight-line fragment
-//! (`proof::gate::in_fragment`) that theorem is about the emitted
+//! the gate covers (`proof::gate::Verdict`) that theorem is about the emitted
 //! instruction list itself, run on `tatic_wasm`'s machine at n = 64
 //! (`proof::gate`), and its verdict is final. For every other term it is
 //! stated over `proof.rs`'s model of the compiler (`compile::build_node`
@@ -61,6 +61,8 @@ pub(crate) mod ir;
 pub(crate) mod lower_wat;
 #[cfg(test)]
 mod op_table_tests;
+#[cfg(test)]
+mod tail_rule_tests;
 pub(crate) mod shape;
 pub mod specialise;
 
@@ -250,7 +252,7 @@ impl JitEngine {
         // that alone goes on to serve arbitrary arguments no evidence
         // ever covered, so only a theorem covering every input earns
         // installation (`prove_install`).
-        if !Self::prove_install(proof_store, proof_term, frag.arity, frag.entry()) {
+        if !Self::prove_install(proof_store, proof_term, &frag) {
             return Err(Some(CacheEntry::NoUniversalProof));
         }
         self.cache.insert(
@@ -271,22 +273,23 @@ impl JitEngine {
 
     /// Whether the kernel proves `h` equal to its compiled form for every
     /// input, on top of (not instead of) the sample-based `verify()` above.
-    /// A term in the gate's fragment (`proof::gate::in_fragment`) is decided
-    /// by the gate alone, which reads `code`, the instruction list that
-    /// runs: its verdict is final, so a wrong body is refused even where a
+    /// A term the gate covers (`Verdict::Accepted` or `Rejected`) is decided
+    /// by the gate alone, which reads the fragment's records, the instruction
+    /// lists that run: its verdict is final, so a wrong body is refused even where a
     /// theorem about `h`'s model would hold. Every other term goes to
     /// `kernel_verify`, whose theorems are about `proof.rs`'s model of the
     /// compiler, not the code that runs (`docs/related-work/` 28).
-    fn prove_install(terms: &TermStore, h: Hash, arity: usize, code: &[tatic_wasm::wasm::Ins]) -> bool {
-        if proof::gate::in_fragment(terms, h, arity) {
-            proof::gate::gate(terms, h, arity, code)
-        } else {
-            Self::kernel_verify(terms, h, arity)
+    pub(crate) fn prove_install(terms: &TermStore, h: Hash, frag: &compile::CompiledFragment) -> bool {
+        match proof::gate::gate(shape::wasm_table(), terms, h, frag) {
+            proof::gate::Verdict::Accepted => true,
+            proof::gate::Verdict::Rejected(..) => false,
+            proof::gate::Verdict::NotCovered(_) => Self::kernel_verify(terms, h, frag.arity),
         }
     }
 
     /// Whether `proof.rs` proves `h` equivalent to the model of its compiled
-    /// form for *every* input. Tries the strategies in order and stops at
+    /// form for *every* input (the model states the IR's tail self-call as
+    /// `loop`/`br`, which stands for the emitted `return_call`). Tries the strategies in order and stops at
     /// the first that applies:
     /// 1. `prove_closure_expr` -- a closed, non-recursive term built from
     ///    non-capturing ("known-call") closures gets one proof covering

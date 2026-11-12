@@ -31,10 +31,10 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use hashbrown::HashMap;
 
 use crate::jit::ir;
-use crate::jit::shape::{ArityUse, Shape, classify, free_vars, infer_closure_arities, is_comparison, local_index, peel};
+use crate::jit::shape::{ArityUse, Shape, classify, free_vars, infer_closure_arities, is_comparison, local_index, peel, wasm_table};
 use crate::lang::term::{Hash, Term, TermStore};
-use tatic_wasm::print::print_body;
-use tatic_wasm::wasm::Ins;
+use tatic_wasm::machine::Entry;
+use tatic_wasm::print::print_func;
 
 /// One piece of a compiled module, in print order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -42,9 +42,12 @@ pub enum Item {
     /// Module scaffolding printed verbatim: templates, `(type ..)`,
     /// `(table ..)`/`(elem ..)` lines, the export.
     Text(String),
-    /// A lowered function: its signature and local declarations, then its
-    /// body (a wrapping `Loop`), then the closing paren.
-    Func { name: String, header: String, body: Vec<Ins> },
+    /// A lowered function at module position `pos` (a combinator's index;
+    /// the entry's is the combinator count): its record, which the printer
+    /// turns into header, body and closing paren, and `source`, the term the
+    /// registry holds at that position (the entry's is the compiled term;
+    /// `None` until `try_compile` fills it, as `lower` alone knows no terms).
+    Func { pos: usize, entry: Entry, source: Option<Hash> },
 }
 
 pub struct CompiledFragment {
@@ -63,6 +66,8 @@ pub struct CompiledFragment {
     /// call, has no such hazard. `false` for a fragment that never
     /// allocates (no allocator, nothing to reset).
     pub needs_hp_reset: bool,
+    /// The entry function `$f`'s module position: the combinator count.
+    pub entry_pos: usize,
 }
 
 impl CompiledFragment {
@@ -72,26 +77,39 @@ impl CompiledFragment {
         for item in &self.module {
             match item {
                 Item::Text(s) => w.push_str(s),
-                Item::Func { header, body, .. } => {
-                    w.push_str(header);
-                    print_body(body, 4, &mut w);
-                    w.push_str("  )\n");
-                }
+                Item::Func { pos, entry, .. } => print_func(wasm_table(), *pos, self.entry_pos, entry, &mut w),
             }
         }
         w
     }
 
-    /// The entry function `$f`'s body, the wrapping `Loop` included: what
-    /// the gate proves, so the list proved is the list printed.
-    pub fn entry(&self) -> &[Ins] {
-        self.module
-            .iter()
-            .find_map(|item| match item {
-                Item::Func { name, body, .. } if name == "f" => Some(body.as_slice()),
-                _ => None,
-            })
-            .expect("every module has an entry function $f")
+    /// The entry function `$f`'s record: what the gate proves, so the list proved is the list printed.
+    pub fn entry(&self) -> &Entry {
+        self.records()[self.entry_pos].expect("every module has an entry function $f")
+    }
+
+    /// Every function's record by module position (a combinator's index, the entry last); `None` for a
+    /// partial-application wrapper, which is scaffolding text.
+    pub fn records(&self) -> Vec<Option<&Entry>> {
+        let mut out = vec![None; self.entry_pos + 1];
+        for item in &self.module {
+            if let Item::Func { pos, entry, .. } = item {
+                out[*pos] = Some(entry);
+            }
+        }
+        out
+    }
+
+    /// The registered term at each module position (the entry's is the compiled term); `None` for a
+    /// partial-application wrapper, which has no record.
+    pub fn sources(&self) -> Vec<Option<Hash>> {
+        let mut out = vec![None; self.entry_pos + 1];
+        for item in &self.module {
+            if let Item::Func { pos, source, .. } = item {
+                out[*pos] = *source;
+            }
+        }
+        out
     }
 }
 
@@ -221,8 +239,9 @@ impl<'a> Combinators<'a> {
 /// `$f`'s body first, then every registered combinator's body, dequeued in
 /// the LIFO order the registry fills, so each combinator's index (and
 /// therefore its table slot) is its registration order. `None` exactly
-/// where the fragment rejects a term.
-pub(crate) fn build(store: &TermStore, h: Hash) -> Option<ir::Module> {
+/// where the fragment rejects a term. The registry is read out beside the module: the source term registered at each
+/// combinator index, `None` for a partial-application wrapper.
+pub(crate) fn build(store: &TermStore, h: Hash) -> Option<(ir::Module, Vec<Option<Hash>>)> {
     let (arity, body, is_rec) = peel(store, h)?;
     let mut reg = Combinators::new(store);
     let entry = build_function(store, arity, body, is_rec, &[], &mut reg)?;
@@ -248,7 +267,15 @@ pub(crate) fn build(store: &TermStore, h: Hash) -> Option<ir::Module> {
         })
         .collect();
     let dispatch = if reg.needs_generic_dispatch { ir::Dispatch::Curried } else { ir::Dispatch::Fast };
-    Some(ir::Module { entry, combinators, dispatch })
+    let sources = reg
+        .kind
+        .iter()
+        .map(|k| match k {
+            PendingCombinator::Literal(h) => Some(*h),
+            PendingCombinator::PartialApp { .. } => None,
+        })
+        .collect();
+    Some((ir::Module { entry, combinators, dispatch }, sources))
 }
 
 /// Everything about the function being built that stays fixed across its
@@ -272,35 +299,35 @@ fn build_function(store: &TermStore, arity: usize, body: Hash, is_rec: bool, cap
         reg.needs_generic_dispatch = true;
     }
     let ctx = BuildCtx { store, arity, self_idx, closure_arities: &closure_arities, captures };
-    let body = build_node(&ctx, reg, body, true)?;
+    let body = build_node(&ctx, reg, body)?;
     Some(ir::Func { arity, is_rec, env_len: captures.len(), body })
 }
 
 fn build_args(ctx: &BuildCtx, reg: &mut Combinators, args: &[Hash]) -> Option<Vec<ir::Node>> {
-    args.iter().map(|&a| build_node(ctx, reg, a, false)).collect()
+    args.iter().map(|&a| build_node(ctx, reg, a)).collect()
 }
 
 /// One node. Sub-terms are built in the order their code is emitted, and
 /// that order is combinator registration order, which is table-index
 /// order (pinned by the golden WAT snapshots, `tests/golden_wat.rs`).
-fn build_node(ctx: &BuildCtx, reg: &mut Combinators, h: Hash, tail: bool) -> Option<ir::Node> {
+fn build_node(ctx: &BuildCtx, reg: &mut Combinators, h: Hash) -> Option<ir::Node> {
     use ir::Node;
     Some(match classify(ctx.store, h, ctx.arity, ctx.self_idx) {
         Shape::If(c, t, e) => {
             // The condition must be a direct comparison, a source op that
-            // `shape::op_of` maps to a bit-result row.
+            // `PrimOp::name` maps to a bit-result row.
             let Term::Prim(cmp, a, b) = ctx.store.resolve(c) else { return None };
             let (cmp, a, b) = (*cmp, *a, *b);
             if !is_comparison(cmp) {
                 return None;
             }
-            let a = build_node(ctx, reg, a, false)?;
-            let b = build_node(ctx, reg, b, false)?;
-            let then = build_node(ctx, reg, t, tail)?;
-            let els = build_node(ctx, reg, e, tail)?;
+            let a = build_node(ctx, reg, a)?;
+            let b = build_node(ctx, reg, b)?;
+            let then = build_node(ctx, reg, t)?;
+            let els = build_node(ctx, reg, e)?;
             Node::If { cmp, a: Box::new(a), b: Box::new(b), then: Box::new(then), els: Box::new(els) }
         }
-        Shape::SelfCall(args) => Node::SelfCall { args: build_args(ctx, reg, &args)?, tail },
+        Shape::SelfCall(args) => Node::SelfCall { args: build_args(ctx, reg, &args)? },
         Shape::VarCall { var, args, .. } => {
             // Under `Consistent(k)` every call site has `k` arguments, so
             // the length check cannot fail. It stays as defence in depth:
@@ -350,8 +377,8 @@ fn build_node(ctx: &BuildCtx, reg: &mut Combinators, h: Hash, tail: bool) -> Opt
             if is_comparison(op) {
                 return None; // a comparison is only legal as an `If` condition
             }
-            let a = build_node(ctx, reg, a, false)?;
-            let b = build_node(ctx, reg, b, false)?;
+            let a = build_node(ctx, reg, a)?;
+            let b = build_node(ctx, reg, b)?;
             Node::Arith(op, Box::new(a), Box::new(b))
         }
         Shape::Combinator { .. } => {
@@ -470,7 +497,7 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
     if tree_size(store, h) > MAX_TREE_NODES {
         return None;
     }
-    let m = build(store, h)?;
+    let (m, sources) = build(store, h)?;
     if let Err(e) = ir::check(&m) {
         builder_bug(BuilderBug::IllFormed, || format!("the IR builder produced an ill-formed module for {h:?}: {e}"));
         return None;
@@ -487,7 +514,13 @@ pub fn try_compile(store: &TermStore, h: Hash) -> Option<CompiledFragment> {
         builder_bug(BuilderBug::Untranslated, || format!("the IR for {h:?} failed translation validation: it does not decompile back to the source term"));
         return None;
     }
-    Some(crate::jit::lower_wat::lower(&m))
+    let mut frag = crate::jit::lower_wat::lower(&m);
+    for item in &mut frag.module {
+        if let Item::Func { pos, source, .. } = item {
+            *source = if *pos == m.combinators.len() { Some(h) } else { sources[*pos] };
+        }
+    }
+    Some(frag)
 }
 
 /// What `compile_specialised` compiled.

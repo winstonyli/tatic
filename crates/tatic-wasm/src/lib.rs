@@ -1,17 +1,18 @@
 //! Church encodings of fixed-width words and a wasm machine over them, on the unchanged kernel (public API only):
-//! `encoding` holds the words, gates and their proofs, `wasm` the instruction set and its meaning. church-bv (the miner)
+//! `encoding` holds the words, gates and their proofs, `machine` the instruction machine and its meaning, `wasm` the wasm table. church-bv (the miner)
 //! and tatic (the JIT) both build on it.
 
+#[cfg(test)]
 use std::time::Instant;
 use tatic_kernel::*;
 
 pub mod encoding;
+pub mod machine;
 pub mod ops;
 pub mod print;
 pub mod wasm;
 
 use encoding::*;
-use ops::Op;
 
 // The unit-test exe's allocator, so its timings run on what ships.
 #[cfg(test)]

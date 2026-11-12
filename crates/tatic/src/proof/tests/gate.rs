@@ -1,18 +1,23 @@
-//! The straight-line gate (`proof::gate`): the fragment terms' emitted bodies are accepted, mutated bodies are
-//! rejected (spec Goal 2), and `in_fragment` keeps out what the gate does not cover.
+//! The gate (`proof::gate`): the covered terms' emitted bodies are `Accepted`, mutated bodies `Rejected` (spec Goal 2),
+//! and what the source reading does not take is `NotCovered`.
 
-use tatic_wasm::ops::Op;
-use tatic_wasm::wasm::Ins;
+use tatic_wasm::machine::Ins;
 
 use crate::jit::compile::{compile_specialised, CompiledFragment};
+use crate::jit::shape::wasm_table;
 use crate::lang::term::{Hash, PrimOp, TermStore};
-use crate::proof::gate::{gate, in_fragment, statement};
-use crate::support::samples::{a_capturing_closure_call, a_pap_capturing, factorial, inc, source, straight_line, twice};
-use crate::testing::ins_mutate::mutate;
+use crate::jit::JitEngine;
+use crate::proof::gate::{build, gate, Layer, Verdict, CALL_WEIGHT, MAX_GATE_TREE};
+use crate::support::samples::{
+    a_capturing_closure_call, a_pap_capturing, capturing_closure_loop, factorial, fib, inc, partial_application_loop,
+    redundant_arithmetic_recursion, source, straight_line,
+    tail_recursive_loop_with_pap_producing_root_self_call_arg, twice, twice_inc_5,
+};
+use crate::testing::ins_mutate::with_entry;
 use crate::testing::test_corpus::doubling;
 
 /// The term the gate sees (the specialised one, if `specialise` changed it) and its compiled fragment.
-fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, CompiledFragment) {
+pub(super) fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, CompiledFragment) {
     let mut s = TermStore::new();
     let h = build(&mut s);
     let c = compile_specialised(&s, h).expect("compiles");
@@ -23,7 +28,7 @@ fn compiled(build: &dyn Fn(&mut TermStore) -> Hash) -> (TermStore, Hash, Compile
 }
 
 /// Goal 1's five terms, by name, with their arity.
-fn the_five() -> Vec<(&'static str, Box<dyn Fn(&mut TermStore) -> Hash>, usize)> {
+pub(super) fn the_five() -> Vec<(&'static str, Box<dyn Fn(&mut TermStore) -> Hash>, usize)> {
     vec![
         ("inc", Box::new(inc), 1),
         ("doubling_4", Box::new(|s: &mut TermStore| doubling(s, 4)), 1),
@@ -51,48 +56,8 @@ fn gate_accepts_the_fragment_table() {
     ));
     for (name, build, arity) in table {
         let (s, h, frag) = compiled(&*build);
-        assert!(in_fragment(&s, h, arity), "{name} should be in the fragment");
-        assert!(gate(&s, h, arity, frag.entry()), "{name}: the gate should accept its emitted body");
-    }
-}
-
-#[test]
-fn gate_rejects_mutations() {
-    type Mutation = (&'static str, Box<dyn Fn(&Ins) -> Option<Ins>>, &'static [&'static str]);
-    let all: &[&str] = &["inc", "doubling_4", "straight_line", "a_capturing_closure_call", "a_pap_capturing"];
-    let mutations: Vec<Mutation> = vec![
-        ("swap if arms", Box::new(|i| match i { Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())), _ => None }), &["straight_line"]),
-        ("LtS -> LtU", Box::new(|i| (i == &Ins::Op(Op::LtS)).then_some(Ins::Op(Op::LtU))), &["straight_line"]),
-        ("Add -> Sub", Box::new(|i| (i == &Ins::Op(Op::Add)).then_some(Ins::Op(Op::Sub))), all),
-        ("Mul -> Add", Box::new(|i| (i == &Ins::Op(Op::Mul)).then_some(Ins::Op(Op::Add))), &["straight_line"]),
-        (
-            "Push(v) -> Push(v + 1)",
-            Box::new(|i| match i { Ins::Push(v) => Some(Ins::Push(v.wrapping_add(1))), _ => None }),
-            &["inc", "straight_line", "a_capturing_closure_call", "a_pap_capturing"],
-        ),
-        ("LocalGet 0 -> 1", Box::new(|i| (i == &Ins::LocalGet(0)).then_some(Ins::LocalGet(1))), &["straight_line"]),
-        ("LocalGet 1 -> 0", Box::new(|i| (i == &Ins::LocalGet(1)).then_some(Ins::LocalGet(0))), &["straight_line"]),
-    ];
-    for (name, build, arity) in the_five() {
-        let (s, h, frag) = compiled(&*build);
-        let code = frag.entry();
-        assert!(gate(&s, h, arity, code), "{name}: the unmutated body should pass");
-        for (what, f, applies) in &mutations {
-            // arity-1 terms are skipped for LocalGet: another index reads an unbound frame slot (spec Goal 2)
-            if what.starts_with("LocalGet") && arity < 2 {
-                continue;
-            }
-            let mutated = mutate(code, &**f);
-            let changed = mutated != code;
-            let applies = applies.contains(&name);
-            assert_eq!(changed, applies, "{name}: '{what}' {} the body", if changed { "changed" } else { "did not change" });
-            if changed {
-                assert!(!gate(&s, h, arity, &mutated), "{name}: the gate accepted '{what}': {mutated:?}");
-            }
-        }
-        let Ins::Loop(body) = &code[0] else { panic!("{name}: entry is not a Loop") };
-        let with_raw = vec![Ins::Loop([body.clone(), vec![Ins::Raw("nop".into())]].concat())];
-        assert!(!gate(&s, h, arity, &with_raw), "{name}: the gate accepted a Raw line");
+        assert_eq!(frag.arity, arity, "{name}");
+        assert_eq!(gate(wasm_table(), &s, h, &frag), Verdict::Accepted, "{name}: the gate should accept its emitted body");
     }
 }
 
@@ -105,7 +70,7 @@ fn gate_check_work_is_linear_in_the_tree() {
     let work = |d: u32| {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
         tatic_kernel::scoped(|| {
-            let (p, st) = statement(&s, h, 1, frag.entry(), 1);
+            let (p, st) = built(&s, h, &frag);
             let w0 = tatic_kernel::work();
             assert!(tatic_wasm::encoding::holds(&p, &st).is_ok(), "doubling_{d} should check");
             tatic_kernel::work() - w0
@@ -128,7 +93,7 @@ fn gate_build_work_is_linear_in_the_tree() {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
         tatic_kernel::scoped(|| {
             let w0 = tatic_kernel::work();
-            let _ = statement(&s, h, 1, frag.entry(), 1);
+            let _ = built(&s, h, &frag);
             tatic_kernel::work() - w0
         })
     };
@@ -140,13 +105,19 @@ fn gate_build_work_is_linear_in_the_tree() {
     }
 }
 
+/// `(proof, statement)` for a fragment term and its emitted body, built apart from the check.
+pub(super) fn built(s: &TermStore, h: Hash, frag: &CompiledFragment) -> (tatic_kernel::Expr, tatic_kernel::Expr) {
+    let (st, p) = build(wasm_table(), s, h, frag).expect("a covered term with a well-formed body");
+    (p.expect("the generator proves a fragment term"), st)
+}
+
 /// `(build ms, check ms, accepted)` for one gate run, best of `reps`.
-fn time_gate(s: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, reps: usize) -> (f64, f64, bool) {
+fn time_gate(s: &TermStore, h: Hash, frag: &CompiledFragment, reps: usize) -> (f64, f64, bool) {
     let mut best = (f64::MAX, f64::MAX, true);
     for _ in 0..reps {
         let (b, c, ok) = tatic_kernel::scoped(|| {
             let t0 = std::time::Instant::now();
-            let (p, st) = statement(s, h, arity, code, fuel);
+            let (p, st) = built(s, h, frag);
             let t1 = std::time::Instant::now();
             let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
             ((t1 - t0).as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3, ok)
@@ -156,24 +127,20 @@ fn time_gate(s: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, re
     best
 }
 
-/// Section 8's measurements: fuel 1 against the bare body, `doubling(d)` up the tree cap, and `Mul`. Prints
+/// Section 8's measurements: `inc`, `doubling(d)` up the tree cap, and `Mul`. Prints
 /// `name build_ms check_ms ok` lines; run through the wrapper.
 #[test]
 #[ignore]
 fn measure_gate_costs() {
     let (s, h, frag) = compiled(&inc);
-    let code = frag.entry();
-    let Ins::Loop(body) = &code[0] else { panic!("entry is not a Loop") };
-    for (name, c, fuel) in [("inc fuel1", code, 1), ("inc bare", body.as_slice(), 0)] {
-        let (b, k, ok) = time_gate(&s, h, 1, c, fuel, 5);
-        println!("{name} {b:.2} {k:.2} {ok}");
-    }
+    let (b, k, ok) = time_gate(&s, h, &frag, 5);
+    println!("inc {b:.2} {k:.2} {ok}");
     for d in 1..=13u32 {
         let r = std::thread::Builder::new()
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn(move || {
                 let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
-                time_gate(&s, h, 1, frag.entry(), 1, 3)
+                time_gate(&s, h, &frag, 3)
             })
             .unwrap()
             .join()
@@ -197,13 +164,69 @@ fn measure_gate_costs() {
     muls.extend((2..=8).map(|k| (format!("mul chain {k}"), format!(r"\a b. a{}", " * b".repeat(k)))));
     for (name, src) in muls {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
-        assert!(in_fragment(&s, h, 2), "{name} should be in the fragment");
-        let (b, k, ok) = time_gate(&s, h, 2, frag.entry(), 1, 1);
+        let (b, k, ok) = time_gate(&s, h, &frag, 1);
         println!("{name} {b:.2} {k:.2} {ok}");
         if b + k > 60_000.0 {
             println!("mul: skipped the rest after {name} (over 60 s)");
             break;
         }
+    }
+}
+
+/// The go/no-go's measurement (docs/superpowers/plans/2026-11-11-v08-recursion-once.md, T9 step 5): `doubling(12)` built
+/// and checked once on a `CHECK_STACK` thread; prints `build_ms <x> check_ms <y>`. Run timed, from a copied exe.
+#[test]
+#[ignore]
+fn time_doubling_12() {
+    let (b, k, ok) = std::thread::Builder::new()
+        .stack_size(tatic_kernel::CHECK_STACK)
+        .spawn(|| {
+            let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 12));
+            time_gate(&s, h, &frag, 1)
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(ok, "doubling(12) should check");
+    println!("build_ms {b:.1} check_ms {k:.1}");
+}
+
+/// T13 step 3, T14 step 3: `name cost build_ms check_ms` for the Goal 1 and Goal 2 targets, the five, `doubling(12)` and the held-out terms,
+/// each best of 3 on a `CHECK_STACK` thread; `cost` is the gate's (tree plus `CALL_WEIGHT` per call site). Run timed,
+/// from a copied exe.
+#[test]
+#[ignore]
+fn time_targets() {
+    use crate::testing::test_corpus::{held_out_a, held_out_b};
+    type Build = Box<dyn Fn(&mut TermStore) -> Hash + Send>;
+    let rows: Vec<(&'static str, Build)> = vec![
+        ("capturing_closure_loop", Box::new(capturing_closure_loop)),
+        ("partial_application_loop", Box::new(partial_application_loop)),
+        ("factorial", Box::new(factorial)),
+        ("redundant_arithmetic_recursion", Box::new(redundant_arithmetic_recursion)),
+        ("fib", Box::new(fib)),
+        ("held_out_a", Box::new(held_out_a)),
+        ("held_out_b", Box::new(held_out_b)),
+        ("doubling_12", Box::new(|s| doubling(s, 12))),
+        ("inc", Box::new(inc)),
+        ("doubling_4", Box::new(|s| doubling(s, 4))),
+        ("straight_line", Box::new(straight_line)),
+        ("a_capturing_closure_call", Box::new(a_capturing_closure_call)),
+        ("a_pap_capturing", Box::new(a_pap_capturing)),
+        ("twice_inc_5", Box::new(twice_inc_5)),
+        ("let_bound_factorial_10", Box::new(crate::testing::test_corpus::let_bound_factorial_10)),
+        ("tail_recursive_loop_with_pap_producing_root_self_call_arg", Box::new(tail_recursive_loop_with_pap_producing_root_self_call_arg)),
+    ];
+    for (name, b) in rows {
+        let (cost, bm, cm, ok) = big(move || {
+            let (s, h, frag) = compiled(&*b);
+            let cost = crate::proof::gate::module_cost(&s, h, &frag);
+            let (bm, cm, ok) = time_gate(&s, h, &frag, 3);
+            (cost, bm, cm, ok)
+        });
+        assert!(ok, "{name} should check");
+        assert!(cost <= MAX_GATE_TREE, "{name}: cost {cost} is over the budget");
+        println!("{name} {cost} {bm:.1} {cm:.1}");
     }
 }
 
@@ -215,7 +238,7 @@ fn measure_stack_2mb() {
         .stack_size(2 << 20)
         .spawn(|| {
             let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 13));
-            time_gate(&s, h, 1, frag.entry(), 1, 1)
+            time_gate(&s, h, &frag, 1)
         })
         .unwrap()
         .join()
@@ -245,7 +268,7 @@ fn measure_cachegrind() {
             for _ in 0..reps {
                 tatic_kernel::scoped(|| {
                     let (w, t) = (tatic_kernel::work(), std::time::Instant::now());
-                    let (p, st) = statement(&s, h, 1, frag.entry(), 1);
+                    let (p, st) = built(&s, h, &frag);
                     if check {
                         assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
                     }
@@ -259,25 +282,241 @@ fn measure_cachegrind() {
         .unwrap();
 }
 
+
+/// `f` on a thread with the checker's stack, as the JIT's gate runs.
+pub(super) fn big<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
+    std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn(f).unwrap().join().unwrap()
+}
+
+/// `jit.apply` agrees with the evaluator at each argument list.
+pub(super) fn applies_like_eval(s: &TermStore, h: Hash, argss: &[&[i64]]) {
+    let mut jit = JitEngine::new();
+    for args in argss {
+        let (got, want) = (jit.apply(s, h, args), crate::proof::eval::apply_term(s, h, args));
+        // a failure is a failure whichever kind the two report (the JIT traps where the evaluator says DivByZero)
+        assert!(got == want || (got.is_err() && want.is_err()), "args={args:?}: {got:?} vs {want:?}");
+    }
+}
+
 #[test]
-fn in_fragment_rejects_the_rest() {
-    let cases: Vec<(&str, Box<dyn Fn(&mut TermStore) -> Hash>, usize)> = vec![
-        ("factorial (recursive)", Box::new(factorial), 1),
-        ("twice (higher-order)", Box::new(twice), 2),
-        ("a / b (no table row)", Box::new(|s: &mut TermStore| source(s, r"\a b. a / b")), 2),
-        ("an If in an operand", Box::new(|s: &mut TermStore| source(s, r"\a b. 1 + (if a < b then a else b)")), 2),
+fn gate_accepts_the_goal_1_targets() {
+    type Build = fn(&mut TermStore) -> Hash;
+    let targets: [(&str, Build); 5] = [
+        ("capturing_closure_loop", capturing_closure_loop),
+        ("partial_application_loop", partial_application_loop),
+        ("factorial", factorial),
+        ("redundant_arithmetic_recursion", redundant_arithmetic_recursion),
+        ("fib", fib),
+    ];
+    for (name, b) in targets {
+        let (v, secs) = big(move || {
+            let (s, h, frag) = compiled(&b);
+            let t = std::time::Instant::now();
+            (gate(wasm_table(), &s, h, &frag), t.elapsed().as_secs_f64())
+        });
+        assert_eq!(v, Verdict::Accepted, "{name}");
+        println!("{name}: gate {secs:.2} s");
+        assert!(secs < 10.0, "{name} took {secs:.1} s");
+    }
+}
+
+/// Builds `rec f <params> = <body>` from its open body: `Rec(Abs^arity(body))`.
+fn rec_of(s: &mut TermStore, arity: usize, body: Hash) -> Hash {
+    let mut t = body;
+    for _ in 0..arity {
+        t = s.abs(t);
+    }
+    s.rec(t)
+}
+
+/// Review Focus 1: a tail call that permutes its arguments.
+#[test]
+fn gate_accepts_a_permuting_tail_call() {
+    let b = |s: &mut TermStore| source(s, "rec f a b = if a <= 0 then b else f b (a - 1)");
+    let (s, h, frag) = compiled(&b);
+    assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted);
+    let mut s = TermStore::new();
+    let h = b(&mut s);
+    applies_like_eval(&s, h, &[&[3, 7], &[0, 5]]);
+}
+
+/// Review Focus 2: literals at the ends of the `i64` range as call arguments.
+#[test]
+fn gate_accepts_extreme_literals_in_call_arguments() {
+    let b = |s: &mut TermStore| {
+        // inside `rec f n acc`: acc is Var(0), n Var(1), f Var(2)
+        let (acc, n, f) = (s.var(0), s.var(1), s.var(2));
+        let zero = s.lit(0);
+        let c = s.prim(PrimOp::Le, n, zero);
+        let (min, m1) = (s.lit(i64::MIN), s.lit(-1));
+        let (a1, a2) = (s.prim(PrimOp::Add, n, min), s.prim(PrimOp::Add, acc, m1));
+        let call = s.app2(f, a1, a2);
+        let body = s.if_(c, acc, call);
+        rec_of(s, 2, body)
+    };
+    let (s, h, frag) = compiled(&b);
+    assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted);
+    let mut s = TermStore::new();
+    let h = b(&mut s);
+    applies_like_eval(&s, h, &[&[1, 0], &[-5, 9]]);
+}
+
+/// Review Focus 3: a self-call inside a condition.
+#[test]
+fn gate_accepts_a_call_in_a_condition() {
+    let b = |s: &mut TermStore| source(s, "rec f n = if n <= 0 then 1 else if f (n - 1) < 5 then f (n - 1) + 1 else 0");
+    let (s, h, frag) = compiled(&b);
+    assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted);
+    let mut s = TermStore::new();
+    let h = b(&mut s);
+    applies_like_eval(&s, h, &[&[3], &[0], &[6]]);
+}
+
+/// Review Focus 4: a tail call whose argument holds a non-tail call.
+#[test]
+fn gate_accepts_mixed_tail_and_non_tail_calls() {
+    let b = |s: &mut TermStore| source(s, "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + f (n - 1) 0)");
+    let (s, h, frag) = compiled(&b);
+    assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted);
+    let mut s = TermStore::new();
+    let h = b(&mut s);
+    applies_like_eval(&s, h, &[&[4, 1], &[0, 3]]);
+}
+
+#[test]
+fn a_record_with_an_env_parameter_is_rejected_by_the_shape_check() {
+    let (s, h, frag) = compiled(&factorial);
+    let frag = with_entry(frag, |e| tatic_wasm::machine::Entry { env: tatic_wasm::machine::EnvAccess::Params(1), ..e });
+    assert!(matches!(gate(wasm_table(), &s, h, &frag), Verdict::Rejected(Layer::Shape, _)));
+}
+
+#[test]
+fn covered_code_with_raw_or_ill_formed_is_rejected_and_not_installed() {
+    let (s, h, frag) = compiled(&factorial);
+    let code = frag.entry().code.clone();
+    let raw = [code.clone(), vec![Ins::Raw("nop".into())]].concat();
+    let short = code[..code.len() - 1].to_vec();
+    for (what, bad) in [("a Raw line", raw), ("a dropped last instruction", short)] {
+        let f = with_entry(compiled(&factorial).2, |e| tatic_wasm::machine::Entry { code: bad, ..e });
+        let v = gate(wasm_table(), &s, h, &f);
+        assert!(matches!(v, Verdict::Rejected(Layer::Shape, _)), "{what}: {v:?}");
+        assert!(!JitEngine::prove_install(&s, h, &f), "{what} was installed");
+    }
+}
+
+#[test]
+fn what_cps_cannot_take_is_not_covered() {
+    let cases: Vec<(&str, Box<dyn Fn(&mut TermStore) -> Hash>)> = vec![
+        ("twice (higher-order)", Box::new(twice)),
+        ("f applied to 1", Box::new(|s: &mut TermStore| source(s, r"\f. f 1"))),
+        ("an If in an operand", Box::new(|s: &mut TermStore| source(s, r"\a b. 1 + (if a < b then a else b)"))),
         (
             "an If in a condition",
             Box::new(|s: &mut TermStore| source(s, r"\a b. if (if a < b then a else b) < 1 then 1 else 0")),
-            2,
         ),
-        ("arity 0", Box::new(|s: &mut TermStore| source(s, "5")), 0),
-        ("doubling_13 (over the tree bound)", Box::new(|s: &mut TermStore| doubling(s, 13)), 1),
-        ("\\f. f 1", Box::new(|s: &mut TermStore| source(s, r"\f. f 1")), 1),
+        ("a / b (no table row)", Box::new(|s: &mut TermStore| source(s, r"\a b. a / b"))),
+        ("gcd (Mod)", Box::new(crate::support::samples::gcd)),
+        ("a / 0", Box::new(|s: &mut TermStore| source(s, r"\a. a / 0"))),
     ];
-    for (name, build, arity) in cases {
+    for (name, b) in cases {
         let mut s = TermStore::new();
-        let h = build(&mut s);
-        assert!(!in_fragment(&s, h, arity), "{name} should be outside the fragment");
+        let h = b(&mut s);
+        let (s, h, frag) = match crate::jit::compile::compile_specialised(&s, h) {
+            Some(c) => match c.specialised {
+                Some((s2, h2)) => (s2, h2, Some(c.frag)),
+                None => (s, h, Some(c.frag)),
+            },
+            None => (s, h, None),
+        };
+        // a term that does not compile has no fragment to gate: it goes to the chain on its own
+        if let Some(frag) = frag {
+            let v = gate(wasm_table(), &s, h, &frag);
+            assert!(matches!(v, Verdict::NotCovered(_)), "{name}: {v:?}");
+        }
+        // and the chain decides it, as before: the JIT agrees with the evaluator
+        let mut s = TermStore::new();
+        let h = b(&mut s);
+        let arity = crate::jit::shape::peel(&s, h).map_or(0, |p| p.0);
+        applies_like_eval(&s, h, &[&vec![12; arity], &vec![5; arity]]);
+    }
+}
+
+#[test]
+fn a_term_over_the_budget_is_not_covered() {
+    let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 13));
+    assert!(crate::jit::compile::tree_size(&s, h) > MAX_GATE_TREE);
+    assert!(matches!(gate(wasm_table(), &s, h, &frag), Verdict::NotCovered(_)));
+    let mut s = TermStore::new();
+    let h = doubling(&mut s, 13);
+    applies_like_eval(&s, h, &[&[3]]);
+    // the weight term of `cost`: a self-call term whose tree fits and whose tree plus the call weight does not
+    assert!(CALL_WEIGHT > 0, "the fitted weight is a finding for T13 if 0");
+    let mut found = false;
+    for k in 1..4000usize {
+        let src = format!("rec f n = if n <= 0 then 0 else {}", vec!["f (n - 1)"; k].join(" + "));
+        let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
+        let tree = crate::jit::compile::tree_size(&s, h);
+        let sites = crate::proof::gate::call_sites(&s, h);
+        if tree <= MAX_GATE_TREE && tree + CALL_WEIGHT * sites > MAX_GATE_TREE {
+            assert!(matches!(gate(wasm_table(), &s, h, &frag), Verdict::NotCovered(_)), "k={k}");
+            found = true;
+            break;
+        }
+    }
+    assert!(found, "no call family member sits between the tree bound and the weighted one");
+}
+
+#[test]
+fn a_closed_straight_line_term_takes_the_gate() {
+    let (s, h, frag) = compiled(&|s: &mut TermStore| source(s, "3 + 4"));
+    assert_eq!(frag.arity, 0);
+    assert_eq!(gate(wasm_table(), &s, h, &frag), Verdict::Accepted);
+}
+
+#[test]
+fn extra_calls_in_covered_code_are_rejected_not_uncovered() {
+    let (s, h, frag) = compiled(&factorial);
+    let entry = frag.entry_pos;
+    let code = frag.entry().code.clone();
+    let calls = vec![Ins::Call(entry); 64];
+    let appended = [code.clone(), calls.clone()].concat();
+    let inserted = [&code[..code.len() - 1], &calls[..], &code[code.len() - 1..]].concat();
+    for (what, bad) in [("appended", appended), ("inserted", inserted)] {
+        let f = with_entry(compiled(&factorial).2, |e| tatic_wasm::machine::Entry { code: bad, ..e });
+        let v = gate(wasm_table(), &s, h, &f);
+        assert!(matches!(v, Verdict::Rejected(..)), "{what}: {v:?}");
+        assert!(!JitEngine::prove_install(&s, h, &f), "{what} was installed");
+    }
+}
+
+/// The `Call` weight's measurement (plan T12): `rec f n = if n <= 0 then 0 else f (n-1) + .. + f (n-1)` with `k` call
+/// sites, `k` in 1, 2, 4 .. 64; prints `k tree_size build_ms check_ms` per `k`. Run from a copied exe through
+/// `docs/runs/2026-11-11/scripts/v08-weight-fit.sh`. The fit ran at `CALL_WEIGHT` 0; with the fitted weight the
+/// members past the budget are not covered, so the probe stops at the first one and says so.
+#[test]
+#[ignore]
+fn time_call_family() {
+    let mut k = 1usize;
+    while k <= 64 {
+        let src = format!("rec f n = if n <= 0 then 0 else {}", vec!["f (n - 1)"; k].join(" + "));
+        let (tree, sites, timed) = std::thread::Builder::new()
+            .stack_size(tatic_kernel::CHECK_STACK)
+            .spawn(move || {
+                let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
+                let (tree, sites) = (crate::jit::compile::tree_size(&s, h), crate::proof::gate::call_sites(&s, h));
+                let covered = tree + crate::proof::gate::CALL_WEIGHT * sites <= MAX_GATE_TREE;
+                (tree, sites, covered.then(|| time_gate(&s, h, &frag, 1)))
+            })
+            .unwrap()
+            .join()
+            .unwrap();
+        assert_eq!(sites, k as u64, "call_sites counts the f applications built");
+        let Some((b, c, ok)) = timed else {
+            println!("{k} {tree} over the budget of {MAX_GATE_TREE}; stopping");
+            break;
+        };
+        assert!(ok, "k={k} should check");
+        println!("{k} {tree} {b:.1} {c:.1}");
+        k *= 2;
     }
 }

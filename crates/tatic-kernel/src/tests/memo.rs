@@ -250,3 +250,26 @@ fn whnf_of_a_whnf_does_no_work() {
         assert_eq!(worked(|| assert_eq!(whnf(&stuck), stuck)), 0);
     });
 }
+
+/// `R(i+1) = x_i R(i) R(i)`: a case tree of depth `d` whose every path ends in the same tail, 2^d leaves as a tree and
+/// `d` shared nodes as a DAG. `R(0)` is `(λy. y) z` on one side and `z` on the other: equal, not the same node, the
+/// shape `conv`'s doc describes (the countdown invariant was exponential here without `EQUAL`; docs/tier-cycle/,
+/// "The countdown invariant was exponential"). Work grows 4x from `d = 14` to `d = 16` without the memo, and under
+/// 1.2x with it.
+#[test]
+fn conv_memo_keeps_a_shared_tail_case_tree_linear() {
+    fn tree(d: u32, tail: Expr) -> Expr {
+        (0..d).fold(tail, |r, i| app(app(var(i), r.clone()), r))
+    }
+    fn sides(d: u32) -> (Expr, Expr) {
+        (tree(d, app(lam(sort(0), var(0)), var(d))), tree(d, var(d)))
+    }
+    assert_scales("def_eq on a shared-tail case tree", 14, 16, 2, 0, move |d| {
+        let (a, b) = sides(d);
+        worked(|| assert!(def_eq(&a, &b)))
+    });
+    let (a, b) = sides(16);
+    let t0 = std::time::Instant::now();
+    assert!(def_eq(&a, &b));
+    assert!(t0.elapsed().as_secs_f64() < 2.0, "d = 16 took {:?}", t0.elapsed());
+}

@@ -295,7 +295,7 @@ pub(super) fn params_and_close_typed(
 
 /// A kernel-checked universal theorem: for every input, the witness that
 /// unrolling the recursion terminates (`Ev`) determines the same value the
-/// compiled code's own recursive structure (`loop_val`) reconstructs from
+/// compiled code's own recursive structure (`loop_val`; the model's `loop`/`br` stands for the emitted `return_call`) reconstructs from
 /// that witness -- covers tail recursion and general (non-tail) recursion
 /// alike (see module docs).
 pub struct UniversalTailProof {

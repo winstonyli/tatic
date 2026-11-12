@@ -97,9 +97,7 @@ impl Decompiler<'_, '_> {
                 let e = self.node(f, env, els)?;
                 self.s.if_(c, t, e)
             }
-            // `tail` is deliberately not read: a loop-back and a `call`
-            // mean the same thing (field-parity class 2).
-            Node::SelfCall { args, .. } => {
+            Node::SelfCall { args } => {
                 if !f.is_rec {
                     return None;
                 }

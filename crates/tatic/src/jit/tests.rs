@@ -125,7 +125,7 @@ fn the_installation_proof_is_about_the_specialised_term() {
     assert!(!JitEngine::kernel_verify(&s, h, 1));
     // `n + 1` is a fragment term: the gate proves its emitted body
     let c = crate::jit::compile::compile_specialised(&sp.store, sp.term).expect("n + 1 compiles");
-    assert!(JitEngine::prove_install(&sp.store, sp.term, 1, c.frag.entry()));
+    assert!(JitEngine::prove_install(&sp.store, sp.term, &c.frag));
     for n in [0, 5, -7] {
         assert_eq!(jit.apply(&s, h, &[n]), Ok(n + 1));
     }
@@ -728,22 +728,26 @@ fn fragment_terms() -> Vec<(&'static str, fn(&mut TermStore) -> Hash, Vec<i64>)>
 }
 
 #[test]
-fn the_gates_verdict_is_final_for_fragment_terms() {
-    use tatic_wasm::wasm::Ins;
-    let mut s = TermStore::new();
-    let h = crate::support::samples::straight_line(&mut s);
-    let crate::jit::compile::Compiled { frag, specialised } =
-        crate::jit::compile::compile_specialised(&s, h).expect("straight_line compiles");
-    let (s, h) = specialised.unwrap_or((s, h));
-    assert!(JitEngine::prove_install(&s, h, 2, frag.entry()));
-    let swapped = crate::testing::ins_mutate::mutate(frag.entry(), &|i| match i {
-        Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())),
-        _ => None,
-    });
-    assert_ne!(swapped, frag.entry());
-    // the chain would accept the term; for a fragment term it is not consulted
-    assert!(JitEngine::kernel_verify(&s, h, 2));
-    assert!(!JitEngine::prove_install(&s, h, 2, &swapped));
+fn the_gates_verdict_is_final_for_covered_terms() {
+    use tatic_wasm::machine::Ins;
+    for build in [crate::support::samples::straight_line, crate::support::samples::factorial] {
+        let mut s = TermStore::new();
+        let h = build(&mut s);
+        let crate::jit::compile::Compiled { frag, specialised } =
+            crate::jit::compile::compile_specialised(&s, h).expect("compiles");
+        let (s, h) = specialised.unwrap_or((s, h));
+        assert!(JitEngine::prove_install(&s, h, &frag));
+        let code = frag.entry().code.clone();
+        let swapped = crate::testing::ins_mutate::mutate(&code, &|i| match i {
+            Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())),
+            _ => None,
+        });
+        assert_ne!(swapped, code);
+        // the chain would accept the term; for a covered term it is not consulted
+        assert!(JitEngine::kernel_verify(&s, h, frag.arity));
+        let frag = crate::testing::ins_mutate::with_entry(frag, |e| tatic_wasm::machine::Entry { code: swapped, ..e });
+        assert!(!JitEngine::prove_install(&s, h, &frag));
+    }
 }
 
 #[test]
@@ -762,10 +766,30 @@ fn fragment_terms_install() {
 fn an_operand_if_installs_through_the_chain() {
     let mut s = TermStore::new();
     let h = crate::support::samples::source(&mut s, r"\a b. 1 + (if a < b then a else b)");
-    assert!(!crate::proof::gate::in_fragment(&s, h, 2));
+    let c = crate::jit::compile::compile_specialised(&s, h).unwrap();
+    assert!(matches!(
+        crate::proof::gate::gate(crate::jit::shape::wasm_table(), &s, h, &c.frag),
+        crate::proof::gate::Verdict::NotCovered(_)
+    ));
     let mut jit = JitEngine::new();
     for args in [[1, 2], [5, 3], [-4, -4]] {
         assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "args={args:?}");
     }
     assert_eq!(jit.stats.compiled, 1);
+}
+
+#[test]
+fn a_tail_loop_of_a_million_iterations_installs_and_runs() {
+    // `return_call` keeps the Wasm stack flat; the same text with `call` traps.
+    let mut s = TermStore::new();
+    let h = crate::support::samples::source(&mut s, "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + n)");
+    let mut jit = JitEngine::new();
+    let n = 1_000_000i64;
+    assert_eq!(jit.apply(&s, h, &[n, 0]), Ok(n * (n + 1) / 2));
+    assert_eq!(jit.stats.compiled, 1);
+    let wat = crate::jit::compile::try_compile(&s, h).unwrap().wat();
+    assert!(wat.contains("return_call $f"), "{wat}");
+    let mut raw = JitEngine::new();
+    let (_module, f, hp) = raw.instantiate(&wat.replace("return_call", "call")).unwrap();
+    assert_eq!(raw.invoke(f, hp, &[n, 0]), Err(EvalError::Trap));
 }

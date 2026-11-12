@@ -629,7 +629,7 @@ fn a_let_bound_self_recursive_function_compiles_and_matches_interpreter() {
 fn build_produces_the_hand_built_ir_for_each_fixture() {
     use crate::jit::ir::fixtures::{factorial, twice, twice_inc};
     for (s, h, want) in [factorial(), twice(), twice_inc()] {
-        assert_eq!(build(&s, h).expect("every fixture builds"), want);
+        assert_eq!(build(&s, h).expect("every fixture builds").0, want);
     }
 }
 
@@ -733,18 +733,17 @@ fn an_oversized_source_compiles_without_consulting_the_checker() {
 }
 
 /// No `Ins` at any depth of `code` is `Raw`.
-fn no_raw(code: &[tatic_wasm::wasm::Ins]) -> bool {
-    use tatic_wasm::wasm::Ins;
+fn no_raw(code: &[tatic_wasm::machine::Ins]) -> bool {
+    use tatic_wasm::machine::Ins;
     code.iter().all(|i| match i {
         Ins::Raw(_) => false,
         Ins::If(t, e) => no_raw(t) && no_raw(e),
-        Ins::Loop(b) => no_raw(b),
         _ => true,
     })
 }
 
 /// The straight-line gate's fragment (v0.7): each of these entry bodies is
-/// one wrapping `Loop` the machine models in full, with no `Raw` line.
+/// the machine models in full, with no `Raw` line.
 #[test]
 fn fragment_bodies_contain_no_raw() {
     let mut s = TermStore::new();
@@ -762,7 +761,6 @@ fn fragment_bodies_contain_no_raw() {
         frags.push(c.frag);
     }
     for frag in &frags {
-        assert!(matches!(frag.entry(), [tatic_wasm::wasm::Ins::Loop(_)]), "{:?}", frag.entry());
-        assert!(no_raw(frag.entry()), "{:?}", frag.entry());
+        assert!(no_raw(&frag.entry().code), "{:?}", frag.entry());
     }
 }

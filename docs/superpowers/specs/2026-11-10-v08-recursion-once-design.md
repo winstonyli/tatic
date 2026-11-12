@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # v0.8: Recursion once (one generated simulation proof over an instruction table)
@@ -114,7 +114,10 @@ S2c fills a verdict column (`Accepted`, `Rejected`, `NotCovered`). No column rea
   budget covers both: a term's cost is its tree nodes plus a weight per `Call` site, and a term over `MAX_GATE_TREE` is
   `NotCovered`; a straight-line term's cap is unchanged. The weight is a cost knob, not a goal: S2c fits it so a
   `Call`-bearing term at the budget takes as long as the relational `doubling(12)` (at most 0.57 s), and every Goal 1
-  target stays under; a Goal 2 target or held-out term over it leaves its goal. The cap may be raised on purpose,
+  target stays under; a Goal 2 target or held-out term over it leaves its goal. As built (T12) the weight was fitted
+  on one family, many self-calls on a tiny tree (`time_call_family`), so the time bound holds for that family only: a
+  term that mixes self-calls with a large straight-line tail can sit under the budget and take about 7x as long (the
+  final review; `PARKED.md`, "A call budget that bounds gate time"). The cap may be raised on purpose,
   never lowered below `doubling(12)` (Goal 5); its doc comment ("largest power of two under 0.4 s") is amended in the
   merge if the go/no-go's median is above 0.4 s. The one go/no-go on time is S2's.
 - **Deep builders** run under `tatic_kernel::grow`; checking threads use `tatic_kernel::CHECK_STACK`
@@ -310,7 +313,7 @@ with a result-kind field fails: the field would be a second source for the kind 
 
 - **A `Row`** is a plain record: name, meaning builder, printer line. The leaf class fixes the stack effect and the
   result kind, so a row cannot disagree with its constructor. Three classes, the leaf arms of `wasm.rs#ctor_ty` today:
-  0 to 1 (one operand, a numeral today and `Fr -> V` from S2c step 1, when `local.get` joins: two rows, whose builders
+  0 to 1 (one operand, a numeral today and, from S2c step 1, a frame function handing its word to a continuation, `Fr -> Pi R:Sort0. (V -> R) -> R` (a plain `Fr -> V` left a redex in every stack value and conversion blew up, T9), when `local.get` joins: two rows, whose builders
   are `\_. lit n` and the frame projection at `n`; the frame spike gave `local.get` its own constructor, the fallback
   if the shared type fails), word-valued 2 to 1 (`V -> V -> V`, one row per arithmetic `PrimOp`) and bit-valued 2 to 1 (`V -> V ->
   Bv_1`, one row per comparison). `Op::kind()`, `shape`'s stack effects, `If`'s bit pop, `gate.rs#operand` and
@@ -451,7 +454,7 @@ generator and the one statement.
 #### S2c The frame, the one statement, the `Call` meaning and the verdict
 
 - **Builds, in order:** (1) the frame and the memory argument (D2), with `local.get` a frame-projection row (the 0-to-1 class's
-  operand becoming `Fr -> V`, D5) and the operand-free `Call` type tried (O1); nothing emitted then reads the memory, so `Store`, `Load`, `upd` and the
+  operand becoming a frame function in continuation form, D5) and the operand-free `Call` type tried (O1); nothing emitted then reads the memory, so `Store`, `Load`, `upd` and the
   store/load check go, with `wasm/laws.rs` (its laws pass fuel and its runs use `upd`) and the fuel items S2b kept;
   (2) the one statement (D4) in `machine/statement.rs` on straight-line terms, with the one law
   telescope, and the generator's straight-line walk in `machine/sim.rs` (the return and `choose`/congruence rules,

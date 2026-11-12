@@ -26,8 +26,10 @@
 //!
 //! ## Recursion: per-execution proofs (`prove_closure_expr_instance`)
 //!
-//! `compile.rs` also turns *tail* self-recursion into a `loop`/`br`
-//! (recursion -> iteration) -- the actually interesting transformation.
+//! `compile.rs` also turns *tail* self-recursion into iteration: the emitted
+//! text is a `return_call` (constant stack), and the model below states it as
+//! a `loop`/`br`, which stands for that `return_call` -- the actually
+//! interesting transformation.
 //! Checking a given transformed term borrows the *shape* of what real
 //! verified compilers fall back to when full verification isn't
 //! available -- validate the output of a compilation instead of proving
