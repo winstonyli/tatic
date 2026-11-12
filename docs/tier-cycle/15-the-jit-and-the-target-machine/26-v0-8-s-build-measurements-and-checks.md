@@ -48,8 +48,9 @@ is emitted on entry to every function and skipped only on Pulley.
 - `cranelift_opt_level`, `enable_probestack(false)` and `preserve_frame_pointers(false)` leave the function body
   byte-identical.
 - `signals_based_traps(false)` moves the check but keeps it.
-- `compiler_inlining` was not tried. Inference: it cannot help, because inlining a function into itself does not
-  make a loop.
+- `compiler_inlining(Inlining::Yes)` on 50.0.1 also leaves the body byte-identical, at the same speed (1.25 against
+  0.21 ns, run `wp/2026-11-12-wasmtime-inline-probe-3` for the build). Its source never inlines a function into its
+  own call graph cycle ("we never inline recursion", `compile.rs#should_inline`).
 
 Replacing these explicit checks with guard pages is upstream issue bytecodealliance/wasmtime#8135, open since
 2024-03, with an unmerged work-in-progress branch. The probe's run records are under `claude-runs\wp`.
