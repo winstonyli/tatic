@@ -210,6 +210,24 @@ fn measure_gate_costs() {
     }
 }
 
+/// The go/no-go's measurement (docs/superpowers/plans/2026-11-11-v08-recursion-once.md, T9 step 5): `doubling(12)` built
+/// and checked once on a `CHECK_STACK` thread; prints `build_ms <x> check_ms <y>`. Run timed, from a copied exe.
+#[test]
+#[ignore]
+fn time_doubling_12() {
+    let (b, k, ok) = std::thread::Builder::new()
+        .stack_size(tatic_kernel::CHECK_STACK)
+        .spawn(|| {
+            let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 12));
+            time_gate(&s, h, 1, frag.entry().code.as_slice(), 1, 1)
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+    assert!(ok, "doubling(12) should check");
+    println!("build_ms {b:.1} check_ms {k:.1}");
+}
+
 /// `doubling(13)` (the tree cap) on a default-size 2 MB thread. Alone, since an overflow aborts the exe.
 #[test]
 #[ignore]
