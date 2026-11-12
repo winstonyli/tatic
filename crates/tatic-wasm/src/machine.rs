@@ -98,7 +98,7 @@ pub enum Ins {
     Row { name: &'static str, operand: i64 },
     If(Vec<Ins>, Vec<Ins>),
     /// `call`/`return_call` to the module position `j` (the printer picks by its tail rule): pops the callee's
-    /// arity in words, pushes one. It has no meaning before S2c.
+    /// arity in words, pushes one. Its meaning continues into the callee environment's entry `j`, then the rest.
     Call(usize),
     Raw(String),
 }
@@ -117,6 +117,41 @@ pub struct Entry {
     pub arity: usize,
     pub env: EnvAccess,
     pub code: Vec<Ins>,
+}
+
+/// The shape check (trusted; the gate runs it before any statement exists): every record's body runs from `[]` to
+/// `[word]`, holds no `Raw` and no unknown row, reads each `local.get` below its own record's arity, calls only
+/// positions that have a record, and every record's env is `Params(0)` (an env parameter would shift the printed
+/// parameter slots off the frame's). `records` is by module position; `None` is scaffolding with no body.
+pub fn shape_check(table: &Table, records: &[Option<&Entry>]) -> Result<(), String> {
+    let arities: Vec<Option<usize>> = records.iter().map(|r| r.map(|e| e.arity)).collect();
+    fn gets(code: &[Ins], arity: usize) -> Result<(), String> {
+        for ins in code {
+            match ins {
+                Ins::Row { name: "local.get", operand } if usize::try_from(*operand).map_or(true, |i| i >= arity) => {
+                    return Err(format!("local.get {operand} is out of the {arity} parameters"));
+                }
+                Ins::If(t, e) => {
+                    gets(t, arity)?;
+                    gets(e, arity)?
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+    for (pos, e) in records.iter().enumerate() {
+        let Some(e) = e else { continue };
+        if e.env != EnvAccess::Params(0) {
+            return Err(format!("position {pos}: env access {:?}, not Params(0)", e.env));
+        }
+        let end = shape(table, &e.code, vec![], &arities).map_err(|m| format!("position {pos}: {m}"))?;
+        if end != vec![K::W] {
+            return Err(format!("position {pos}: the body ends on {end:?}, not one word"));
+        }
+        gets(&e.code, e.arity).map_err(|m| format!("position {pos}: {m}"))?;
+    }
+    Ok(())
 }
 
 /// The one stack analysis: the stack after `code` from `st` (top first), or why the
@@ -158,7 +193,7 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
     Ok(st)
 }
 
-/// The stack after `code` from `st` (top first); panics on ill-formed code.
+/// The stack after `code` from `st` (top first); panics on ill-formed code. `arities` as in `shape`.
 pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>, arities: &[Option<usize>]) -> Vec<K> {
     shape(table, code, st, arities).unwrap_or_else(|e| panic!("{e}"))
 }
@@ -191,11 +226,12 @@ pub fn nat2_lit(k: usize) -> Expr {
 enum Ctor {
     Leaf(Class),
     If,
+    Call,
 }
 
 /// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, the count).
-fn ctor_list() -> [Ctor; 4] {
-    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If]
+fn ctor_list() -> [Ctor; 5] {
+    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call]
 }
 
 fn ctor_idx(k: Ctor) -> usize {
@@ -211,12 +247,16 @@ pub struct Machine<'t> {
     pub table: &'t Table,
 }
 
-/// What `meaning` is given beside the program and its continuation: the answer type `r` and, for the generator's
-/// proofs, `ch`, an opaque `choose` (`Pi R:Sort0. Bv_1 -> R -> R -> R`) an `If` uses in place of the real one.
+/// What `meaning` is given beside the program and its continuation: the answer type `r`; for the generator's proofs,
+/// `ch`, an opaque `choose` (`Pi R:Sort0. Bv_1 -> R -> R -> R`) an `If` uses in place of the real one; and `calls`, the
+/// callee environment `V -> Fr -> Mem -> Ret -> R` (`Ret = V -> Mem -> R`) a `Call(j)` continues into at `j`, which the
+/// statement builder fills from the module fixpoint over fuel. `None` is the environment of no functions: a call
+/// answers 0 at the memory it was given.
 #[derive(Clone, Copy)]
 pub struct MeaningEnv {
     pub r: At,
     pub ch: Option<At>,
+    pub calls: Option<At>,
 }
 
 const F_TY: fn() -> Expr = || arrow(sort(2), sort(2));
@@ -291,15 +331,21 @@ impl Machine<'_> {
     }
     fn ctor_ty(&self, c: &mut Cx, f: At, k: Ctor) -> Expr {
         let (v, v1) = (self.v(), bv_ty(1));
-        c.pi(sort(2), |c, a| {
+        c.pi(sort(2), |c, a_at| {
             let fa = |e: Expr| app(c.at(f), e);
-            let a = c.at(a);
+            let a = c.at(a_at);
             let (va, vva, v1a) = (prod(v, a), prod(v, prod(v, a)), prod(v1, a));
             match k {
                 Ctor::Leaf(Class::Const) => arrow(self.operand_ty(), arrow(fa(va), fa(a))),
                 Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(fa(va), fa(vva))),
                 Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                // `Pi S. (S -> Fr x A) -> V -> F (V, A) -> F S`: the arguments over `A` are `S`, the callee's index
+                // a word, the rest of the program continues with the callee's answer pushed
+                Ctor::Call => c.pi(sort(2), |c, s| {
+                    let (a, sa) = (c.at(a_at), c.at(s));
+                    arrow(arrow(sa, prod(self.fr(), a)), arrow(v, arrow(app(c.at(f), prod(v, a)), app(c.at(f), sa))))
+                }),
             }
         })
     }
@@ -320,29 +366,29 @@ impl Machine<'_> {
     pub fn code_ty(&self, c: &mut Cx, k: K) -> Expr {
         c.pi(sort(2), |c, s| self.prog_ty(c, &|c| c.at(s), &|c| self.sty(c, &[k], s)))
     }
-    /// `code` as a program from `ks` over `base`.
-    pub fn prog(&self, c: &mut Cx, code: &[Ins], ks: &[K], base: At) -> Expr {
-        let out = out_stack(self.table, code, ks.to_vec(), &[]);
+    /// `code` as a program from `ks` over `base`; `arities[j]` is the number of words module position `j` pops.
+    pub fn prog(&self, c: &mut Cx, code: &[Ins], ks: &[K], base: At, arities: &[Option<usize>]) -> Expr {
+        let out = out_stack(self.table, code, ks.to_vec(), arities);
         c.lam(F_TY(), |c, f| {
             let nil = app(c.at(f), self.sty(c, &out, base));
             c.lam(nil, |c, nil| {
                 self.ctors(c, f, lam, &mut |c, ct| {
                     let ct = ct.to_vec();
-                    self.seq(c, f, &ct, base, code, ks.to_vec(), &|c, _| c.at(nil))
+                    self.seq(c, f, &ct, base, code, ks.to_vec(), arities, &|c, _| c.at(nil))
                 })
             })
         })
     }
     #[allow(clippy::too_many_arguments)]
-    fn seq(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, k: &dyn Fn(&mut Cx, Vec<K>) -> Expr) -> Expr {
+    fn seq(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, ar: &[Option<usize>], k: &dyn Fn(&mut Cx, Vec<K>) -> Expr) -> Expr {
         // one frame per instruction through `cont`: run on the kernel's growable stack (a 2 MB thread overflowed at
         // the JIT's tree cap)
-        tatic_kernel::grow(|| self.seq_step(c, f, ct, base, code, st, k))
+        tatic_kernel::grow(|| self.seq_step(c, f, ct, base, code, st, ar, k))
     }
     #[allow(clippy::too_many_arguments)]
-    fn seq_step(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, k: &dyn Fn(&mut Cx, Vec<K>) -> Expr) -> Expr {
+    fn seq_step(&self, c: &mut Cx, f: At, ct: &[At], base: At, code: &[Ins], st: Vec<K>, ar: &[Option<usize>], k: &dyn Fn(&mut Cx, Vec<K>) -> Expr) -> Expr {
         let Some((ins, rest)) = code.split_first() else { return k(c, st) };
-        let cont = |c: &mut Cx, st: Vec<K>| self.seq(c, f, ct, base, rest, st, k);
+        let cont = |c: &mut Cx, st: Vec<K>| self.seq(c, f, ct, base, rest, st, ar, k);
         let ty = |c: &Cx, ks: &[K]| self.sty(c, ks, base);
         let cons = |c: &Cx, i: usize, args: Vec<Expr>| apps(c.at(ct[i]), args);
         let below = |n: usize| st[n..].to_vec();
@@ -356,13 +402,45 @@ impl Machine<'_> {
                 cons(c, i, vec![ty(c, &below(pops)), meaning, r])
             }
             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
-            Ins::Call(_) => unreachable!("Call has no meaning before S2c"),
+            Ins::Call(j) => {
+                let m = ar.get(*j).copied().flatten().unwrap_or_else(|| panic!("prog's out_stack rejects Call({j})"));
+                let (s_ty, a_ty) = (ty(c, &st), ty(c, &below(m)));
+                let unpack = self.unpack(c, m, s_ty.clone(), a_ty.clone());
+                let r = cont(c, with(&[K::W], m));
+                cons(c, ctor_idx(Ctor::Call), vec![a_ty, s_ty, unpack, lit(self.n, *j as u128), r])
+            }
             Ins::If(t, e) => {
-                let th = self.seq(c, f, ct, base, t, below(1), &cont);
-                let el = self.seq(c, f, ct, base, e, below(1), &cont);
+                let th = self.seq(c, f, ct, base, t, below(1), ar, &cont);
+                let el = self.seq(c, f, ct, base, e, below(1), ar, &cont);
                 cons(c, ctor_idx(Ctor::If), vec![ty(c, &below(1)), th, el])
             }
         }
+    }
+    /// The `Call` operand `unpack : S -> Fr x A` for a callee of `m` parameters: the arguments (the deepest is the first
+    /// parameter) go to the callee's slots `0..m`, every other slot is 0, and the stack `A` below them comes back.
+    fn unpack(&self, c: &mut Cx, m: usize, s_ty: Expr, a_ty: Expr) -> Expr {
+        let (s_at, a_at) = (c.mark(s_ty), c.mark(a_ty));
+        c.lam(c.at(s_at), |c, s| {
+            let res = c.mark(prod(self.fr(), c.at(a_at)));
+            self.split_args(c, res, a_at, m, s, &mut |c, xs, rest| {
+                let vals: Vec<Expr> = xs.iter().map(|x| c.at(*x)).collect();
+                mkpair(c.at(a_at), self.frame(&vals), c.at(rest))
+            })
+        })
+    }
+    /// `sigrec` on a stack `st : V^m x A` into `R`: `body(c, words, below)` with the words in parameter order (the
+    /// deepest first).
+    fn split_args(&self, c: &mut Cx, r: At, a: At, m: usize, st: At, body: &mut dyn FnMut(&mut Cx, Vec<At>, At) -> Expr) -> Expr {
+        if m == 0 {
+            return body(c, vec![], st);
+        }
+        let tail = c.mark(self.words(m - 1, c.at(a)));
+        self.split(c, r, self.v(), tail, st, |c, x, s| {
+            self.split_args(c, r, a, m - 1, s, &mut |c, mut xs, rest| {
+                xs.push(x);
+                body(c, xs, rest)
+            })
+        })
     }
     /// `sigrec` on a stack `st : A x B` into `R`: `body(c, top, below)`.
     fn split(&self, c: &mut Cx, r: At, a: Expr, b: At, st: At, body: impl FnOnce(&mut Cx, At, At) -> Expr) -> Expr {
@@ -378,7 +456,7 @@ impl Machine<'_> {
         sigrec(motive, step, c.at(st))
     }
     /// The constructors' meanings.
-    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>) -> Vec<Expr> {
+    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: Option<At>) -> Vec<Expr> {
         let (v, v1) = (self.v(), bv_ty(1));
         let w = *self;
         let fr_ty = self.fr();
@@ -444,11 +522,45 @@ impl Machine<'_> {
                 })
             })
         });
+        // `\A S unp idx rest fr st mu`: unpack the arguments into the callee's frame, run entry `idx` of the environment
+        // there at the memory as it is, and continue with the callee's final memory, the caller's own frame and the
+        // callee's answer pushed. With an empty `rest` that continuation is the activation's own, up to the relation.
+        let call = c.lam(sort(2), |c, a| {
+            c.lam(sort(2), |c, s| {
+                let up_ty = arrow(c.at(s), prod(fr_ty, c.at(a)));
+                c.lam(up_ty, |c, unp| {
+                    c.lam(v, |c, idx| {
+                        let rt = w.g(c, r, prod(v, c.at(a)));
+                        c.lam(rt, |c, rest| {
+                            c.lam(fr_ty, |c, fr| {
+                                c.lam(c.at(s), |c, st| {
+                                    let m = w.mem(c, r);
+                                    c.lam(m, |c, mu| {
+                                        let ua = c.mark(app(c.at(unp), c.at(st)));
+                                        w.split(c, r, fr_ty, a, ua, |c, fr2, below| {
+                                            let kont = c.lam(v, |c, y| {
+                                                let mm = w.mem(c, r);
+                                                c.lam(mm, |c, mu2| app3(c.at(rest), c.at(fr), mkpair(c.at(a), c.at(y), c.at(below)), c.at(mu2)))
+                                            });
+                                            match calls {
+                                                Some(t) => app(app3(c.at(t), c.at(idx), c.at(fr2), c.at(mu)), kont),
+                                                None => app2(kont, lit(w.n, 0), c.at(mu)),
+                                            }
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                    })
+                })
+            })
+        });
         let built = [
             (Ctor::Leaf(Class::Const), konst),
             (Ctor::Leaf(Class::Word), bin),
             (Ctor::Leaf(Class::Bit), cmp),
             (Ctor::If, if_),
+            (Ctor::Call, call),
         ];
         ctor_list().into_iter().map(|k| built.iter().find(|(b, _)| *b == k).expect("interp builds every constructor").1).collect()
     }
@@ -457,7 +569,7 @@ impl Machine<'_> {
         let r = me.r;
         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
         let mut args = vec![gfam, c.at(k)];
-        args.extend(self.interp(c, r, me.ch));
+        args.extend(self.interp(c, r, me.ch, me.calls));
         apps(c.at(p), args)
     }
     /// `GoodNat N = Pi P:(Nat2 -> Sort3). P 0 -> (Pi j. P j -> P (S j)) -> P N`: induction over fuel, as a hypothesis.
@@ -563,10 +675,10 @@ mod tests {
                 ty!(|c, x| w.mem(c, x[1])),
             ];
             law(&tys, |c, x| {
-                let p = w.prog(c, &code, &[], x[0]);
+                let p = w.prog(c, &code, &[], x[0], &[]);
                 let p = c.mark(p);
                 let fr = w.frame(&[c.at(x[3]), c.at(x[4])]);
-                let me = MeaningEnv { r: x[1], ch: None };
+                let me = MeaningEnv { r: x[1], ch: None, calls: None };
                 let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[5]), c.at(x[6]));
                 let (p, q) = if b_minus_a { (x[4], x[3]) } else { (x[3], x[4]) };
                 let val = app2(sub(n), c.at(p), c.at(q));
@@ -583,13 +695,34 @@ mod tests {
             let t = crate::wasm::table();
             let w = Machine { n: 8, fw: 2, table: &t };
             Cx::default().under(|c, base| {
-                w.prog(c, &[Ins::Row { name: "local.get", operand: 2 }], &[], base);
+                w.prog(c, &[Ins::Row { name: "local.get", operand: 2 }], &[], base, &[]);
                 sort(0)
             })
         });
         let msg = out_of_range.expect_err("local.get 2 at fw 2 must panic");
         let msg = msg.downcast_ref::<String>().cloned().unwrap_or_default();
         assert!(msg.contains("out of the frame's width"), "{msg}");
+    }
+
+    /// O1 (the spec's operand-free `[unpack, idx, rest]`) is not expressible: the call's result is `F S`, `S` the
+    /// arity-dependent input stack, and the kernel has no implicit arguments, so `S` and `A` stay explicit binders
+    /// (D3's fallback). A call of any arity types as one constructor, `Pi A S. (S -> Fr x A) -> V -> F (V, A) -> F S`.
+    #[test]
+    fn call_constructor_types_with_sort_binders() {
+        let t = crate::wasm::table();
+        let w = Machine { n: 8, fw: 3, table: &t };
+        let ar = [Some(1), Some(2), Some(3)];
+        let calls: [(&str, Vec<Ins>); 3] = [
+            ("one argument", vec![konst(1), Ins::Call(0)]),
+            ("two arguments", vec![konst(1), konst(2), Ins::Call(1)]),
+            ("three arguments", vec![konst(1), konst(2), konst(3), Ins::Call(2)]),
+        ];
+        let want = w.code_ty(&mut Cx::default(), K::W);
+        for (name, code) in calls {
+            let p = Cx::default().lam(sort(2), |c, base| w.prog(c, &code, &[], base, &ar));
+            let got = infer(&Ctx::new(), &p).unwrap_or_else(|e| panic!("{name}: {e}"));
+            assert!(def_eq(&got, &want), "{name}: not a program from [] to [word]");
+        }
     }
 
     /// `frame([x])` at `fw` 3 is `(x, (0, (0, 0)))`: padded with zeros and a terminal zero word.

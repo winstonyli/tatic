@@ -5,11 +5,16 @@
 //! the function:
 //!   - `km a mu` against `ks a'`: the relation hypothesis;
 //!   - `CH R w t e` against `CH R w' t' e'` (`CH` is the probe standing for `choose`): J through the shared choice;
-//!   - a read of a local is the frame's projection, which reduces (the frame is a concrete nested pair).
+//!   - a read of a local is the frame's projection, which reduces (the frame is a concrete nested pair);
+//!   - a fuel variable applied to a function's `H`, `timeout`, `Bm`, a frame, a memory and a continuation (a `Call`, tail
+//!     or not, of the entry itself or of a callee; ONE rule, through the induction's `j` for the entry and the outer fuel
+//!     `N` for a callee): that function's LAW (the induction hypothesis, or the callee's law, a hypothesis of this proof)
+//!     at the arguments read off the source side, the frame's slots having been checked against them and its padding
+//!     against 0. A callee's law enters its caller's proof only as a hypothesis; `closed` discharges it with the
+//!     callee's own proof.
 //!
-//! There is no call rule yet: a body holding a `Call` is refused. `CH` is a bound variable of the proof only: the
-//! statement uses the real `choose`, and `prove` applies the proof to it.
-use super::statement::{head_tys, widen, Ctxt, ModEntry, G};
+//! `CH` is a bound variable of the proof only: the statement uses the real `choose`, and `prove` applies the proof to it.
+use super::statement::{callees, head_tys, widen, Ctxt, ModEntry, G};
 use super::*;
 use std::cell::RefCell;
 
@@ -60,38 +65,50 @@ fn spine(e: &Expr) -> (Expr, Vec<Expr>) {
     (cur, args)
 }
 
-/// What `prove` checks of a body before generating anything: no call (no rule yet), and a list the machine runs from
-/// `[]` to `[word]`.
-fn check_code(table: &Table, code: &[Ins]) -> Result<(), String> {
-    fn calls(code: &[Ins]) -> bool {
-        code.iter().any(|i| match i {
-            Ins::Call(_) => true,
-            Ins::If(t, e) => calls(t) || calls(e),
-            _ => false,
-        })
-    }
-    if calls(code) {
-        return Err("the body holds a call, which the walk has no rule for".into());
-    }
-    if !well_formed(table, code, &[], &[]) || out_stack(table, code, vec![], &[]) != vec![K::W] {
+/// What `prove` checks of a body before generating anything: a list the machine runs from `[]` to `[word]`, its calls
+/// naming positions of the module.
+fn check_code(table: &Table, code: &[Ins], arities: &[Option<usize>]) -> Result<(), String> {
+    if !well_formed(table, code, &[], arities) || out_stack(table, code, vec![], arities) != vec![K::W] {
         return Err("the body does not run from [] to [word]".into());
     }
     Ok(())
 }
 
-/// The proof of entry `k`'s law with the probe `CH` as its first parameter: `\CH N gn R z d x.. mu km ks rel. ..`, or
-/// why the two sides do not simulate each other.
+/// What the walk needs of a function it may meet called: the fuel variable it is applied through (the induction's `j`
+/// for the entry itself, the outer fuel `N` for a callee), its sizes, its `Bm` and `Bs`, and its law (the induction
+/// hypothesis, or the callee's law hypothesis).
+#[derive(Clone, Copy)]
+struct CallRule<'t> {
+    head: At,
+    g: G<'t>,
+    bm: At,
+    bs: At,
+    law: At,
+}
+
+/// The proof of entry `k`'s law with the probe `CH` as its first parameter and the callees' laws as hypotheses:
+/// `\CH N gn R z HC.. d x.. mu km ks rel. ..`, or why the two sides do not simulate each other.
 fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr, String> {
     let e = module.get(k).and_then(|e| e.as_ref()).ok_or_else(|| format!("no module entry at position {k}"))?;
-    check_code(w.table, &e.entry.code)?;
+    let arities: Vec<Option<usize>> = module.iter().map(|e| e.as_ref().map(|e| e.entry.arity)).collect();
+    check_code(w.table, &e.entry.code, &arities)?;
     let g = G { w, m: e.entry.arity };
     let m = g.m;
+    let cs = callees(k, &e.entry.code);
     let err: RefCell<Option<String>> = RefCell::new(None);
-    let tys = head_tys(w);
+    let tys = head_tys(w, module, &cs, true);
     let proof = Cx::default().lam(ch_ty(), |c, ch| {
         tele(c, &tys, &mut vec![], &lam, &mut |c, x| {
             let (fuel, gn, r, z) = (x[0], x[1], x[2], x[3]);
             let cx = Ctxt::new(c, w, module, fuel, r, z);
+            let rules: Vec<CallRule> = cs
+                .iter()
+                .zip(&x[4..])
+                .map(|(p, hc)| {
+                    let re = cx.real(c, *p);
+                    CallRule { head: fuel, g: cx.g(*p), bm: re.bm, bs: re.bs, law: *hc }
+                })
+                .collect();
             let (hm, tm) = (cx.hm, cx.tm);
             let (bm0, bs0) = cx.bm_bs(c, k, Some(ch));
             let (bm, bs) = (c.mark(bm0), c.mark(bs0));
@@ -113,9 +130,12 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
                 let hz = g.binders(c, r, &lam, &mut |c, _| refl(c.at(z)));
                 let step = c.lam(nat2(), |c, j| {
                     let ih_ty = mot(c, c.at(j));
-                    c.lam(ih_ty, |c, _ih| {
+                    c.lam(ih_ty, |c, ih| {
                         g.binders(c, r, &lam, &mut |c, y| {
-                            let sim = Sim { r, ch, km: y[2 + m], ks: y[3 + m], rel: y[4 + m] };
+                            // the entry itself is a call like any callee's: through `j`, with the hypothesis for its law
+                            let own = CallRule { head: j, g, bm, bs, law: ih };
+                            let all_rules: Vec<CallRule> = std::iter::once(own).chain(rules.iter().copied()).collect();
+                            let sim = Sim { g: &g, r, ch, d: y[0], km: y[2 + m], ks: y[3 + m], rel: y[4 + m], rules: &all_rules };
                             let ya: Vec<Expr> = y[1..1 + m].iter().map(|a| c.at(*a)).collect();
                             let fr = g.frame(&ya);
                             let mj = apps(c.at(j), vec![c.at(hm), c.at(tm), c.at(bm)]);
@@ -144,32 +164,65 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
     }
 }
 
+/// The closed proof of entry `k`'s law, `Pi N gn R z, law_k`: the probe applied to the real `choose`, every callee's
+/// law discharged by that callee's own closed proof (at the module's frame width). `path` holds the entries being
+/// proved, so a cycle of calls is refused.
+fn closed(w: Machine, module: &[Option<ModEntry>], k: usize, path: &mut Vec<usize>) -> Result<Expr, String> {
+    if path.contains(&k) {
+        return Err(format!("the module's calls form a cycle through position {k}"));
+    }
+    let open = app(proof_open(w, module, k)?, choose_fn());
+    let e = module[k].as_ref().expect("proof_open found the entry");
+    let cs = callees(k, &e.entry.code);
+    path.push(k);
+    let closed_callees: Vec<Expr> = cs.iter().map(|p| closed(w, module, *p, path)).collect::<Result<_, _>>()?;
+    path.pop();
+    let tys = head_tys(w, module, &cs, false);
+    Ok(tele(&mut Cx::default(), &tys, &mut vec![], &lam, &mut |c, x| {
+        let nzs: Vec<At> = x.to_vec();
+        let mut all: Vec<Expr> = nzs.iter().map(|a| c.at(*a)).collect();
+        for (p, cl) in cs.iter().zip(&closed_callees) {
+            let gc = G { w, m: module[*p].as_ref().expect("proof_open found the callee").entry.arity };
+            let law = gc.binders(c, nzs[2], &lam, &mut |c, y| {
+                apps(*cl, [nzs.iter().map(|a| c.at(*a)).collect::<Vec<_>>(), y.iter().map(|a| c.at(*a)).collect()].concat())
+            });
+            all.push(law);
+        }
+        apps(open, all)
+    }))
+}
+
 /// The proof of the statement `statement::statement(m, module, entry)`: `Pi N gn R z, law_entry`, the probe applied to
 /// the real `choose`. `Err` names where the machine and the source part ways, or why the body is out of the walk's
 /// reach; the kernel decides whether an `Ok` proof holds.
 pub fn prove(m: &Machine, module: &[Option<ModEntry>], entry: usize) -> Result<Expr, String> {
     let w = widen(m, module);
-    let open = app(proof_open(w, module, entry)?, choose_fn());
-    let tys = head_tys(w);
-    Ok(tele(&mut Cx::default(), &tys, &mut vec![], &lam, &mut |c, x| apps(open, x.iter().map(|a| c.at(*a)).collect())))
+    closed(w, module, entry, &mut vec![])
 }
 
 /// One walk's fixed names.
-struct Sim {
+struct Sim<'g, 't> {
+    g: &'g G<'t>,
     r: At,
     ch: At,
+    /// The walk's own copy of the lifting numeral every law and the induction hypothesis take first.
+    d: At,
     km: At,
     ks: At,
     rel: At,
+    /// The functions the walk may meet called: the entry itself first, then its callees.
+    rules: &'g [CallRule<'t>],
 }
 
-impl Sim {
+impl Sim<'_, '_> {
     /// What a term in weak head normal form is doing, for the reasons.
     fn kind(&self, c: &Cx, head: &Expr) -> &'static str {
         if *head == c.at(self.km) || *head == c.at(self.ks) {
             "returns"
         } else if *head == c.at(self.ch) {
             "branches"
+        } else if self.rules.iter().any(|rl| *head == c.at(rl.head)) {
+            "calls a function"
         } else {
             "is stuck"
         }
@@ -180,7 +233,45 @@ impl Sim {
         tatic_kernel::grow(|| self.sim_step(c, m, s, path))
     }
 
+    /// The `fw` words of a frame, read off its pair spine.
+    fn slots(&self, fr: Expr, path: &str) -> Result<Vec<Expr>, String> {
+        let (mut cur, mut xs) = (fr, vec![]);
+        for _ in 0..self.g.w.fw {
+            let tatic_kernel::Node::Pair(_, x, rest) = whnf(&cur).node() else {
+                return Err(format!("{path}: the frame is not a pair spine of the module's width"));
+            };
+            xs.push(x);
+            cur = rest;
+        }
+        Ok(xs)
+    }
+
+    /// `Pi a mu. Id(R, k2 a mu, ks2 a)`, from walking the two continuations under their binders.
+    fn cont_rel(&self, c: &mut Cx, k2: Expr, ks2: Expr, path: &str) -> Result<Expr, String> {
+        let (k2m, ks2m) = (c.mark(k2), c.mark(ks2));
+        let failed: RefCell<Option<String>> = RefCell::new(None);
+        let w = self.g.w;
+        let rel2 = c.lam(self.g.v(), |c, a| {
+            let mem = w.mem(c, self.r);
+            c.lam(mem, |c, mu| {
+                let (l, r) = (app2(c.at(k2m), c.at(a), c.at(mu)), app(c.at(ks2m), c.at(a)));
+                match self.sim(c, l, r, &format!("{path}/after")) {
+                    Ok(p) => p,
+                    Err(e) => {
+                        failed.borrow_mut().get_or_insert(e);
+                        refl(l)
+                    }
+                }
+            })
+        });
+        match failed.into_inner() {
+            Some(e) => Err(e),
+            None => Ok(rel2),
+        }
+    }
+
     fn sim_step(&self, c: &mut Cx, m: Expr, s: Expr, path: &str) -> Result<Expr, String> {
+        let n = self.g.w.n;
         let (mw, sw) = (whnf(&m), whnf(&s));
         let ((mh, ma), (sh, sa)) = (spine(&mw), spine(&sw));
         let (mk, sk) = (self.kind(c, &mh), self.kind(c, &sh));
@@ -205,6 +296,38 @@ impl Sim {
             let pe = self.sim(c, ma[3], sa[3], &format!("{path}/else"))?;
             let cd = c.mark(ma[1]);
             return Ok(cong(c, self.r, self.ch, cd, (ma[2], sa[2], pt), (ma[3], sa[3], pe)));
+        }
+        // a call (of the entry itself or of a callee): `F H timeout Bm_c frame mu kont` against `F Hs ts Bs_c args ks'`,
+        // answered by the law of `c` at the arguments read off the source
+        if self.rules.iter().any(|rl| mh == c.at(rl.head)) {
+            if ma.len() != 6 {
+                return Err(format!("{path}: the machine {mk} with {} arguments", ma.len()));
+            }
+            let Some(rule) = self.rules.iter().find(|rl| mh == c.at(rl.head) && def_eq(&ma[2], &c.at(rl.bm))) else {
+                return Err(format!("{path}: the machine calls a function that is neither this one nor one of its callees"));
+            };
+            let mc = rule.g.m;
+            if sh != c.at(rule.head) || sa.len() != 3 + mc + 1 || !def_eq(&sa[2], &c.at(rule.bs)) {
+                return Err(format!("{path}: the machine calls a function but the source {sk} (or another function, or another arity)"));
+            }
+            let (fr2, mu2, k2, ks2) = (ma[3], ma[4], ma[5], sa[sa.len() - 1]);
+            let src_args = &sa[3..3 + mc];
+            // the frame: each parameter slot holds the source's argument, the padding 0
+            let slots = self.slots(fr2, path)?;
+            for (i, a) in src_args.iter().enumerate() {
+                if !def_eq(&slots[i], a) {
+                    return Err(format!("{path}: at the call, local {i} does not hold the source's argument {i} (order or values)"));
+                }
+            }
+            let zero = lit(n, 0);
+            if let Some(i) = (mc..slots.len()).find(|i| !def_eq(&slots[*i], &zero)) {
+                return Err(format!("{path}: at the call, padding slot {i} is not 0"));
+            }
+            let rel2 = self.cont_rel(c, k2, ks2, path)?;
+            let mut all = vec![c.at(self.d)];
+            all.extend_from_slice(src_args);
+            all.extend([mu2, k2, ks2, rel2]);
+            return Ok(apps(c.at(rule.law), all));
         }
         Err(format!("{path}: the machine {mk} but the source {sk}"))
     }

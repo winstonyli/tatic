@@ -9,7 +9,10 @@
 //! ```
 //!
 //! `Bm = \env fr mu k. M (prog code) fr 0 mu`, the body's answer passed to `k`, is the machine's step; `N H timeout Bm`
-//! unrolls it `N` times from `timeout` (`H = Fr -> Mem -> Ret -> R`, `Ret = V -> Mem -> R`). `Bs = \g x.. ks. src`,
+//! unrolls it `N` times from `timeout` (`H = Fr -> Mem -> Ret -> R`, `Ret = V -> Mem -> R`). A `Call(j)` continues into
+//! the module's table `\i fr mu k. (i == own) (env fr mu k) ((i == c) (N H timeout Bm_c fr mu k) .. z)`: the entry's own
+//! position runs the `env` the fixpoint hands it, a callee its own fixpoint over the same fuel, anything else answers
+//! `z`. `Bs = \g x.. ks. src`,
 //! built by the entry's source closure (`SrcFn`) over the telescope's variables, is the source's step, unrolled the same
 //! way (`Hs = V^m -> (V -> R) -> R`). Every law, the motive, the step and the hypothesis of the generator's induction
 //! (`sim.rs`, untrusted) share ONE telescope `d, a.., mu, km, ks, rel`. `d` is a numeral binder that lifts the
@@ -19,6 +22,7 @@
 //! `statement` builds the proposition and `sim.rs` proves it; both take the same pieces from here, so the generator
 //! cannot prove another statement than the one the kernel checks it against.
 use super::*;
+use std::cell::RefCell;
 
 /// What a source builder is given: the answer sort `r`, the entry's own fixpoint variable `g`, its parameters, the probe
 /// `ch` that stands for `choose` (the statement uses the real one: `None`), the outer fuel, the entry's own module
@@ -131,18 +135,19 @@ impl G<'_> {
             c.lam(rs, |c, _| c.at(z))
         })
     }
-    /// `Bm = \env fr mu k. M (prog code) fr 0 mu`, the body's answer passed to `k`; `ch` is the generator's probe.
-    pub fn bm(&self, c: &mut Cx, r: At, ch: Option<At>, code: &[Ins]) -> Expr {
+    /// `Bm = \env fr mu k. M (prog code) fr 0 mu`, the body's answer passed to `k`; `ch` is the generator's probe, and
+    /// `table` builds the module's callee environment from `env` (the entry's own fuel-unrolled step).
+    pub fn bm(&self, c: &mut Cx, r: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
         let (w, n) = (self.w, self.w.n);
         let hm = self.hm(c, r);
-        c.lam(hm, |c, _env| {
+        c.lam(hm, |c, env| {
             c.lam(w.fr(), |c, fr| {
                 let mem = w.mem(c, r);
                 c.lam(mem, |c, mu| {
                     let rm = self.ret_m(c, r);
                     c.lam(rm, |c, k| {
                         let base = c.mark(w.v());
-                        let p = w.prog(c, code, &[], base);
+                        let p = w.prog(c, code, &[], base, arities);
                         let p = c.mark(p);
                         let st_ty = prod(w.v(), c.at(base));
                         let kk = c.lam(w.fr(), |c, _| {
@@ -152,7 +157,9 @@ impl G<'_> {
                             })
                         });
                         let kk = c.mark(kk);
-                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch });
+                        let tbl = table(c, env);
+                        let tbl = c.mark(tbl);
+                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: Some(tbl) });
                         app3(m, c.at(fr), lit(n, 0), c.at(mu))
                     })
                 })
@@ -188,12 +195,32 @@ impl G<'_> {
     }
 }
 
-/// The telescope `N gn R z`.
-pub(super) fn head_tys<'a>(w: Machine<'a>) -> Vec<Ty<'a>> {
-    vec![ty!(|_c, _x| nat2()), ty!(|c, x| w.good_nat(c, x[0])), ty!(|_c, _x| sort(0)), ty!(|c, x| c.at(x[2]))]
+/// The telescope `N gn R z`, then (for the proof and the closed composition) the laws of `callees`.
+pub(super) fn head_tys<'a>(w: Machine<'a>, module: &'a [Option<ModEntry<'a>>], callees: &[usize], with_laws: bool) -> Vec<Ty<'a>> {
+    let mut tys: Vec<Ty> = vec![ty!(|_c, _x| nat2()), ty!(|c, x| w.good_nat(c, x[0])), ty!(|_c, _x| sort(0)), ty!(|c, x| c.at(x[2]))];
+    if with_laws {
+        for &p in callees {
+            tys.push(ty!(|c, x| {
+                let cx = Ctxt::new(c, w, module, x[0], x[2], x[3]);
+                cx.law(c, p)
+            }));
+        }
+    }
+    tys
 }
 
-/// The module at one context: the fuel `N`, the answer sort `r` and `z`.
+/// An entry's pieces as marks at the base depth of a statement or proof: its `Bm` and `Bs`, and the real (probe-free)
+/// fixpoints `N H timeout Bm` and `N Hs ts Bs`.
+#[derive(Clone, Copy)]
+pub(super) struct Real {
+    pub bm: At,
+    pub bs: At,
+    pub hc: At,
+    pub sc: At,
+}
+
+/// The module at one context: the fuel `N`, the answer sort `r` and `z`, with the real pieces of each entry built on
+/// demand at the depth this was made, so every mark is valid under all deeper binders.
 pub(super) struct Ctxt<'a> {
     pub w: Machine<'a>,
     pub module: &'a [Option<ModEntry<'a>>],
@@ -202,6 +229,10 @@ pub(super) struct Ctxt<'a> {
     pub z: At,
     pub hm: At,
     pub tm: At,
+    /// `arities[j]`: the words position `j` pops (`None`: no entry there).
+    pub arities: Vec<Option<usize>>,
+    memo: RefCell<Vec<Option<Real>>>,
+    building: RefCell<Vec<usize>>,
 }
 
 impl<'a> Ctxt<'a> {
@@ -215,7 +246,8 @@ impl<'a> Ctxt<'a> {
             let e = g0.tm(c, r, z);
             c.mark(e)
         };
-        Ctxt { w, module, fuel, r, z, hm, tm }
+        let arities = module.iter().map(|e| e.as_ref().map(|e| e.entry.arity)).collect();
+        Ctxt { w, module, fuel, r, z, hm, tm, arities, memo: RefCell::new(vec![None; module.len()]), building: RefCell::new(vec![]) }
     }
     pub fn entry(&self, k: usize) -> &'a ModEntry<'a> {
         self.module.get(k).and_then(|e| e.as_ref()).unwrap_or_else(|| panic!("no module entry at position {k}"))
@@ -223,15 +255,45 @@ impl<'a> Ctxt<'a> {
     pub fn g(&self, k: usize) -> G<'a> {
         G { w: self.w, m: self.entry(k).entry.arity }
     }
-    /// `Bm_k` and `Bs_k`, through the probe `probe` if any.
+    /// The table of entry `k`: `\i fr mu kont. (i == k) (env fr mu kont) ((i == c) (H_c fr mu kont) .. z)` over its
+    /// callees `cs`, with `env` its own fuel-unrolled step.
+    fn table(&self, c: &mut Cx, k: usize, env: At, cs: &[(usize, Real)]) -> Expr {
+        let (w, r, z, n) = (self.w, self.r, self.z, self.w.n);
+        c.lam(w.v(), |c, i| {
+            c.lam(w.fr(), |c, fr| {
+                let mem = w.mem(c, r);
+                c.lam(mem, |c, mu| {
+                    let rm = G { w, m: 0 }.ret_m(c, r);
+                    c.lam(rm, |c, kont| {
+                        let pick = |c: &Cx, pos: usize, yes: Expr, no: Expr| app3(app2(eq_bv(n), c.at(i), lit(n, pos as u128)), c.at(r), yes, no);
+                        let mut acc = c.at(z);
+                        for (pos, re) in cs.iter().rev() {
+                            acc = pick(c, *pos, app3(c.at(re.hc), c.at(fr), c.at(mu), c.at(kont)), acc);
+                        }
+                        let own = app3(c.at(env), c.at(fr), c.at(mu), c.at(kont));
+                        pick(c, k, own, acc)
+                    })
+                })
+            })
+        })
+    }
+    /// `Bm_k` and `Bs_k`, through the probe `probe` if any; the callees' real pieces are those of `real`.
     pub fn bm_bs(&self, c: &mut Cx, k: usize, probe: Option<At>) -> (Expr, Expr) {
         let (e, g) = (self.entry(k), self.g(k));
-        let bm = g.bm(c, self.r, probe, &e.entry.code);
-        let bs = g.bs(c, self.r, probe, e.src, self.fuel, k, &[]);
+        let cs: Vec<(usize, Real)> = callees(k, &e.entry.code).into_iter().map(|p| (p, self.real(c, p))).collect();
+        let bm = g.bm(c, self.r, probe, &e.entry.code, &self.arities, &|c, env| self.table(c, k, env, &cs));
+        let scs: Vec<(usize, At)> = cs.iter().map(|(p, re)| (*p, re.sc)).collect();
+        let bs = g.bs(c, self.r, probe, e.src, self.fuel, k, &scs);
         (bm, bs)
     }
-    /// `N H timeout Bm_k` and `N Hs ts Bs_k`, the real (probe-free) fixpoints of entry `k`.
-    pub fn fixpoints(&self, c: &mut Cx, k: usize) -> (At, At) {
+    /// Entry `k`'s real (probe-free) pieces, built once.
+    pub fn real(&self, c: &mut Cx, k: usize) -> Real {
+        let cached = self.memo.borrow()[k];
+        if let Some(re) = cached {
+            return re;
+        }
+        assert!(!self.building.borrow().contains(&k), "the module's calls form a cycle through position {k}");
+        self.building.borrow_mut().push(k);
         let g = self.g(k);
         let (bm, bs) = self.bm_bs(c, k, None);
         let (bm, bs) = (c.mark(bm), c.mark(bs));
@@ -239,29 +301,54 @@ impl<'a> Ctxt<'a> {
         let (hs, ts) = (c.mark(hs), c.mark(ts));
         let hc = c.mark(apps(c.at(self.fuel), vec![c.at(self.hm), c.at(self.tm), c.at(bm)]));
         let sc = c.mark(apps(c.at(self.fuel), vec![c.at(hs), c.at(ts), c.at(bs)]));
-        (hc, sc)
+        self.building.borrow_mut().pop();
+        let re = Real { bm, bs, hc, sc };
+        self.memo.borrow_mut()[k] = Some(re);
+        re
     }
     /// The law of entry `k`: `Pi d x.. mu km ks rel. Id(R, N H timeout Bm_k (frame x..) mu km, N Hs ts Bs_k x.. ks)`.
     pub fn law(&self, c: &mut Cx, k: usize) -> Expr {
         let g = self.g(k);
-        let (hc, sc) = self.fixpoints(c, k);
+        let re = self.real(c, k);
         let r = self.r;
         g.binders(c, r, &pi, &mut |c, x| {
             let m = g.m;
             let args: Vec<Expr> = x[1..1 + m].iter().map(|a| c.at(*a)).collect();
             let (mu, km, ks) = (x[1 + m], x[2 + m], x[3 + m]);
-            let l = app3(c.at(hc), g.frame(&args), c.at(mu), c.at(km));
-            let rhs = apps(c.at(sc), [args, vec![c.at(ks)]].concat());
+            let l = app3(c.at(re.hc), g.frame(&args), c.at(mu), c.at(km));
+            let rhs = apps(c.at(re.sc), [args, vec![c.at(ks)]].concat());
             id(c.at(r), l, rhs)
         })
     }
+}
+
+/// The positions entry `k`'s code calls other than `k` itself, sorted and distinct.
+pub(super) fn callees(k: usize, code: &[Ins]) -> Vec<usize> {
+    fn walk(code: &[Ins], out: &mut Vec<usize>) {
+        for i in code {
+            match i {
+                Ins::Call(j) => out.push(*j),
+                Ins::If(t, e) => {
+                    walk(t, out);
+                    walk(e, out)
+                }
+                _ => {}
+            }
+        }
+    }
+    let mut out = vec![];
+    walk(code, &mut out);
+    out.retain(|j| *j != k);
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// `Pi N (GoodNat N) R z, law_entry`: entry `entry` of the module simulates its source, for every fuel. A single
 /// function is a one-entry module, whose frame width is its own arity.
 pub fn statement(m: &Machine, module: &[Option<ModEntry>], entry: usize) -> Expr {
     let w = widen(m, module);
-    let tys = head_tys(w);
+    let tys = head_tys(w, module, &[], false);
     tele(&mut Cx::default(), &tys, &mut vec![], &pi, &mut |c, x| {
         let cx = Ctxt::new(c, w, module, x[0], x[2], x[3]);
         cx.law(c, entry)

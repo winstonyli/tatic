@@ -27,3 +27,23 @@ pub(crate) fn mutate(code: &[Ins], f: &dyn Fn(&Ins) -> Option<Ins>) -> Vec<Ins> 
     }
     go(code, f, &mut false)
 }
+
+/// `frag` with its entry function's record replaced by `f` of it (the printed text is derived from the records, so this
+/// is the module the mutated list would print).
+pub(crate) fn with_entry(
+    mut frag: crate::jit::compile::CompiledFragment,
+    f: impl FnOnce(tatic_wasm::machine::Entry) -> tatic_wasm::machine::Entry,
+) -> crate::jit::compile::CompiledFragment {
+    use crate::jit::compile::Item;
+    let pos = frag.entry_pos;
+    let mut f = Some(f);
+    for item in &mut frag.module {
+        if let Item::Func { pos: p, entry } = item {
+            if *p == pos {
+                *entry = (f.take().expect("one entry record"))(entry.clone());
+            }
+        }
+    }
+    assert!(f.is_none(), "the module has no entry record");
+    frag
+}

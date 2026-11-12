@@ -353,7 +353,7 @@ short of end-to-end soundness.
 What counts as "a theorem covering every input" (`kernel_verify`,
 reported by `JitEngine::is_kernel_verified`):
 
-- For a term in the straight-line fragment (`proof/gate.rs#in_fragment`),
+- For a term the gate covers (`proof/gate.rs#Verdict`, not `NotCovered`),
   the gate's theorem alone (`jit.rs#prove_install`): the emitted
   instruction list, run on `tatic_wasm`'s machine at n = 64, equals the
   source term for every input. This one is about the emitted body, not a
