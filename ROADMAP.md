@@ -51,18 +51,11 @@ sends the five fragment terms to `proof/gate.rs#gate` alone (`jit/tests.rs`: `fr
 (`docs/superpowers/specs/2026-11-08-v07-straight-line-gate-design.md`); findings in `docs/tier-cycle/`, "v0.7's first
 steps: the census and the emit spike" and "The gate's costs, and the rules they triggered".
 
-- v0.8 **Recursion once** - loops and self-calls install from emitted code through one generated simulation proof, on
-  an instruction table with locals as a frame passed in (staged; picked 2026-11-10,
-  `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`; spec approved 2026-11-11:
-  `docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`).
-  - Progress: S0 to S4 are built on branch `v08-recursion-once`, awaiting the user's merge and tag (loops, self-calls
-    and callees are `Call`, `loop` and the memory rows are deleted, Goal 1's five targets and Goal 2's three install
-    through the gate, the held-out terms prove, the toy table passes). Measurements: `docs/tier-cycle/`, "v0.8's
-    build: measurements and checks" and "v0.8's modules: measurements".
-  - Done when: the spec's Goals hold (both sum loops and terms 1, 2, 3 install through the generator, the loop
-    machinery is deleted, and a toy second table passes a straight-line term through the unchanged gate, among them).
-    Met on the branch: workspace suite `v08-final-workspace` at the branch tip (805 passed, 0 failed over 21 suites; goldens unchanged after S2b), the
-    Goal 1 and 2 verdict columns in `proof/tests/baseline.rs#VERDICTS`, mutants in `proof/tests/{gate_mutants,
-    modules}.rs`, `held_out_terms_are_accepted` (Goal 3), `toy_table.rs` (Goal 7; "installs" read as the gate's
-    verdict, since the toy has no runtime: the user confirms). Gate times were rerun timed on a quiet machine (`docs/tier-cycle/`,
-    "v0.8's build: measurements and checks").
+v0.8 (`git tag -n99 v0.8.0`; goal 1) closed with loops, self-calls and module callees installing from the emitted
+code through one generated simulation proof, on an instruction table with locals as a frame passed in. What showed it:
+the workspace suite on main after the merge (806 passed, 0 failed), the Goal 1 and 2 verdict columns in
+`proof/tests/baseline.rs#VERDICTS`, mutants in `proof/tests/{gate_mutants,modules}.rs`, `held_out_terms_are_accepted`
+and `toy_table.rs` (the toy's "installs" read as the gate's verdict, confirmed at tag). Its decisions are in
+`docs/decisions/2026-11-10-v08-shape-and-any-backend.md` and the spec
+(`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`); findings in `docs/tier-cycle/`, "v0.8's build:
+measurements and checks" and "v0.8's modules: measurements".
