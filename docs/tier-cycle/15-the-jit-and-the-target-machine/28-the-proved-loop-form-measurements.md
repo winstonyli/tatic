@@ -24,8 +24,11 @@ try (`pfl-bench-a2-timed1`).
   `return_call`. Every A run reads 25.6 to 27.2 us, so the gap is the form, not the machine. This meets the ROADMAP v0.9
   check.
 - Cold compile and verify is unchanged (4.72 against 4.76 and 4.38 ms; the plan's bound was 1.5 times main's). The cold rows
-  are about 4.7 ms, not the 604 us of v0.8's S2b table, on both arms, while gcd's still match it; the cause is not
-  established (not checked).
+  are about 4.7 ms, not the 604 us of v0.8's S2b table, on both arms, while gcd's still match it. A probe that rebuilt
+  the bench at six commits (`cold-probe`, untimed on `CFF`, `docs/runs/2026-11-12/scripts/cold-probe.sh`) puts the
+  step at `c46cfe6`: 632 and 607 us at `0f97e17` and `59810fd`, then 4.70, 5.07, 5.02 and 4.86 ms at `c46cfe6`,
+  `d4e54b3`, `64d1689` and `7ad2f0a`. That commit brought self calls into the gate, so the cold path now includes the
+  closure loop's kernel proof; that the extra 4.1 ms is the proof is an inference from the commit, not a profile.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
   that `return_call` costs invisible beside the call into the module; confirming it would take a gcd input with many
   steps.
