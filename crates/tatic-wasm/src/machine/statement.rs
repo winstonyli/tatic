@@ -77,6 +77,8 @@ pub(super) fn widen<'t>(m: &Machine<'t>, module: &[Option<ModEntry>]) -> Machine
 
 /// The statement's two clauses a mutant may weaken (O3): how the continuation relation hypothesis is stated, and whether
 /// the fuel is quantified. Private to the machine module; the one public entry, `statement`, passes `FIXED`.
+/// Deliberately not `cfg(test)`: the mutation tests then check the same compiled statement code that ships, rather than
+/// a test-only variant of the trusted builder (decided 2026-11-11, f1).
 pub(super) struct Clauses {
     /// The relation's body for `r, km, ks, a, mu`: `Id(R, km a mu, ks a)` in `FIXED`.
     pub relate: fn(&mut Cx, At, At, At, At, At) -> Expr,
