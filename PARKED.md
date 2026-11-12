@@ -248,6 +248,19 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   and call 0.41 s against a 0.57 s cap; Goal 1 targets under 55 ms against 440 ms) and the weight is a plain constant.
   Trigger: a quiet machine, or a change to the Call-bearing path. Evidence: `docs/tier-cycle/`, "v0.8's build:
   measurements and checks", verified 2026-11-11. Status: parked.
+- **A call budget that bounds gate time** - what: `proof/gate.rs#cost` is tree nodes plus `CALL_WEIGHT` (228) per
+  call site, fitted only on `rec f n = if n <= 0 then 0 else f (n - 1) + .. + f (n - 1)` (a tiny tree). A term
+  with 16 self-calls and a 1920-node straight-line tail costs 7590, under `MAX_GATE_TREE` (8192), and took about
+  3 s to build and check against 0.37 s for `doubling(12)` in the same run (untimed; review probe
+  `2026-11-11-v08-final-review-probe-p3d`, verifier run `2026-11-11-v08-verify-callcost`): check time grows with
+  call sites times the code after each call, which a per-site weight does not see. No verdict is wrong; the
+  first `apply` of such a term stalls. Options weighed 2026-11-11: weight each site by the code after it and
+  refit; or replace the weight and its fit with a cap on the kernel's deterministic work count during build
+  and check (fewer concepts, but padded code could then turn `Rejected` into `NotCovered`, against the spec's
+  source-only budget). Why parked: by decision (Decide c1, 2026-11-11); the stalling shapes are contrived and
+  no corpus term is near them. Trigger: a real term that is covered and takes over 0.57 s in the gate, or the
+  timed reruns above moving the fit. Evidence: `crates/tatic/src/proof/gate.rs#cost`, `#CALL_WEIGHT`, verified
+  2026-11-11. Status: parked.
 - **A distinct `i32` kind** — why parked: no v0.8 target holds an `i32` value; v0.8 removes the env word from covered
   callees (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`, D3). Trigger: the first `i32` arithmetic in a gate target. Evidence: same spec, "Departures from the
   decision file", verified 2026-11-11. Status: parked.

@@ -114,7 +114,10 @@ S2c fills a verdict column (`Accepted`, `Rejected`, `NotCovered`). No column rea
   budget covers both: a term's cost is its tree nodes plus a weight per `Call` site, and a term over `MAX_GATE_TREE` is
   `NotCovered`; a straight-line term's cap is unchanged. The weight is a cost knob, not a goal: S2c fits it so a
   `Call`-bearing term at the budget takes as long as the relational `doubling(12)` (at most 0.57 s), and every Goal 1
-  target stays under; a Goal 2 target or held-out term over it leaves its goal. The cap may be raised on purpose,
+  target stays under; a Goal 2 target or held-out term over it leaves its goal. As built (T12) the weight was fitted
+  on one family, many self-calls on a tiny tree (`time_call_family`), so the time bound holds for that family only: a
+  term that mixes self-calls with a large straight-line tail can sit under the budget and take about 7x as long (the
+  final review; `PARKED.md`, "A call budget that bounds gate time"). The cap may be raised on purpose,
   never lowered below `doubling(12)` (Goal 5); its doc comment ("largest power of two under 0.4 s") is amended in the
   merge if the go/no-go's median is above 0.4 s. The one go/no-go on time is S2's.
 - **Deep builders** run under `tatic_kernel::grow`; checking threads use `tatic_kernel::CHECK_STACK`
