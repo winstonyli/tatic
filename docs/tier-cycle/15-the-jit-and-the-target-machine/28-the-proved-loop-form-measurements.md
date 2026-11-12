@@ -28,7 +28,12 @@ try (`pfl-bench-a2-timed1`).
   the bench at six commits (`cold-probe`, untimed on `CFF`, `docs/runs/2026-11-12/scripts/cold-probe.sh`) puts the
   step at `c46cfe6`: 632 and 607 us at `0f97e17` and `59810fd`, then 4.70, 5.07, 5.02 and 4.86 ms at `c46cfe6`,
   `d4e54b3`, `64d1689` and `7ad2f0a`. That commit brought self calls into the gate, so the cold path now includes the
-  closure loop's kernel proof; that the extra 4.1 ms is the proof is an inference from the commit, not a profile.
+  closure loop's kernel proof. A samply profile of the cold row on main (`cold-prof`, table
+  `docs/runs/2026-11-12/cold-prof/named.txt`) confirms it: of the samples under `compile_verify_and_apply`, the gate
+  is 80% (`gate::build`, the statement and the walk, 56%; the kernel check 24%), wasmtime's `instantiate` 13%, and
+  compile and `verify` the rest. At 4.7 to 4.9 ms that is about 2.7 ms building, 1.2 ms checking and 0.6 ms in
+  wasmtime. Open: the O3 spike timed the same build at 0.7 ms in a debug test (`docs/tier-cycle/`, "v0.8's build: measurements and checks"), against 2.7 ms here in a
+  release bench whose every iteration starts from a fresh `JitEngine` and `TermStore`; the gap is not explained.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
   that `return_call` costs invisible beside the call into the module; confirming it would take a gcd input with many
   steps.

@@ -6,6 +6,8 @@
 import collections, gzip, json, re, subprocess, sys
 
 D, EXE = sys.argv[1], sys.argv[2]
+# the profiled exe's own frames: its library carries the exe's file stem (e.g. church_bv-<hash>, execution-<hash>)
+EXE_STEM = __import__("os").path.splitext(__import__("os").path.basename(EXE))[0].lower()
 p = json.load(gzip.open(f"{D}/pcs.json.gz"))
 libs = p["libs"]
 threads = list(p["threads"]) + [t for sp in p.get("processes", []) for t in sp["threads"]]
@@ -35,7 +37,7 @@ for t in threads:
         n = S[fu["name"][f]]
         m = re.match(r"^(?:fun_|0x)([0-9a-f]+)$", n)
         out = None
-        if lib and "church_bv" in lib.lower() or lib and "bv_prof" in lib.lower():
+        if lib and EXE_STEM in lib.lower():
             rva = addr if addr is not None and addr >= 0 else (int(m.group(1), 16) if m else None)
             out = ("exe", rva)
         else:
