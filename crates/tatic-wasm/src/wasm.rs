@@ -39,7 +39,7 @@ mod tests {
         for (name, operand) in cases {
             let row = t.row(name).unwrap_or_else(|| panic!("no row {name}"));
             let want = match row.class {
-                Class::Const => arrow(m.fr(), v.clone()),
+                Class::Const => m.operand_ty(),
                 Class::Word => arrow(v.clone(), arrow(v.clone(), v.clone())),
                 Class::Bit => arrow(v.clone(), arrow(v.clone(), bv_ty(1))),
             };

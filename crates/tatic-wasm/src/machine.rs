@@ -260,15 +260,29 @@ impl Machine<'_> {
         let n = self.n;
         (0..self.fw).rev().fold(lit(n, 0), |acc, i| mkpair(self.words(self.fw - 1 - i, self.v()), vals.get(i).copied().unwrap_or(lit(n, 0)), acc))
     }
-    /// Slot `i` of the frame `fr` (of `k` slots left), by `sigrec`.
-    fn nth(&self, c: &mut Cx, i: usize, k: usize, fr: At) -> Expr {
-        assert!(i < k, "local {i} is out of the frame's width");
-        let (vm, tail) = (c.mark(self.v()), c.mark(self.words(k - 1, self.v())));
-        self.split(c, vm, self.v(), tail, fr, |c, x, rest| if i == 0 { c.at(x) } else { self.nth(c, i - 1, k - 1, rest) })
+    /// A Const-class operand's type, `Fr -> Pi R:Sort0. (V -> R) -> R`: the word is handed to a continuation, so the
+    /// interpreter pushes the reduced component, never the redex `op fr` (a stack value that shares no node with the
+    /// source's makes every conversion of the two walk both term trees).
+    pub fn operand_ty(&self) -> Expr {
+        arrow(self.fr(), pi(sort(0), arrow(arrow(self.v(), var(0)), var(0))))
     }
-    /// `r. slot i of fr`: the operand of the `local.get` row.
+    /// The operand that hands `word fr` to its continuation.
+    pub fn handing(&self, c: &mut Cx, word: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
+        c.lam(self.fr(), |c, fr| c.lam(sort(0), |c, r| c.lam(arrow(self.v(), c.at(r)), |c, k| app(c.at(k), word(c, fr)))))
+    }
+    /// Slot `i` of the frame `fr` (of `k` slots left), by `sigrec`, handed to `cont : V -> res`.
+    fn nth(&self, c: &mut Cx, i: usize, k: usize, fr: At, res: At, cont: At) -> Expr {
+        assert!(i < k, "local {i} is out of the frame's width");
+        let tail = c.mark(self.words(k - 1, self.v()));
+        self.split(c, res, self.v(), tail, fr, |c, x, rest| {
+            if i == 0 { app(c.at(cont), c.at(x)) } else { self.nth(c, i - 1, k - 1, rest, res, cont) }
+        })
+    }
+    /// The operand of the `local.get` row: hands slot `i` of the frame to its continuation.
     pub fn getter(&self, c: &mut Cx, i: usize) -> Expr {
-        c.lam(self.fr(), |c, fr| self.nth(c, i, self.fw, fr))
+        c.lam(self.fr(), |c, fr| {
+            c.lam(sort(0), |c, r| c.lam(arrow(self.v(), c.at(r)), |c, k| self.nth(c, i, self.fw, fr, r, k)))
+        })
     }
     /// The row `name` of the table; panics on a name the table lacks (`well_formed` rejects those first).
     fn row(&self, name: &str) -> &Row {
@@ -281,7 +295,7 @@ impl Machine<'_> {
             let a = c.at(a);
             let (va, vva, v1a) = (prod(v, a), prod(v, prod(v, a)), prod(v1, a));
             match k {
-                Ctor::Leaf(Class::Const) => arrow(arrow(self.fr(), v), arrow(fa(va), fa(a))),
+                Ctor::Leaf(Class::Const) => arrow(self.operand_ty(), arrow(fa(va), fa(a))),
                 Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(fa(va), fa(vva))),
                 Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
@@ -389,9 +403,9 @@ impl Machine<'_> {
             })
         };
         // a 0-to-1 row pushes its operand's value at the frame
-        let konst = shape(c, Some(arrow(fr_ty, v)), &|a| prod(v, a), &|a| a, &|c, a, op, rest, fr, st, mu| {
-            let x = app(c.at(op.unwrap()), c.at(fr));
-            app3(c.at(rest), c.at(fr), mkpair(c.at(a), x, c.at(st)), c.at(mu))
+        let konst = shape(c, Some(self.operand_ty()), &|a| prod(v, a), &|a| a, &|c, a, op, rest, fr, st, mu| {
+            let kont = c.lam(v, |c, x| app3(c.at(rest), c.at(fr), mkpair(c.at(a), c.at(x), c.at(st)), c.at(mu)));
+            app3(c.at(op.unwrap()), c.at(fr), c.at(r), kont)
         });
         let binop = |c: &mut Cx, out: Expr| {
             shape(c, Some(arrow(v, arrow(v, out))), &|a| prod(out, a), &|a| prod(v, prod(v, a)), &|c, a, op, rest, fr, st, mu| {
@@ -464,6 +478,9 @@ impl Machine<'_> {
         })
     }
 }
+
+pub mod sim;
+pub mod statement;
 
 #[cfg(test)]
 mod tests {

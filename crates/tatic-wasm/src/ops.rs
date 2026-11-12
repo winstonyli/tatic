@@ -10,7 +10,7 @@ pub fn const_row() -> Row {
     Row {
         name: "const",
         class: machine::Class::Const,
-        meaning: |c, m: &Machine, v| c.lam(m.fr(), |_, _| lit(m.n, (v as u64 as u128) & low_bits(m.n))),
+        meaning: |c, m: &Machine, v| m.handing(c, &|_, _| lit(m.n, (v as u64 as u128) & low_bits(m.n))),
         line: |v| format!("i64.const {v}"),
     }
 }
