@@ -67,7 +67,8 @@ fn a_callee_wider_than_its_caller_and_the_reverse() {
     applies_like_eval(&s, h, &[&[1, 2, 3], &[0, 0, 0]]);
 }
 
-/// Review Focus 5: a callee's own tail loop is a `return_call`, so a million iterations run in constant depth.
+/// Review Focus 5: a callee's own tail loop is in the loop form (`br $top`), so a million iterations run in constant
+/// depth; the entry's tail call into the callee is not a self call and stays a `return_call`.
 #[test]
 fn a_callee_tail_loop_runs_a_million_iterations() {
     let b = |s: &mut TermStore| source(s, r"\n. (rec g n acc = if n <= 0 then acc else g (n - 1) (acc + n)) n 0");
@@ -76,7 +77,10 @@ fn a_callee_tail_loop_runs_a_million_iterations() {
         (gate(wasm_table(), &s, h, &frag), frag.wat())
     });
     assert_eq!(v, Verdict::Accepted);
-    assert!(wat.contains("return_call $c0"), "{wat}");
+    let start = wat.find("(func $c0").expect("the callee is at position 0");
+    let g = &wat[start..wat[start + 1..].find("(func").map_or(wat.len(), |i| start + 1 + i)];
+    assert!(g.contains("br $top") && !g.contains("return_call $c0"), "{wat}");
+    assert_eq!(wat.matches("return_call $c0").count(), 1, "{wat}");
     let mut s = TermStore::new();
     let h = b(&mut s);
     let mut jit = JitEngine::new();
@@ -205,7 +209,10 @@ fn site_mutants(frag: &CompiledFragment) -> Vec<(&'static str, String, CompiledF
 
 /// A module's subject: the term the gate sees and its fragment, built afresh at each call.
 fn subject_of(b: &Build) -> impl Fn() -> (TermStore, Hash, CompiledFragment) + '_ {
-    move || compiled(&**b)
+    move || {
+        let (s, h, f) = compiled(&**b);
+        (s, h, super::loop_form::call_form_frag(f))
+    }
 }
 
 /// The row `from` read as the row `to` in the first instruction of the record at `pos` that holds it.
@@ -358,7 +365,8 @@ fn a_cyclic_registry_is_never_accepted() {
 /// rejected: `[konst 1, add]` after its `If`, a `Set` past its arity, and the `Set`s in forward order.
 #[test]
 fn a_callee_loop_form_is_accepted_and_its_mutants_rejected() {
-    use super::loop_form::{call_form_frag, loop_form};
+    use super::loop_form::call_form_frag;
+    use crate::jit::lower_wat::loop_form;
     let b: Build = src(r"\n. (rec g n acc = if n <= 0 then acc else g (n - 1) (acc + n)) n 0");
     let subject = || {
         let (s, h, frag) = compiled(&*b);

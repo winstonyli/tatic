@@ -7,46 +7,11 @@
     (local $papenv i64)
     (local $diva i64)
     (local $divb i64)
-    i64.const 1
-    i64.const 0
-    i64.lt_s
-    if (result i64)
-      local.get $p1
-      local.tee $papenv
-      i64.const 32
-      i64.shr_u
-      i32.wrap_i64
-      local.get $papenv
-      local.get $p2
-      local.set $papenv
-      i32.wrap_i64
-      local.set $envtmp
-      local.get $papenv
-      local.get $envtmp
-      call_indirect (type $ty1)
-      local.tee $papenv
-      i64.const 32
-      i64.shr_u
-      i32.wrap_i64
-      local.get $papenv
-      i64.const 999
-      local.set $papenv
-      i32.wrap_i64
-      local.set $envtmp
-      local.get $papenv
-      local.get $envtmp
-      call_indirect (type $ty1)
-    else
-      local.get $p0
+    loop $top (result i64)
+      i64.const 1
       i64.const 0
-      i64.le_s
+      i64.lt_s
       if (result i64)
-        local.get $p2
-      else
-        local.get $p0
-        i64.const 1
-        i64.sub
-        local.get $p1
         local.get $p1
         local.tee $papenv
         i64.const 32
@@ -60,7 +25,47 @@
         local.get $papenv
         local.get $envtmp
         call_indirect (type $ty1)
-        return_call $c0
+        local.tee $papenv
+        i64.const 32
+        i64.shr_u
+        i32.wrap_i64
+        local.get $papenv
+        i64.const 999
+        local.set $papenv
+        i32.wrap_i64
+        local.set $envtmp
+        local.get $papenv
+        local.get $envtmp
+        call_indirect (type $ty1)
+      else
+        local.get $p0
+        i64.const 0
+        i64.le_s
+        if (result i64)
+          local.get $p2
+        else
+          local.get $p0
+          i64.const 1
+          i64.sub
+          local.get $p1
+          local.get $p1
+          local.tee $papenv
+          i64.const 32
+          i64.shr_u
+          i32.wrap_i64
+          local.get $papenv
+          local.get $p2
+          local.set $papenv
+          i32.wrap_i64
+          local.set $envtmp
+          local.get $papenv
+          local.get $envtmp
+          call_indirect (type $ty1)
+          local.set $p2
+          local.set $p1
+          local.set $p0
+          br $top
+        end
       end
     end
   )

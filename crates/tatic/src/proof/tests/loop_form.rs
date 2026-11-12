@@ -3,11 +3,11 @@
 //! recorded (`docs/tier-cycle/`, "v0.8's build: measurements and checks"). Every list starts from the `Call` form
 //! (`call_form_frag`), so the tests read the same after the lowering emits the loop form.
 use tatic_wasm::machine::{Entry, Ins};
-use tatic_wasm::print::map_tail_calls;
 
 use super::gate::{big, compiled};
 use super::gate_mutants::{clip, get, konst};
 use crate::jit::compile::{CompiledFragment, Item};
+use crate::jit::lower_wat::{loop_form, rev_slots};
 use crate::jit::shape::wasm_table;
 use crate::lang::term::{Hash, TermStore};
 use crate::proof::gate::{gate, Layer, Verdict};
@@ -28,16 +28,6 @@ pub(super) fn set(i: i64) -> Ins {
 }
 fn row(name: &'static str) -> Ins {
     Ins::Row { name, operand: 0 }
-}
-
-/// The slots a self call's arguments are written to, top of the stack first: the last argument first.
-pub(super) fn rev_slots(arity: usize) -> Vec<i64> {
-    (0..arity as i64).rev().collect()
-}
-
-/// `code` with each tail `Call(own)` replaced by `Set`s at `slots` (in order) then `Br`.
-pub(super) fn loop_form(code: &[Ins], own: usize, slots: &[i64]) -> Vec<Ins> {
-    map_tail_calls(code, &mut |j| (j == own).then(|| slots.iter().map(|s| set(*s)).chain([Ins::Br]).collect()))
 }
 
 /// `code` with each tail `[Set(arity-1) .. Set(0), Br]` mapped back to `Call(own)`: the inverse of `loop_form` with the
@@ -329,5 +319,31 @@ fn dead_code_after_br_validates() {
         wat.push_str("  (export \"f\" (func $f))\n)\n");
         let bytes = wat::parse_str(&wat).unwrap_or_else(|err| panic!("{code:?} parses: {err}\n{wat}"));
         wasmtime::Module::new(&engine, &bytes).unwrap_or_else(|err| panic!("{code:?} validates: {err}\n{wat}"));
+    }
+}
+
+/// The number of records in `wat` whose text holds a `return_call` of their own label.
+fn self_return_calls(wat: &str) -> usize {
+    wat.split("(func ").skip(1).filter(|f| {
+        let label = f.split_whitespace().next().unwrap_or("");
+        f.lines().any(|l| l.trim() == format!("return_call {label}"))
+    })
+    .count()
+}
+
+/// The ROADMAP v0.9 check: the shipped loops, compiled as the lowering emits them (no `call_form_frag`), gate
+/// `Accepted` and print `br $top` with no self `return_call`.
+#[test]
+fn the_shipped_loops_install_in_loop_form() {
+    let shipped: [(&str, Build); 2] =
+        [("capturing_closure_loop", Box::new(capturing_closure_loop)), ("held_out_b", Box::new(crate::testing::test_corpus::held_out_b))];
+    for (name, b) in shipped {
+        let (v, wat) = big(move || {
+            let (s, h, frag) = compiled(&*b);
+            (gate(wasm_table(), &s, h, &frag), frag.wat())
+        });
+        assert_eq!(v, Verdict::Accepted, "{name}");
+        assert!(wat.contains("br $top"), "{name}: {wat}");
+        assert_eq!(self_return_calls(&wat), 0, "{name}: {wat}");
     }
 }

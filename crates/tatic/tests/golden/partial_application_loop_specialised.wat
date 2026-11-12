@@ -4,19 +4,23 @@
     (local $papenv i64)
     (local $diva i64)
     (local $divb i64)
-    local.get $p0
-    i64.const 0
-    i64.le_s
-    if (result i64)
-      local.get $p1
-    else
+    loop $top (result i64)
       local.get $p0
-      i64.const 1
-      i64.sub
-      local.get $p1
-      local.get $p0
-      i64.add
-      return_call $f
+      i64.const 0
+      i64.le_s
+      if (result i64)
+        local.get $p1
+      else
+        local.get $p0
+        i64.const 1
+        i64.sub
+        local.get $p1
+        local.get $p0
+        i64.add
+        local.set $p1
+        local.set $p0
+        br $top
+      end
     end
   )
   (export "f" (func $f))

@@ -204,13 +204,20 @@ fn call_dropped(b: &mut Vec<Ins>, call: usize, _args: &[std::ops::Range<usize>])
     true
 }
 
+/// `b` compiled and mapped back to the `Call` form (`loop_form::call_form_frag`): the lowering emits a tail self call
+/// as the loop form, and these mutators edit `Call` sites.
+fn call_formed(b: &Build) -> (TermStore, Hash, CompiledFragment) {
+    let (s, h, f) = compiled(&**b);
+    (s, h, super::loop_form::call_form_frag(f))
+}
+
 #[test]
 fn self_call_site_mutants_are_rejected() {
     let terms: [(&str, Build, usize); 3] =
         [("factorial", Box::new(factorial), 1), ("fib", Box::new(fib), 1), ("capturing_closure_loop", Box::new(capturing_closure_loop), 2)];
     let mut applied = std::collections::BTreeMap::<&str, usize>::new();
     for (name, b, arity) in &terms {
-        let subject = || compiled(&**b);
+        let subject = || call_formed(b);
         let mut run = |what: &'static str, layer: Layer, edit: SiteEdit| {
             *applied.entry(what).or_default() += at_each_site(name, what, &subject, *arity, layer, edit);
         };
@@ -244,12 +251,13 @@ fn an_if_arm_swap_is_rejected() {
 
 /// The no-loop spike's control list (doc 15, "Tail self-calls as `return_call`, with no `loop` or `br`: a spike"), minus
 /// its `return_call`-for-`call` mutant: the records carry `Call` only and the printer picks the form, so there is no such
-/// mutant here (`call` for `return_call` proves, as it should).
+/// mutant here (`call` for `return_call` proves, as it should). The subject is mapped back to the `Call` form
+/// (`call_formed`); the shipped loop form's mutants are in `loop_form.rs`.
 #[test]
 fn no_loop_spike_controls_are_rejected() {
     let terms: [(&str, Build, usize); 3] = [("sum loop", src(SUM), 2), ("factorial", Box::new(factorial), 1), ("fib", Box::new(fib), 1)];
     for (name, b, arity) in &terms {
-        let subject = || compiled(&**b);
+        let subject = || call_formed(b);
         let code = code_of(&subject);
         let holds_row = |r: &str| format!("{code:?}").contains(&format!("name: \"{r}\""));
         let mut seen = 0;

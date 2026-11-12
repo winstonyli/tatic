@@ -5,10 +5,13 @@
 //! are in `lower_wat/templates.rs`. Every representation choice lives here;
 //! `compile.rs` decides only term shape and builds the IR.
 //!
-//! Every call (`SelfCall`, `CallKnown`) lowers to `Ins::Call(position)`, and the
-//! printer writes `return_call` for a call in tail position and `call`
-//! otherwise (`tatic_wasm::print`'s tail rule), so tail recursion runs in
-//! constant Wasm call-stack depth with no `loop`.
+//! Every call (`SelfCall`, `CallKnown`) lowers to `Ins::Call(position)`; then
+//! each function's tail self calls are rewritten to the loop form (`loop_form`:
+//! the arguments written to the parameter slots by `local.set`, then `Br`),
+//! which the printer wraps in `loop $top` and the gate proves like a call. A
+//! remaining call prints as `return_call` in tail position and `call` otherwise
+//! (`tatic_wasm::print`'s tail rule), so tail recursion runs in constant Wasm
+//! call-stack depth.
 //!
 //! ## Closures: real closure conversion, uniform representation
 //!
@@ -194,6 +197,7 @@
 use hashbrown::{HashMap, HashSet};
 
 use tatic_wasm::machine::{Class, EnvAccess, Entry, Ins};
+use tatic_wasm::print::map_tail_calls;
 
 use crate::jit::compile::{CompiledFragment, Item};
 use crate::jit::ir::{Combinator, Dispatch, Func, Module, Node, Read};
@@ -404,6 +408,7 @@ impl Lowering<'_> {
         let cx = FnCx { pos, env };
         let mut code = Vec::new();
         self.node(&cx, &f.body, &mut code);
+        let code = loop_form(&code, pos, &rev_slots(f.arity));
         Item::Func { pos, entry: Entry { arity: f.arity, env, code }, source: None }
     }
 
@@ -596,6 +601,18 @@ fn push_closure_env(cx: &FnCx, env: &[Read], w: &mut Vec<Ins>) {
     raw(w, "local.get $envtmp");
 }
 
+/// The slots a self call's arguments are written to, top of the stack first: the last argument first.
+pub(crate) fn rev_slots(arity: usize) -> Vec<i64> {
+    (0..arity as i64).rev().collect()
+}
+
+/// The loop form (spec 2026-11-12-proved-loop-form-design.md, B1): `code` with each tail `Call(own)` replaced by a
+/// `local.set` at each of `slots` (in order) then `Br`; other calls are left alone.
+pub(crate) fn loop_form(code: &[Ins], own: usize, slots: &[i64]) -> Vec<Ins> {
+    let set = |i: &i64| Ins::Row { name: "local.set", operand: *i };
+    map_tail_calls(code, &mut |j| (j == own).then(|| slots.iter().map(set).chain([Ins::Br]).collect()))
+}
+
 /// The `const` row with operand `v`.
 fn konst(v: i64) -> Ins {
     Ins::Row { name: "const", operand: v }
@@ -707,5 +724,63 @@ mod tests {
     #[test]
     fn a_known_call_passing_a_closure_value_lowers_like_the_builder() {
         assert_lowers_like_the_builder(twice_inc());
+    }
+
+    /// Only a tail self call becomes the loop form: one followed by more code, one to another position, and one in
+    /// the tail of a nested `If` are told apart.
+    #[test]
+    fn loop_form_rewrites_only_tail_self_calls() {
+        let get = |i| Ins::Row { name: "local.get", operand: i };
+        let set = |i| Ins::Row { name: "local.set", operand: i };
+        let cond = vec![get(0), konst(0), Ins::Row { name: "le", operand: 0 }];
+        let lf = |c: &[Ins]| loop_form(c, 0, &rev_slots(2));
+        let with = |tail: Vec<Ins>| [cond.clone(), vec![Ins::If(vec![konst(0)], [vec![get(0), get(1)], tail].concat())]].concat();
+        let call0 = with(vec![Ins::Call(0)]);
+        assert_eq!(lf(&call0), with(vec![set(1), set(0), Ins::Br]));
+        let not_tail = [vec![konst(1)], call0.clone(), vec![Ins::Row { name: "add", operand: 0 }]].concat();
+        assert_eq!(lf(&not_tail), not_tail);
+        let other = with(vec![Ins::Call(1)]);
+        assert_eq!(lf(&other), other);
+        let nested = |tail: Vec<Ins>| [cond.clone(), vec![Ins::If(vec![konst(0)], with(tail))]].concat();
+        assert_eq!(lf(&nested(vec![Ins::Call(0)])), nested(vec![set(1), set(0), Ins::Br]));
+    }
+
+    /// The loop form over env words: a loop `g` reading a capture `k`, called directly (its env as a parameter) and
+    /// through `call_indirect` (its env behind a pointer), runs its own body as `br $top` and agrees with `eval`. These
+    /// terms are `NotCovered`, so the text runs here rather than through `JitEngine::apply`.
+    #[test]
+    fn env_word_loops_run_and_match_eval() {
+        let terms = [
+            (r"\k n. (rec g m acc = if m <= 0 then acc else g (m - 1) (acc + k)) n 0", false),
+            (r"\k n. (rec f i h = if i <= 0 then h n 0 else f (i - 1) h) 1 (rec g m acc = if m <= 0 then acc else g (m - 1) (acc + k))", true),
+        ];
+        for (src, indirect) in terms {
+            let mut s = crate::lang::term::TermStore::new();
+            let h = crate::support::samples::source(&mut s, src);
+            let frag = try_compile(&s, h).unwrap_or_else(|| panic!("{src}: compiles"));
+            let wat = frag.wat();
+            let records = frag.records();
+            let g = if indirect {
+                let ptr: Vec<usize> = (0..records.len()).filter(|&p| records[p].is_some_and(|e| e.env == EnvAccess::Pointer)).collect();
+                assert_eq!(ptr.len(), 1, "{src}: one record behind a pointer: {ptr:?}\n{wat}");
+                ptr[0]
+            } else {
+                0
+            };
+            let want = if indirect { EnvAccess::Pointer } else { EnvAccess::Params(1) };
+            assert_eq!(records[g].expect("g is a record").env, want, "{src}\n{wat}");
+            let label = if g == frag.entry_pos { "$f".to_string() } else { format!("$c{g}") };
+            let start = wat.find(&format!("(func {label} ")).unwrap_or_else(|| panic!("{src}: {label}\n{wat}"));
+            let text = &wat[start..wat[start + 1..].find("(func").map_or(wat.len(), |i| start + 1 + i)];
+            assert!(text.contains("br $top"), "{src}: g loops\n{wat}");
+            let (mut store, instance) = instantiate(&wat);
+            let f = instance.get_typed_func::<(i64, i64), i64>(&mut store, "f").unwrap();
+            for k in [-3, 0, 7] {
+                for n in (0..20).chain([100_000]) {
+                    let got = f.call(&mut store, (k, n)).unwrap();
+                    assert_eq!(Ok(got), crate::lang::eval::apply_term(&s, h, &[k, n]), "{src}: k={k} n={n}");
+                }
+            }
+        }
     }
 }

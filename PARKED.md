@@ -172,6 +172,14 @@ A finding is cited by section or paragraph title, never by line (its lines drift
 
 ## Proof shapes and compiled evaluation
 
+- **Dead env pushes before a loop-form `br`** — what: a self call in a function with env words (`EnvAccess::Params(k)`,
+  k > 0, or `Pointer`) still pushes `$e0..` or `$env` before its arguments (`lower_wat.rs#Lowering::node`,
+  `SelfCall`). In the loop form the `local.set`s take only the arguments, and `br $top` drops the env words under
+  them, so each iteration pushes words it never reads. Why parked: a stopgap of the loop-form pass, which rewrites the
+  `Call` lowering after the fact (spec `2026-11-12-proved-loop-form-design.md`, B1) and must not decide tail position
+  itself; the gate types `Br` with the stack under it ignored, so the pushes are proved harmless. Dropping them means
+  the pass knowing `SelfCall`'s env prefix. Trigger: a profile showing the pushes in a hot loop. Evidence:
+  `crates/tatic/src/jit/lower_wat.rs` (`env_word_loops_run_and_match_eval`; 2026-11-12). Status: parked.
 - **The straight-line gate's leftovers (v0.7 final review)** — what: the arm part is fixed (`shape` starts each `If` arm from an empty stack, `machine.rs#if_arms_start_empty_and_leave_one_word`, 2026-11-12; `Loop` is gone since v0.8); left: Goal 4's 8 table edges run ignored (`op_table_agrees_at_n64_on_all_edges`, 4-6 s, nearly all `Mul`; why parked: too slow for every run; trigger: a change to the operator table), and `negative_literals.wat` pins the printer's negative literals (both 2026-11-08). Nested `Mul` and the post-`grow` rerun were measured 2026-11-08 (doc 15, same section): no rule needed. The slow statement build was `karrow`'s nested shifts, fixed 2026-11-08 (doc 15, same section); the check is now the gate's cost. Evidence: doc 15, "The gate's costs, and the rules they triggered", verified 2026-11-08. Status: parked.
 
 - **The gate's time on an operator swap that changes nothing** — what: `redundant_arithmetic_recursion` (`n * 8 + 0 + f (n - 1)`) with its first `add` swapped for `sub` (`x + 0` to `x - 0`, the same function) neither settles nor fails inside 60 s (killed, not run to completion; whether the time is in the walk or the kernel check is not yet told apart); a swap that changes the function is refused in milliseconds. Why parked: found while pinning S2c's operator-swap carriers (T11), which therefore pin `fib` and `factorial` instead of "the first covered census term"; a gate with no deadline on an equivalent mutant is a time risk, not a soundness one (nothing is accepted). Trigger: a gate target whose lowering emits an identity operand, or a deadline on `kernel_verify`'s path. Evidence: `proof/tests/gate_mutants.rs#every_row_has_an_operator_swap_mutant` (2026-11-11). Status: parked.

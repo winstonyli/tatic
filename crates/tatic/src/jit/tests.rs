@@ -780,7 +780,7 @@ fn an_operand_if_installs_through_the_chain() {
 
 #[test]
 fn a_tail_loop_of_a_million_iterations_installs_and_runs() {
-    // `return_call` keeps the Wasm stack flat; the same text with `call` traps.
+    // The loop form keeps the Wasm stack flat: a million iterations run through `br $top`.
     let mut s = TermStore::new();
     let h = crate::support::samples::source(&mut s, "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + n)");
     let mut jit = JitEngine::new();
@@ -788,8 +788,6 @@ fn a_tail_loop_of_a_million_iterations_installs_and_runs() {
     assert_eq!(jit.apply(&s, h, &[n, 0]), Ok(n * (n + 1) / 2));
     assert_eq!(jit.stats.compiled, 1);
     let wat = crate::jit::compile::try_compile(&s, h).unwrap().wat();
-    assert!(wat.contains("return_call $f"), "{wat}");
-    let mut raw = JitEngine::new();
-    let (_module, f, hp) = raw.instantiate(&wat.replace("return_call", "call")).unwrap();
-    assert_eq!(raw.invoke(f, hp, &[n, 0]), Err(EvalError::Trap));
+    assert!(wat.contains("br $top"), "{wat}");
+    assert!(!wat.contains("return_call $f"), "{wat}");
 }

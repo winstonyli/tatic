@@ -134,13 +134,15 @@ fn tail_rule_matches_call_everywhere_under_wasmtime() {
 
 #[test]
 fn tail_rule_prints_both_forms_in_one_body() {
-    // Review Focus 4: the tail call returns, the non-tail call (under `+ 1`) does not.
+    // Review Focus 4: the tail self call becomes the loop form's `br $top`, the non-tail one (under `+ 1`) stays a
+    // `call`.
     let mut s = crate::lang::term::TermStore::new();
     let h = crate::support::samples::source(&mut s, "rec f n = if n <= 0 then 0 else if n < 2 then f (n - 1) else f (n - 1) + 1");
     let frag = crate::jit::compile::try_compile(&s, h).unwrap();
     let wat = frag.wat();
-    assert_eq!(wat.matches("return_call $f").count(), 1, "{wat}");
-    assert_eq!(wat.matches("call $f").count() - 1, 1, "{wat}");
+    assert_eq!(wat.matches("return_call $f").count(), 0, "{wat}");
+    assert_eq!(wat.matches("br $top").count(), 1, "{wat}");
+    assert_eq!(wat.matches("call $f").count(), 1, "{wat}");
     let (mut store, inst) = instantiate(&wat);
     let f = inst.get_typed_func::<i64, i64>(&mut store, "f").unwrap();
     let mut jit = crate::jit::JitEngine::new();
