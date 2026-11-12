@@ -32,6 +32,14 @@ rejected, as are wrong `km` and `ks` on the sum loop.
 `return_call` per iteration in place of `loop` costs the closure loop's warm call +480% (4.4 to 25 us), and gcd's +12%.
 Both stay far under the interpreter (7.7 ms). The spec makes a slowdown a finding, not a gate; this is the finding.
 
+Why (2026-11-11, `docs/runs/2026-11-11/scripts/rc_probe.rs`, a quick unrecorded probe): it is wasmtime's, not tatic's.
+The same body on a default `Engine`, as `return_call` and as `loop`, runs 1.50 and 0.25 ns per iteration (best of 30
+at n = 20 000 and 2 000 000; the bench's 25 and 4.4 us for 20 000). Cranelift does not turn a self tail call into a
+jump inside the function: each `return_call` re-enters through the prologue (push and pop of `rbp` and the stack-limit
+check, two dependent loads from the vmctx and a compare) before the `jmp`, where the `loop` body is the four
+arithmetic instructions and a back edge. So the cost is a fixed few cycles per call, the same in any self tail
+recursion, and cannot be removed by changing tatic's emitted wasm short of emitting `loop` again.
+
 **The go/no-go (T9) and its rerun with `Call` (T10 Step 4b).** The relational build and check of `doubling(12)` against
 the refl path, untimed (5 interleaved runs per arm, `CFF`, BelowNormal; a timed run was refused for 45 minutes): relational
 median 0.360 s against refl 0.399 s (0.90x), limit 0.57 s (1.5x). With `Call` in the machine (runs
