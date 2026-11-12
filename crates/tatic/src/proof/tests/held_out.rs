@@ -1,5 +1,5 @@
 //! Goal 5's held-out rows: terms written without sight of the generator (T8). They must be `Accepted` by the gate and
-//! install through the JIT; ignored until the freeze (T13) turns it on.
+//! install through the JIT; the freeze (T13) turned it on.
 use super::*;
 use crate::jit::compile::compile_specialised;
 use crate::jit::shape::wasm_table;
@@ -8,7 +8,6 @@ use crate::proof::gate::{gate, Verdict};
 use crate::testing::test_corpus as tc;
 
 #[test]
-#[ignore = "held out until the freeze (T13)"]
 fn held_out_terms_are_accepted() {
     for (name, build) in [("held_out_a", tc::held_out_a as fn(&mut TermStore) -> Hash), ("held_out_b", tc::held_out_b)] {
         let (v, installed) = std::thread::Builder::new()
