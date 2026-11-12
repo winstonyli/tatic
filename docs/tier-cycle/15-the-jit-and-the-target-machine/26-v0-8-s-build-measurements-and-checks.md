@@ -40,6 +40,20 @@ check, two dependent loads from the vmctx and a compare) before the `jmp`, where
 arithmetic instructions and a back edge. So the cost is a fixed few cycles per call, the same in any self tail
 recursion, and cannot be removed by changing tatic's emitted wasm short of emitting `loop` again.
 
+Newer wasmtime does not fix it (checked 2026-11-12). On 50.0.1, the latest stable release, and on 51.0.0-rc.1, the same
+probe gives the same per-iteration costs: about 1.5 against 0.26 ns. The prologue is the same, except that the stack
+limit is read from vmctx field `+0x18`. In all three versions, `translate_return_call` emits a plain Cranelift
+`return_call`, with no special case when a function calls itself. No `Config` option removes the stack check, which
+is emitted on entry to every function and skipped only on Pulley.
+- `cranelift_opt_level`, `enable_probestack(false)` and `preserve_frame_pointers(false)` leave the function body
+  byte-identical.
+- `signals_based_traps(false)` moves the check but keeps it.
+- `compiler_inlining` was not tried. Inference: it cannot help, because inlining a function into itself does not
+  make a loop.
+
+Replacing these explicit checks with guard pages is upstream issue bytecodealliance/wasmtime#8135, open since
+2024-03, with an unmerged work-in-progress branch. The probe's run records are under `claude-runs\wp`.
+
 **The go/no-go (T9) and its rerun with `Call` (T10 Step 4b).** The relational build and check of `doubling(12)` against
 the refl path, untimed (5 interleaved runs per arm, `CFF`, BelowNormal; a timed run was refused for 45 minutes): relational
 median 0.360 s against refl 0.399 s (0.90x), limit 0.57 s (1.5x). With `Call` in the machine (runs
