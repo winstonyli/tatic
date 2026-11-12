@@ -373,9 +373,11 @@ reported by `JitEngine::is_kernel_verified`):
     and the JIT passing `args` in order (guard: `verify`);
   - the machine as a model of wasm `if`, `call`, `local.get` and i64
     arithmetic, with locals as a frame passed into every interpreter and
-    one opaque memory argument; it is more permissive than wasm validation
-    (an arm may pop below its entry stack), so the gate relies on wasmtime
-    having validated the module first, as `try_install` does;
+    one opaque memory argument; each `if` arm runs from an empty stack and
+    leaves one word, as the printed `if (result i64)` requires (since
+    2026-11-12, `machine.rs#if_arms_start_empty_and_leave_one_word`), and
+    the gate still runs after wasmtime has validated the module, as
+    `try_install` does;
   - the registry pairing (`gate.rs#pairing`): each record's source term has the record's arity and calls the positions
     its code calls other than its own, so a swapped registry entry or a mismatched callee is refused before any
     statement exists (guard: `proof/tests/modules.rs`);
