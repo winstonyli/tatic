@@ -125,7 +125,7 @@ fn the_installation_proof_is_about_the_specialised_term() {
     assert!(!JitEngine::kernel_verify(&s, h, 1));
     // `n + 1` is a fragment term: the gate proves its emitted body
     let c = crate::jit::compile::compile_specialised(&sp.store, sp.term).expect("n + 1 compiles");
-    assert!(JitEngine::prove_install(&sp.store, sp.term, 1, c.frag.entry()));
+    assert!(JitEngine::prove_install(&sp.store, sp.term, 1, c.frag.entry().code.as_slice()));
     for n in [0, 5, -7] {
         assert_eq!(jit.apply(&s, h, &[n]), Ok(n + 1));
     }
@@ -735,12 +735,12 @@ fn the_gates_verdict_is_final_for_fragment_terms() {
     let crate::jit::compile::Compiled { frag, specialised } =
         crate::jit::compile::compile_specialised(&s, h).expect("straight_line compiles");
     let (s, h) = specialised.unwrap_or((s, h));
-    assert!(JitEngine::prove_install(&s, h, 2, frag.entry()));
-    let swapped = crate::testing::ins_mutate::mutate(frag.entry(), &|i| match i {
+    assert!(JitEngine::prove_install(&s, h, 2, frag.entry().code.as_slice()));
+    let swapped = crate::testing::ins_mutate::mutate(frag.entry().code.as_slice(), &|i| match i {
         Ins::If(t, e) => Some(Ins::If(e.clone(), t.clone())),
         _ => None,
     });
-    assert_ne!(swapped, frag.entry());
+    assert_ne!(swapped, frag.entry().code.as_slice());
     // the chain would accept the term; for a fragment term it is not consulted
     assert!(JitEngine::kernel_verify(&s, h, 2));
     assert!(!JitEngine::prove_install(&s, h, 2, &swapped));
@@ -768,4 +768,36 @@ fn an_operand_if_installs_through_the_chain() {
         assert_eq!(jit.apply(&s, h, &args), eval::apply_term(&s, h, &args), "args={args:?}");
     }
     assert_eq!(jit.stats.compiled, 1);
+}
+
+#[test]
+fn a_tail_loop_of_a_million_iterations_installs_and_runs() {
+    // `return_call` keeps the Wasm stack flat; the same text with `call` traps.
+    let mut s = TermStore::new();
+    let h = crate::support::samples::source(&mut s, "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + n)");
+    let mut jit = JitEngine::new();
+    let n = 1_000_000i64;
+    assert_eq!(jit.apply(&s, h, &[n, 0]), Ok(n * (n + 1) / 2));
+    assert_eq!(jit.stats.compiled, 1);
+    let wat = crate::jit::compile::try_compile(&s, h).unwrap().wat();
+    assert!(wat.contains("return_call $f"), "{wat}");
+    let mut raw = JitEngine::new();
+    let (_module, f, hp) = raw.instantiate(&wat.replace("return_call", "call")).unwrap();
+    assert_eq!(raw.invoke(f, hp, &[n, 0]), Err(EvalError::Trap));
+}
+
+#[test]
+fn calls_go_to_kernel_verify_until_the_gate_covers_them() {
+    // A `Call` is outside the gate's fragment (`in_fragment` admits no recursion), so `kernel_verify` decides and
+    // the terms still install.
+    for build in [crate::support::samples::factorial, crate::support::samples::capturing_closure_loop] {
+        let mut s = TermStore::new();
+        let h = build(&mut s);
+        let c = crate::jit::compile::compile_specialised(&s, h).unwrap();
+        let (ps, ph) = c.specialised.as_ref().map_or((&s, h), |(ss, t)| (ss, *t));
+        assert!(!crate::proof::gate::in_fragment(shape::wasm_table(), ps, ph, c.frag.arity));
+        let mut jit = JitEngine::new();
+        assert!(jit.try_install(&s, h, c.frag.arity).is_ok());
+        assert_eq!(jit.stats.compiled, 1);
+    }
 }

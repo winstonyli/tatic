@@ -113,7 +113,7 @@ fn tail_and_non_tail_self_call_templates_agree() {
             a: b(p(0)),
             b: b(Node::Lit(0)),
             then: b(p(1)),
-            els: b(Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p(0)), b(Node::Lit(1))), Node::Arith(PrimOp::Add, b(p(1)), b(p(0)))], tail: true }),
+            els: b(Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p(0)), b(Node::Lit(1))), Node::Arith(PrimOp::Add, b(p(1)), b(p(0)))] }),
         },
         vec![],
         Dispatch::Fast,
@@ -127,7 +127,7 @@ fn tail_and_non_tail_self_call_templates_agree() {
             a: b(p(0)),
             b: b(Node::Lit(0)),
             then: b(Node::Lit(0)),
-            els: b(Node::Arith(PrimOp::Add, b(p(0)), b(Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p(0)), b(Node::Lit(1)))], tail: false }))),
+            els: b(Node::Arith(PrimOp::Add, b(p(0)), b(Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p(0)), b(Node::Lit(1)))] }))),
         },
         vec![],
         Dispatch::Fast,
@@ -148,7 +148,7 @@ fn tail_and_non_tail_self_call_templates_agree() {
 fn direct_only_combinator_templates_agree_under_both_dispatch_modes() {
     let rec_capturing = |tail: bool| {
         // c0 = rec g n = if n <= 0 then e0 else (e0 + g (n - 1)) or g (n - 1).
-        let call = Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p(0)), b(Node::Lit(1)))], tail };
+        let call = Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p(0)), b(Node::Lit(1)))] };
         let els = if tail { call } else { Node::Arith(PrimOp::Add, b(e(0)), b(call)) };
         Combinator::Lifted(Func { arity: 1, is_rec: true, env_len: 1, body: Node::If { cmp: PrimOp::Le, a: b(p(0)), b: b(Node::Lit(0)), then: b(e(0)), els: b(els) } })
     };

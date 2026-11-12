@@ -74,9 +74,9 @@ pub(crate) enum Node {
     Read(Read),
     Arith(PrimOp, Box<Node>, Box<Node>),
     If { cmp: PrimOp, a: Box<Node>, b: Box<Node>, then: Box<Node>, els: Box<Node> },
-    /// `tail` picks a loop-back or an ordinary `call`. Both are correct;
-    /// `check` only forbids `tail: true` outside tail position.
-    SelfCall { args: Vec<Node>, tail: bool },
+    /// A call back into the enclosing recursive function; the printer picks
+    /// `return_call` or `call` by the tail rule.
+    SelfCall { args: Vec<Node> },
     /// A saturated call to a statically known combinator.
     CallKnown { f: usize, env: Vec<Read>, args: Vec<Node> },
     /// A call through a closure value of unknown arity. Over-application is
@@ -213,13 +213,13 @@ fn lifted(m: &Module, idx: usize) -> Result<&Func, String> {
 }
 
 fn check_func(m: &Module, f: &Func) -> Result<(), String> {
-    // A nullary recursive function's tail self-call lowers to a bare
-    // `br` back to the loop head: an infinite loop (`shape::peel` never
-    // builds one either).
+    // A nullary recursive function's self-call would call itself with no
+    // argument to change: an infinite loop (`shape::peel` never builds one
+    // either).
     if f.is_rec && f.arity == 0 {
         return Err("a recursive function of arity 0".into());
     }
-    check_node(m, f, &f.body, true, &mut HashMap::new())
+    check_node(m, f, &f.body, &mut HashMap::new())
 }
 
 fn check_read(f: &Func, r: Read) -> Result<(), String> {
@@ -240,7 +240,7 @@ fn check_env(f: &Func, expected_len: usize, env: &[Read]) -> Result<(), String> 
 /// `callee_arities` records, for this function, how many arguments each
 /// `Read` callee has been applied to so far. Under `Dispatch::Fast` they
 /// must all agree.
-fn check_node(m: &Module, f: &Func, n: &Node, tail: bool, callee_arities: &mut HashMap<Read, usize>) -> Result<(), String> {
+fn check_node(m: &Module, f: &Func, n: &Node, callee_arities: &mut HashMap<Read, usize>) -> Result<(), String> {
     match n {
         Node::Lit(_) => {}
         Node::Read(r) => check_read(f, *r)?,
@@ -254,15 +254,12 @@ fn check_node(m: &Module, f: &Func, n: &Node, tail: bool, callee_arities: &mut H
                 return Err(format!("{cmp:?} used as a condition"));
             }
         }
-        Node::SelfCall { args, tail: t } => {
+        Node::SelfCall { args } => {
             if !f.is_rec {
                 return Err("a self-call in a non-recursive function".into());
             }
             if args.len() != f.arity {
                 return Err(format!("a self-call with {} of {} arguments", args.len(), f.arity));
-            }
-            if *t && !tail {
-                return Err("a tail self-call outside tail position".into());
             }
         }
         Node::CallKnown { f: g, env, args } => {
@@ -298,13 +295,7 @@ fn check_node(m: &Module, f: &Func, n: &Node, tail: bool, callee_arities: &mut H
             check_env(f, lifted(m, *root)?.env_len, root_env)?;
         }
     }
-    if let Node::If { a, b, then, els, .. } = n {
-        check_node(m, f, a, false, callee_arities)?;
-        check_node(m, f, b, false, callee_arities)?;
-        check_node(m, f, then, tail, callee_arities)?;
-        return check_node(m, f, els, tail, callee_arities);
-    }
-    n.children().into_iter().try_for_each(|c| check_node(m, f, c, false, callee_arities))
+    n.children().into_iter().try_for_each(|c| check_node(m, f, c, callee_arities))
 }
 
 /// Hand-built terms together with the IR `compile::build` must produce for
@@ -367,7 +358,7 @@ pub(crate) mod fixtures {
                     els: b(Node::Arith(
                         PrimOp::Mul,
                         b(p0()),
-                        b(Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p0()), b(Node::Lit(1)))], tail: false }),
+                        b(Node::SelfCall { args: vec![Node::Arith(PrimOp::Sub, b(p0()), b(Node::Lit(1)))] }),
                     )),
                 },
             },
@@ -481,13 +472,13 @@ mod tests {
     }
 
     #[test]
-    fn a_self_call_needs_a_recursive_function_saturation_and_tail_position_for_tail() {
-        let call = |tail| Node::SelfCall { args: vec![Node::Lit(0)], tail };
-        rejects(&with_entry(call(false), 1, false), "non-recursive");
-        rejects(&with_entry(Node::SelfCall { args: vec![], tail: false }, 1, true), "0 of 1");
-        rejects(&with_entry(Node::Arith(PrimOp::Add, Box::new(call(true)), lit(1)), 1, true), "outside tail position");
-        check(&with_entry(call(true), 1, true)).unwrap();
-        let in_branch = Node::If { cmp: PrimOp::Lt, a: lit(0), b: lit(1), then: Box::new(call(true)), els: lit(2) };
+    fn a_self_call_needs_a_recursive_function_and_saturation() {
+        let call = || Node::SelfCall { args: vec![Node::Lit(0)] };
+        rejects(&with_entry(call(), 1, false), "non-recursive");
+        rejects(&with_entry(Node::SelfCall { args: vec![] }, 1, true), "0 of 1");
+        check(&with_entry(Node::Arith(PrimOp::Add, Box::new(call()), lit(1)), 1, true)).unwrap();
+        check(&with_entry(call(), 1, true)).unwrap();
+        let in_branch = Node::If { cmp: PrimOp::Lt, a: lit(0), b: lit(1), then: Box::new(call()), els: lit(2) };
         check(&with_entry(in_branch, 1, true)).unwrap();
     }
 
@@ -527,8 +518,8 @@ mod tests {
 
     #[test]
     fn a_recursive_function_binds_at_least_one_argument() {
-        // Would lower to `loop $L br $L end`.
-        rejects(&with_entry(Node::SelfCall { args: vec![], tail: true }, 0, true), "recursive function of arity 0");
+        // Would call itself forever with nothing to change.
+        rejects(&with_entry(Node::SelfCall { args: vec![] }, 0, true), "recursive function of arity 0");
         // A nullary entry is fine when it is not recursive.
         check(&with_entry(Node::Lit(1), 0, false)).unwrap();
     }

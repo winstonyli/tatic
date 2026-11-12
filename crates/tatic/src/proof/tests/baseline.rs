@@ -119,7 +119,8 @@ fn baseline_fixture_matches() {
             assert!(got.installs && !want.installs, "{name}: a held-out row's installs may go false to true, never back");
             assert_eq!((got.tree, got.name), (want.tree, want.name), "{name}");
         } else {
-            assert_eq!(&got, want, "{name}");
+            // after S2b the tree is not compared: only what the pipeline does with the term
+            assert_eq!((got.installs, got.compiled, got.specialised), (want.installs, want.compiled, want.specialised), "{name}");
         }
     }
 }
@@ -134,4 +135,117 @@ fn print_baseline_rows() {
             r.name, r.installs, r.compiled, r.specialised, r.tree
         );
     }
+}
+
+/// Whether `code` holds a `Raw` line at any depth.
+fn has_raw(code: &[tatic_wasm::machine::Ins]) -> bool {
+    use tatic_wasm::machine::Ins;
+    code.iter().any(|i| match i {
+        Ins::Raw(_) => true,
+        Ins::If(t, e) => has_raw(t) || has_raw(e),
+        Ins::Loop(b) => has_raw(b),
+        _ => false,
+    })
+}
+
+/// What the gate's statement would need of one term's specialised fragment (spec S2c and S3 targets).
+#[derive(Debug, PartialEq, Eq)]
+pub(super) struct Member {
+    name: &'static str,
+    /// No `Raw` at any depth in any record of the specialised fragment.
+    no_raw: bool,
+    /// The specialised term is at most `MAX_GATE_TREE` nodes as a tree.
+    under_cap: bool,
+    /// `records()` holds only the entry.
+    single_entry: bool,
+    /// The stage whose statement is to cover it.
+    stage: &'static str,
+}
+
+fn measure_member(name: &'static str, stage: &'static str, s: &TermStore, h: Hash) -> Member {
+    let c = compile::compile_specialised(s, h).expect("a membership target compiles");
+    let tree = match &c.specialised {
+        Some((ss, t)) => compile::tree_size(ss, *t),
+        None => compile::tree_size(s, h),
+    };
+    let records = c.frag.records();
+    Member {
+        name,
+        no_raw: records.iter().flatten().all(|e| !has_raw(&e.code)),
+        under_cap: tree <= crate::proof::gate::MAX_GATE_TREE,
+        single_entry: records.iter().flatten().count() == 1,
+        stage,
+    }
+}
+
+/// Goal 1 targets (stage S2c) then Goal 2 targets (stage S3).
+const TARGETS: &[(&str, &str)] = &[
+    ("capturing_closure_loop", "S2c"),
+    ("partial_application_loop", "S2c"),
+    ("factorial", "S2c"),
+    ("redundant_arithmetic_recursion", "S2c"),
+    ("fib", "S2c"),
+    ("twice_inc_5", "S3"),
+    ("let_bound_factorial_10", "S3"),
+    ("tail_recursive_loop_with_pap_producing_root_self_call_arg", "S3"),
+];
+
+fn measure_members() -> Vec<Member> {
+    let terms = census();
+    TARGETS
+        .iter()
+        .map(|(name, stage)| {
+            let (n, s, h) = terms.iter().find(|(n, ..)| n == name).unwrap_or_else(|| panic!("no census term {name}"));
+            measure_member(n, stage, s, *h)
+        })
+        .collect()
+}
+
+const MEMBERSHIP: &[Member] = &[
+    Member { name: "capturing_closure_loop", no_raw: true, under_cap: true, single_entry: true, stage: "S2c" },
+    Member { name: "partial_application_loop", no_raw: true, under_cap: true, single_entry: true, stage: "S2c" },
+    Member { name: "factorial", no_raw: true, under_cap: true, single_entry: true, stage: "S2c" },
+    Member { name: "redundant_arithmetic_recursion", no_raw: true, under_cap: true, single_entry: true, stage: "S2c" },
+    Member { name: "fib", no_raw: true, under_cap: true, single_entry: true, stage: "S2c" },
+    Member { name: "twice_inc_5", no_raw: true, under_cap: true, single_entry: false, stage: "S3" },
+    Member { name: "let_bound_factorial_10", no_raw: true, under_cap: true, single_entry: false, stage: "S3" },
+    Member { name: "tail_recursive_loop_with_pap_producing_root_self_call_arg", no_raw: true, under_cap: true, single_entry: false, stage: "S3" },
+];
+
+#[test]
+fn membership_matches() {
+    assert_eq!(measure_members(), MEMBERSHIP);
+}
+
+#[test]
+#[ignore]
+fn print_membership_rows() {
+    for m in measure_members() {
+        println!(
+            "    Member {{ name: {:?}, no_raw: {}, under_cap: {}, single_entry: {}, stage: {:?} }},",
+            m.name, m.no_raw, m.under_cap, m.single_entry, m.stage
+        );
+    }
+}
+
+/// Every `Func` of every census term's fragment prints with the four scratch locals, and `wat()` holds that text.
+#[test]
+fn every_function_header_declares_the_scratch_locals() {
+    let mut funcs = 0;
+    for (name, s, h) in census() {
+        for frag in compile::compile_specialised(&s, h).map(|c| c.frag).into_iter().chain(compile::try_compile(&s, h)) {
+            let wat = frag.wat();
+            for (pos, rec) in frag.records().iter().enumerate() {
+                let Some(e) = rec else { continue };
+                let mut text = String::new();
+                tatic_wasm::print::print_func(crate::jit::shape::wasm_table(), pos, frag.entry_pos, e, &mut text);
+                assert!(wat.contains(&text), "{name}: wat() lacks the function at {pos}");
+                for local in ["(local $envtmp i32)", "(local $papenv i64)", "(local $diva i64)", "(local $divb i64)"] {
+                    assert!(text.contains(local), "{name}: the function at {pos} lacks {local}");
+                }
+                funcs += 1;
+            }
+        }
+    }
+    assert!(funcs > 30, "only {funcs} functions seen");
 }

@@ -98,12 +98,32 @@ pub enum Ins {
     Br(usize),
     Store,
     Load,
+    /// `call`/`return_call` to the module position `j` (the printer picks by its tail rule): pops the callee's
+    /// arity in words, pushes one. It has no meaning before S2c.
+    Call(usize),
     Raw(String),
 }
 
+/// How a function reaches its captures: `Params(k)` as its leading parameters `$e0 .. $e{k-1}`; `Pointer` through
+/// `$env`, a pointer to its environment slots in linear memory.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EnvAccess {
+    Params(usize),
+    Pointer,
+}
+
+/// A function of a module: its parameter count, how it reaches its captures, and its body.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Entry {
+    pub arity: usize,
+    pub env: EnvAccess,
+    pub code: Vec<Ins>,
+}
+
 /// The one stack analysis: the stack after `code` from `st` (top first), `None` if every path jumps, or why the
-/// code is ill formed. `loops` holds the entry stacks of the enclosing loops, innermost first.
-fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Result<Option<Vec<K>>, String> {
+/// code is ill formed. `loops` holds the entry stacks of the enclosing loops, innermost first; `arities[j]` is the
+/// number of words module position `j` pops (`None`: no such callee).
+fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>], arities: &[Option<usize>]) -> Result<Option<Vec<K>>, String> {
     let pop = |st: &mut Vec<K>, want: &[K]| {
         if !st.starts_with(want) {
             return Err(format!("stack {st:?} lacks {want:?}"));
@@ -124,7 +144,7 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Resul
             }
             Ins::If(t, e) => {
                 pop(&mut st, &[K::B])?;
-                st = match (shape(table, t, st.clone(), loops)?, shape(table, e, st, loops)?) {
+                st = match (shape(table, t, st.clone(), loops, arities)?, shape(table, e, st, loops, arities)?) {
                     (Some(a), Some(b)) if a != b => return Err(format!("if arms end on different stacks: {a:?}, {b:?}")),
                     (Some(a), _) | (None, Some(a)) => a,
                     (None, None) => return Ok(None),
@@ -132,7 +152,7 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Resul
             }
             Ins::Loop(body) => {
                 let ls = [std::slice::from_ref(&st), loops].concat();
-                match shape(table, body, st.clone(), &ls)? {
+                match shape(table, body, st.clone(), &ls, arities)? {
                     Some(s) => st = s,
                     None => return Ok(None),
                 }
@@ -149,6 +169,11 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Resul
                 pop(&mut st, &[K::W])?;
                 st.insert(0, K::W)
             }
+            Ins::Call(j) => {
+                let Some(Some(n)) = arities.get(*j) else { return Err(format!("call to position {j}, which has no arity")) };
+                pop(&mut st, &vec![K::W; *n])?;
+                st.insert(0, K::W)
+            }
             Ins::Raw(s) => return Err(format!("raw line {s:?}")),
         }
     }
@@ -156,14 +181,15 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, loops: &[Vec<K>]) -> Resul
 }
 
 /// The stack after `code` from `st` (top first), or `None` if every path jumps; panics on ill-formed code.
-pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>) -> Option<Vec<K>> {
-    shape(table, code, st, &[]).unwrap_or_else(|e| panic!("{e}"))
+pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>, arities: &[Option<usize>]) -> Option<Vec<K>> {
+    shape(table, code, st, &[], arities).unwrap_or_else(|e| panic!("{e}"))
 }
 
 /// Whether `code` from `st` is something the machine runs and falls through: no `Raw`, no unknown row or operand on a
-/// 2-to-1 row, no underflow, matching `if` arms and `br`s to an enclosing loop with its entry stack.
-pub fn well_formed(table: &Table, code: &[Ins], st: &[K]) -> bool {
-    matches!(shape(table, code, st.to_vec(), &[]), Ok(Some(_)))
+/// 2-to-1 row, no underflow, matching `if` arms and `br`s to an enclosing loop with its entry stack, and each
+/// `Call(j)` to a position with an arity.
+pub fn well_formed(table: &Table, code: &[Ins], st: &[K], arities: &[Option<usize>]) -> bool {
+    matches!(shape(table, code, st.to_vec(), &[], arities), Ok(Some(_)))
 }
 
 /// `A x B` as a `Sigma`, both at the same depth.
@@ -277,7 +303,7 @@ impl Machine<'_> {
     }
     /// `code` as a program from `ks` over `base`.
     pub fn prog(&self, c: &mut Cx, code: &[Ins], ks: &[K], base: At) -> Expr {
-        let out = out_stack(self.table, code, ks.to_vec()).expect("a program that falls through");
+        let out = out_stack(self.table, code, ks.to_vec(), &[]).expect("a program that falls through");
         c.lam(F_TY(), |c, f| {
             let nil = app(c.at(f), self.sty(c, &out, base));
             c.lam(nil, |c, nil| {
@@ -319,6 +345,7 @@ impl Machine<'_> {
                 cons(c, ctor_idx(Ctor::Leaf(Class::Const)), vec![ty(c, &st), lit(self.n, *i as u128), load])
             }
             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
+            Ins::Call(_) => unreachable!("Call has no meaning before S2c"),
             Ins::If(t, e) => {
                 let th = self.seq(c, f, ct, base, t, below(1), &cont, labels);
                 let el = self.seq(c, f, ct, base, e, below(1), &cont, labels);
@@ -576,12 +603,12 @@ mod tests {
     fn well_formed_rejects_raw_underflow_bad_br_and_mismatched_arms() {
         let t = crate::wasm::table();
         let cmp_if = |e: Vec<Ins>| vec![konst(1), konst(2), row("lt"), Ins::If(vec![konst(1)], e)];
-        assert!(!well_formed(&t, &[Ins::Raw("x".into())], &[]));
-        assert!(!well_formed(&t, &[row("add")], &[]));
-        assert!(!well_formed(&t, &[Ins::Loop(vec![Ins::Br(1)])], &[]));
-        assert!(!well_formed(&t, &cmp_if(vec![]), &[]));
-        assert!(well_formed(&t, &cmp_if(vec![konst(2)]), &[]));
-        assert!(well_formed(&t, &[Ins::Loop(vec![Ins::LocalGet(0)])], &[]));
+        assert!(!well_formed(&t, &[Ins::Raw("x".into())], &[], &[]));
+        assert!(!well_formed(&t, &[row("add")], &[], &[]));
+        assert!(!well_formed(&t, &[Ins::Loop(vec![Ins::Br(1)])], &[], &[]));
+        assert!(!well_formed(&t, &cmp_if(vec![]), &[], &[]));
+        assert!(well_formed(&t, &cmp_if(vec![konst(2)]), &[], &[]));
+        assert!(well_formed(&t, &[Ins::Loop(vec![Ins::LocalGet(0)])], &[], &[]));
     }
 
     fn konst(v: i64) -> Ins {
@@ -594,9 +621,23 @@ mod tests {
     #[test]
     fn well_formed_rejects_unknown_rows_and_operands_on_binary_rows() {
         let t = crate::wasm::table();
-        assert!(!well_formed(&t, &[Ins::Row { name: "nope", operand: 0 }], &[]));
-        assert!(!well_formed(&t, &[konst(1), konst(2), Ins::Row { name: "add", operand: 7 }], &[]));
-        assert!(well_formed(&t, &[konst(1), konst(2), Ins::Row { name: "add", operand: 0 }], &[]));
+        assert!(!well_formed(&t, &[Ins::Row { name: "nope", operand: 0 }], &[], &[]));
+        assert!(!well_formed(&t, &[konst(1), konst(2), Ins::Row { name: "add", operand: 7 }], &[], &[]));
+        assert!(well_formed(&t, &[konst(1), konst(2), Ins::Row { name: "add", operand: 0 }], &[], &[]));
+    }
+
+    /// A `Call(j)` pops its callee's arity and pushes one word; a position without an arity is ill formed.
+    #[test]
+    fn call_pops_the_callees_arity_and_pushes_one_word() {
+        let t = crate::wasm::table();
+        let ar = [Some(2), None, Some(0)];
+        assert!(well_formed(&t, &[konst(1), konst(2), Ins::Call(0)], &[], &ar));
+        assert_eq!(out_stack(&t, &[konst(1), konst(2), Ins::Call(0)], vec![], &ar), Some(vec![K::W]));
+        assert!(well_formed(&t, &[Ins::Call(2)], &[], &ar));
+        assert!(!well_formed(&t, &[konst(1), Ins::Call(0)], &[], &ar), "underflow");
+        assert!(!well_formed(&t, &[Ins::Call(1)], &[], &ar), "no arity");
+        assert!(!well_formed(&t, &[Ins::Call(3)], &[], &ar), "no such position");
+        assert!(!well_formed(&t, &[Ins::Call(2)], &[], &[]), "no table of arities");
     }
 
     /// `[local.get 1, local.get 0, sub]` over the frame `upd 0 a (upd 1 b mu)` answers `sub b a` by `refl`, and not

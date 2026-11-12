@@ -30,7 +30,7 @@ fn a_dangling_reference_decompiles_to_nothing() {
     assert_eq!(decompile(&m, &mut TermStore::new()), None);
     m.entry.body = Node::Read(Read::Param(0)); // entry arity is 0
     assert_eq!(decompile(&m, &mut TermStore::new()), None);
-    m.entry.body = Node::SelfCall { args: vec![], tail: false }; // entry is not recursive
+    m.entry.body = Node::SelfCall { args: vec![] }; // entry is not recursive
     assert_eq!(decompile(&m, &mut TermStore::new()), None);
     m.entry.body = Node::MakePap { wrapper: 0, root_env: vec![], args: vec![Node::Lit(1)] }; // $c0 is Lifted, not Pap
     assert_eq!(decompile(&m, &mut TermStore::new()), None);
@@ -97,7 +97,6 @@ fn an_environment_slot_in_a_recursive_combinator_is_offset_past_its_self_binder(
                 then: Box::new(Node::Read(Read::Env(0))),
                 els: Box::new(Node::SelfCall {
                     args: vec![Node::Arith(PrimOp::Sub, Box::new(Node::Read(Read::Param(0))), Box::new(Node::Lit(1)))],
-                    tail: true,
                 }),
             },
         })],
@@ -371,32 +370,4 @@ fn every_single_point_mutation_of_a_built_module_is_rejected() {
     for kind in KINDS {
         assert!(kinds_seen.contains(kind), "no well-formed mutant of kind `{kind}` was produced");
     }
-}
-
-#[test]
-fn flipping_a_self_calls_tail_flag_keeps_the_meaning() {
-    // Field-parity class 2: `tail` picks a loop or a call, and both are
-    // correct. The decompiler must therefore not reject the flip, or
-    // the gate would reject correct code.
-    let mut flipped = 0;
-    for (name, s, h) in crate::support::samples::corpus() {
-        let mut m = crate::jit::compile::build(&s, h).unwrap();
-        fn untail(n: &mut Node, count: &mut usize) {
-            if let Node::SelfCall { tail, .. } = n
-                && *tail
-            {
-                *tail = false;
-                *count += 1;
-            }
-            for c in n.children_mut() {
-                untail(c, count);
-            }
-        }
-        for f in m.funcs_mut() {
-            untail(&mut f.body, &mut flipped);
-        }
-        check(&m).unwrap();
-        assert_eq!(decompile(&m, &mut TermStore::new()), Some(h), "{name}");
-    }
-    assert!(flipped > 0);
 }

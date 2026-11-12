@@ -744,7 +744,7 @@ fn no_raw(code: &[tatic_wasm::machine::Ins]) -> bool {
 }
 
 /// The straight-line gate's fragment (v0.7): each of these entry bodies is
-/// one wrapping `Loop` the machine models in full, with no `Raw` line.
+/// the machine models in full, with no `Raw` line.
 #[test]
 fn fragment_bodies_contain_no_raw() {
     let mut s = TermStore::new();
@@ -762,7 +762,6 @@ fn fragment_bodies_contain_no_raw() {
         frags.push(c.frag);
     }
     for frag in &frags {
-        assert!(matches!(frag.entry(), [tatic_wasm::machine::Ins::Loop(_)]), "{:?}", frag.entry());
-        assert!(no_raw(frag.entry()), "{:?}", frag.entry());
+        assert!(no_raw(&frag.entry().code), "{:?}", frag.entry());
     }
 }

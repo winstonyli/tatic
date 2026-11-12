@@ -6,8 +6,8 @@
 //! Pi S R k z q_0 .. q_{m-1} s mu.  Id(R, M (prog code) 1 R k z s (frame q mu), rhs)
 //! ```
 //!
-//! proved by `refl`. `frame` puts parameter `q_j` at address `j` (`LocalGet j` reads it); fuel 1 lets the `loop $L`
-//! wrapper with no `br` run its body once. `rhs` is built from the source term, never from `code` (`cps`), so a
+//! proved by `refl`. `frame` puts parameter `q_j` at address `j` (`LocalGet j` reads it); the body is the entry's code itself (no
+//! `loop` wraps it since S2b), so the fuel is not read until S2c. `rhs` is built from the source term, never from `code` (`cps`), so a
 //! lowering bug cannot cancel itself. Both sides read operators from the one table (`shape::wasm_table`, the row's `meaning`), so a
 //! wrong row is the table check's to catch (`jit/op_table_tests.rs`), not the gate's.
 
@@ -25,7 +25,7 @@ const N: usize = 64;
 /// The largest tree (`compile::tree_size`) the gate takes: the largest power of two under the JIT path's 0.4 s.
 /// `doubling(12)` (8192 nodes) took 0.35-0.38 s, `doubling(13)` (16384) 0.74-0.88 s, nearly all of it the check (doc
 /// 15, "Why the build grew 2.2x per doubling").
-const MAX_GATE_TREE: u64 = 8192;
+pub(crate) const MAX_GATE_TREE: u64 = 8192;
 
 /// Whether `h` is in the gate's fragment (D3a): `arity` ≥ 1 leading `Abs`, then a body of parameters, literals and
 /// table rows, where every `If` is in tail position and tests a comparison of operands, and comparisons appear
@@ -96,7 +96,7 @@ pub(crate) fn gate_with(table: &Table, store: &TermStore, h: Hash, arity: usize,
         (true, [Ins::Loop(body)]) => body.as_slice(),
         (true, _) => panic!("strip_loop on a list that is not one Loop"),
     };
-    if !in_fragment(table, store, h, arity) || !well_formed(table, code, &[]) {
+    if !in_fragment(table, store, h, arity) || !well_formed(table, code, &[], &[]) {
         return false;
     }
     scoped(|| {

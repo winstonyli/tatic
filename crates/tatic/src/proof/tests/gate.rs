@@ -57,7 +57,7 @@ fn gate_accepts_the_fragment_table() {
     for (name, build, arity) in table {
         let (s, h, frag) = compiled(&*build);
         assert!(in_fragment(wasm_table(), &s, h, arity), "{name} should be in the fragment");
-        assert!(gate(wasm_table(), &s, h, arity, frag.entry()), "{name}: the gate should accept its emitted body");
+        assert!(gate(wasm_table(), &s, h, arity, frag.entry().code.as_slice()), "{name}: the gate should accept its emitted body");
     }
 }
 
@@ -83,7 +83,7 @@ fn gate_rejects_mutations() {
     ];
     for (name, build, arity) in the_five() {
         let (s, h, frag) = compiled(&*build);
-        let code = frag.entry();
+        let code = frag.entry().code.as_slice();
         assert!(gate(wasm_table(), &s, h, arity, code), "{name}: the unmutated body should pass");
         for (what, f, applies) in &mutations {
             // arity-1 terms are skipped for LocalGet: another index reads an unbound frame slot (spec Goal 2)
@@ -98,8 +98,7 @@ fn gate_rejects_mutations() {
                 assert!(!gate(wasm_table(), &s, h, arity, &mutated), "{name}: the gate accepted '{what}': {mutated:?}");
             }
         }
-        let Ins::Loop(body) = &code[0] else { panic!("{name}: entry is not a Loop") };
-        let with_raw = vec![Ins::Loop([body.clone(), vec![Ins::Raw("nop".into())]].concat())];
+        let with_raw = [code, &[Ins::Raw("nop".into())]].concat();
         assert!(!gate(wasm_table(), &s, h, arity, &with_raw), "{name}: the gate accepted a Raw line");
     }
 }
@@ -113,7 +112,7 @@ fn gate_check_work_is_linear_in_the_tree() {
     let work = |d: u32| {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
         tatic_kernel::scoped(|| {
-            let (p, st) = statement(wasm_table(), &s, h, 1, frag.entry(), 1);
+            let (p, st) = statement(wasm_table(), &s, h, 1, frag.entry().code.as_slice(), 1);
             let w0 = tatic_kernel::work();
             assert!(tatic_wasm::encoding::holds(&p, &st).is_ok(), "doubling_{d} should check");
             tatic_kernel::work() - w0
@@ -136,7 +135,7 @@ fn gate_build_work_is_linear_in_the_tree() {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
         tatic_kernel::scoped(|| {
             let w0 = tatic_kernel::work();
-            let _ = statement(wasm_table(), &s, h, 1, frag.entry(), 1);
+            let _ = statement(wasm_table(), &s, h, 1, frag.entry().code.as_slice(), 1);
             tatic_kernel::work() - w0
         })
     };
@@ -164,24 +163,20 @@ fn time_gate(s: &TermStore, h: Hash, arity: usize, code: &[Ins], fuel: usize, re
     best
 }
 
-/// Section 8's measurements: fuel 1 against the bare body, `doubling(d)` up the tree cap, and `Mul`. Prints
+/// Section 8's measurements: `inc`, `doubling(d)` up the tree cap, and `Mul`. Prints
 /// `name build_ms check_ms ok` lines; run through the wrapper.
 #[test]
 #[ignore]
 fn measure_gate_costs() {
     let (s, h, frag) = compiled(&inc);
-    let code = frag.entry();
-    let Ins::Loop(body) = &code[0] else { panic!("entry is not a Loop") };
-    for (name, c, fuel) in [("inc fuel1", code, 1), ("inc bare", body.as_slice(), 0)] {
-        let (b, k, ok) = time_gate(&s, h, 1, c, fuel, 5);
-        println!("{name} {b:.2} {k:.2} {ok}");
-    }
+    let (b, k, ok) = time_gate(&s, h, 1, &frag.entry().code, 1, 5);
+    println!("inc {b:.2} {k:.2} {ok}");
     for d in 1..=13u32 {
         let r = std::thread::Builder::new()
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn(move || {
                 let (s, h, frag) = compiled(&move |s: &mut TermStore| doubling(s, d));
-                time_gate(&s, h, 1, frag.entry(), 1, 3)
+                time_gate(&s, h, 1, frag.entry().code.as_slice(), 1, 3)
             })
             .unwrap()
             .join()
@@ -206,7 +201,7 @@ fn measure_gate_costs() {
     for (name, src) in muls {
         let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
         assert!(in_fragment(wasm_table(), &s, h, 2), "{name} should be in the fragment");
-        let (b, k, ok) = time_gate(&s, h, 2, frag.entry(), 1, 1);
+        let (b, k, ok) = time_gate(&s, h, 2, frag.entry().code.as_slice(), 1, 1);
         println!("{name} {b:.2} {k:.2} {ok}");
         if b + k > 60_000.0 {
             println!("mul: skipped the rest after {name} (over 60 s)");
@@ -223,7 +218,7 @@ fn measure_stack_2mb() {
         .stack_size(2 << 20)
         .spawn(|| {
             let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 13));
-            time_gate(&s, h, 1, frag.entry(), 1, 1)
+            time_gate(&s, h, 1, frag.entry().code.as_slice(), 1, 1)
         })
         .unwrap()
         .join()
@@ -253,7 +248,7 @@ fn measure_cachegrind() {
             for _ in 0..reps {
                 tatic_kernel::scoped(|| {
                     let (w, t) = (tatic_kernel::work(), std::time::Instant::now());
-                    let (p, st) = statement(wasm_table(), &s, h, 1, frag.entry(), 1);
+                    let (p, st) = statement(wasm_table(), &s, h, 1, frag.entry().code.as_slice(), 1);
                     if check {
                         assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
                     }

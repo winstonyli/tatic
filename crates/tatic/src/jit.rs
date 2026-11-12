@@ -61,6 +61,8 @@ pub(crate) mod ir;
 pub(crate) mod lower_wat;
 #[cfg(test)]
 mod op_table_tests;
+#[cfg(test)]
+mod tail_rule_tests;
 pub(crate) mod shape;
 pub mod specialise;
 
@@ -250,7 +252,7 @@ impl JitEngine {
         // that alone goes on to serve arbitrary arguments no evidence
         // ever covered, so only a theorem covering every input earns
         // installation (`prove_install`).
-        if !Self::prove_install(proof_store, proof_term, frag.arity, frag.entry()) {
+        if !Self::prove_install(proof_store, proof_term, frag.arity, &frag.entry().code) {
             return Err(Some(CacheEntry::NoUniversalProof));
         }
         self.cache.insert(
@@ -286,7 +288,8 @@ impl JitEngine {
     }
 
     /// Whether `proof.rs` proves `h` equivalent to the model of its compiled
-    /// form for *every* input. Tries the strategies in order and stops at
+    /// form for *every* input (the model states the IR's tail self-call as
+    /// `loop`/`br`, which stands for the emitted `return_call`). Tries the strategies in order and stops at
     /// the first that applies:
     /// 1. `prove_closure_expr` -- a closed, non-recursive term built from
     ///    non-capturing ("known-call") closures gets one proof covering
