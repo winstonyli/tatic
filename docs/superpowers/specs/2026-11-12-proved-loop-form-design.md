@@ -8,7 +8,7 @@ Goal 1 (a JIT on proved equivalence). This spec reopens D1 of the v0.8 spec
 (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`, "D1 No `loop`; tail calls are one `Call`, printed
 `return_call`") with a measurement D1 did not have. The design came from a survey of how the kernel could take over
 this optimization instead of the printer hard-coding it (2026-11-12, o1). A spike checked its central claim
-(`docs/tier-cycle/`, "v0.8's build: measurements and checks", the Set and Br spike).
+(`docs/tier-cycle/`, "v0.8's build: measurements and checks", the Set and Br spike and its O3 follow-up).
 
 ## Intent and why
 
@@ -44,8 +44,9 @@ considered and rejected: it is one bit with a timing harness to maintain.
 Milestone (accepted 2026-11-12, `ROADMAP.md`): v0.9 **Proved loop form**: "a self-tail-recursive function installs
 as a wasm loop whose text the kernel proved, and runs at the v0.7 loop's speed."
 
-Decisions (2026-11-12): Shape B is B1. Shape A is A1, with O3 (how `Br` is typed) to be settled by a spike first;
-if it passes, the spec and plan are revised to O3 and re-reviewed before T1 starts.
+Decisions (2026-11-12): Shape B is B1. Shape A is A1 with `Br` typed like a call (O3): a spike of O3 accepted the
+same lists and rejected the same mutants at the same cold-check cost (`docs/tier-cycle/`, "v0.8's build: measurements
+and checks", "`Br` typed like a `Call`").
 
 ## Non-goals
 
@@ -60,8 +61,8 @@ if it passes, the spec and plan are revised to O3 and re-reviewed before T1 star
 
 - No peephole in the printer: each instruction prints on its own line or lines, with the existing tail rule as the
   only exception.
-- No change to the proof generator (`machine/sim.rs`), the gate (`proof/gate.rs`) or the kernel. The spike needed
-  none, and `out_stack` keeps its type so that `sim.rs:71` does not change (Details, "Shape").
+- No change to the proof generator (`machine/sim.rs`), the gate (`proof/gate.rs`) or the kernel. Both spikes needed
+  none.
 
 ## Constraints
 
@@ -76,17 +77,17 @@ if it passes, the spec and plan are revised to O3 and re-reviewed before T1 star
   its own.
 - Under that bound, each meaning is faithful to its wasm text, with no tail condition. `Br` skips what follows, and so does wasm's `br`. The tail rule only decides whether the gate *accepts* (completeness), never
   whether an accepted list is right.
-- `shape` no longer catches a surplus word left before a `Br`: `Br` drops the stack under it, as wasm's `br` does.
-  Such a list is still faithful; a wrong one is caught by the walk instead (the call-site mutants whose layer moves,
-  plan T4). O3 would move them back to `shape`.
+- `shape` types `Br` as a call with no arguments: it pushes one word. wasm's `br` never falls through, so the code
+  after a `Br` is dead in the printed text, and the meaning ignores it too. The pushed word is a typing device only:
+  it lets an arm ending in `Br` meet the one-word arm rule, and a surplus word left before a `Br` fails that rule
+  unless dead code after the `Br` consumes it. Dead code after a `Br` that `shape` accepts (`[Br, get 0, add]`,
+  `[konst 1, Br, add]`) is valid wasm, since the operand stack is polymorphic after `br`, and it is faithful, since
+  both sides skip it.
 - `prog` and `put` assume `shape_check` ran (they assert on an out-of-range slot); the gate always runs it first.
-- `out_stack` returns `vec![]` both for code that ends in `Br` and for code that leaves an empty stack. Both fail
-  every `[W]` check (`sim.rs:71`, `shape_check`), so the shared value fails closed. It must stay that way: no caller
-  may read `vec![]` as "returns".
 
 ## Shapes
 
-### A The instruction shape (proposed: A1)
+### A The instruction shape (decided: A1 with O3)
 
 Searched: six shapes were tried.
 - A3, a row-class schema (`Class` described by pops, push and operand kind). It kept `Class` and added an `Operand`
@@ -100,7 +101,13 @@ Searched: six shapes were tried.
   (class `Const`, slot operand), and keeping `local.set` a row keeps the pair symmetric in the table, the vocabulary
   the kernel works over. A bound by class instead of by name cannot work: `Const` also holds `const`.
 - `Br` typed like `Call` (O3): `Ctor::Br : Pi A. F (V, A) -> F A`, pushing one word whose continuation the meaning
-  ignores. Open, unspiked: see O3.
+  ignores. Against a terminal `Br : Pi A. F A` it removes `shape`'s `Option` result, the "`Br` is last" and "both arms
+  end in `Br`" rules, and `out_stack`'s empty-stack stand-in for a `Br` path, and the loop-form pass preserves shape
+  (`Call(own)` and `[Set.., Br]` both pop the arguments and push one word). Spiked and folded into A1.
+- A2 re-tested under O3: a `Restart(n)` typed exactly like `Call` would make the pass a rename and delete `Class::Set`
+  and its row, setter and slot bound. Two objections survive and are the whole reason A1 stays: the argument order
+  would live only in the printer's n-line print, where the gate cannot see it, and its frame-plus-continuation term is
+  unspiked (A2 below).
 - A4, a terminal call family, `TailCall(j)`, putting tail position in the instruction. It deletes the printer's tail rule
   and `map_tail_calls`. Rejected: the lowering would have to know tail position (B2). Also, unless the own-position
   case stays a proved restart, the printer would choose the loop text, which is h4's trust.
@@ -108,10 +115,10 @@ Searched: six shapes were tried.
 - A1 **`Set` as a row class, `Br` as a structural constructor** (recommended; the spike's shape).
   - `Class::Set` sits beside `Const`, `Word` and `Bit`. `Class::kind() -> K` becomes `push() -> Option<K>`, since
     `Set` pushes nothing. `shape`'s operand rule reads `Class::takes_operand()`, which is true for `Const` and `Set`.
-  - `Ins::Br` and `Ctor::Br : Pi A. F A`, terminal (or, if O3's spike passes, typed like `Call`).
+  - `Ins::Br` and `Ctor::Br : Pi A. F (V, A) -> F A`, typed like a call with no arguments (O3).
   - Pro: each printed line is one instruction with its own proved meaning. The order in which the arguments reach the
-    parameters is part of the list, so the gate checks it. The spike rejected forward-order `Set` mutants. The spike
-    proved the whole shape: 5 targets accepted, 54 mutants rejected.
+    parameters is part of the list, so the gate checks it. The spike rejected forward-order `Set` mutants. The spikes
+    proved the whole shape: 5 targets accepted (6 with O3, `held_out_b` added), 54 mutants rejected.
   - Con: a fourth arm in each `match Class`. `Set` is not the tripwire's third same-shaped item: it pops 1, pushes
     nothing and takes a frame operand.
 - A2 **`Restart(n)`**: one terminal instruction meaning "pop `n` words, build a fresh frame as `Call` does
@@ -177,36 +184,32 @@ printer's rule.
 - **`Set`** (`Class::Set`; row `local.set`; operand the slot `i`; line `local.set $p{i}`). It pops one word, writes
   slot `i`, and passes the new frame to the rest.
   - Meaning: `\A op rest fr st mu. split st (x, s). rest (op fr x) s mu`, with `op = setter(i)`.
-  - `setter(i)` rebuilds the concrete nested-pair frame with slot `i` replaced. It reduces under whnf; the spike's
-    no-op preludes `[get i, Set i]` were accepted.
+  - `setter(i)` rebuilds the concrete nested-pair frame with slot `i` replaced. It reduces under whnf; the spike
+    asserted the no-op prelude `[get 0, Set 0]` `Accepted` before a loop-form list (`[get 1, Set 1]` was only printed:
+    `Accepted`).
   - `shape_check` bounds a `Set` operand by the arity, as it bounds `local.get`, in the same `gets` walk. That walk
     matches `local.get` by name, because its class `Const` is shared with `const`. `local.set` is matched by name
     in the same arm (`"local.get" | "local.set"`), with the same negative-operand bound.
-- **`Br`** (`Ins::Br`, `Ctor::Br : Pi A. F A`) is terminal.
-  - Meaning: `\A fr st mu. restart fr mu`, where `MeaningEnv.restart = \fr mu. env fr mu k`.
+- **`Br`** (`Ins::Br`, `Ctor::Br : Pi A. F (V, A) -> F A`), typed like a call with no arguments.
+  - Meaning: `\A rest fr st mu. restart fr mu`, where `MeaningEnv.restart = \fr mu. env fr mu k` (why ignoring
+    `rest` and `st` is faithful: Constraints).
   - `G::bm` fills `restart` with the entry's own previous-fuel step `env` and the activation's continuation `k`. So a
     restart consumes one fuel, as `Call(own)` does.
   - `env` is `Bm_k`'s own lambda parameter, built per entry, so in a callee `Br` restarts that callee.
-- **Shape.** The private `shape` returns `Option<Vec<K>>`, with `None` for code that ends in `Br` on every path.
-  - `Br` must be the last instruction of its sequence; the stack under it may be non-empty (the machine drops it,
-    and wasm's `br` discards it).
-  - An `If` arm runs from an empty stack and ends on `Some([W])` or `None`. This widens the rule e5e9771 added on
-    main. An `If` with both arms `None` is `None`, and code after a `None` is an error.
-  - `shape_check` compares the body's shape with `Some(vec![W])`, so a body that ends in `None` is rejected.
-  - The public `out_stack` keeps its `Vec<K>` type and returns `vec![]` for `None` (fails closed, Constraints). Its callers (`sim.rs:71`,
-    `prog`, the tail-rule test) are unchanged. A body that ends in `Br` on every path then fails the `[W]` check and
-    is rejected.
-  - `well_formed` and its doc count a `None` path as well-formed.
-- **Tail rule.** `print.rs` gains `pub fn map_tail_calls(code: &[Ins], tail: bool, f: &mut dyn FnMut(usize) ->
-  Option<Vec<Ins>>) -> Vec<Ins>`. It replaces each `Call(j)` in tail position with `f(j)` where that returns `Some`.
-  - Tail position: the last instruction of a tail sequence. An `If` in tail position passes it to both arms.
-  - `print_body` decides `return_call` with the same helper, `fn tail_at(tail: bool, i: usize, len: usize) -> bool`.
-  - A test pins the two together by position: map each visited tail call to a marker line and print, then compare
-    with the plain print with `return_call $c0` replaced by the marker. It runs over the tail-rule test's bodies,
-    whose `If` arms nest one level deep. A drift inside `tail_at` changes both sides, by design: there is one rule.
+- **Shape.** `shape` gains one arm, `Br` pushes `W` (Constraints); nothing else in it or its callers changes.
+  `well_formed`'s doc ("runs and falls through") gains "or restarts at a `Br`".
+- **Tail rule.** `print.rs` gains `pub fn map_tail_calls(code: &[Ins], f: &mut dyn FnMut(usize) ->
+  Option<Vec<Ins>>) -> Vec<Ins>`. It replaces each `Call(j)` in tail position of a body with `f(j)` where that
+  returns `Some`, and leaves the rest unchanged.
+  - Tail position: the last instruction of a tail sequence; a body is a tail sequence, and an `If` in tail
+    position passes it to both arms. Every caller starts at a body's top, so the public function takes no `tail`
+    flag.
+  - `print_body` and `map_tail_calls` decide it with one helper, `fn tail_at(tail: bool, i: usize, len: usize) ->
+    bool`, so there is one rule (B1). `tail_rule_tests.rs#tail_rule_matches_call_everywhere_under_wasmtime` guards
+    it; the pass's unit test covers the traversal's recursion into nested arms.
   - The printer cannot just print the mapped code, since non-self tail calls still print `return_call`.
-  - The tie test cannot catch a wrong `tail_at`; `tail_rule_tests.rs#tail_rule_matches_call_everywhere_under_wasmtime`
-    guards the rule itself and is unaffected.
+  - The rewrite is one function, `loop_form(code, own, slots)` over `map_tail_calls`, in the lowering: the pass
+    calls it with the reversed slots, and the mutants call it with their own slot lists.
 - **Printer.** `Br` prints `br $top`. `print_func` wraps the body in `loop $top (result i64)` / `end` when the body
   holds a `Br`. The tail rule is unchanged for every other call.
 - **Mutation coverage.** `testing/ins_mutate.rs` does not change: its helpers mutate the `Call` form, and the tests
@@ -216,21 +219,25 @@ printer's rule.
 
 - Definitional tests of the new meanings, in the style of `machine.rs#local_get_reads_the_frame`, in a new
   `machine/loop_tests.rs` (the inline test block would near its limit):
-  - `Set i` then `local.get j` gives the new word for `i == j` and the old slot otherwise;
-  - the padding slots and the frame's terminal word are untouched;
-  - `Br` with a stub `restart` reduces to `restart fr mu`, dropping the stack under it.
-- The spike's 5 targets plus `held_out_b` (an Accepted tail loop the spike did not cover), and its 54 mutants,
-  ported as gate tests in `proof/tests/loop_form.rs`. Each mutant's layer is
-  re-derived against e5e9771's arm rule, and any change from the spike's layer is reported.
+  - over a frame of variables (slots and terminal word), `Set i` then `local.get j` gives the written word for
+    `i == j` and the old slot otherwise, for every slot;
+  - a `Br` after a `Set` restarts on the whole updated frame, the terminal word included (writes to padding are
+    rejected by `shape`, pinned by the ported mutants);
+  - `Br` with a stub `restart` reduces to `restart fr mu`, ignoring the stack under it and the code after it.
+- The O3 spike's 6 targets (the first spike's 5 plus `held_out_b`), its 54 mutants and the no-op prelude,
+  ported as gate tests in `proof/tests/loop_form.rs`, each at the layer the O3 spike recorded (25 differ from the
+  first spike's; `docs/tier-cycle/`, "v0.8's build: measurements and checks", "`Br` typed like a `Call`"; the
+  rows are in the plan, T2). A tail self-call whose argument holds a non-tail self-call (`gate.rs#gate_accepts_mixed_tail_and_non_tail_calls`'s term) is also checked.
+  After the pass, `capturing_closure_loop` and `held_out_b` gate `Accepted` with `br $top` in their text.
   - They build loop lists from the `Call` form. After the pass lands, the compiled list is already in loop form, so
     a test helper first maps it back to the `Call` form.
 - Callee coverage: `proof/tests/modules.rs`'s million-iteration callee loop asserts `br $top` inside `$c0`. Exactly
-  one `return_call $c0` remains: the entry's call into the callee. It stays `Accepted`. Three callee mutants: `Br` off the tail, a `Set` past the callee's arity, and
-  the `Set`s in forward order.
-- `shape` cases: both arms `None` followed by more code (error), both arms `None` as the last instruction of an outer
-  arm (outer `None`), an instruction after `Br` (error), `Br` over a non-empty stack (accepted), a frame flowing
-  across a join, and a body ending in `None` (rejected).
-- The printed loop (hand-printed from a `Set`/`Br` list, 100 000 iterations) runs under wasmtime at constant stack.
+  one `return_call $c0` remains: the entry's call into the callee. It stays `Accepted`. Three callee mutants: `[konst 1, add]` after the record's `If` (the
+  spike's `(f)`), a `Set` past the callee's arity, and the `Set`s in forward order.
+- `[Br]`, `[Br, get 0, add]` and `[konst 1, Br, add]` are `[W]` and mean `restart fr mu`; a frame flows across a join.
+  The surplus-word boundary is otherwise pinned by the ported mutants.
+- Dead code after a `Br`, printed inside an arm, validates under wasmtime. The printed loop's run is covered by the
+  JIT's million-iteration tail loop and the callee loop (below).
 - The JIT tail-loop test asserts `br $top` and no `return_call $f`.
 - Env-word loops, the one argued rather than proved part (Shape B, "Env words" and "Scratch locals"): no golden or
   fuzz program has a self-tail-recursive function with captures. A new test compiles a callee loop that captures a
@@ -239,8 +246,6 @@ printer's rule.
   directly: these terms are `NotCovered`, and the JIT may not install them.
 - The goldens change for every self-tail-recursive function. They are regenerated and diffed. Only these
   functions change: they gain the wrapper lines, the body is re-indented by two, and the call's lines change.
-- The tail-rule tie test (Details, "Tail rule"). It prints with `entry_pos = usize::MAX`, so the self label is
-  `$c0`.
 - The differential compile fuzz (`tests/compile_fuzz.rs#compiled_and_interpreted_agree_on_random_terms`) still
   passes. Its generators include tail recursion with closure payloads. It reaches the loop form by construction: `gen_tail_recursive`
   always builds a tail self-call, and `gen_program` draws it one time in four. The build confirms the reach once
@@ -255,7 +260,6 @@ printer's rule.
 |---|---|---|---|
 | `Set` class, `local.set` row, setter | `tatic-wasm/src/machine.rs`, `ops.rs`, `wasm.rs` | `Class::kind` (by `push`), the `Const`-only operand match (by `takes_operand`) | `kind` |
 | `Br`, `MeaningEnv.restart` | `machine.rs`, `machine/statement.rs#G::bm` | nothing | nothing |
-| `shape` returns `Option` | `machine.rs` | `Vec<K>` result (private) | nothing |
 | loop wrapper, `br $top`, `map_tail_calls`, `tail_at` | `tatic-wasm/src/print.rs` | the inline `last_tail` expression | nothing |
 | loop-form pass | `tatic/src/jit/lower_wat.rs` | tail `Call(own)` in emitted lists | the self-tail `return_call` in printed text |
 | tests | `proof/tests/loop_form.rs` (new), `modules.rs`, `gate_mutants.rs`, `jit/tests.rs`, `tail_rule_tests.rs`, goldens | the `return_call` assertions for self-loops | the `call`-traps control in `jit/tests.rs` |
@@ -267,10 +271,3 @@ printer's rule.
   moves within noise either way.
 - O2 A callee loop (a self-tail-recursive function that is not the entry) is the one acceptance claim the spike did
   not cover. The plan tests it first, in T2, and stops if it is refused.
-- O3 `Br` typed like `Call`: `Ctor::Br : Pi A. F (V, A) -> F A`, with the meaning `\A rest fr st mu. restart fr
-  mu` (it ignores `rest`). Against A1 as spiked it deletes `shape`'s `Option` result, the "`Br` is last" and "both
-  arms `None`" rules, the `out_stack` `vec![]` constraint and its doc edits, and about three `shape` tests. The pass
-  becomes shape-preserving (`Call(own)` and `[Set.., Br]` both pop the arguments and push one word), and the
-  surplus-word mutants stay at `shape`. The gate still checks the argument order. Unspiked risks: the walk over a
-  `rest` it never enters, and a larger proof term, since `rest` carries a copy of the join's continuation (cold
-  time). A spike would port the 54 mutants and 6 targets and time the closure loop's cold check.

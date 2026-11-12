@@ -126,7 +126,9 @@ terminal `Pi A. F A` to `Pi A. F (V, A) -> F A`, the type of a call with no argu
 word, and its meaning `\A rest fr st mu. restart fr mu` ignores `rest`. Since the printed `br $top` never falls through,
 the code after it is dead in the wasm too. `shape` loses its `Option`, the "Br last" and "both arms end in Br" rules,
 and `out_stack`'s panic on a `Br` path.
-- All six targets are `Accepted` (the five above and `held_out_b`); all 54 mutants are rejected (`o3-spike-tests`).
+- All six targets are `Accepted` (the five above and `held_out_b`); all 54 mutants are rejected (`o3-spike-tests`;
+  it exits 101 because the patch's table still asserts the first spike's layers, and its `err.log` lists the 25
+  rows below, which the loop form plan's T2 carries).
   The suite of `tatic-wasm` and `tatic --lib` passes: 349 passed, 0 failed (`o3-regress`).
 - 25 mutants change layer, none to `Accepted`. Walk to Shape (14): a dropped Set or a `Br` with no Sets on the three
   two-argument loops, and a `Br` for a non-tail call whose surplus word now fails the one-word arm rule (factorial c1
