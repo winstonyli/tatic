@@ -35,4 +35,5 @@ mod baseline;
 mod held_out;
 mod gate_mutants;
 mod modules;
+mod loop_form;
 mod toy_table;

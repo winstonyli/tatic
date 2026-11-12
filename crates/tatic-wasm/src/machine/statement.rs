@@ -181,7 +181,14 @@ impl<'t> G<'t> {
                         let kk = c.mark(kk);
                         let tbl = table(c, env);
                         let tbl = c.mark(tbl);
-                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: tbl });
+                        // a `Br` continues into the entry's own previous-fuel step at a frame and memory, with this
+                        // activation's `k`: a restart consumes one fuel, as `Call(own)` does
+                        let restart = c.lam(w.fr(), |c, fr2| {
+                            let mem = w.mem(c, r);
+                            c.lam(mem, |c, mu2| app3(c.at(env), c.at(fr2), c.at(mu2), c.at(k)))
+                        });
+                        let restart = c.mark(restart);
+                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: tbl, restart });
                         app3(m, c.at(fr), lit(n, 0), c.at(mu))
                     })
                 })

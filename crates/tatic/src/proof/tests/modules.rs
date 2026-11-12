@@ -352,3 +352,35 @@ fn a_cyclic_registry_is_never_accepted() {
         println!("{name}: {v:?}");
     }
 }
+
+/// The loop form in a callee (Review Focus 2): `rec g`'s record at position 0 with its tail `Call(0)` as
+/// `[Set 1, Set 0, Br]` is `Accepted`, and `Br` restarts the callee, not the entry. Three mutants of that record are
+/// rejected: `[konst 1, add]` after its `If`, a `Set` past its arity, and the `Set`s in forward order.
+#[test]
+fn a_callee_loop_form_is_accepted_and_its_mutants_rejected() {
+    use super::loop_form::{call_form_frag, loop_form};
+    let b: Build = src(r"\n. (rec g n acc = if n <= 0 then acc else g (n - 1) (acc + n)) n 0");
+    let subject = || {
+        let (s, h, frag) = compiled(&*b);
+        (s, h, call_form_frag(frag))
+    };
+    let (s, h, frag) = subject();
+    assert_eq!(frag.records()[0].unwrap().arity, 2, "the callee g at position 0 takes n and acc");
+    let with_g = |slots: &[i64], post: &[Ins]| {
+        with_record(dup(&frag), 0, |e| Entry { code: [loop_form(&e.code, 0, slots), post.to_vec()].concat(), ..e })
+    };
+    let accepted = with_g(&[1, 0], &[]);
+    let wat = accepted.wat();
+    assert!(wat.contains("br $top"), "{wat}");
+    let v = big(move || gate(wasm_table(), &s, h, &accepted));
+    assert_eq!(v, Verdict::Accepted);
+    check_frag("callee: [konst 1, add] after the If", &subject, with_g(&[1, 0], &[konst(1), Ins::Row { name: "add", operand: 0 }]), Layer::Walk);
+    check_frag("callee: Sets in forward order", &subject, with_g(&[0, 1], &[]), Layer::Walk);
+    let past = with_g(&[2, 0], &[]);
+    check_frag("callee: Set 2 past the arity", &subject, dup(&past), Layer::Shape);
+    let (s, h, _) = subject();
+    match big(move || gate(wasm_table(), &s, h, &past)) {
+        Verdict::Rejected(Layer::Shape, why) => assert!(why.contains("local.set 2"), "{why}"),
+        other => panic!("Set 2: {other:?}"),
+    }
+}

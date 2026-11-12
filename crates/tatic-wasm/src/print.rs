@@ -26,10 +26,36 @@ pub fn print_func(table: &Table, pos: usize, entry_pos: usize, e: &Entry, out: &
     out.push_str("  )\n");
 }
 
+/// The tail rule: instruction `i` of a sequence of `len` is in tail position when the sequence is (`tail`) and it is
+/// the last. A body is a tail sequence, and an `If` in tail position passes it to both arms.
+fn tail_at(tail: bool, i: usize, len: usize) -> bool {
+    tail && i + 1 == len
+}
+
+/// `code` (a body) with each `Call(j)` in tail position replaced by `f(j)` where that returns `Some`; the rest is
+/// unchanged. The loop form's rewrite (`loop_form`) is this with `f` picking the function's own position.
+pub fn map_tail_calls(code: &[Ins], f: &mut dyn FnMut(usize) -> Option<Vec<Ins>>) -> Vec<Ins> {
+    fn walk(code: &[Ins], tail: bool, f: &mut dyn FnMut(usize) -> Option<Vec<Ins>>) -> Vec<Ins> {
+        let mut out = Vec::with_capacity(code.len());
+        for (i, ins) in code.iter().enumerate() {
+            let last_tail = tail_at(tail, i, code.len());
+            match ins {
+                Ins::If(t, e) if last_tail => out.push(Ins::If(walk(t, true, f), walk(e, true, f))),
+                Ins::Call(j) if last_tail => match f(*j) {
+                    Some(repl) => out.extend(repl),
+                    None => out.push(ins.clone()),
+                },
+                other => out.push(other.clone()),
+            }
+        }
+        out
+    }
+    walk(code, true, f)
+}
+
 /// Appends `code`'s lines to `out`, each indented `depth` spaces: a row as its `line`, `If` flat (`if (result i64)` / `else` / `end`) with
-/// its arms at +2, `Raw` as given. A `Call(j)` prints `return_call` when
-/// `tail` holds and it is the last instruction of `code` (an `If` passes `tail` and being last to both arms), `call`
-/// otherwise; `entry_pos` is the position printed `$f`.
+/// its arms at +2, `Br` as `br $top`, `Raw` as given. A `Call(j)` prints `return_call` in tail position (`tail_at`),
+/// `call` otherwise; `entry_pos` is the position printed `$f`.
 pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_pos: usize, out: &mut String) {
     let line = |out: &mut String, s: &str| {
         out.extend(std::iter::repeat_n(' ', depth));
@@ -37,7 +63,7 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
         out.push('\n');
     };
     for (i, ins) in code.iter().enumerate() {
-        let last_tail = tail && i + 1 == code.len();
+        let last_tail = tail_at(tail, i, code.len());
         match ins {
             Ins::Row { name, operand } => {
                 let row = table.row(name).unwrap_or_else(|| panic!("print_body: no row {name:?}"));
@@ -51,6 +77,7 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
                 line(out, "end");
             }
             Ins::Call(j) => line(out, &format!("{} {}", if last_tail { "return_call" } else { "call" }, label(*j, entry_pos))),
+            Ins::Br => line(out, "br $top"),
             Ins::Raw(s) => line(out, s),
         }
     }

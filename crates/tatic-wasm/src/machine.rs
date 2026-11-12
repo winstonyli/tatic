@@ -2,8 +2,8 @@
 //! over a `Table` of rows (`wasm::table` is the wasm one).
 //!
 //! A program is a Church-encoded instruction tree typed by its start and end stacks,
-//! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> const -> word -> bit -> if -> call -> set -> F S` (one leaf constructor
-//! per row class, in `ctor_list` order), where each
+//! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> const -> word -> bit -> if -> call -> set -> br -> F S` (one leaf
+//! constructor per row class, in `ctor_list` order), where each
 //! constructor takes the rest of the program (`const : Pi A. Op -> F (V,A) -> F A`, with the operand
 //! `Op = Fr -> Pi R:Sort0. (V -> R) -> R` handing its word to a continuation). Its meaning `M p R k` interprets `F A` as `Fr -> A -> Mem -> R` for an answer type `R : Sort0`: words are width-n Church vectors
 //! (`encoding.rs`), stacks are nested `Sigma` pairs, the locals are a frame `Fr = V^fw x V` of nested word pairs
@@ -110,6 +110,10 @@ pub enum Ins {
     /// `call`/`return_call` to the module position `j` (the printer picks by its tail rule): pops the callee's
     /// arity in words, pushes one. Its meaning continues into the callee environment's entry `j`, then the rest.
     Call(usize),
+    /// `br $top`: restart the function's own entry on the current frame with the activation's own return continuation.
+    /// Typed like a `Call` with no arguments (pushes one word); its meaning ignores the stack under it and the code
+    /// after it, which the printed function never reaches.
+    Br,
     Raw(String),
 }
 
@@ -200,6 +204,9 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
                 }
                 st.insert(0, K::W)
             }
+            // typed like a 0-argument `Call` (pushes one word); `br $top` never falls through, so the code after it is
+            // dead in the printed function and its meaning ignores it
+            Ins::Br => st.insert(0, K::W),
             Ins::Call(j) => {
                 let Some(Some(n)) = arities.get(*j) else { return Err(format!("call to position {j}, which has no arity")) };
                 pop(&mut st, &vec![K::W; *n])?;
@@ -216,7 +223,7 @@ pub fn out_stack(table: &Table, code: &[Ins], st: Vec<K>, arities: &[Option<usiz
     shape(table, code, st, arities).unwrap_or_else(|e| panic!("{e}"))
 }
 
-/// Whether `code` from `st` is something the machine runs and falls through: no `Raw`, no unknown row or operand on a
+/// Whether `code` from `st` is something the machine runs and falls through, or restarts at a `Br`: no `Raw`, no unknown row or operand on a
 /// 2-to-1 row, no underflow, `if` arms that each leave one word from an empty stack, and each `Call(j)` to a position with an arity.
 pub fn well_formed(table: &Table, code: &[Ins], st: &[K], arities: &[Option<usize>]) -> bool {
     shape(table, code, st.to_vec(), arities).is_ok()
@@ -245,11 +252,12 @@ enum Ctor {
     Leaf(Class),
     If,
     Call,
+    Br,
 }
 
 /// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, the count).
-fn ctor_list() -> [Ctor; 6] {
-    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call, Ctor::Leaf(Class::Set)]
+fn ctor_list() -> [Ctor; 7] {
+    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call, Ctor::Leaf(Class::Set), Ctor::Br]
 }
 
 fn ctor_idx(k: Ctor) -> usize {
@@ -268,12 +276,15 @@ pub struct Machine<'t> {
 /// What `meaning` is given beside the program and its continuation: the answer type `r`; for the generator's proofs,
 /// `ch`, an opaque `choose` (`Pi R:Sort0. Bv_1 -> R -> R -> R`) an `If` uses in place of the real one; and `calls`, the
 /// callee environment `V -> Fr -> Mem -> Ret -> R` (`Ret = V -> Mem -> R`) a `Call(j)` continues into at `j`, which the
-/// statement builder fills from the module fixpoint over fuel.
+/// statement builder fills from the module fixpoint over fuel; and `restart`, `Fr -> Mem -> R`, what a `Br` continues
+/// into: the activation's own entry run again at a frame and memory with the activation's own return continuation
+/// (`\fr mu. env fr mu k`, filled in `G::bm`).
 #[derive(Clone, Copy)]
 pub struct MeaningEnv {
     pub r: At,
     pub ch: Option<At>,
     pub calls: At,
+    pub restart: At,
 }
 
 const F_TY: fn() -> Expr = || arrow(sort(2), sort(2));
@@ -381,6 +392,7 @@ impl Machine<'_> {
                 Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
                 Ctor::Leaf(Class::Set) => arrow(self.setter_ty(), arrow(fa(a), fa(va))),
+                Ctor::Br => arrow(fa(va), fa(a)),
                 // `Pi S. (S -> Fr x A) -> V -> F (V, A) -> F S`: the arguments over `A` are `S`, the callee's index
                 // a word, the rest of the program continues with the callee's answer pushed
                 Ctor::Call => c.pi(sort(2), |c, s| {
@@ -446,6 +458,10 @@ impl Machine<'_> {
                 cons(c, i, vec![ty(c, &below(pops)), meaning, r])
             }
             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
+            Ins::Br => {
+                let r = cont(c, with(&[K::W], 0));
+                cons(c, ctor_idx(Ctor::Br), vec![ty(c, &st), r])
+            }
             Ins::Call(j) => {
                 let m = ar.get(*j).copied().flatten().unwrap_or_else(|| panic!("prog's out_stack rejects Call({j})"));
                 let (s_ty, a_ty) = (ty(c, &st), ty(c, &below(m)));
@@ -500,7 +516,7 @@ impl Machine<'_> {
         sigrec(motive, step, c.at(st))
     }
     /// The constructors' meanings.
-    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: At) -> Vec<Expr> {
+    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: At, restart: At) -> Vec<Expr> {
         let (v, v1) = (self.v(), bv_ty(1));
         let w = *self;
         let fr_ty = self.fr();
@@ -603,6 +619,8 @@ impl Machine<'_> {
                 app3(c.at(rest), fr2, c.at(s), c.at(mu))
             })
         });
+        // `\A rest fr st mu`: the activation's own entry again at the current frame (the stack and the rest are dropped)
+        let br = shape(c, None, &|a| prod(v, a), &|a| a, &|c, _a, _op, _rest, fr, _st, mu| app2(c.at(restart), c.at(fr), c.at(mu)));
         let built = [
             (Ctor::Leaf(Class::Const), konst),
             (Ctor::Leaf(Class::Word), bin),
@@ -610,6 +628,7 @@ impl Machine<'_> {
             (Ctor::If, if_),
             (Ctor::Call, call),
             (Ctor::Leaf(Class::Set), set),
+            (Ctor::Br, br),
         ];
         ctor_list().into_iter().map(|k| built.iter().find(|(b, _)| *b == k).expect("interp builds every constructor").1).collect()
     }
@@ -618,7 +637,7 @@ impl Machine<'_> {
         let r = me.r;
         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
         let mut args = vec![gfam, c.at(k)];
-        args.extend(self.interp(c, r, me.ch, me.calls));
+        args.extend(self.interp(c, r, me.ch, me.calls, me.restart));
         apps(c.at(p), args)
     }
     /// `GoodNat N = Pi P:(Nat2 -> Sort3). P 0 -> (Pi j. P j -> P (S j)) -> P N`: induction over fuel, as a hypothesis.
@@ -757,7 +776,13 @@ mod tests {
                 });
                 let none = c.mark(none);
                 let fr = w.frame(&[c.at(x[3]), c.at(x[4])]);
-                let me = MeaningEnv { r, ch: None, calls: none };
+                // no `Br` here; `R` is abstract, so `restart` is built from the continuation
+                let restart = c.lam(w.fr(), |c, fr2| {
+                    let mem = w.mem(c, r);
+                    c.lam(mem, |c, mu2| app3(c.at(x[2]), c.at(fr2), mkpair(c.at(x[0]), lit(n, 0), c.at(x[5])), c.at(mu2)))
+                });
+                let restart = c.mark(restart);
+                let me = MeaningEnv { r, ch: None, calls: none, restart };
                 let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[5]), c.at(x[6]));
                 let (p, q) = if b_minus_a { (x[4], x[3]) } else { (x[3], x[4]) };
                 let val = app2(sub(n), c.at(p), c.at(q));
