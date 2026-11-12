@@ -177,7 +177,8 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   `SelfCall`). In the loop form the `local.set`s take only the arguments, and `br $top` drops the env words under
   them, so each iteration pushes words it never reads. Why parked: a stopgap of the loop-form pass, which rewrites the
   `Call` lowering after the fact (spec `2026-11-12-proved-loop-form-design.md`, B1) and must not decide tail position
-  itself; the gate types `Br` with the stack under it ignored, so the pushes are proved harmless. Dropping them means
+  itself. The pushes are dead under wasm's `br`, which drops the stack under it; that is tested, not proved, since
+  `shape_check` refuses a record whose env is not `Params(0)`, so these functions are `NotCovered`. Dropping them means
   the pass knowing `SelfCall`'s env prefix. Trigger: a profile showing the pushes in a hot loop. Evidence:
   `crates/tatic/src/jit/lower_wat.rs` (`env_word_loops_run_and_match_eval`; 2026-11-12). Status: parked.
 - **The straight-line gate's leftovers (v0.7 final review)** — what: the arm part is fixed (`shape` starts each `If` arm from an empty stack, `machine.rs#if_arms_start_empty_and_leave_one_word`, 2026-11-12; `Loop` is gone since v0.8); left: Goal 4's 8 table edges run ignored (`op_table_agrees_at_n64_on_all_edges`, 4-6 s, nearly all `Mul`; why parked: too slow for every run; trigger: a change to the operator table), and `negative_literals.wat` pins the printer's negative literals (both 2026-11-08). Nested `Mul` and the post-`grow` rerun were measured 2026-11-08 (doc 15, same section): no rule needed. The slow statement build was `karrow`'s nested shifts, fixed 2026-11-08 (doc 15, same section); the check is now the gate's cost. Evidence: doc 15, "The gate's costs, and the rules they triggered", verified 2026-11-08. Status: parked.
