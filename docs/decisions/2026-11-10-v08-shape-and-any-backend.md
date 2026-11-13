@@ -215,7 +215,10 @@ in `jit/shape.rs#wasm_table` over `tatic_wasm::wasm::table()`, which builds a fr
   the walk's probe; the spec is `docs/superpowers/specs/2026-11-13-partial-row-and-gcd-design.md`. Its spike passes
   gcd but fails on check cost (doc 15, "Word-row guards through the probe: a spike
   (2026-11-13)"). Option 2 (fold plus a step at 1) fails the same way, and main's `If` chains grow alike: the walk's
-  step over a branch is the cost; the next choice is in the spec's Open section.
+  step over a branch is the cost. That step was made linear on main (doc 15, "The gate's branch step made linear
+  (2026-11-13)"), and on top of it the probe spike passes with every series linear. Picked 2026-11-13 (d1): every
+  Word guard through the probe, nothing folded, the constant factor on `add`-heavy programs accepted (check up to 4x
+  at `doubling(12)`); folding total-row guards goes to `PARKED.md` with the build (the spec's End-state fit).
 
 ## Open for the spec: tail calls and the state shape (surveys, 2026-11-10)
 
