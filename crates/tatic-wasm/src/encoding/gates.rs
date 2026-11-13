@@ -176,6 +176,10 @@ pub fn eq_bit(n: usize) -> Expr {
     let body = app(var(0), app2(eq_bv(n), var(3), var(2)));
     lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
 }
+/// The constant-true domain of a total row: `\x y. 1 : V -> V -> Bv_1`.
+pub fn dom_true(n: usize) -> Expr {
+    lam(bv_ty(n), lam(bv_ty(n), lit(1, 1)))
+}
 /// Wrapping `a * b` (mod 2^n): the shift-and-add rows of `mul_bits` as a `V -> V -> V` circuit.
 pub fn mul(n: usize) -> Expr {
     bits_circuit(n, &move |x, y| mul_bits(n, x, y))

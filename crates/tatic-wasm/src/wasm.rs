@@ -28,7 +28,8 @@ mod tests {
     use machine::Machine;
 
     /// Every row of `table()` at n = 8, frame width 2: a `Word` row's meaning infers `V -> V -> V`, a `Bit` row's
-    /// `V -> V -> Bv_1`, a `Const` row's (`const` at operand 3, `local.get` at operands 0 and 1) `Fr -> Pi R:Sort0. (V -> R) -> R` (`Machine::operand_ty`).
+    /// `V -> V -> Bv_1`, a `Const` row's (`const` at operand 3, `local.get` at operands 0 and 1) `Fr -> Pi R:Sort0. (V -> R) -> R` (`Machine::operand_ty`);
+/// every row's domain circuit infers `V -> V -> Bv_1`.
     #[test]
     fn wasm_rows_are_closed_and_typed() {
         let n = 8;
@@ -47,6 +48,8 @@ mod tests {
                 Class::Word => arrow(v.clone(), arrow(v.clone(), v.clone())),
                 Class::Bit => arrow(v.clone(), arrow(v.clone(), bv_ty(1))),
             };
+            let dom = infer(&Ctx::new(), &constant_n(row.dom.circuit, n)).unwrap_or_else(|e| panic!("{name} domain: {e}"));
+            assert!(def_eq(&dom, &arrow(v.clone(), arrow(v.clone(), bv_ty(1)))), "{name}: domain has the wrong type");
             let term = (row.meaning)(&mut Cx::default(), &m, operand);
             let got = infer(&Ctx::new(), &term).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(def_eq(&got, &want), "{name} ({}) has the wrong type", (row.line)(operand));

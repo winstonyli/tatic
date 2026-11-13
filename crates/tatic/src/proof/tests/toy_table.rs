@@ -8,11 +8,11 @@ use crate::support::samples::source;
 use tatic_kernel::{app2, lam};
 use tatic_wasm::encoding::{add, constant_n, lit, sub};
 use tatic_wasm::machine::{Class, Entry, EnvAccess, Ins, Row, Table};
+use tatic_wasm::ops::Dom;
 
 /// The wasm `name` row's meaning and line under the toy.
 fn as_wasm(name: &'static str) -> Row {
-    let r = tatic_wasm::wasm::table().row(name).unwrap_or_else(|| panic!("no wasm row {name:?}"));
-    Row { name: r.name, class: r.class, meaning: r.meaning, line: r.line }
+    *tatic_wasm::wasm::table().row(name).unwrap_or_else(|| panic!("no wasm row {name:?}"))
 }
 
 /// `const`, `local.get` and `lt` as wasm's; `sub` means `\x y. add (sub y x) 1`.
@@ -23,6 +23,7 @@ fn toy() -> Table {
         Row {
             name: "sub",
             class: Class::Word,
+            dom: Dom::TOTAL,
             meaning: |_c, m, _| lam(m.v(), lam(m.v(), app2(constant_n(add, m.n), app2(constant_n(sub, m.n), tatic_kernel::var(0), tatic_kernel::var(1)), lit(m.n, 1)))),
             line: |_| "toy.sub".to_string(),
         },

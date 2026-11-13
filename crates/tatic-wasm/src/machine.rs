@@ -90,11 +90,13 @@ impl Class {
 /// constructor's operand: for `Const` a function of the frame that hands its word (a constant, or a projection of the
 /// frame) to a continuation (`Machine::operand_ty`; a plain `Fr -> V` left the redex `op fr` in every stack value, and
 /// conversion blew up), for `Set` the frame with the operand's slot replaced (`Machine::setter`), for `Word`/`Bit` the
-/// closed circuit (`operand` is 0).
+/// closed circuit (`operand` is 0). `dom` is where the row has a value, read only at Word sites (`ops::Dom`).
+#[derive(Clone, Copy)]
 pub struct Row {
     pub name: &'static str,
     pub class: Class,
     pub meaning: fn(&mut Cx, &Machine, i64) -> Expr,
+    pub dom: crate::ops::Dom,
     pub line: fn(i64) -> String,
 }
 
