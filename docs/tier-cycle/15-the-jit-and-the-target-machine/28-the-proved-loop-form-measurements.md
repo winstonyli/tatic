@@ -215,6 +215,12 @@ try (`pfl-bench-a2-timed1`).
   and the workspace suite passes (`p1-suite`: 822, the 819 before plus three memo tests). The timed A/B
   (`time_doubling_12`, six alternating runs per arm) was refused four times on a busy machine (`p1-ab-doubling12`,
   `-r2` to `-r4`; a game held CPUs 8 and 9), so the claim is "does less work", not "faster", until it runs.
+  church-bv on the memo (`r4-churchbv-ignored`, `r4-rskc-ab-3`, `r4-held11-abab`): `held_out_replacements_prove`
+  and both stream pins pass, and `search::rule_set_kernel_check` prints the same output, built just before the memo
+  (`54efbb7`) and with it, on three law files: `floor/cmp3d.txt` (92 laws) and `floor/add3.txt` (37), counts
+  stripped, and `held_11.txt` (919 checked, 81 not proved). Untimed walls on `held_11` were 32.3 and 28.4 s before
+  against 28.1 and 28.1 s with it; a first pair at 31.8 against 51.5 s was load (the class build, which does not use
+  the kernel, doubled with it).
 - The head-beta shortcut on top of the merged memo (`hb-*`, a reviewer's `hb2-*`; patch
   `docs/runs/2026-11-12/patches/head-beta-on-memo-probe.patch`; never merged). The shortcut is the one in "Where
   the depth-4 telescopes come from": before `whnf`, one syntactic head beta on a side, then pointer equality with
