@@ -15,11 +15,31 @@ use super::*;
 
 /// `choose w x y = w (Lift R) (\c Y g. g (c R x y)) R id`, with `Lift R = Pi Y:Sort0. (R -> Y) -> Y`: a one-bit word
 /// opens only at Sort1, and `Lift R` carries the Sort0 answer through it.
+///
+/// It is the application of the closed `choose_fn` to its four arguments, never an unfolded copy: the arguments (a branch
+/// holds the rest of the program) are neither shifted under `choose`'s binders when built nor again when a conversion
+/// reduces it, and the proof, which takes the real choice as its probe `CH`, then states the very term the statement
+/// does, so the kernel's final comparison finds them equal without reducing a thing (a chain of `n` branches cost `n^2`
+/// shifts when it unfolded them).
 pub fn choose(r: Expr, w: Expr, x: Expr, y: Expr) -> Expr {
-    let lift = pi(sort(0), arrow(arrow(shift(&r, 0, 1), var(0)), var(0)));
-    let k = lam(bool0(), lam(sort(0), lam(arrow(shift(&r, 0, 2), var(0)),
-        app(var(0), app3(var(2), shift(&r, 0, 3), shift(&x, 0, 3), shift(&y, 0, 3))))));
-    apps(w, vec![lift, k, r, lam(r, var(0))])
+    apps(choose_fn(), vec![r, w, x, y])
+}
+
+/// `\R w x y. choose R w x y`, closed: the one definition of the choice.
+pub fn choose_fn() -> Expr {
+    Cx::default().lam(sort(0), |c, r| {
+        c.lam(bv_ty(1), |c, w| {
+            c.lam(c.at(r), |c, x| {
+                c.lam(c.at(r), |c, y| {
+                    let (r, w, x, y) = (c.at(r), c.at(w), c.at(x), c.at(y));
+                    let lift = pi(sort(0), arrow(arrow(shift(&r, 0, 1), var(0)), var(0)));
+                    let k = lam(bool0(), lam(sort(0), lam(arrow(shift(&r, 0, 2), var(0)),
+                        app(var(0), app3(var(2), shift(&r, 0, 3), shift(&x, 0, 3), shift(&y, 0, 3))))));
+                    apps(w, vec![lift, k, r, lam(r, var(0))])
+                })
+            })
+        })
+    })
 }
 
 /// An interpreter case's body from `A`, its operator if any, `rest`, the frame, the stack and the memory.

@@ -105,6 +105,43 @@ fn gate_build_work_is_linear_in_the_tree() {
     }
 }
 
+/// The build and check work of `\a. if a == 0 then 7 else if a == 1 then 8 else ... else a` at depth `d`, as
+/// `(accepted, check work, build work)`.
+fn if_chain_work(d: usize) -> (bool, u64, u64) {
+    let mut e = "a".to_string();
+    for k in (0..d).rev() {
+        e = format!("if a == {k} then {} else {e}", k + 7);
+    }
+    let src = format!(r"\a. {e}");
+    big(move || {
+        let (s, h, frag) = compiled(&move |s: &mut TermStore| crate::support::samples::source(s, &src));
+        tatic_kernel::scoped(|| {
+            let b0 = tatic_kernel::work();
+            let (p, st) = built(&s, h, &frag);
+            let b1 = tatic_kernel::work();
+            let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
+            (ok, tatic_kernel::work() - b1, b1 - b0)
+        })
+    })
+}
+
+/// A nested if-else chain's check and build work double with its depth. Three costs made each 2.3x to 3.6x per doubling
+/// (about 3.8x at depth 128 on main): `cong` put the proofs of a branch's two arms under three binders (J on each), so a
+/// chain of `d` branches shifted `d` nested proofs `d` times; `choose` unfolded its arguments (a branch holds the rest of
+/// the program) under its own binders; and the final comparison of the proof's type (the real choice at the probe) with
+/// the statement then reduced both `choose`s, shifting the rest of the program at each branch again.
+#[test]
+fn gate_check_work_is_linear_in_an_if_chain() {
+    let w: Vec<(bool, u64, u64)> = [16, 32, 64].into_iter().map(if_chain_work).collect();
+    println!("if chain (accepted, check work, build work), depths 16, 32, 64: {w:?}");
+    assert!(w.iter().all(|x| x.0), "the if chain should check: {w:?}");
+    for i in 1..w.len() {
+        let (rc, rb) = (w[i].1 as f64 / w[i - 1].1 as f64, w[i].2 as f64 / w[i - 1].2 as f64);
+        assert!(rc < 2.2, "check work grew {rc:.2}x from depth {} to depth {}: {w:?}", 8 << i, 16 << i);
+        assert!(rb < 2.2, "build work grew {rb:.2}x from depth {} to depth {}: {w:?}", 8 << i, 16 << i);
+    }
+}
+
 /// `(proof, statement)` for a fragment term and its emitted body, built apart from the check.
 pub(super) fn built(s: &TermStore, h: Hash, frag: &CompiledFragment) -> (tatic_kernel::Expr, tatic_kernel::Expr) {
     let (st, p) = build(wasm_table(), s, h, frag).expect("a covered term with a well-formed body");

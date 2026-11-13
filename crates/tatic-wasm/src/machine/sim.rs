@@ -22,19 +22,36 @@ use std::cell::RefCell;
 fn ch_ty() -> Expr {
     pi(sort(0), arrow(bv_ty(1), arrow(var(0), arrow(var(0), var(0)))))
 }
-/// The real choice, `\R w x y. choose R w x y`.
-fn choose_fn() -> Expr {
+
+/// The closed lemma `\R CH w t t' (pt : Id(R, t, t')) e e' (pe : Id(R, e, e')). Id(R, CH R w t e, CH R w t' e')`: J on each
+/// branch. It has no free variable, so applying it (`cong`) shifts none of its arguments under its binders: the proofs
+/// `pt` and `pe` (and the branches) stay one shared term at the walk's depth instead of a shifted copy per level of a
+/// chain of branches (each copy a new node, the proof of a chain of `d` branches `d^2` nodes).
+fn cong_lemma() -> Expr {
     Cx::default().lam(sort(0), |c, r| {
-        c.lam(bv_ty(1), |c, w| {
-            c.lam(c.at(r), |c, x| c.lam(c.at(r), |c, y| choose(c.at(r), c.at(w), c.at(x), c.at(y))))
+        c.lam(ch_ty(), |c, ch| {
+            c.lam(bv_ty(1), |c, cd| {
+                c.lam(c.at(r), |c, t| {
+                    c.lam(c.at(r), |c, t2| {
+                        let pt_ty = id(c.at(r), c.at(t), c.at(t2));
+                        c.lam(pt_ty, |c, pt| {
+                            c.lam(c.at(r), |c, e| {
+                                c.lam(c.at(r), |c, e2| {
+                                    let pe_ty = id(c.at(r), c.at(e), c.at(e2));
+                                    c.lam(pe_ty, |c, pe| cong_body(c, (r, ch, cd), (t, t2, pt), (e, e2, pe)))
+                                })
+                            })
+                        })
+                    })
+                })
+            })
         })
     })
 }
 
-/// `Id(R, CH R w t e, CH R w t' e')` from `Id(R, t, t')` and `Id(R, e, e')`: J on each branch.
-fn cong(c: &mut Cx, r: At, ch: At, cd: At, (t, t2, pt): (Expr, Expr, Expr), (e, e2, pe): (Expr, Expr, Expr)) -> Expr {
+/// `cong_lemma`'s body, J on the then side and then on the else side.
+fn cong_body(c: &mut Cx, (r, ch, cd): (At, At, At), (t, t2, pt): (At, At, At), (e, e2, pe): (At, At, At)) -> Expr {
     let pick = |c: &Cx, x: Expr, y: Expr| apps(c.at(ch), vec![c.at(r), c.at(cd), x, y]);
-    let (e, e2, pe) = (c.mark(e), c.mark(e2), c.mark(pe));
     let outer_m = c.lam(c.at(r), |c, a| {
         c.lam(c.at(r), |c, b| {
             let ty = id(c.at(r), c.at(a), c.at(b));
@@ -51,7 +68,12 @@ fn cong(c: &mut Cx, r: At, ch: At, cd: At, (t, t2, pt): (Expr, Expr, Expr), (e, 
         let inner_b = c.lam(c.at(r), |c, y| refl(pick(c, c.at(a), c.at(y))));
         jelim(inner_m, inner_b, c.at(e), c.at(e2), c.at(pe))
     });
-    jelim(outer_m, outer_b, t, t2, pt)
+    jelim(outer_m, outer_b, c.at(t), c.at(t2), c.at(pt))
+}
+
+/// `Id(R, CH R w t e, CH R w t' e')` from `Id(R, t, t')` and `Id(R, e, e')`: the lemma applied at the walk's depth.
+fn cong(c: &Cx, r: At, ch: At, cd: At, (t, t2, pt): (Expr, Expr, Expr), (e, e2, pe): (Expr, Expr, Expr)) -> Expr {
+    apps(cong_lemma(), vec![c.at(r), c.at(ch), c.at(cd), t, t2, pt, e, e2, pe])
 }
 
 /// `e` as a head and its arguments.
