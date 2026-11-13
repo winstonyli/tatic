@@ -185,6 +185,31 @@ remainder circuit answers `x`; the machine has no trap channel.
   (status quo); an explicit guard and a `Trap` instruction (a new constructor and a guard per site that the engine
   already checks).
 - Div's `MIN / -1` wrap still needs the lowering's wrapping sequence modelled as instructions.
+- Correction (2026-11-12): "language, evaluator and lowering are unchanged" does not hold for any placement of the
+  domain: `lang/eval.rs#apply_prim`'s `Mod` zero check and `jit/lower_wat.rs#node`'s raw `i64.rem_s` arm change.
+
+### Open: where the domain lives (recon, 2026-11-12)
+
+Three readers, three designers and a skeptic, over main at `9151850`; nothing built. Facts checked by hand:
+`PrimOp::{Div, Mod}` (`lang/term.rs`) have no machine row; `apply_prim` holds the only two zero checks; `lang` imports
+nothing outside `lang`; `tatic` depends on `tatic-wasm`, which cannot see `PrimOp`; the cached table is a `OnceLock`
+in `jit/shape.rs#wasm_table` over `tatic_wasm::wasm::table()`, which builds a fresh `Table` per call; `Row` is
+`{name, class, meaning, line}` and the machine has 7 constructors (`machine.rs#ctor_list`).
+
+- Options: (a) the domain on the row in `tatic-wasm` (`Row.dom`), the table cached there, `eval` reads it through
+  the row (no upward edge; all three designers' pick); (b) a predicate on `PrimOp` plus a circuit on the row (`lang`
+  stays independent, two sources paired by a test); (c) `eval` reads `jit::shape` (the spike's shape; an upward
+  `lang -> jit` edge); (d) the circuit only, with `eval` evaluating it in the kernel (one definition, the kernel
+  inside the oracle). Later, additive on (a): the row carries each op's concrete semantics and `apply_prim`'s match
+  goes.
+- Under (a) the guard is either an 8th constructor chosen by `row.dom` (existing gate costs unchanged) or a domain on
+  every Word/Bit row, constant true on total ones (no constructor split; every gate cost moves, unmeasured).
+- What any option must also change: `op_table_tests.rs#agree` (`.expect("no division")` panics at b = 0 once `mod`
+  has a row) and `every_prim_op_with_a_row_names_it` (only Div then lacks a row); the row is named `mod`
+  (`PrimOp::name`), not `rem_s`; `z` reaches `MeaningEnv` and `SEnv`; one last-resort rule in
+  `machine/sim.rs#Sim::sim_step` closes two identical stuck sides by `refl`. Under any option the gate accepts a domain
+  that is wrong the same way on both sides; only the table test catches it. Not confirmed: that nothing besides the
+  missing row keeps gcd `NotCovered` after v0.9.
 
 ## Open for the spec: tail calls and the state shape (surveys, 2026-11-10)
 
