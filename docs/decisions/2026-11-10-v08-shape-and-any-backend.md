@@ -212,7 +212,9 @@ in `jit/shape.rs#wasm_table` over `tatic_wasm::wasm::table()`, which builds a fr
   missing row keeps gcd `NotCovered` after v0.9.
 - Picked 2026-11-13: (a), with a domain on every Word/Bit row; the cost spike that conditioned it is doc 15, "A
   domain on every row: a cost spike (2026-11-13)". Narrowed the same day to Word rows only, with every guard through
-  the walk's probe; the spec is `docs/superpowers/specs/2026-11-13-partial-row-and-gcd-design.md`.
+  the walk's probe; the spec is `docs/superpowers/specs/2026-11-13-partial-row-and-gcd-design.md`. Its spike passes
+  gcd but fails on check cost (unfolded constant-true guards; doc 15, "Word-row guards through the probe: a spike
+  (2026-11-13)"); the choice between folding them and another shape is open.
 
 ## Open for the spec: tail calls and the state shape (surveys, 2026-11-10)
 
