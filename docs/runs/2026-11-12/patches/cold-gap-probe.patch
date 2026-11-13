@@ -1,0 +1,103 @@
+diff --git a/crates/tatic/src/proof/tests.rs b/crates/tatic/src/proof/tests.rs
+index d1e1e90..e17ae0e 100644
+--- a/crates/tatic/src/proof/tests.rs
++++ b/crates/tatic/src/proof/tests.rs
+@@ -37,3 +37,4 @@ mod gate_mutants;
+ mod modules;
+ mod loop_form;
+ mod toy_table;
++mod cold_gap;
+diff --git a/crates/tatic/src/proof/tests/cold_gap.rs b/crates/tatic/src/proof/tests/cold_gap.rs
+new file mode 100644
+index 0000000..6b99384
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/cold_gap.rs
+@@ -0,0 +1,88 @@
++//! PROBE (g1, 2026-11-12, reverted): why the closure loop's gate build reads 0.7 ms in the O3 spike's debug test and
++//! 2.7 ms in the release `execution` bench. Times `build` and `holds` apart, with the kernel's work count and stack
++//! segment switches, on a `CHECK_STACK` thread (the spike's test) and on a 1 MiB thread (criterion's main thread),
++//! with one store reused (the spike) or a fresh store and compile per run (the bench); then the whole cold
++//! `jit.apply` per run on each thread.
++use super::gate::compiled;
++use crate::jit::shape::wasm_table;
++use crate::jit::JitEngine;
++use crate::lang::term::TermStore;
++use crate::proof::gate::build;
++use crate::support::samples::capturing_closure_loop;
++
++const RUNS: usize = 20;
++const MAIN_STACK: usize = 1024 * 1024;
++
++fn on(stack: usize, f: impl FnOnce() + Send + 'static) {
++    std::thread::Builder::new().stack_size(stack).spawn(f).unwrap().join().unwrap();
++}
++
++fn med(mut x: Vec<f64>) -> f64 {
++    x.sort_by(|p, q| p.partial_cmp(q).unwrap());
++    (x[x.len() / 2 - 1] + x[x.len() / 2]) / 2.0
++}
++
++fn gate_parts(label: &'static str, fresh: bool) {
++    let shared = compiled(&capturing_closure_loop);
++    let (mut bt, mut ct, mut bw, mut cw, mut bs, mut cs) = (vec![], vec![], vec![], vec![], vec![], vec![]);
++    for i in 0..RUNS + 1 {
++        let own;
++        let (s, h, frag) = if fresh {
++            own = compiled(&capturing_closure_loop);
++            (&own.0, own.1, &own.2)
++        } else {
++            (&shared.0, shared.1, &shared.2)
++        };
++        let (b, c, w1, w2, s1, s2) = tatic_kernel::scoped(|| {
++            let (w0, s0, t0) = (tatic_kernel::work(), tatic_kernel::segment_switches(), std::time::Instant::now());
++            let (st, p) = build(wasm_table(), s, h, frag).expect("builds");
++            let p = p.expect("proves");
++            let (w1, s1, t1) = (tatic_kernel::work(), tatic_kernel::segment_switches(), std::time::Instant::now());
++            assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++            let (w2, s2) = (tatic_kernel::work(), tatic_kernel::segment_switches());
++            let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
++            (ms(t1 - t0), ms(t1.elapsed()), w1 - w0, w2 - w1, s1 - s0, s2 - s1)
++        });
++        if i > 0 {
++            bt.push(b);
++            ct.push(c);
++            bw.push(w1 as f64);
++            cw.push(w2 as f64);
++            bs.push(s1 as f64);
++            cs.push(s2 as f64);
++        }
++    }
++    println!(
++        "PROBE {label}: build {:.3} ms (work {}, segments {}), check {:.3} ms (work {}, segments {})",
++        med(bt), med(bw), med(bs), med(ct), med(cw), med(cs)
++    );
++}
++
++fn cold_apply(label: &'static str) {
++    let mut t = vec![];
++    let mut segs = vec![];
++    for i in 0..RUNS + 1 {
++        let mut store = TermStore::new();
++        let h = capturing_closure_loop(&mut store);
++        let mut jit = JitEngine::new();
++        let (s0, t0) = (tatic_kernel::segment_switches(), std::time::Instant::now());
++        jit.apply(&store, h, &[5, 0]).unwrap();
++        if i > 0 {
++            t.push(t0.elapsed().as_secs_f64() * 1e3);
++            segs.push((tatic_kernel::segment_switches() - s0) as f64);
++        }
++    }
++    println!("PROBE {label}: cold jit.apply {:.3} ms (segments {})", med(t), med(segs));
++}
++
++#[test]
++#[ignore]
++fn cold_gap_probe() {
++    println!("PROBE profile debug_assertions={}", cfg!(debug_assertions));
++    on(tatic_kernel::CHECK_STACK, || gate_parts("big   shared", false));
++    on(MAIN_STACK, || gate_parts("1MiB  shared", false));
++    on(tatic_kernel::CHECK_STACK, || gate_parts("big   fresh ", true));
++    on(MAIN_STACK, || gate_parts("1MiB  fresh ", true));
++    on(tatic_kernel::CHECK_STACK, || cold_apply("big  "));
++    on(MAIN_STACK, || cold_apply("1MiB "));
++}

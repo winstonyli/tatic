@@ -28,12 +28,30 @@ try (`pfl-bench-a2-timed1`).
   the bench at six commits (`cold-probe`, untimed on `CFF`, `docs/runs/2026-11-12/scripts/cold-probe.sh`) puts the
   step at `c46cfe6`: 632 and 607 us at `0f97e17` and `59810fd`, then 4.70, 5.07, 5.02 and 4.86 ms at `c46cfe6`,
   `d4e54b3`, `64d1689` and `7ad2f0a`. That commit brought self calls into the gate, so the cold path now includes the
-  closure loop's kernel proof. A samply profile of the cold row on main (`cold-prof`, table
-  `docs/runs/2026-11-12/cold-prof/named.txt`) confirms it: of the samples under `compile_verify_and_apply`, the gate
-  is 80% (`gate::build`, the statement and the walk, 56%; the kernel check 24%), wasmtime's `instantiate` 13%, and
-  compile and `verify` the rest. At 4.7 to 4.9 ms that is about 2.7 ms building, 1.2 ms checking and 0.6 ms in
-  wasmtime. Open: the O3 spike timed the same build at 0.7 ms in a debug test (`docs/tier-cycle/`, "v0.8's build: measurements and checks"), against 2.7 ms here in a
-  release bench whose every iteration starts from a fresh `JitEngine` and `TermStore`; the gap is not explained.
+  closure loop's kernel proof, and most of it is the kernel check, not the build. A probe timed `build` and `holds`
+  apart, 20 runs each, untimed on `CFF` (`cold-gap-release`, patch `docs/runs/2026-11-12/patches/cold-gap-probe.patch`,
+  reverted). In release, build took 0.67 to 0.70 ms (kernel work 6804) and check 3.49 to 3.82 ms (work 23552). These
+  hold on a `CHECK_STACK` thread and on a 1 MiB one like criterion's main thread, with one store reused or a fresh
+  store and compile per run, as the bench does. So the O3 spike's 0.70 ms build stands in a release test exe. That
+  exe is not the bench: its whole cold `jit.apply` read 5.84 and 6.12 ms (the two threads), against the bench's
+  timed 4.4 to 4.8 ms, and the probe was untimed at 16 to 19% CPU load. At the test profile's opt-level 1 with debug
+  assertions (`cold-gap-debug`), build is 0.85 to 1.05 ms and check 4.4 to 5.7 ms. The spike's 0.70 and 3.70 ms were
+  taken at that profile too, on its own tree and machine state. On the 1 MiB thread the check, and not the build,
+  moves onto one `CHECK_SEGMENT` stacker segment. In release that costs 0.24 to 0.29 ms more; at opt-level 1 it costs
+  0.57 and 1.29 ms more.
+- A samply profile of the cold row (`cold-prof`, table `docs/runs/2026-11-12/cold-prof/named.txt`) seemed to say the
+  reverse: of the samples under `compile_verify_and_apply`, `gate::build` was 56% and the check 24%. That split
+  disagrees with the direct timings above, and the profile's stacks show why. On the bench's main thread
+  (`docs/runs/2026-11-12/scripts/profile-roots.py`), 3364 busy stacks walk back to the thread's start, and 1503 of
+  those hold `gate::build`. Another 3423 end at an ntdll root that is not the thread's start; 3416 of them hold
+  `on_segment` and a kernel frame, so they ran on a stacker fiber. A further 3079 reach samply's 256 frames, and all of
+  them are in the kernel; their roots cannot be seen. None of the last two groups reaches a gate frame. Inference: these
+  are mostly the check's samples. The probe shows that only the check takes a segment, and the counts fit:
+  1503 build samples at about 0.7 ms put about 7500 at the check's 3.5 ms, against the roughly 6500 here. That the
+  truncated stacks are not the build's is not shown, since `holds` is inlined and their roots are cut off. A build with
+  `holds` kept out of line, or a deeper samply stack limit, would confirm it. In this profile, then, the share of a
+  caller of kernel work reads low, because its samples on a segment or deeper than 256 frames never reach the
+  caller's frame. The leaf shares are not affected.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
   that `return_call` costs invisible beside the call into the module; confirming it would take a gcd input with many
   steps.
