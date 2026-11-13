@@ -104,24 +104,59 @@ fn gate_build_work_is_linear_in_the_tree() {
     }
 }
 
-/// The build and check work of `\a. if a == 0 then 7 else if a == 1 then 8 else ... else a` at depth `d`, as
-/// `(accepted, check work, build work)`.
-fn if_chain_work(d: usize) -> (bool, u64, u64) {
+/// `\a. if a == 0 then 7 else if a == 1 then 8 else ... else a` at depth `d`.
+fn if_chain_src(d: usize) -> String {
     let mut e = "a".to_string();
     for k in (0..d).rev() {
         e = format!("if a == {k} then {} else {e}", k + 7);
     }
-    let src = format!(r"\a. {e}");
-    big(move || {
-        let (s, h, frag) = compiled(&move |s: &mut TermStore| crate::support::samples::source(s, &src));
-        tatic_kernel::scoped(|| {
-            let b0 = tatic_kernel::work();
-            let (p, st) = built(&s, h, &frag);
-            let b1 = tatic_kernel::work();
-            let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
-            (ok, tatic_kernel::work() - b1, b1 - b0)
+    format!(r"\a. {e}")
+}
+
+/// `\a b. a % (b % (a % .. b))` at depth `d`: every `%` holds the rest of the chain as its divisor.
+fn right_mod_chain(d: usize) -> String {
+    let mut e = "b".to_string();
+    for k in 0..d {
+        e = format!("({} % {e})", if k % 2 == 0 { "a" } else { "b" });
+    }
+    format!(r"\a b. {e}")
+}
+
+/// `\a b. ((b % a) % b) % ..` at depth `d`: every `%` holds the rest of the chain as its dividend.
+fn left_mod_chain(d: usize) -> String {
+    let mut e = "b".to_string();
+    for k in 0..d {
+        e = format!("({e} % {})", if k % 2 == 0 { "a" } else { "b" });
+    }
+    format!(r"\a b. {e}")
+}
+
+/// `src` at depths 16, 32, 64 is accepted, and its check and build work (`tatic_kernel::work`) each grow under 2.2x per
+/// doubling of depth.
+fn assert_linear(name: &str, src: fn(usize) -> String) {
+    let w: Vec<(bool, u64, u64)> = [16, 32, 64]
+        .into_iter()
+        .map(|d| {
+            let src = src(d);
+            big(move || {
+                let (s, h, frag) = compiled(&move |s: &mut TermStore| crate::support::samples::source(s, &src));
+                tatic_kernel::scoped(|| {
+                    let b0 = tatic_kernel::work();
+                    let (p, st) = built(&s, h, &frag);
+                    let b1 = tatic_kernel::work();
+                    let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
+                    (ok, tatic_kernel::work() - b1, b1 - b0)
+                })
+            })
         })
-    })
+        .collect();
+    println!("{name} (accepted, check work, build work), depths 16, 32, 64: {w:?}");
+    assert!(w.iter().all(|x| x.0), "the {name} should check: {w:?}");
+    for i in 1..w.len() {
+        let (rc, rb) = (w[i].1 as f64 / w[i - 1].1 as f64, w[i].2 as f64 / w[i - 1].2 as f64);
+        assert!(rc < 2.2, "{name}: check work grew {rc:.2}x from depth {} to depth {}: {w:?}", 8 << i, 16 << i);
+        assert!(rb < 2.2, "{name}: build work grew {rb:.2}x from depth {} to depth {}: {w:?}", 8 << i, 16 << i);
+    }
 }
 
 /// A nested if-else chain's check and build work double with its depth. Three costs made each 2.3x to 3.6x per doubling
@@ -131,14 +166,15 @@ fn if_chain_work(d: usize) -> (bool, u64, u64) {
 /// the statement then reduced both `choose`s, shifting the rest of the program at each branch again.
 #[test]
 fn gate_check_work_is_linear_in_an_if_chain() {
-    let w: Vec<(bool, u64, u64)> = [16, 32, 64].into_iter().map(if_chain_work).collect();
-    println!("if chain (accepted, check work, build work), depths 16, 32, 64: {w:?}");
-    assert!(w.iter().all(|x| x.0), "the if chain should check: {w:?}");
-    for i in 1..w.len() {
-        let (rc, rb) = (w[i].1 as f64 / w[i - 1].1 as f64, w[i].2 as f64 / w[i - 1].2 as f64);
-        assert!(rc < 2.2, "check work grew {rc:.2}x from depth {} to depth {}: {w:?}", 8 << i, 16 << i);
-        assert!(rb < 2.2, "build work grew {rb:.2}x from depth {} to depth {}: {w:?}", 8 << i, 16 << i);
-    }
+    assert_linear("if chain", if_chain_src);
+}
+
+/// A nested `%` chain, right and left, is linear too: every Word site is a guard the walk steps through, and the
+/// guards nest as the if chain's branches do.
+#[test]
+fn gate_work_is_linear_in_a_mod_chain() {
+    assert_linear("right % chain", right_mod_chain);
+    assert_linear("left % chain", left_mod_chain);
 }
 
 /// `(proof, statement)` for a fragment term and its emitted body, built apart from the check.
