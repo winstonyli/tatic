@@ -71,3 +71,6 @@ work that grows with the rest of the program, and guards only make every Word si
 counted: each step's proof names the rest-of-program terms as arguments, and instantiating the step lemma shifts
 their loose variables, one unshared copy per step (the shape of round 3 of the previous spike, in the walk rather
 than the statement).
+
+Fixed on main the same day: "The gate's branch step made linear (2026-11-13)". The inference above was half right:
+the congruence was one cause, `choose` unfolded and the final comparison the others.

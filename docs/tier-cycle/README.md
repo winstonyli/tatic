@@ -63,6 +63,7 @@ The tier-cycle findings log, one file per section (the two long sections are spl
 - [15-the-jit-and-the-target-machine/28-the-proved-loop-form-measurements.md](15-the-jit-and-the-target-machine/28-the-proved-loop-form-measurements.md): The proved loop form: measurements (2026-11-12)
 - [15-the-jit-and-the-target-machine/29-a-domain-on-every-row-a-cost-spike.md](15-the-jit-and-the-target-machine/29-a-domain-on-every-row-a-cost-spike.md): A domain on every row: a cost spike (2026-11-13)
 - [15-the-jit-and-the-target-machine/30-word-row-guards-through-the-probe-a-spike.md](15-the-jit-and-the-target-machine/30-word-row-guards-through-the-probe-a-spike.md): Word-row guards through the probe: a spike (2026-11-13)
+- [15-the-jit-and-the-target-machine/31-the-gates-branch-step-made-linear.md](15-the-jit-and-the-target-machine/31-the-gates-branch-step-made-linear.md): The gate's branch step made linear (2026-11-13)
 - [16-other-theories.md](16-other-theories.md): Other theories
 - [17-learned-and-fixed-parts.md](17-learned-and-fixed-parts.md): Learned and fixed parts
 - [18-related-work-surveyed-2026-10-10.md](18-related-work-surveyed-2026-10-10.md): Related work (surveyed 2026-10-10)
