@@ -134,9 +134,34 @@ try (`pfl-bench-a2-timed1`).
   already shares exact repeats, and keyed with its free variables anchored to the context only 30 of the 211 calls
   repeat, for 78 shift and 86 instantiate units (about 1.2% of the beta units, 0.8% of the shift and instantiate
   work). A lambda reused with new arguments still pays for its substitution. So a gain would have to come from making
-  the substitutions cheaper or from not reducing the inferred side before comparing it. Which term the depth-4
-  telescopes come from was not measured. The earlier 81% of beta shift on open lambdas reads 75.6% with this probe's
-  cut (lambda has a free variable); the difference was not traced.
+  the substitutions cheaper or from not reducing the inferred side before comparing it. Where the depth-4 telescopes
+  come from is the next bullet. The earlier 81% of beta shift on open lambdas reads 75.6% with this probe's cut
+  (lambda has a free variable); the difference was not traced.
+- Where the depth-4 telescopes come from, and whether the inferred side must be reduced (`n4-origin-closure4`,
+  `n4-pre-modes`, `n4-gate-pre1`, a reviewer's `n4-ref-*` reruns; patch
+  `docs/runs/2026-11-12/patches/telescope-origin-probe.patch`, which includes the beta-trigger probe, with the
+  reviewer's `n4-referee-addon.patch`; never merged). The depth-4 betas are one call, the `def_eq(inferred, expected)`
+  after the proof's four leading lambdas: 8303 units and 43 betas. Its inferred side still holds the redex that
+  instantiating the simulation's program variable leaves (`machine/sim.rs`, `choose_fn`), where the statement side
+  has the choice already inlined (`machine/statement.rs`, `SEnv::choose`). Conversion reduces both sides to weak head normal
+  form before comparing heads, so it runs the program's 64-bit gates symbolically on the inferred side: the 64-lambda
+  telescopes are Church bit-vector literals and gate continuations (`encoding/gates.rs`). The match is by signature
+  against registered constructors and resolved most, not all, of the 43 (the `good_*` and `lift_*` constructors were
+  left out to keep the probe under its memory cap). Before that reduction the two sides differ only at the head. A
+  probe-only flag tried a congruence step before `whnf`; all verdicts stay `Accepted`:
+
+  | program | off | congruence (heads equal, arguments convertible) | one head beta, then pointer equality |
+  |---|---|---|---|
+  | `capturing_closure_loop` | 23552 | 18644 (-20.8%) | 15400 (-34.6%) |
+  | `straight_line` | 33989 | 31865 (-6.2%) | 31141 (-8.4%) |
+  | `doubling(6)` | 19884 | 19163 (-3.6%) | 19462 (-2.1%) |
+
+  With one head beta the depth-4 call falls from 8303 units and 43 betas to 181 and none: after one syntactic step
+  the inferred side is pointer-equal to the expected one. These are totals over `holds()`, so the work is removed,
+  not moved. Neither form is a keeper as written. A failed attempt is not memoised (the conversion memo records only
+  successes), and with the congruence form on, 9 rejection tests in `proof::tests` did not finish in 43 minutes
+  (107 passed; the whole module takes 1.19 s without the flag), and `modules::swapped_call_indices_are_rejected`
+  alone ran past 60 s against about 1 s. The head-beta form was not run against the rejection tests.
 - How the gate's work grows with program size (`dg-build-d1-12`, `dg-d14-16`, `dg-lean-d14-17`, `dg-lean-d18-19`,
   test profile; patch `docs/runs/2026-11-12/patches/doubling-growth-probe.patch`, which applies to a clean main and
   includes the reviewer's `doubling-growth-referee-addon.patch`; it also lifts the gate's 8192 and the JIT's 16384

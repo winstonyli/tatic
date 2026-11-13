@@ -1,0 +1,14 @@
+diff --git "a/crates/tatic/src/proof/tests/telescope_origin.rs" b/crates/tatic/src/proof/tests/telescope_origin.rs
+index 5a7730b..b687c29 100644
+--- "a/crates/tatic/src/proof/tests/telescope_origin.rs"
++++ b/crates/tatic/src/proof/tests/telescope_origin.rs
+@@ -96,3 +96,9 @@ fn origin4_straight_line() {
+ fn origin4_doubling6() {
+     on(|| origin4("doubling(6)", &|s: &mut TermStore| doubling(s, 6)));
+ }
++
++#[test]
++#[ignore]
++fn origin4_closure_loop_pre4() {
++    on(|| origin4_mode("capturing_closure_loop+pre4", &capturing_closure_loop, 4));
++}
