@@ -75,15 +75,18 @@ pub(super) fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Exp
     if s.loose(e) <= d {
         return *e;
     }
-    hc::inst_begin(s);
-    debug_assert!(!s.inst_open.replace(true), "instantiate_n re-entered: its memo is per call");
-    let r = inst_rec(s, e, args, d);
-    debug_assert!(s.inst_open.replace(false));
+    let id = hc::inst_args_id(s, args);
+    if let Some(r) = hc::inst_get(s, e, d, id) {
+        return r;
+    }
+    let r = inst_rec(s, e, args, d, id);
+    hc::inst_put(s, e, d, id, &r);
     r
 }
 
-/// `instantiate_n`'s recursion; the memo is per top-level call (nothing below calls `instantiate_n`).
-fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
+/// `instantiate_n`'s recursion; `id` is the argument list's (`hc::inst_args_id`). The memo lives for the region, so a
+/// later call with the same list finds this one's entries.
+fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32, id: u32) -> Expr {
     s.tick();
     let m = args.len() as u32;
     let go = |x: Expr, under: bool| {
@@ -95,12 +98,12 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
             return shift_child(s, &x, d + m, -(m as i32));
         }
         let memo = s.shared(&x) && !hc::low(s, &x);
-        if memo && let Some(r) = hc::inst_get(s, &x, d) {
+        if memo && let Some(r) = hc::inst_get(s, &x, d, id) {
             return r;
         }
-        let r = inst_rec(s, &x, args, d);
+        let r = inst_rec(s, &x, args, d, id);
         if memo {
-            hc::inst_put(s, &x, d, &r);
+            hc::inst_put(s, &x, d, id, &r);
         }
         r
     };

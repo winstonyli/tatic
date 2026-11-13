@@ -458,7 +458,8 @@ fn uses_bounds_agree_with_lowest_loose() {
     })
 }
 
-/// A walk's memo stores shared nodes only: `t` (two parents) gets an `inst` and a `lows` entry, `u` (one) neither.
+/// A walk's inner nodes are stored only when shared: `t` (two parents) gets an `inst` and a `lows` entry, `u` (one) neither;
+/// `inst` also stores a call's root, shared or not (a repeated call hits it), so `body` has one.
 #[test]
 fn walk_memos_store_only_shared_nodes() {
     scoped(|| {
@@ -472,6 +473,7 @@ fn walk_memos_store_only_shared_nodes() {
         with_spaces(|s| {
             let inst = &s.memos.borrow().inst;
             assert!(inst.keys().any(|k| k.0 == s.key(&t)) && !inst.keys().any(|k| k.0 == s.key(&u)));
+            assert!(!body.shared() && inst.keys().any(|k| k.0 == s.key(&body)));
             assert!(lows.keys().any(|k| k.0 == s.key(&t)) && !lows.keys().any(|k| k.0 == s.key(&u)));
         });
     })
@@ -542,5 +544,72 @@ fn shift_by_zero_is_the_identity_including_through_binders() {
     );
     assert_eq!(shift(&e, 0, 0), e);
     assert_eq!(shift(&e, 3, 0), e);
+}
+
+/// The instantiation memo lives for the region: it must neither carry an answer across a region close (region `Ref`s are
+/// reused by the next region for other terms) nor answer wrongly after `persist` gives an argument a persistent twin.
+/// Repeats each (term, argument, depth) so that a memo answers, and compares with the one-step reference at depth `d`.
+#[test]
+fn instantiate_n_memo_is_stable_across_regions_depths_and_persisted_args() {
+    let mut kept: Vec<PExpr> = vec![];
+    for round in 0..40u64 {
+        let out = scoped(|| {
+            let mut next = splitmix(1000 + round);
+            let pool: Vec<Expr> = (0..3).map(|_| random_term(&mut next)).collect();
+            let es: Vec<Expr> = (0..6).map(|_| random_term(&mut next)).collect();
+            // From round 1 on, an argument is a term persisted by an earlier region, which reads as a twin once copied back.
+            let mut args = pool.clone();
+            if let Some(p) = kept.last() {
+                args.push(p.get());
+            }
+            let kept_now = persist(es[0]);
+            for rep in 0..3 {
+                for e in &es {
+                    for d in 0..3u32 {
+                        for a in &args {
+                            let want = instantiate_ref(e, a, d);
+                            assert_eq!(instantiate_n(e, &[a], d), want, "round {round} rep {rep} d {d} e {e:?} a {a:?}");
+                            let twin = persist(*a).get();
+                            assert_eq!(instantiate_n(e, &[&twin], d), want, "persisted arg: round {round} rep {rep} d {d}");
+                        }
+                    }
+                }
+            }
+            kept_now
+        });
+        kept.push(out);
+    }
+}
+
+/// Closing a region empties the instantiation memo and the argument-list interner with it.
+#[test]
+fn closing_a_region_empties_the_instantiation_memo_and_its_interner() {
+    scoped(|| {
+        let a = app(var(0), var(5));
+        let e = lam(sort(0), app(app(app(var(1), var(1)), var(2)), var(3)));
+        instantiate_n(&e, &[&a, &a], 0);
+        with_spaces(|s| {
+            let m = s.memos.borrow();
+            assert!(!m.inst.is_empty() && !m.inst_args.is_empty());
+        });
+    });
+    with_spaces(|s| {
+        let m = s.memos.borrow();
+        assert!(m.inst.is_empty() && m.inst_args.is_empty());
+    });
+}
+
+/// A second identical top-level call is a root hit: it counts no work, shared root or not.
+#[test]
+fn a_repeated_instantiate_n_call_ticks_nothing() {
+    scoped(|| {
+        let a = app(var(0), var(5));
+        let e = lam(sort(0), app(app(app(var(1), var(1)), var(2)), var(3)));
+        let first = worked(|| { let _ = instantiate_n(&e, &[&a], 0); });
+        assert!(first > 0);
+        assert_eq!(worked(|| { let _ = instantiate_n(&e, &[&a], 0); }), 0);
+        // Another argument list is another entry.
+        assert!(worked(|| { let _ = instantiate_n(&e, &[&sort(1)], 0); }) > 0);
+    });
 }
 

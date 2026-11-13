@@ -186,9 +186,11 @@ fn derive(p: &mut Cols, g: &mut Cols, n: &Node<Ref>) -> ((u32, u32), u8) {
 /// The region's memos, keyed by resolved `Ref` bits and emptied when it closes (they were `hc::Table`'s and
 /// `ReductionCache`'s). Entries made with no region open name persistent nodes and stay valid until the next close.
 pub(crate) struct Memos {
-    /// (node, depth) -> its instantiation under the current `instantiate_n` call's argument list; emptied at the start
-    /// of each top-level call (`hc::inst_begin`), since the list is fixed within a call and nothing in a call re-enters it.
-    pub(crate) inst: IdMap<(u32, u32), u32>,
+    /// (node, depth, argument-list id) -> its instantiation under that list, kept across `instantiate_n` calls for the
+    /// region; ids come from `inst_args`.
+    pub(crate) inst: IdMap<(u32, u32, u32), u32>,
+    /// Argument keys, in order -> a small id (`hc::inst_args_id`).
+    pub(crate) inst_args: IdMap<Box<[u32]>, u32>,
     /// (node, cutoff, amount) -> it shifted.
     pub(crate) shifts: IdMap<(u32, u32, i32), u32>,
     /// Node -> its weak head normal form.
@@ -205,6 +207,7 @@ impl Memos {
     const fn new() -> Memos {
         Memos {
             inst: IdMap::with_hasher(H),
+            inst_args: IdMap::with_hasher(H),
             shifts: IdMap::with_hasher(H),
             whnf: IdMap::with_hasher(H),
             hnf: IdMap::with_hasher(H),
@@ -214,6 +217,7 @@ impl Memos {
     }
     fn clear(&mut self) {
         reset_map(&mut self.inst);
+        reset_map(&mut self.inst_args);
         reset_map(&mut self.shifts);
         reset_map(&mut self.whnf);
         reset_map(&mut self.hnf);
@@ -243,8 +247,6 @@ pub(crate) struct Spaces {
     /// Calls to the kernel's six recursive workers on this thread (see [`tick`](Spaces::tick)): a deterministic count
     /// of its work, the same in every build.
     work: Cell<u64>,
-    /// Whether an `instantiate_n` call is running: its memo is per call, so debug builds assert it never re-enters.
-    pub(crate) inst_open: Cell<bool>,
 }
 
 impl Spaces {
@@ -261,7 +263,6 @@ impl Spaces {
             }),
             memos: RefCell::new(Memos::new()),
             work: Cell::new(0),
-            inst_open: Cell::new(false),
         }
     }
 

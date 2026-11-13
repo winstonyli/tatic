@@ -119,20 +119,36 @@ pub fn low(s: &Spaces, x: &Expr) -> bool {
     s.height(x) <= 2
 }
 
-/// Starts a top-level `instantiate_n` call: the memo holds the previous call's entries, which name another argument list.
-pub fn inst_begin(s: &Spaces) {
+/// The small id of an `instantiate_n` argument list, by the keys of its arguments in order; the same list gets the same
+/// id for the rest of the region. A known list allocates nothing (the lookup borrows a `&[u32]`), and a list of up to
+/// eight arguments is keyed from a stack buffer.
+pub fn inst_args_id(s: &Spaces, args: &[&Expr]) -> u32 {
+    let mut buf = [0u32; 8];
+    let heap: Vec<u32>;
+    let keys: &[u32] = if args.len() <= buf.len() {
+        for (b, a) in buf.iter_mut().zip(args) {
+            *b = s.key(a);
+        }
+        &buf[..args.len()]
+    } else {
+        heap = args.iter().map(|a| s.key(a)).collect();
+        &heap
+    };
     let mut m = s.memos.borrow_mut();
-    if !m.inst.is_empty() {
-        spaces::reset_map(&mut m.inst);
+    if let Some(&id) = m.inst_args.get(keys) {
+        return id;
     }
+    let id = m.inst_args.len() as u32;
+    m.inst_args.insert(keys.into(), id);
+    id
 }
 
-pub fn inst_get(s: &Spaces, x: &Expr, d: u32) -> Option<Expr> {
-    s.memos.borrow().inst.get(&(s.key(x), d)).map(|r| s.expr_of(r))
+pub fn inst_get(s: &Spaces, x: &Expr, d: u32, args: u32) -> Option<Expr> {
+    s.memos.borrow().inst.get(&(s.key(x), d, args)).map(|r| s.expr_of(r))
 }
 
-pub fn inst_put(s: &Spaces, x: &Expr, d: u32, r: &Expr) {
-    s.memos.borrow_mut().inst.insert((s.key(x), d), s.key(r));
+pub fn inst_put(s: &Spaces, x: &Expr, d: u32, args: u32, r: &Expr) {
+    s.memos.borrow_mut().inst.insert((s.key(x), d, args), s.key(r));
 }
 
 /// `x`'s weak head normal form, if the memos have it. `whnf` reads no context, so an answer holds for the whole
