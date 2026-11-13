@@ -239,7 +239,9 @@ A finding is cited by section or paragraph title, never by line (its lines drift
 - **The partial row and gcd (after v0.8)** — why parked: the rung after v0.8 by decision
   (`docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Decided: division and remainder by zero"). Trigger: v0.8
   tagged. Evidence: `docs/tier-cycle/`, "The partial row's cost, and gcd through the generator", verified 2026-11-11.
-  Open: where the domain lives (`eval` depending on the JIT, a one-sided mismatch, or op and row). Status: parked.
+  Open: where the domain lives (`eval` depending on the JIT, a one-sided mismatch, or op and row). gcd is `NotCovered`
+  until it lands, so its JIT row installs through the older chain with no gate check (`docs/tier-cycle/`, "The proved
+  loop form: measurements"). Status: parked; trigger met (`v0.8.0` tagged 2026-11-11, checked 2026-11-12), not started.
 - **Bit rows (`wrap`, `extend`, `shl`, `or`; terms 25 and 28)** — why parked: outside v0.8's goals (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`). Trigger:
   v0.8 tagged. Evidence: the census, `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code
   stands", verified 2026-11-11. Status: parked.
