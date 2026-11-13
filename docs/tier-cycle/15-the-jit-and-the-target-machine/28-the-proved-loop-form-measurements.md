@@ -213,8 +213,8 @@ try (`pfl-bench-a2-timed1`).
   above `hc::low`; the per-call clear (`inst_begin`) and its re-entry guard are gone. Its check work equals arm B's on
   all five programs measured (`p1-work`: 20668, 32467, 42983, 10798, 369820), no other test's work count moved,
   and the workspace suite passes (`p1-suite`: 822, the 819 before plus three memo tests). The timed A/B
-  (`time_doubling_12`, six alternating runs per arm) was refused three times on a busy machine (`p1-ab-doubling12`,
-  `-r2`, `-r3`), so the claim is "does less work", not "faster", until it runs.
+  (`time_doubling_12`, six alternating runs per arm) was refused four times on a busy machine (`p1-ab-doubling12`,
+  `-r2` to `-r4`; a game held CPUs 8 and 9), so the claim is "does less work", not "faster", until it runs.
 - The head-beta shortcut on top of the merged memo (`hb-*`, a reviewer's `hb2-*`; patch
   `docs/runs/2026-11-12/patches/head-beta-on-memo-probe.patch`; never merged). The shortcut is the one in "Where
   the depth-4 telescopes come from": before `whnf`, one syntactic head beta on a side, then pointer equality with
