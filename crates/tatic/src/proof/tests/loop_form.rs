@@ -334,8 +334,13 @@ fn self_return_calls(wat: &str) -> usize {
 /// `Accepted` and print `br $top` with no self `return_call`.
 #[test]
 fn the_shipped_loops_install_in_loop_form() {
-    let shipped: [(&str, Build); 2] =
-        [("capturing_closure_loop", Box::new(capturing_closure_loop)), ("held_out_b", Box::new(crate::testing::test_corpus::held_out_b))];
+    let shipped: [(&str, Build); 4] = [
+        ("capturing_closure_loop", Box::new(capturing_closure_loop)),
+        ("held_out_b", Box::new(crate::testing::test_corpus::held_out_b)),
+        ("gcd", Box::new(crate::support::samples::gcd)),
+        // `%` in the loop's base leaf, outside the tail call's arguments
+        ("mod in a loop's base leaf", Box::new(|s: &mut TermStore| source(s, r"\n. (rec g n acc = if n <= 0 then acc % 7 else g (n - 1) (acc + n)) n 0"))),
+    ];
     for (name, b) in shipped {
         let (v, wat) = big(move || {
             let (s, h, frag) = compiled(&*b);

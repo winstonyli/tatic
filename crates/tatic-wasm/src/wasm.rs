@@ -1,9 +1,9 @@
 //! The wasm table: the `i64` rows the lowering emits and the machine runs (`ops.rs` builds them).
 use super::*;
 use machine::{Class, Table};
-use ops::{circuit_row, const_row, local_get_row, local_set_row};
+use ops::{circuit_row, const_row, local_get_row, local_set_row, Dom};
 
-/// The wasm rows: `const`, `local.get`, `local.set`, the word rows `add` `sub` `mul`, and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
+/// The wasm rows: `const`, `local.get`, `local.set`, the word rows `add` `sub` `mul` `mod` (`mod` partial: `Dom::NONZERO_SECOND`), and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
 /// source operator; it serves the `lt`-for-`lt_u` control only). Built once per process: every reader (the lowering,
 /// the gate's two sides, the fragment predicate, eval) shares this one table.
 pub fn table() -> &'static Table {
@@ -15,6 +15,7 @@ pub fn table() -> &'static Table {
         circuit_row!("add", Class::Word, add, "i64.add"),
         circuit_row!("sub", Class::Word, sub, "i64.sub"),
         circuit_row!("mul", Class::Word, mul, "i64.mul"),
+        circuit_row!("mod", Class::Word, rem_s, "i64.rem_s", Dom::NONZERO_SECOND),
         circuit_row!("lt", Class::Bit, lt_s, "i64.lt_s"),
         circuit_row!("le", Class::Bit, le_s, "i64.le_s"),
         circuit_row!("eq", Class::Bit, eq_bit, "i64.eq"),
@@ -36,9 +37,9 @@ mod tests {
         let t = table();
         let m = Machine { n, fw: 2, table: t };
         let v = bv_ty(n);
-        assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "lt", "le", "eq", "lt_u"]);
-        let cases: [(&str, i64); 11] = [
-            ("const", 3), ("local.get", 0), ("local.get", 1), ("local.set", 1), ("add", 0), ("sub", 0), ("mul", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
+        assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "mod", "lt", "le", "eq", "lt_u"]);
+        let cases: [(&str, i64); 12] = [
+            ("const", 3), ("local.get", 0), ("local.get", 1), ("local.set", 1), ("add", 0), ("sub", 0), ("mul", 0), ("mod", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
         ];
         for (name, operand) in cases {
             let row = t.row(name).unwrap_or_else(|| panic!("no row {name}"));

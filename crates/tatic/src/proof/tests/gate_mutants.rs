@@ -334,6 +334,7 @@ fn every_row_has_an_operator_swap_mutant() {
         match r {
             "add" | "lt" => Some("fib"),
             "sub" | "mul" | "le" => Some("factorial"),
+            "mod" => Some("gcd"),
             _ => None,
         }
     };

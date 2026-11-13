@@ -66,6 +66,15 @@ fn a_callee_wider_than_its_caller_and_the_reverse() {
     applies_like_eval(&s, h, &[&[1, 2, 3], &[0, 0, 0]]);
 }
 
+/// A `%` off the tail call, in a callee's body: the callee's source guards its Word site as its code does
+/// (unspecialised, since the specialiser would inline the callee).
+#[test]
+fn a_callee_holding_mod_is_accepted() {
+    let (v, records, _) = raw_verdict(|s| source(s, r"\a b. (\x y. x % y) (a + 1) b"));
+    assert!(records > 1, "compiles with a callee");
+    assert_eq!(v, Verdict::Accepted);
+}
+
 /// Review Focus 5: a callee's own tail loop is in the loop form (`br $top`), so a million iterations run in constant
 /// depth; the entry's tail call into the callee is not a self call and stays a `return_call`.
 #[test]

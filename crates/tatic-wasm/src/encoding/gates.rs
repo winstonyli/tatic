@@ -176,6 +176,11 @@ pub fn eq_bit(n: usize) -> Expr {
     let body = app(var(0), app2(eq_bv(n), var(3), var(2)));
     lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
 }
+/// `y != 0` as a one-bit word: `\x y C k. k (not (eq_bv y 0))`.
+pub fn nonzero_second(n: usize) -> Expr {
+    let body = app(var(0), not_(app2(eq_bv(n), var(2), lit(n, 0))));
+    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
+}
 /// The constant-true domain of a total row: `\x y. 1 : V -> V -> Bv_1`.
 pub fn dom_true(n: usize) -> Expr {
     lam(bv_ty(n), lam(bv_ty(n), lit(1, 1)))
@@ -183,6 +188,10 @@ pub fn dom_true(n: usize) -> Expr {
 /// Wrapping `a * b` (mod 2^n): the shift-and-add rows of `mul_bits` as a `V -> V -> V` circuit.
 pub fn mul(n: usize) -> Expr {
     bits_circuit(n, &move |x, y| mul_bits(n, x, y))
+}
+/// Signed `a % b` (`wrapping_rem`, `x % 0 = x`): `rem_s_bits` as a `V -> V -> V` circuit.
+pub fn rem_s(n: usize) -> Expr {
+    bits_circuit(n, &move |x, y| rem_s_bits(n, x, y))
 }
 /// The next carry (or borrow) of one position, given its operand bits, the incoming carry and `x = a ^ b`.
 pub fn ripple_carry(sub: bool, a: Expr, b: Expr, c: Expr, x: Expr) -> Expr {
@@ -288,6 +297,35 @@ pub fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
 }
 
 pub type BitsFn<'a> = &'a dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
+
+/// `a` negated when `s` is set: `(a ^ s) + s`.
+pub fn neg_if(a: &[Expr], s: Expr) -> Vec<Expr> {
+    let xs: Vec<Expr> = a.iter().map(|&x| xor(x, s)).collect();
+    let one: Vec<Expr> = (0..a.len()).map(|i| if i == 0 { s } else { f() }).collect();
+    add_rows(&xs, &one)
+}
+
+/// Signed remainder (`wrapping_rem`; the sign of the dividend; `x % 0 = x`, where the source errors and wasm traps):
+/// restoring division of the magnitudes, one subtract-and-select row per dividend bit, MSB first.
+pub fn rem_s_bits(n: usize, a: &[Expr], b: &[Expr]) -> Vec<Expr> {
+    let (sa, sb) = (a[n - 1], b[n - 1]);
+    let (ma, mb) = (neg_if(a, sa), neg_if(b, sb));
+    let mut r: Vec<Expr> = vec![f(); n];
+    for i in (0..n).rev() {
+        // r2 = (r << 1) | ma[i]; r < mb <= 2^(n-1), so r2 < 2^n
+        let r2: Vec<Expr> = (0..n).map(|j| if j == 0 { ma[i] } else { r[j - 1] }).collect();
+        let mut borrow = f();
+        let mut diff = Vec::with_capacity(n);
+        for j in 0..n {
+            let x = xor(r2[j], mb[j]);
+            diff.push(xor(x, borrow));
+            borrow = ripple_carry(true, r2[j], mb[j], borrow, x);
+        }
+        let ge = not_(borrow);
+        r = (0..n).map(|j| mux(ge, diff[j], r2[j])).collect();
+    }
+    neg_if(&r, sa)
+}
 
 pub fn mul_bits(n: usize, x: &[Expr], y: &[Expr]) -> Vec<Expr> {
     let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i], x[j - i]) }).collect() };

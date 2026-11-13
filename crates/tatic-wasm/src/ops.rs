@@ -20,6 +20,8 @@ fn always(_: i64, _: i64) -> bool {
 impl Dom {
     /// A total row's domain: everywhere.
     pub const TOTAL: Dom = Dom { holds: always, circuit: dom_true };
+    /// A divisor's domain: the second operand is not 0 (`mod`; `i64.rem_s` traps there, and the source errors).
+    pub const NONZERO_SECOND: Dom = Dom { holds: |_, y| y != 0, circuit: nonzero_second };
 }
 
 /// The `const` row: operand `v` is the word, masked to the machine's width, constant in the frame (`\_:Fr. v`), and

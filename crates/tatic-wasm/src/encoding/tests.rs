@@ -443,3 +443,64 @@ pub fn add_of_x_and_not_x_is_all_ones() {
 // Terms over x, y (and z) are *run* on every tuple of n-bit literals by the kernel (`normalize`); terms with
 // the same results are conjectured equal; each conjecture is then *checked*: by the matching library
 // generator, or by a generic builder (`bitwise_law`) that has no template for the particular lemma.
+
+/// `Op::RemS` on literals against Rust's `wrapping_rem` (and `x % 0 = x`, which `eval` rejects and wasm traps on).
+fn rem_ref(n: usize, a: u128, b: u128) -> u128 {
+    let sext = |v: u128| ((v << (128 - n)) as i128) >> (128 - n);
+    let (x, y) = (sext(a), sext(b));
+    (if y == 0 { x } else { x.wrapping_rem(y) } as u128) & low_bits(n)
+}
+
+#[test]
+pub fn rem_s_computes_on_literals_n8_sample() {
+    let n = 8;
+    let ty = pi(bv_ty(n), pi(bv_ty(n), bv_ty(n)));
+    ck("rem_s type", &rem_s(n), &ty);
+    let term = rem_s(n);
+    let vals: Vec<u128> = (0..256u128).step_by(5).chain([0, 1, 2, 127, 128, 129, 254, 255]).collect();
+    for &a in &vals {
+        for &b in &vals {
+            let got = app2(term.clone(), lit(n, a), lit(n, b));
+            assert!(def_eq(&got, &lit(n, rem_ref(n, a, b))), "rem a={a:#x} b={b:#x}");
+        }
+    }
+}
+
+#[test]
+#[ignore]
+pub fn rem_s_computes_on_literals_n8_exhaustive() {
+    let n = 8;
+    let term = rem_s(n);
+    for a in 0..256u128 {
+        for b in 0..256u128 {
+            let got = app2(term.clone(), lit(n, a), lit(n, b));
+            assert!(def_eq(&got, &lit(n, rem_ref(n, a, b))), "rem a={a:#x} b={b:#x}");
+        }
+    }
+}
+
+#[test]
+pub fn rem_s_computes_on_literals_n64_edges_and_random() {
+    let n = 64;
+    let term = rem_s(n);
+    let vals: Vec<u64> = vec![0, 1, u64::MAX, i64::MIN as u64, i64::MAX as u64, 2, 3, (-7i64) as u64, 7, 1 << 32, (1 << 32) - 1];
+    let mut x = 0x9E3779B97F4A7C15u64;
+    let mut next = || {
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        x
+    };
+    let mut pairs: Vec<(u64, u64)> = vals.iter().flat_map(|&a| vals.iter().map(move |&b| (a, b))).collect();
+    for _ in 0..90 {
+        let (a, b) = (next(), next());
+        // vary magnitudes so quotients are neither always 0 nor always huge
+        pairs.push((a, b >> (next() % 64)));
+    }
+    tatic_kernel::scoped(|| {
+        for (a, b) in pairs {
+            let got = app2(term.clone(), lit(n, a as u128), lit(n, b as u128));
+            assert!(def_eq(&got, &lit(n, rem_ref(n, a as u128, b as u128))), "rem a={a:#x} b={b:#x}");
+        }
+    })
+}

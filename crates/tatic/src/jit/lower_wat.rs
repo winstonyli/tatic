@@ -428,7 +428,6 @@ impl Lowering<'_> {
                 self.node(cx, b, w);
                 match *op {
                     PrimOp::Div => emit_wrapping_div(w),
-                    PrimOp::Mod => raw(w, "i64.rem_s"),
                     op => w.push(row_of(op, Class::Word, "ir::check: Arith carries an arithmetic op (wasm::table)")),
                 }
             }

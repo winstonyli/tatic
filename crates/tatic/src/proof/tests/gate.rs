@@ -356,6 +356,25 @@ fn gate_accepts_the_goal_1_targets() {
     }
 }
 
+/// `%` is a partial row (`mod`, domain `y != 0`) guarded on both sides, so the gcd samples and a `%` inside an `If`
+/// condition's operand are `Accepted`.
+#[test]
+fn gcd_is_accepted() {
+    type Build = Box<dyn Fn(&mut TermStore) -> Hash + Send>;
+    let cases: [(&str, Build); 3] = [
+        ("gcd", Box::new(crate::support::samples::gcd)),
+        ("gcd_with_two_base_cases", Box::new(crate::support::samples::gcd_with_two_base_cases)),
+        ("a % b in a condition", Box::new(|s: &mut TermStore| source(s, r"\a b. if a % b == 0 then a else b"))),
+    ];
+    for (name, b) in cases {
+        let v = big(move || {
+            let (s, h, frag) = compiled(&*b);
+            gate(tatic_wasm::wasm::table(), &s, h, &frag)
+        });
+        assert_eq!(v, Verdict::Accepted, "{name}");
+    }
+}
+
 /// Builds `rec f <params> = <body>` from its open body: `Rec(Abs^arity(body))`.
 fn rec_of(s: &mut TermStore, arity: usize, body: Hash) -> Hash {
     let mut t = body;
@@ -451,7 +470,6 @@ fn what_cps_cannot_take_is_not_covered() {
             Box::new(|s: &mut TermStore| source(s, r"\a b. if (if a < b then a else b) < 1 then 1 else 0")),
         ),
         ("a / b (no table row)", Box::new(|s: &mut TermStore| source(s, r"\a b. a / b"))),
-        ("gcd (Mod)", Box::new(crate::support::samples::gcd)),
         ("a / 0", Box::new(|s: &mut TermStore| source(s, r"\a. a / 0"))),
     ];
     for (name, b) in cases {
