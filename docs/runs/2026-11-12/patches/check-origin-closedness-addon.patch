@@ -1,0 +1,45 @@
+--- "C:\\Users\\WINSTO~1\\AppData\\Local\\Temp/reduce.rs.bak"	2026-11-12 17:06:16.701944800 -0800
++++ b/crates/tatic-kernel/src/reduce.rs	2026-11-12 17:06:17.358362000 -0800
+@@ -33,6 +33,15 @@
+ /// one rebuilds again. Arguments left over are applied to the result. `None` when the head is not a
+ /// lambda, so the caller's one-argument path runs unchanged (and keeps a stuck spine's per-prefix
+ /// cache entries). `head` is the spine's, from [`spine`].
++fn beta_label(kind: usize, lam_closed: bool, args_closed: bool) -> &'static str {
++    const L: [[&str; 4]; 3] = [
++        ["B0 beta_spine lam OPEN args OPEN", "B0 beta_spine lam OPEN args closed", "B0 beta_spine lam closed args OPEN", "B0 beta_spine lam closed args closed"],
++        ["B1 closed_prefix lam OPEN args OPEN", "B1 closed_prefix lam OPEN args closed", "B1 closed_prefix lam closed args OPEN", "B1 closed_prefix lam closed args closed"],
++        ["B2 single lam OPEN arg OPEN", "B2 single lam OPEN arg closed", "B2 single lam closed arg OPEN", "B2 single lam closed arg closed"],
++    ];
++    L[kind][(lam_closed as usize) * 2 + args_closed as usize]
++}
++
+ fn beta_spine(s: &Spaces, e: &Expr, head: &Expr) -> Option<Expr> {
+     // The head is reduced as the node the spine holds, so its cache entry is shared by every level
+     // of the spine; the arguments are collected only once it is a lambda.
+@@ -55,7 +64,7 @@
+     }
+     let used: Vec<&Expr> = args[..taken].iter().collect();
+     let mut r = {
+-        let _site = prof::site("whnf:beta_spine (instantiate Lam telescope body with spine args)");
++        let _site = prof::site(beta_label(0, s.loose(&wh) == 0, used.iter().all(|a| s.loose(a) == 0)));
+         instantiate_n(s, &body, &used, 0)
+     };
+     for a in &args[taken..] {
+@@ -97,7 +106,7 @@
+     }
+     let used: Vec<&Expr> = args[..taken].iter().collect();
+     let mut r = {
+-        let _site = prof::site("whnf:closed_prefix_spine (instantiate hnf Lam body with args)");
++        let _site = prof::site(beta_label(1, true, used.iter().all(|a| s.loose(a) == 0)));
+         instantiate_n(s, &body, &used, 0)
+     };
+     for a in &args[taken..] {
+@@ -193,7 +202,7 @@
+                 Node::Lam(_, body) => {
+                     prof::inc(prof::C::PathSingleBeta);
+                     let r = {
+-                        let _site = prof::site("whnf:single beta (App of whnf'd Lam)");
++                        let _site = prof::site(beta_label(2, s.loose(&wf) == 0, s.loose(&a) == 0));
+                         subst_top(s, &body, &a)
+                     };
+                     Some(whnf_in(s, &r))

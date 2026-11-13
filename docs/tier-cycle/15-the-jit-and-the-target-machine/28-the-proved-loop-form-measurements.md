@@ -86,10 +86,41 @@ try (`pfl-bench-a2-timed1`).
   Closing saves 2 to 8% of the check, and the opening costs about as much, so the net runs from 3% less to 10% more.
   It also ends with more nodes in the region on every program but the closure loop and straight_line. With cold
   memos, the survey's 13081 does not reproduce: the closure loop's closed check is 21799. So most of the shift and
-  instantiate work is not caused by the 11 leading binders. Inference: it comes from the proof's own lambdas and the
-  application types it instantiates, and those stay open whichever way the statement is checked. This agrees with
-  v0.7's -6.5%. gcd did not build through this helper (`NotCovered`: "position 0 is outside what the source reading
-  takes"), so it is not in the table.
+  instantiate work is not caused by the 11 leading binders. The next bullet
+  finds where it does come from. This agrees with
+  v0.7's -6.5%. gcd is not in the table: the gate does not cover it (`NotCovered`: "position 0 is outside what the
+  source reading takes"), because `%` has no row in the gate's table yet (`PARKED.md`, "The partial row and gcd (after
+  v0.8)"; pinned by `proof/tests/gate.rs#what_cps_cannot_take_is_not_covered` and `baseline.rs`'s `VERDICTS`). It
+  installs through the older chain, so its cold row carries no gate check, which is why it still matches v0.8's
+  S2b table.
+- Where the shift and instantiate work comes from, by kernel call site (`check-origin2`, rerun byte-identical as
+  `check-origin-rerun`; test profile; patch `docs/runs/2026-11-12/patches/check-origin-probe.patch`, which adds site
+  tags to the survey's counters, never merged). Each tick is charged to the outermost tagged call that made it, and
+  the site sums equal the totals (10918 and 8838 for the closure loop, as in the survey). Two caveats, from a static
+  audit of the probe. Shift ticks at a substitution site are shifts done inside that substitution (lifting
+  arguments, lowering unused subterms), not separate calls. And memo hits make no ticks, so an entry's cost goes to
+  whichever site computed it first. The shares say where the work happens, not what would vanish if one site went.
+  For the closure loop:
+
+  | site | shift | instantiate |
+  |---|---|---|
+  | beta in whnf (spine, closed-prefix spine, single; 211 calls) | 7637 (70%) | 5542 (63%) |
+  | instantiating application types (3 sites in `infer`'s App arm) | 1554 (14%) | 3275 (37%) |
+  | lifting a context entry's type on `Var` lookup | 1306 (12%) | 0 |
+  | `J`'s motive, `SigRec`, `Pair` | 421 | 21 |
+
+  The phase counters put most of the beta inside definitional equality: that phase holds 6818 of the shift and 5298
+  of the instantiate units (`check-breakdown-rerun`). A further counter (`check-origin-closedness`, patch
+  `docs/runs/2026-11-12/patches/check-origin-closedness-addon.patch`) split the beta by whether the lambda has loose
+  variables: 6202 of the 7637 beta shift units (81%) are on open lambdas, and 5170 on open lambdas with open
+  arguments. Beta of closed lambdas, the closed-prefix site, is 1435 shift and 2157 instantiate. So the bulk is
+  conversion reducing open terms of the proof, not instantiating the statement's binders. Inference: it is the
+  proof's top redex, a 4-binder lambda applied to its arguments, being evaluated by conversion; the largest share sits
+  at context depth 4. Which binders the loose variables belong to was not measured: the probe's depth split is the
+  checker's context size at the call, not the term's own binders. The other programs differ. In straight_line
+  (shift 4812, instantiate 4162) the work is spread across beta, application types and `Var` lifts. doubling 6 is
+  instantiate-heavy (10708 of 19884 work), and 8928 of that is instantiating application domains while inferring
+  the statement, the opposite of the closure loop.
 - The bench's cold row keeps the cost of the stacker segment, by decision (2026-11-12): it is what a caller on a
   1 MiB thread pays, as criterion's main thread is.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
