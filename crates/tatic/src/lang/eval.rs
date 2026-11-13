@@ -133,6 +133,12 @@ fn apply_step(store: &TermStore, f: Value, arg: Value) -> Result<(Env, Hash), Ev
 
 fn apply_prim(op: PrimOp, x: i64, y: i64) -> Result<Value, EvalError> {
     use PrimOp::*;
+    // A row's domain decides where its op is defined (`%` needs `y != 0`); `Div` has no row and keeps its own check.
+    if let Some(r) = op.row() {
+        if !(r.dom.holds)(x, y) {
+            return Err(EvalError::DivByZero);
+        }
+    }
     Ok(match op {
         Add => Value::Int(x.wrapping_add(y)),
         Sub => Value::Int(x.wrapping_sub(y)),
@@ -143,12 +149,7 @@ fn apply_prim(op: PrimOp, x: i64, y: i64) -> Result<Value, EvalError> {
             }
             Value::Int(x.wrapping_div(y))
         }
-        Mod => {
-            if y == 0 {
-                return Err(EvalError::DivByZero);
-            }
-            Value::Int(x.wrapping_rem(y))
-        }
+        Mod => Value::Int(x.wrapping_rem(y)),
         Lt => Value::Int((x < y) as i64),
         Le => Value::Int((x <= y) as i64),
         Eq => Value::Int((x == y) as i64),
@@ -224,5 +225,13 @@ mod tests {
         let mut s = TermStore::new();
         let div = source(&mut s, "1 / 0");
         assert_eq!(apply_term(&s, div, &[]), Err(EvalError::DivByZero));
+    }
+
+    #[test]
+    fn mod_by_zero_errors_through_the_rows_domain() {
+        let mut s = TermStore::new();
+        let rem = source(&mut s, r"\a b. a % b");
+        assert_eq!(apply_term(&s, rem, &[5, 0]), Err(EvalError::DivByZero));
+        assert_eq!(apply_term(&s, rem, &[-7, 2]), Ok(-1));
     }
 }
