@@ -33,6 +33,41 @@ chain grows 1.56x and 2.04x per doubling of depth (check 97098, 151570, 308898 a
 **Where it comes from.** `doubling` is only `add`, a total row, so its whole rise is guards whose condition is the
 literal 1: through the opaque probe the walk cannot reduce them, and closes each by congruence on `CH` with the rest
 of the program as both branches. The cause inside that congruence (the nested continuation carried on both sides of
-every `cong` proof) is an inference, not counted. The fix the spec names as option 2 removes exactly this cost: fold
-a guard whose condition is constant true at build time, on both sides, so total rows build what main builds, and
-only partial rows (today `mod`) pay a guard. Round 3 of the previous spike measured that fold within 1% of M2.
+every `cong` proof) is an inference, not counted. The spec's option 2 was expected to remove this cost (round 3 of
+the previous spike measured a source-side fold within 1% of M2, with the real `choose` on the machine); it does not,
+below.
+
+**Option 2 (y1): the fold plus a step at 1.** Same worktree, patch
+`docs/superpowers/spikes/2026-11-13-fold-and-step-at-1-spike.patch` (against `b2b86ab`); runs `2026-11-13-y1-*`. The
+machine keeps every Word guard (its constructor meaning is shared by all sites, so a total site's guard cannot be
+dropped there); a hypothesis `H1 : Pi R t e. Id(R, CH R 1 t e, t)`, discharged in `closed` by `\R t e. refl t` (the
+checker accepts it, so the real `choose` reduces at 1), lets a `sim_step` rule step a `CH` whose condition is
+`def_eq` to 1; the source folds a guard whose condition is the literal 1 after `whnf`. Every verdict and control
+above holds, plus two: a source that folds `mod`'s guard is Rejected ("the machine branches but the source calls a
+function"), and a total site guarded by `y != 0` is not stepped by `H1` (Rejected, "the machine branches but the
+source returns"). The cost does not come down:
+
+| program | check main | check x1 | check y1 |
+|---|---|---|---|
+| capturing_closure_loop | 20668 | 58614 | 43209 |
+| straight_line | 32467 | 109050 | 75238 |
+| held_out_b | 42983 | 82799 | 66932 |
+| doubling(6) | 10798 | 151123 | 146109 |
+
+`gate_check_work_is_linear_in_the_tree` still fails ("check work grew 2.96x from doubling_7 to doubling_8: [384357,
+1138767, 3744123]") and doubling(12) hits the 12 GB cap. With the machine's guard dropped as well, doubling(6) checks
+in 11198 (build 11851), main's numbers: the extra domain operand costs nothing, and the whole excess is the walk's
+steps over `CH`, congruence or `H1`. The nested `mod` chain is unchanged from x1 (check 97163, 151635, 308963,
+817155, 2607683 at depths 16 to 256; 3.19x for the last doubling). Temporary kernel counters at depth 256 put the
+work in `shift` (2210858 calls, 3.74x per doubling, against at most 2x for infer, whnf, conv and inst); in doubling(6)
+shift is 109200 of 146109 with the guard and 3025 of 11198 without.
+
+**Main has the same growth on branches.** A nested `if a == k then .. else ..` chain on main (patch
+`docs/superpowers/spikes/2026-11-13-if-chain-work-probe.patch`, one test, applies to `b2b86ab`; run
+`2026-11-13-y1-ifchain-main`) is Accepted at every depth, with check work 21962, 51377, 136279, 389345, 1274460,
+4639314 at depths 4 to 128 (2.34x, 2.65x, 2.86x, 3.27x, 3.64x per doubling) and build work 5465 to 511764 (3.49x at
+the last). So the cost is not the guard's: every step the walk takes over a `CH`, an `If`'s as much as a guard's, does
+work that grows with the rest of the program, and guards only make every Word site such a step. Inference, not
+counted: each step's proof names the rest-of-program terms as arguments, and instantiating the step lemma shifts
+their loose variables, one unshared copy per step (the shape of round 3 of the previous spike, in the walk rather
+than the statement).

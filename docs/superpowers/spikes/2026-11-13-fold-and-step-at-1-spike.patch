@@ -1,0 +1,1031 @@
+diff --git a/crates/tatic-wasm/src/encoding/gates.rs b/crates/tatic-wasm/src/encoding/gates.rs
+index c494286..2c3a006 100644
+--- a/crates/tatic-wasm/src/encoding/gates.rs
++++ b/crates/tatic-wasm/src/encoding/gates.rs
+@@ -176,10 +176,23 @@ pub fn eq_bit(n: usize) -> Expr {
+     let body = app(var(0), app2(eq_bv(n), var(3), var(2)));
+     lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
+ }
++/// `y != 0` as a one-bit word: `\x y C k. k (not (eq_bv y 0))`.
++pub fn nonzero_second(n: usize) -> Expr {
++    let body = app(var(0), not_(app2(eq_bv(n), var(2), lit(n, 0))));
++    lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(1), body))))
++}
++/// The constant-true domain of a total row: `\x y. 1 : V -> V -> Bv_1`.
++pub fn dom_true(n: usize) -> Expr {
++    lam(bv_ty(n), lam(bv_ty(n), lit(1, 1)))
++}
+ /// Wrapping `a * b` (mod 2^n): the shift-and-add rows of `mul_bits` as a `V -> V -> V` circuit.
+ pub fn mul(n: usize) -> Expr {
+     bits_circuit(n, &move |x, y| mul_bits(n, x, y))
+ }
++/// Signed `a % b` (`wrapping_rem`, `x % 0 = x`): `rem_s_bits` as a `V -> V -> V` circuit.
++pub fn rem_s(n: usize) -> Expr {
++    bits_circuit(n, &move |x, y| rem_s_bits(n, x, y))
++}
+ /// The next carry (or borrow) of one position, given its operand bits, the incoming carry and `x = a ^ b`.
+ pub fn ripple_carry(sub: bool, a: Expr, b: Expr, c: Expr, x: Expr) -> Expr {
+     if sub {
+@@ -285,6 +298,35 @@ pub fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
+ 
+ pub type BitsFn<'a> = &'a dyn Fn(&[Expr], &[Expr]) -> Vec<Expr>;
+ 
++/// `a` negated when `s` is set: `(a ^ s) + s`.
++pub fn neg_if(a: &[Expr], s: Expr) -> Vec<Expr> {
++    let xs: Vec<Expr> = a.iter().map(|&x| xor(x, s)).collect();
++    let one: Vec<Expr> = (0..a.len()).map(|i| if i == 0 { s } else { f() }).collect();
++    add_rows(&xs, &one)
++}
++
++/// Signed remainder (`wrapping_rem`; the sign of the dividend; `x % 0 = x`, where the source errors and wasm traps):
++/// restoring division of the magnitudes, one subtract-and-select row per dividend bit, MSB first.
++pub fn rem_s_bits(n: usize, a: &[Expr], b: &[Expr]) -> Vec<Expr> {
++    let (sa, sb) = (a[n - 1], b[n - 1]);
++    let (ma, mb) = (neg_if(a, sa), neg_if(b, sb));
++    let mut r: Vec<Expr> = vec![f(); n];
++    for i in (0..n).rev() {
++        // r2 = (r << 1) | ma[i]; r < mb <= 2^(n-1), so r2 < 2^n
++        let r2: Vec<Expr> = (0..n).map(|j| if j == 0 { ma[i] } else { r[j - 1] }).collect();
++        let mut borrow = f();
++        let mut diff = Vec::with_capacity(n);
++        for j in 0..n {
++            let x = xor(r2[j], mb[j]);
++            diff.push(xor(x, borrow));
++            borrow = ripple_carry(true, r2[j], mb[j], borrow, x);
++        }
++        let ge = not_(borrow);
++        r = (0..n).map(|j| mux(ge, diff[j], r2[j])).collect();
++    }
++    neg_if(&r, sa)
++}
++
+ pub fn mul_bits(n: usize, x: &[Expr], y: &[Expr]) -> Vec<Expr> {
+     let row = |i: usize| -> Vec<Expr> { (0..n).map(|j| if j < i { f() } else { and(y[i], x[j - i]) }).collect() };
+     (1..n).fold(row(0), |acc, i| add_rows(&acc, &row(i)))
+diff --git a/crates/tatic-wasm/src/encoding/tests.rs b/crates/tatic-wasm/src/encoding/tests.rs
+index 9360ba0..423e64b 100644
+--- a/crates/tatic-wasm/src/encoding/tests.rs
++++ b/crates/tatic-wasm/src/encoding/tests.rs
+@@ -443,3 +443,64 @@ pub fn add_of_x_and_not_x_is_all_ones() {
+ // Terms over x, y (and z) are *run* on every tuple of n-bit literals by the kernel (`normalize`); terms with
+ // the same results are conjectured equal; each conjecture is then *checked*: by the matching library
+ // generator, or by a generic builder (`bitwise_law`) that has no template for the particular lemma.
++
++/// `Op::RemS` on literals against Rust's `wrapping_rem` (and `x % 0 = x`, which `eval` rejects and wasm traps on).
++fn rem_ref(n: usize, a: u128, b: u128) -> u128 {
++    let sext = |v: u128| ((v << (128 - n)) as i128) >> (128 - n);
++    let (x, y) = (sext(a), sext(b));
++    (if y == 0 { x } else { x.wrapping_rem(y) } as u128) & low_bits(n)
++}
++
++#[test]
++pub fn rem_s_computes_on_literals_n8_sample() {
++    let n = 8;
++    let ty = pi(bv_ty(n), pi(bv_ty(n), bv_ty(n)));
++    ck("rem_s type", &rem_s(n), &ty);
++    let term = rem_s(n);
++    let vals: Vec<u128> = (0..256u128).step_by(5).chain([0, 1, 2, 127, 128, 129, 254, 255]).collect();
++    for &a in &vals {
++        for &b in &vals {
++            let got = app2(term.clone(), lit(n, a), lit(n, b));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a, b))), "rem a={a:#x} b={b:#x}");
++        }
++    }
++}
++
++#[test]
++#[ignore]
++pub fn rem_s_computes_on_literals_n8_exhaustive() {
++    let n = 8;
++    let term = rem_s(n);
++    for a in 0..256u128 {
++        for b in 0..256u128 {
++            let got = app2(term.clone(), lit(n, a), lit(n, b));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a, b))), "rem a={a:#x} b={b:#x}");
++        }
++    }
++}
++
++#[test]
++pub fn rem_s_computes_on_literals_n64_edges_and_random() {
++    let n = 64;
++    let term = rem_s(n);
++    let vals: Vec<u64> = vec![0, 1, u64::MAX, i64::MIN as u64, i64::MAX as u64, 2, 3, (-7i64) as u64, 7, 1 << 32, (1 << 32) - 1];
++    let mut x = 0x9E3779B97F4A7C15u64;
++    let mut next = || {
++        x ^= x << 13;
++        x ^= x >> 7;
++        x ^= x << 17;
++        x
++    };
++    let mut pairs: Vec<(u64, u64)> = vals.iter().flat_map(|&a| vals.iter().map(move |&b| (a, b))).collect();
++    for _ in 0..90 {
++        let (a, b) = (next(), next());
++        // vary magnitudes so quotients are neither always 0 nor always huge
++        pairs.push((a, b >> (next() % 64)));
++    }
++    tatic_kernel::scoped(|| {
++        for (a, b) in pairs {
++            let got = app2(term.clone(), lit(n, a as u128), lit(n, b as u128));
++            assert!(def_eq(&got, &lit(n, rem_ref(n, a as u128, b as u128))), "rem a={a:#x} b={b:#x}");
++        }
++    })
++}
+diff --git a/crates/tatic-wasm/src/machine.rs b/crates/tatic-wasm/src/machine.rs
+index 61e9776..682bc9a 100644
+--- a/crates/tatic-wasm/src/machine.rs
++++ b/crates/tatic-wasm/src/machine.rs
+@@ -17,13 +17,28 @@ use super::*;
+ /// opens only at Sort1, and `Lift R` carries the Sort0 answer through it.
+ pub fn choose(r: Expr, w: Expr, x: Expr, y: Expr) -> Expr {
+     let lift = pi(sort(0), arrow(arrow(shift(&r, 0, 1), var(0)), var(0)));
+-    let k = lam(bool0(), lam(sort(0), lam(arrow(shift(&r, 0, 2), var(0)),
+-        app(var(0), app3(var(2), shift(&r, 0, 3), shift(&x, 0, 3), shift(&y, 0, 3))))));
+-    apps(w, vec![lift, k, r, lam(r, var(0))])
++    // MS3: `x` and `y` are passed as arguments of a closed-over-`r` abstraction, `(\X Y. w (Lift R) (\c T g. g (c R X Y)) R id) x y`,
++    // not embedded under the three binders: embedded, a long `x` (a continuation holding the rest of the program) is
++    // shifted at a new cutoff per nested `choose`, O(n) cutoffs per node and O(n^2) shifts in all.
++    let lift = shift(&lift, 0, 2);
++    let (r2, w2) = (shift(&r, 0, 2), shift(&w, 0, 2));
++    let k = lam(bool0(), lam(sort(0), lam(arrow(shift(&r, 0, 4), var(0)),
++        app(var(0), app3(var(2), shift(&r, 0, 5), var(4), var(3))))));
++    let body = apps(w2, vec![lift, k, r2, lam(shift(&r, 0, 2), var(0))]);
++    apps(lam(r, lam(shift(&r, 0, 1), body)), vec![x, y])
++}
++
++thread_local! {
++    /// SPIKE control only: while set on this thread, the machine's Word guard is dropped (the source side keeps its own).
++    static DROP_GUARD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
++}
++/// SPIKE control only: sets `DROP_GUARD` for this thread.
++pub fn spike_drop_guard(on: bool) {
++    DROP_GUARD.with(|d| d.set(on));
+ }
+ 
+ /// An interpreter case's body from `A`, its operator if any, `rest`, the frame, the stack and the memory.
+-type Body<'a> = dyn Fn(&mut Cx, At, Option<At>, At, At, At, At) -> Expr + 'a;
++type Body<'a> = dyn Fn(&mut Cx, At, &[At], At, At, At, At) -> Expr + 'a;
+ 
+ /// What a stack slot holds: an n-bit word or a one-bit word (a compare's result).
+ #[derive(Clone, Copy, PartialEq, Debug)]
+@@ -72,6 +87,8 @@ impl Class {
+ /// conversion blew up), for `Set` the frame with the operand's slot replaced (`Machine::setter`), for `Word`/`Bit` the
+ /// closed circuit (`operand` is 0).
+ pub struct Row {
++    /// The domain as a `V -> V -> Bv_1` circuit builder (read through `constant_n`): where the row has a value; `dom_true` for a total row. Only `Word` sites carry it.
++    pub dom: fn(usize) -> Expr,
+     pub name: &'static str,
+     pub class: Class,
+     pub meaning: fn(&mut Cx, &Machine, i64) -> Expr,
+@@ -286,6 +303,8 @@ pub struct MeaningEnv {
+     pub ch: Option<At>,
+     pub calls: At,
+     pub restart: At,
++    /// SPIKE: the R-typed answer a guard's else branch takes (the statement's `z`); `None` (tests) falls back to the continuation.
++    pub z: Option<At>,
+ }
+ 
+ const F_TY: fn() -> Expr = || arrow(sort(2), sort(2));
+@@ -389,7 +408,7 @@ impl Machine<'_> {
+             let (va, vva, v1a) = (prod(v, a), prod(v, prod(v, a)), prod(v1, a));
+             match k {
+                 Ctor::Leaf(Class::Const) => arrow(self.operand_ty(), arrow(fa(va), fa(a))),
+-                Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(fa(va), fa(vva))),
++                Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(arrow(v, arrow(v, v1)), arrow(fa(va), fa(vva)))),
+                 Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
+                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                 Ctor::Leaf(Class::Set) => arrow(self.setter_ty(), arrow(fa(a), fa(va))),
+@@ -456,7 +475,13 @@ impl Machine<'_> {
+                     None => below(pops),
+                 });
+                 let meaning = (row.meaning)(c, self, *operand);
+-                cons(c, i, vec![ty(c, &below(pops)), meaning, r])
++                let mut args = vec![ty(c, &below(pops)), meaning];
++                // a Word row also carries its domain `V -> V -> Bv_1`, built at this site through `constant_n`
++                if row.class == Class::Word {
++                    args.push(constant_n(row.dom, self.n));
++                }
++                args.push(r);
++                cons(c, i, args)
+             }
+             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
+             Ins::Br => {
+@@ -517,49 +542,71 @@ impl Machine<'_> {
+         sigrec(motive, step, c.at(st))
+     }
+     /// The constructors' meanings.
+-    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: At, restart: At) -> Vec<Expr> {
++    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, z: Option<At>, calls: At, restart: At) -> Vec<Expr> {
+         let (v, v1) = (self.v(), bv_ty(1));
+         let w = *self;
+         let fr_ty = self.fr();
+-        // `\A [op] rest fr st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`
+-        let shape = |c: &mut Cx, extra: Option<Expr>, rest_ty: &dyn Fn(Expr) -> Expr, st_ty: &dyn Fn(Expr) -> Expr,
++        // `\A [ops..] rest fr st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`; `extras` are the operand types
++        let shape = |c: &mut Cx, extras: &[Expr], rest_ty: &dyn Fn(Expr) -> Expr, st_ty: &dyn Fn(Expr) -> Expr,
+                      body: &Body| {
++            fn bind(c: &mut Cx, tys: &[Expr], ops: &mut Vec<At>, k: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
++                match tys.split_first() {
++                    None => k(c, ops),
++                    Some((t, rest)) => c.lam(*t, |c, op| {
++                        ops.push(op);
++                        bind(c, rest, ops, k)
++                    }),
++                }
++            }
+             c.lam(sort(2), |c, a| {
+-                let inner = |c: &mut Cx, op: Option<At>| {
++                bind(c, extras, &mut vec![], &mut |c, ops| {
+                     let rt = w.g(c, r, rest_ty(c.at(a)));
+                     c.lam(rt, |c, rest| {
+                         c.lam(fr_ty, |c, fr| {
+                             c.lam(st_ty(c.at(a)), |c, st| {
+                                 let m = w.mem(c, r);
+-                                c.lam(m, |c, mu| body(c, a, op, rest, fr, st, mu))
++                                c.lam(m, |c, mu| body(c, a, ops, rest, fr, st, mu))
+                             })
+                         })
+                     })
+-                };
+-                match extra {
+-                    Some(t) => c.lam(t, |c, op| inner(c, Some(op))),
+-                    None => inner(c, None),
+-                }
++                })
+             })
+         };
++        // `choose R cond t e`, through the proof's opaque probe when there is one
++        let pick = |c: &Cx, cond: Expr, t: Expr, e: Expr| match ch {
++            Some(f) => apps(c.at(f), vec![c.at(r), cond, t, e]),
++            None => choose(c.at(r), cond, t, e),
++        };
+         // a 0-to-1 row pushes its operand's value at the frame
+-        let konst = shape(c, Some(self.operand_ty()), &|a| prod(v, a), &|a| a, &|c, a, op, rest, fr, st, mu| {
++        let konst = shape(c, &[self.operand_ty()], &|a| prod(v, a), &|a| a, &|c, a, ops, rest, fr, st, mu| {
+             let kont = c.lam(v, |c, x| app3(c.at(rest), c.at(fr), mkpair(c.at(a), c.at(x), c.at(st)), c.at(mu)));
+-            app3(c.at(op.unwrap()), c.at(fr), c.at(r), kont)
++            app3(c.at(ops[0]), c.at(fr), c.at(r), kont)
+         });
+-        let binop = |c: &mut Cx, out: Expr| {
+-            shape(c, Some(arrow(v, arrow(v, out))), &|a| prod(out, a), &|a| prod(v, prod(v, a)), &|c, a, op, rest, fr, st, mu| {
++        // a 2-to-1 row pops `y` then `x` and pushes `op x y`; a Word row first guards on its domain `dom x y`
++        // (else branch `z`, the statement's no-value answer), through `pick`
++        let binop = |c: &mut Cx, out: Expr, guarded: bool| {
++            let mut extras = vec![arrow(v, arrow(v, out))];
++            if guarded {
++                extras.push(arrow(v, arrow(v, v1)));
++            }
++            shape(c, &extras, &|a| prod(out, a), &|a| prod(v, prod(v, a)), &|c, a, ops, rest, fr, st, mu| {
+                 let below = c.mark(prod(v, c.at(a)));
+                 w.split(c, r, v, below, st, |c, y, rs| {
+                     w.split(c, r, v, a, rs, |c, x, s| {
+-                        let val = app2(c.at(op.unwrap()), c.at(x), c.at(y));
+-                        app3(c.at(rest), c.at(fr), mkpair(c.at(a), val, c.at(s)), c.at(mu))
++                        let val = app2(c.at(ops[0]), c.at(x), c.at(y));
++                        let kk = app3(c.at(rest), c.at(fr), mkpair(c.at(a), val, c.at(s)), c.at(mu));
++                        if !guarded || DROP_GUARD.with(|d| d.get()) {
++                            return kk;
++                        }
++                        // `z` is `None` only in hand-built test environments with no statement: the guard is vacuous there
++                        let zz = z.map_or(kk, |z| c.at(z));
++                        pick(c, app2(c.at(ops[1]), c.at(x), c.at(y)), kk, zz)
+                     })
+                 })
+             })
+         };
+-        let bin = binop(c, v);
+-        let cmp = binop(c, v1);
++        let bin = binop(c, v, true);
++        let cmp = binop(c, v1, false);
+         let if_ = c.lam(sort(2), |c, a| {
+             let ga = w.g(c, r, c.at(a));
+             c.lam(ga, |c, th| {
+@@ -572,10 +619,7 @@ impl Machine<'_> {
+                                 w.split(c, r, v1, a, st, |c, b, s| {
+                                     let (fr, s, mu) = (c.at(fr), c.at(s), c.at(mu));
+                                     let (x, y) = (app3(c.at(th), fr.clone(), s.clone(), mu.clone()), app3(c.at(el), fr, s, mu));
+-                                    match ch {
+-                                        Some(f) => apps(c.at(f), vec![c.at(r), c.at(b), x, y]),
+-                                        None => choose(c.at(r), c.at(b), x, y),
+-                                    }
++                                    pick(c, c.at(b), x, y)
+                                 })
+                             })
+                         })
+@@ -614,14 +658,14 @@ impl Machine<'_> {
+             })
+         });
+         // `\A op rest fr st mu`: pop the word, write it to the frame through `op`, run `rest` at the new frame
+-        let set = shape(c, Some(self.setter_ty()), &|a| a, &|a| prod(v, a), &|c, a, op, rest, fr, st, mu| {
++        let set = shape(c, &[self.setter_ty()], &|a| a, &|a| prod(v, a), &|c, a, ops, rest, fr, st, mu| {
+             w.split(c, r, v, a, st, |c, x, s| {
+-                let fr2 = app2(c.at(op.expect("set takes an operand")), c.at(fr), c.at(x));
++                let fr2 = app2(c.at(ops[0]), c.at(fr), c.at(x));
+                 app3(c.at(rest), fr2, c.at(s), c.at(mu))
+             })
+         });
+         // `\A rest fr st mu`: the activation's own entry again at the current frame (the stack and the rest are dropped)
+-        let br = shape(c, None, &|a| prod(v, a), &|a| a, &|c, _a, _op, _rest, fr, _st, mu| app2(c.at(restart), c.at(fr), c.at(mu)));
++        let br = shape(c, &[], &|a| prod(v, a), &|a| a, &|c, _a, _ops, _rest, fr, _st, mu| app2(c.at(restart), c.at(fr), c.at(mu)));
+         let built = [
+             (Ctor::Leaf(Class::Const), konst),
+             (Ctor::Leaf(Class::Word), bin),
+@@ -638,7 +682,7 @@ impl Machine<'_> {
+         let r = me.r;
+         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
+         let mut args = vec![gfam, c.at(k)];
+-        args.extend(self.interp(c, r, me.ch, me.calls, me.restart));
++        args.extend(self.interp(c, r, me.ch, me.z, me.calls, me.restart));
+         apps(c.at(p), args)
+     }
+     /// `GoodNat N = Pi P:(Nat2 -> Sort3). P 0 -> (Pi j. P j -> P (S j)) -> P N`: induction over fuel, as a hypothesis.
+@@ -783,7 +827,7 @@ mod tests {
+                     c.lam(mem, |c, mu2| app3(c.at(x[2]), c.at(fr2), mkpair(c.at(x[0]), lit(n, 0), c.at(x[5])), c.at(mu2)))
+                 });
+                 let restart = c.mark(restart);
+-                let me = MeaningEnv { r, ch: None, calls: none, restart };
++                let me = MeaningEnv { r, ch: None, z: None, calls: none, restart };
+                 let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[5]), c.at(x[6]));
+                 let (p, q) = if b_minus_a { (x[4], x[3]) } else { (x[3], x[4]) };
+                 let val = app2(sub(n), c.at(p), c.at(q));
+diff --git a/crates/tatic-wasm/src/machine/loop_tests.rs b/crates/tatic-wasm/src/machine/loop_tests.rs
+index b8fd5be..34ff7d3 100644
+--- a/crates/tatic-wasm/src/machine/loop_tests.rs
++++ b/crates/tatic-wasm/src/machine/loop_tests.rs
+@@ -17,7 +17,7 @@ fn meaning_env(c: &mut Cx, w: &Machine, r: At, restart: At) -> MeaningEnv {
+         })
+     });
+     let none = c.mark(none);
+-    MeaningEnv { r, ch: None, calls: none, restart }
++    MeaningEnv { r, ch: None, z: None, calls: none, restart }
+ }
+ 
+ /// A `restart` for tests whose code holds no `Br`, or whose `Br` is not taken: `\fr mu. kk fr (0, s) mu` (`R` is
+diff --git a/crates/tatic-wasm/src/machine/sim.rs b/crates/tatic-wasm/src/machine/sim.rs
+index 281d7ab..9fcd871 100644
+--- a/crates/tatic-wasm/src/machine/sim.rs
++++ b/crates/tatic-wasm/src/machine/sim.rs
+@@ -22,6 +22,54 @@ use std::cell::RefCell;
+ fn ch_ty() -> Expr {
+     pi(sort(0), arrow(bv_ty(1), arrow(var(0), arrow(var(0), var(0)))))
+ }
++/// `H1 : Pi R:Sort0. Pi t e:R. Id(R, CH R 1 t e, t)`, the probe's one law (the real `choose` reduces at the literal 1).
++fn h1_ty(c: &mut Cx, ch: At) -> Expr {
++    c.pi(sort(0), |c, r| {
++        c.pi(c.at(r), |c, t| {
++            c.pi(c.at(r), |c, e| id(c.at(r), apps(c.at(ch), vec![c.at(r), lit(1, 1), c.at(t), c.at(e)]), c.at(t)))
++        })
++    })
++}
++/// `\R t e. refl t`: `H1` for the real `choose`.
++fn h1_proof() -> Expr {
++    Cx::default().lam(sort(0), |c, r| c.lam(c.at(r), |c, t| c.lam(c.at(r), |c, _| refl(c.at(t)))))
++}
++/// The transitivity lemma `Pi R a t s. Id(R, a, t) -> Id(R, t, s) -> Id(R, a, s)`, closed (applied, so no program term
++/// is copied into a motive).
++fn trans_lemma() -> Expr {
++    Cx::default().lam(sort(0), |c, r| {
++        c.lam(c.at(r), |c, a| {
++            c.lam(c.at(r), |c, t| {
++                c.lam(c.at(r), |c, s| {
++                    let pa_ty = id(c.at(r), c.at(a), c.at(t));
++                    c.lam(pa_ty, |c, pa| {
++                        let pts_ty = id(c.at(r), c.at(t), c.at(s));
++                        c.lam(pts_ty, |c, pts| {
++                            let mot = c.lam(c.at(r), |c, x| {
++                                c.lam(c.at(r), |c, y| {
++                                    let ty = id(c.at(r), c.at(x), c.at(y));
++                                    c.lam(ty, |c, _| {
++                                        let ih = id(c.at(r), c.at(a), c.at(x));
++                                        c.pi(ih, |c, _| id(c.at(r), c.at(a), c.at(y)))
++                                    })
++                                })
++                            });
++                            let base = c.lam(c.at(r), |c, x| {
++                                let ih = id(c.at(r), c.at(a), c.at(x));
++                                c.lam(ih, |c, h| c.at(h))
++                            });
++                            app(jelim(mot, base, c.at(t), c.at(s), c.at(pts)), c.at(pa))
++                        })
++                    })
++                })
++            })
++        })
++    })
++}
++/// `Id(R, a, s)` from `Id(R, a, t)` and `Id(R, t, s)`.
++fn trans(r: At, c: &Cx, (a, t, s): (Expr, Expr, Expr), (pa, pts): (Expr, Expr)) -> Expr {
++    apps(trans_lemma(), vec![c.at(r), a, t, s, pa, pts])
++}
+ /// The real choice, `\R w x y. choose R w x y`.
+ fn choose_fn() -> Expr {
+     Cx::default().lam(sort(0), |c, r| {
+@@ -98,6 +146,8 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
+     let err: RefCell<Option<String>> = RefCell::new(None);
+     let tys = head_tys(w, module, &cs, true);
+     let proof = Cx::default().lam(ch_ty(), |c, ch| {
++      let h1t = h1_ty(c, ch);
++      c.lam(h1t, |c, h1| {
+         tele(c, &tys, &mut vec![], &lam, &mut |c, x| {
+             let (fuel, gn, r, z) = (x[0], x[1], x[2], x[3]);
+             let cx = Ctxt::new(c, w, module, fuel, r, z);
+@@ -135,7 +185,7 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
+                             // the entry itself is a call like any callee's: through `j`, with the hypothesis for its law
+                             let own = CallRule { head: j, g, bm, bs, law: ih };
+                             let all_rules: Vec<CallRule> = std::iter::once(own).chain(rules.iter().copied()).collect();
+-                            let sim = Sim { g: &g, r, ch, d: y[0], km: y[2 + m], ks: y[3 + m], rel: y[4 + m], rules: &all_rules };
++                            let sim = Sim { g: &g, r, ch, h1, d: y[0], km: y[2 + m], ks: y[3 + m], rel: y[4 + m], rules: &all_rules };
+                             let ya: Vec<Expr> = y[1..1 + m].iter().map(|a| c.at(*a)).collect();
+                             let fr = g.frame(&ya);
+                             let mj = apps(c.at(j), vec![c.at(hm), c.at(tm), c.at(bm)]);
+@@ -157,6 +207,7 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
+                 apps(c.at(gn), all)
+             })
+         })
++      })
+     });
+     match err.into_inner() {
+         Some(e) => Err(e),
+@@ -171,7 +222,7 @@ fn closed(w: Machine, module: &[Option<ModEntry>], k: usize, path: &mut Vec<usiz
+     if path.contains(&k) {
+         return Err(format!("the module's calls form a cycle through position {k}"));
+     }
+-    let open = app(proof_open(w, module, k)?, choose_fn());
++    let open = app(app(proof_open(w, module, k)?, choose_fn()), h1_proof());
+     let e = module[k].as_ref().expect("proof_open found the entry");
+     let cs = callees(k, &e.entry.code);
+     path.push(k);
+@@ -205,6 +256,8 @@ struct Sim<'g, 't> {
+     g: &'g G<'t>,
+     r: At,
+     ch: At,
++    /// `H1`, the probe's law at the literal 1.
++    h1: At,
+     /// The walk's own copy of the lifting numeral every law and the induction hypothesis take first.
+     d: At,
+     km: At,
+@@ -285,6 +338,13 @@ impl Sim<'_, '_> {
+             }
+             return Ok(apps(c.at(self.rel), vec![ma[0], ma[1]]));
+         }
++        // the probe at the literal 1 (a total row's guard): the machine steps to its then-branch by `H1`, the source
++        // (which folded the guard) does not branch there
++        if mh == c.at(self.ch) && sh != c.at(self.ch) && ma.len() == 4 && def_eq(&ma[1], &lit(1, 1)) {
++            let pt = self.sim(c, ma[2], s, &format!("{path}/then1"))?;
++            let hh = apps(c.at(self.h1), vec![c.at(self.r), ma[2], ma[3]]);
++            return Ok(trans(self.r, c, (m, ma[2], s), (hh, pt)));
++        }
+         if mh == c.at(self.ch) {
+             if sh != c.at(self.ch) || ma.len() != 4 || sa.len() != 4 {
+                 return Err(format!("{path}: the machine {mk} but the source {sk}"));
+@@ -329,6 +389,10 @@ impl Sim<'_, '_> {
+             all.extend([mu2, k2, ks2, rel2]);
+             return Ok(apps(c.at(rule.law), all));
+         }
++        // last resort: the two sides are the same term (a guard's else branch, `z` against `z`), closed by `refl`
++        if def_eq(&mw, &sw) {
++            return Ok(refl(m));
++        }
+         Err(format!("{path}: the machine {mk} but the source {sk}"))
+     }
+ }
+diff --git a/crates/tatic-wasm/src/machine/sim/tests.rs b/crates/tatic-wasm/src/machine/sim/tests.rs
+index a263eae..6bb892c 100644
+--- a/crates/tatic-wasm/src/machine/sim/tests.rs
++++ b/crates/tatic-wasm/src/machine/sim/tests.rs
+@@ -45,7 +45,14 @@ fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) ->
+             let x = c.mark(x);
+             cps(w, e, c, b, &|c, y| {
+                 let op = (w.table.row(o).unwrap().meaning)(c, w, 0);
+-                k(c, app2(op, c.at(x), y))
++                let y = c.mark(y);
++                let kk = k(c, app2(op, c.at(x), c.at(y)));
++                let dom = constant_n(w.table.row(o).unwrap().dom, w.n);
++                let cond = app2(dom, c.at(x), c.at(y));
++                if tatic_kernel::whnf(&cond) == lit(1, 1) {
++                    return kk; // SPIKE y1: folded
++                }
++                e.guard(c, cond, kk) // SPIKE guard
+             })
+         }),
+         If(o, a, b, t, f) => cps(w, e, c, a, &|c, x| {
+diff --git a/crates/tatic-wasm/src/machine/statement.rs b/crates/tatic-wasm/src/machine/statement.rs
+index a73e7e1..efe9eb2 100644
+--- a/crates/tatic-wasm/src/machine/statement.rs
++++ b/crates/tatic-wasm/src/machine/statement.rs
+@@ -30,6 +30,8 @@ use std::cell::RefCell;
+ pub struct SEnv {
+     pub n: usize,
+     pub r: At,
++    /// SPIKE: the R-typed answer a guard's else branch takes (the statement's `z`).
++    pub z: At,
+     pub g: At,
+     pub params: Vec<At>,
+     pub ch: Option<At>,
+@@ -39,6 +41,10 @@ pub struct SEnv {
+ }
+ 
+ impl SEnv {
++    /// SPIKE: a Word row's domain guard, `choose R cond k z` (the probe in the proof's walk, the real one otherwise).
++    pub fn guard(&self, c: &Cx, cond: Expr, k: Expr) -> Expr {
++        self.choose(c, cond, k, c.at(self.z))
++    }
+     /// `choose R cond t e`, through the probe in the proof.
+     pub fn choose(&self, c: &Cx, cond: Expr, t: Expr, e: Expr) -> Expr {
+         match self.ch {
+@@ -159,7 +165,7 @@ impl<'t> G<'t> {
+     }
+     /// `Bm = \env fr mu k. M (prog code) fr 0 mu`, the body's answer passed to `k`; `ch` is the generator's probe, and
+     /// `table` builds the module's callee environment from `env` (the entry's own fuel-unrolled step).
+-    pub fn bm(&self, c: &mut Cx, r: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
++    pub fn bm(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
+         let (w, n) = (self.w, self.w.n);
+         let hm = self.hm(c, r);
+         c.lam(hm, |c, env| {
+@@ -188,7 +194,7 @@ impl<'t> G<'t> {
+                             c.lam(mem, |c, mu2| app3(c.at(env), c.at(fr2), c.at(mu2), c.at(k)))
+                         });
+                         let restart = c.mark(restart);
+-                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: tbl, restart });
++                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, z: Some(z), calls: tbl, restart });
+                         app3(m, c.at(fr), lit(n, 0), c.at(mu))
+                     })
+                 })
+@@ -196,7 +202,7 @@ impl<'t> G<'t> {
+         })
+     }
+     /// `Bs = \g x.. ks. src`, `src` built by the entry's source closure; `fuel` and `callees` are the module's.
+-    pub fn bs(&self, c: &mut Cx, r: At, ch: Option<At>, src: &SrcFn, fuel: At, own: usize, callees: &[(usize, At)]) -> Expr {
++    pub fn bs(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, src: &SrcFn, fuel: At, own: usize, callees: &[(usize, At)]) -> Expr {
+         let n = self.w.n;
+         let hs = self.hs(c, r);
+         c.lam(hs, |c, g| {
+@@ -204,7 +210,7 @@ impl<'t> G<'t> {
+             tele(c, &vs, &mut vec![], &lam, &mut |c, xs| {
+                 let rs = self.ret_s(c, r);
+                 c.lam(rs, |c, ks| {
+-                    let env = SEnv { n, r, g, params: xs.to_vec(), ch, fuel, own, callees: callees.to_vec() };
++                    let env = SEnv { n, r, z, g, params: xs.to_vec(), ch, fuel, own, callees: callees.to_vec() };
+                     src(c, &env, &|c, v| app(c.at(ks), v))
+                 })
+             })
+@@ -312,9 +318,9 @@ impl<'a> Ctxt<'a> {
+     pub fn bm_bs(&self, c: &mut Cx, k: usize, probe: Option<At>) -> (Expr, Expr) {
+         let (e, g) = (self.entry(k), self.g(k));
+         let cs: Vec<(usize, Real)> = callees(k, &e.entry.code).into_iter().map(|p| (p, self.real(c, p))).collect();
+-        let bm = g.bm(c, self.r, probe, &e.entry.code, &self.arities, &|c, env| self.table(c, k, env, &cs));
++        let bm = g.bm(c, self.r, self.z, probe, &e.entry.code, &self.arities, &|c, env| self.table(c, k, env, &cs));
+         let scs: Vec<(usize, At)> = cs.iter().map(|(p, re)| (*p, re.sc)).collect();
+-        let bs = g.bs(c, self.r, probe, e.src, self.fuel, k, &scs);
++        let bs = g.bs(c, self.r, self.z, probe, e.src, self.fuel, k, &scs);
+         (bm, bs)
+     }
+     /// Entry `k`'s real (probe-free) pieces, built once.
+diff --git a/crates/tatic-wasm/src/ops.rs b/crates/tatic-wasm/src/ops.rs
+index 698a2cc..784c1c7 100644
+--- a/crates/tatic-wasm/src/ops.rs
++++ b/crates/tatic-wasm/src/ops.rs
+@@ -11,6 +11,7 @@ pub fn const_row() -> Row {
+         name: "const",
+         class: machine::Class::Const,
+         meaning: |c, m: &Machine, v| m.handing(c, &|_, _| lit(m.n, (v as u64 as u128) & low_bits(m.n))),
++        dom: dom_true,
+         line: |v| format!("i64.const {v}"),
+     }
+ }
+@@ -22,6 +23,7 @@ pub fn local_get_row() -> Row {
+         name: "local.get",
+         class: machine::Class::Const,
+         meaning: |c, m: &Machine, i| m.getter(c, i as usize),
++        dom: dom_true,
+         line: |i| format!("local.get $p{i}"),
+     }
+ }
+@@ -33,6 +35,7 @@ pub fn local_set_row() -> Row {
+         name: "local.set",
+         class: machine::Class::Set,
+         meaning: |c, m: &Machine, i| m.setter(c, i as usize),
++        dom: dom_true,
+         line: |i| format!("local.set $p{i}"),
+     }
+ }
+@@ -41,10 +44,14 @@ pub fn local_set_row() -> Row {
+ /// generation, `constant_n`) and whose line is the fixed `$line`.
+ macro_rules! circuit_row {
+     ($name:literal, $class:expr, $build:expr, $line:literal) => {
++        circuit_row!($name, $class, $build, $line, dom_true)
++    };
++    ($name:literal, $class:expr, $build:expr, $line:literal, $dom:expr) => {
+         machine::Row {
+             name: $name,
+             class: $class,
+             meaning: |_c, m: &machine::Machine, _| constant_n($build, m.n),
++            dom: $dom,
+             line: |_| $line.to_string(),
+         }
+     };
+diff --git a/crates/tatic-wasm/src/wasm.rs b/crates/tatic-wasm/src/wasm.rs
+index 7dff8f3..9e5cabd 100644
+--- a/crates/tatic-wasm/src/wasm.rs
++++ b/crates/tatic-wasm/src/wasm.rs
+@@ -3,7 +3,7 @@ use super::*;
+ use machine::{Class, Table};
+ use ops::{circuit_row, const_row, local_get_row, local_set_row};
+ 
+-/// The wasm rows: `const`, `local.get`, `local.set`, the word rows `add` `sub` `mul`, and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
++/// The wasm rows: `const`, `local.get`, `local.set`, the word rows `add` `sub` `mul` `mod`, and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
+ /// source operator; it serves the `lt`-for-`lt_u` control only).
+ pub fn table() -> Table {
+     Table::new(vec![
+@@ -13,6 +13,7 @@ pub fn table() -> Table {
+         circuit_row!("add", Class::Word, add, "i64.add"),
+         circuit_row!("sub", Class::Word, sub, "i64.sub"),
+         circuit_row!("mul", Class::Word, mul, "i64.mul"),
++        circuit_row!("mod", Class::Word, rem_s, "i64.rem_s", nonzero_second),
+         circuit_row!("lt", Class::Bit, lt_s, "i64.lt_s"),
+         circuit_row!("le", Class::Bit, le_s, "i64.le_s"),
+         circuit_row!("eq", Class::Bit, eq_bit, "i64.eq"),
+@@ -33,9 +34,9 @@ mod tests {
+         let t = table();
+         let m = Machine { n, fw: 2, table: &t };
+         let v = bv_ty(n);
+-        assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "lt", "le", "eq", "lt_u"]);
+-        let cases: [(&str, i64); 11] = [
+-            ("const", 3), ("local.get", 0), ("local.get", 1), ("local.set", 1), ("add", 0), ("sub", 0), ("mul", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
++        assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "mod", "lt", "le", "eq", "lt_u"]);
++        let cases: [(&str, i64); 12] = [
++            ("const", 3), ("local.get", 0), ("local.get", 1), ("local.set", 1), ("add", 0), ("sub", 0), ("mul", 0), ("mod", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
+         ];
+         for (name, operand) in cases {
+             let row = t.row(name).unwrap_or_else(|| panic!("no row {name}"));
+@@ -45,6 +46,8 @@ mod tests {
+                 Class::Word => arrow(v.clone(), arrow(v.clone(), v.clone())),
+                 Class::Bit => arrow(v.clone(), arrow(v.clone(), bv_ty(1))),
+             };
++            let dom = infer(&Ctx::new(), &constant_n(row.dom, n)).unwrap_or_else(|e| panic!("{name} dom: {e}"));
++            assert!(def_eq(&dom, &arrow(v.clone(), arrow(v.clone(), bv_ty(1)))), "{name}: domain has the wrong type");
+             let term = (row.meaning)(&mut Cx::default(), &m, operand);
+             let got = infer(&Ctx::new(), &term).unwrap_or_else(|e| panic!("{name}: {e}"));
+             assert!(def_eq(&got, &want), "{name} ({}) has the wrong type", (row.line)(operand));
+diff --git a/crates/tatic/src/jit/lower_wat.rs b/crates/tatic/src/jit/lower_wat.rs
+index d33d5ee..7b15e0f 100644
+--- a/crates/tatic/src/jit/lower_wat.rs
++++ b/crates/tatic/src/jit/lower_wat.rs
+@@ -429,7 +429,6 @@ impl Lowering<'_> {
+                 self.node(cx, b, w);
+                 match *op {
+                     PrimOp::Div => emit_wrapping_div(w),
+-                    PrimOp::Mod => raw(w, "i64.rem_s"),
+                     op => w.push(row_of(op, Class::Word, "ir::check: Arith carries an arithmetic op (wasm_table)")),
+                 }
+             }
+diff --git a/crates/tatic/src/jit/op_table_tests.rs b/crates/tatic/src/jit/op_table_tests.rs
+index b562ce9..2aede5c 100644
+--- a/crates/tatic/src/jit/op_table_tests.rs
++++ b/crates/tatic/src/jit/op_table_tests.rs
+@@ -73,6 +73,10 @@ fn agree(n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
+         };
+         for (x, y) in pairs() {
+             let (x, y) = (mask(n, x), mask(n, y));
++            // SPIKE: `mod` is partial; eval errors and wasm traps at y = 0, so the pair is skipped (no domain test yet)
++            if p == PrimOp::Mod && y == 0 {
++                continue;
++            }
+             let (sx, sy) = (sign_extend(n, x), sign_extend(n, y));
+             let r_eval = mask(n, apply_term(&s, h, &[sx, sy]).expect("no division") as u64);
+             let r_wasm = mask(n, f.call(&mut store, (sx, sy)).expect("no trap") as u64);
+@@ -97,7 +101,7 @@ fn agree(n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
+ fn every_prim_op_with_a_row_names_it() {
+     for p in SOURCE_OPS {
+         let row = wasm_table().row(p.name());
+-        assert_eq!(row.is_some(), !matches!(p, PrimOp::Div | PrimOp::Mod), "{p:?}");
++        assert_eq!(row.is_some(), !matches!(p, PrimOp::Div), "{p:?}");
+         assert_eq!(is_comparison(p), row.is_some_and(|r| r.class == Class::Bit), "{p:?}");
+     }
+ }
+diff --git a/crates/tatic/src/proof/gate.rs b/crates/tatic/src/proof/gate.rs
+index de5b5a4..cf5ccec 100644
+--- a/crates/tatic/src/proof/gate.rs
++++ b/crates/tatic/src/proof/gate.rs
+@@ -130,6 +130,12 @@ fn cps_args(w: &Machine, e: &SEnv, c: &mut Cx, args: &[Src], done: Vec<At>, k: &
+     }
+ }
+ 
++static SPIKE_FOLD_ALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
++/// SPIKE control only: the source folds every Word guard (also `mod`'s).
++pub(crate) fn spike_fold_all(on: bool) {
++    SPIKE_FOLD_ALL.store(on, std::sync::atomic::Ordering::SeqCst);
++}
++
+ /// `s` in continuation-passing form with the continuation `k`, evaluating operands left to right, as the lowering
+ /// emits them. Total: `parse` has already kept out everything else.
+ fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
+@@ -139,7 +145,18 @@ fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) ->
+         Src::Lit(v) => k(c, lit(e.n, *v)),
+         Src::Prim(o, a, b) => cps(w, e, c, a, &|c, x| {
+             let x = c.mark(x);
+-            cps(w, e, c, b, &|c, y| k(c, app2(row_term(w, o), c.at(x), y)))
++            cps(w, e, c, b, &|c, y| {
++                // SPIKE: the Word row's domain guard `choose(dom x y, K, z)`, as the machine's binop carries it
++                let y = c.mark(y);
++                let kk = k(c, app2(row_term(w, o), c.at(x), c.at(y)));
++                let dom = tatic_wasm::encoding::constant_n(w.table.row(o).expect("parse admits only table rows").dom, w.n);
++                let cond = app2(dom, c.at(x), c.at(y));
++                // SPIKE y1: a guard whose condition is structurally the literal 1 is folded away
++                if SPIKE_FOLD_ALL.load(std::sync::atomic::Ordering::SeqCst) || tatic_kernel::whnf(&cond) == lit(1, 1) {
++                    return kk;
++                }
++                e.guard(c, cond, kk)
++            })
+         }),
+         Src::If(o, a, b, t, f) => cps(w, e, c, a, &|c, x| {
+             let x = c.mark(x);
+diff --git a/crates/tatic/src/proof/tests.rs b/crates/tatic/src/proof/tests.rs
+index d1e1e90..85cc77a 100644
+--- a/crates/tatic/src/proof/tests.rs
++++ b/crates/tatic/src/proof/tests.rs
+@@ -37,3 +37,4 @@ mod gate_mutants;
+ mod modules;
+ mod loop_form;
+ mod toy_table;
++mod x1_spike;
+diff --git a/crates/tatic/src/proof/tests/baseline.rs b/crates/tatic/src/proof/tests/baseline.rs
+index 91da3e0..7700b5a 100644
+--- a/crates/tatic/src/proof/tests/baseline.rs
++++ b/crates/tatic/src/proof/tests/baseline.rs
+@@ -309,8 +309,8 @@ pub(super) const VERDICTS: &[(&'static str, Kind)] = &[
+     ("factorial", Kind::Accepted),
+     ("redundant_arithmetic_recursion", Kind::Accepted),
+     ("fib", Kind::Accepted),
+-    ("gcd", Kind::NotCovered),
+-    ("gcd_with_two_base_cases", Kind::NotCovered),
++    ("gcd", Kind::Accepted),
++    ("gcd_with_two_base_cases", Kind::Accepted),
+     ("capturing_closure_loop", Kind::Accepted),
+     ("partial_application_loop", Kind::Accepted),
+     ("closure_typed_loop_carried_parameter_loop", Kind::NotCovered),
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index 9aebb18..ca62ad6 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -283,6 +283,52 @@ fn measure_cachegrind() {
+ }
+ 
+ 
++/// PROBE: the check's and build's kernel work for the loop programs, doubling and the two gcds, one line each.
++#[test]
++#[ignore]
++fn p1_probe() {
++    let progs: Vec<(&str, Box<dyn Fn(&mut TermStore) -> Hash + Send>)> = vec![
++        ("capturing_closure_loop", Box::new(capturing_closure_loop)),
++        ("straight_line", Box::new(straight_line)),
++        ("held_out_b", Box::new(crate::testing::test_corpus::held_out_b)),
++        ("doubling(6)", Box::new(|s: &mut TermStore| doubling(s, 6))),
++        ("gcd", Box::new(crate::support::samples::gcd)),
++        ("gcd_with_two_base_cases", Box::new(crate::support::samples::gcd_with_two_base_cases)),
++        ("doubling(12)", Box::new(|s: &mut TermStore| doubling(s, 12))),
++    ];
++    for (name, mk) in progs {
++        if std::env::var("P1_ONLY").is_ok_and(|o| o != name) {
++            continue;
++        }
++        let w = big(move || {
++            let (s, h, frag) = compiled(&*mk);
++            tatic_wasm::machine::spike_drop_guard(std::env::var("P1_DROP").is_ok());
++            tatic_kernel::scoped(|| {
++                let b0 = tatic_kernel::work();
++                let r = build(wasm_table(), &s, h, &frag);
++                let b1 = tatic_kernel::work();
++                match r {
++                    Ok((st, Ok(p))) => {
++                        let w0 = tatic_kernel::work();
++                        let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
++                        (if ok { 1u64 } else { 2 }, tatic_kernel::work() - w0, b1 - b0)
++                    }
++                    Ok((_, Err(why))) => {
++                        println!("P1 {name} walk failed: {why}");
++                        (3, 0, b1 - b0)
++                    }
++                    Err(v) => {
++                        println!("P1 {name} {v:?}");
++                        (4, 0, b1 - b0)
++                    }
++                }
++            })
++        });
++        let st = ["", "accepted", "kernel-rejected", "walk-failed", "not-built"][w.0 as usize];
++        println!("P1 {name} {st} check_work={} build_work={}", w.1, w.2);
++    }
++}
++
+ /// `f` on a thread with the checker's stack, as the JIT's gate runs.
+ pub(super) fn big<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
+     std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn(f).unwrap().join().unwrap()
+@@ -415,7 +461,6 @@ fn what_cps_cannot_take_is_not_covered() {
+             Box::new(|s: &mut TermStore| source(s, r"\a b. if (if a < b then a else b) < 1 then 1 else 0")),
+         ),
+         ("a / b (no table row)", Box::new(|s: &mut TermStore| source(s, r"\a b. a / b"))),
+-        ("gcd (Mod)", Box::new(crate::support::samples::gcd)),
+         ("a / 0", Box::new(|s: &mut TermStore| source(s, r"\a. a / 0"))),
+     ];
+     for (name, b) in cases {
+diff --git a/crates/tatic/src/proof/tests/gate_mutants.rs b/crates/tatic/src/proof/tests/gate_mutants.rs
+index aaced96..e6466f5 100644
+--- a/crates/tatic/src/proof/tests/gate_mutants.rs
++++ b/crates/tatic/src/proof/tests/gate_mutants.rs
+@@ -335,6 +335,7 @@ fn every_row_has_an_operator_swap_mutant() {
+         match r {
+             "add" | "lt" => Some("fib"),
+             "sub" | "mul" | "le" => Some("factorial"),
++            "mod" => Some("gcd"),
+             _ => None,
+         }
+     };
+diff --git a/crates/tatic/src/proof/tests/toy_table.rs b/crates/tatic/src/proof/tests/toy_table.rs
+index 65cdabc..0ec92ef 100644
+--- a/crates/tatic/src/proof/tests/toy_table.rs
++++ b/crates/tatic/src/proof/tests/toy_table.rs
+@@ -13,7 +13,7 @@ use tatic_wasm::machine::{Class, Entry, EnvAccess, Ins, Row, Table};
+ /// The wasm `name` row's meaning and line under the toy.
+ fn as_wasm(name: &'static str) -> Row {
+     let r = wasm_table().row(name).unwrap_or_else(|| panic!("no wasm row {name:?}"));
+-    Row { name: r.name, class: r.class, meaning: r.meaning, line: r.line }
++    Row { name: r.name, class: r.class, meaning: r.meaning, dom: r.dom, line: r.line }
+ }
+ 
+ /// `const`, `local.get` and `lt` as wasm's; `sub` means `\x y. add (sub y x) 1`.
+@@ -25,6 +25,7 @@ fn toy() -> Table {
+             name: "sub",
+             class: Class::Word,
+             meaning: |_c, m, _| lam(m.v(), lam(m.v(), app2(constant_n(add, m.n), app2(constant_n(sub, m.n), tatic_kernel::var(0), tatic_kernel::var(1)), lit(m.n, 1)))),
++            dom: tatic_wasm::encoding::dom_true,
+             line: |_| "toy.sub".to_string(),
+         },
+         as_wasm("lt"),
+diff --git a/crates/tatic/src/proof/tests/x1_spike.rs b/crates/tatic/src/proof/tests/x1_spike.rs
+new file mode 100644
+index 0000000..ff6f3a8
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/x1_spike.rs
+@@ -0,0 +1,161 @@
++//! SPIKE x1 (option 1 of the partial-row draft): verdicts for `%` through the gate, and the controls.
++use super::gate::{big, compiled};
++use super::*;
++use crate::jit::shape::wasm_table;
++use crate::lang::term::Hash;
++use crate::proof::gate::{gate, Layer, Verdict};
++use crate::support::samples::{gcd, gcd_with_two_base_cases, source};
++use crate::testing::ins_mutate::{mutate, with_entry};
++use tatic_wasm::encoding::{constant_n, dom_true, nonzero_second, rem_s};
++use tatic_wasm::machine::{Class, Entry, Ins, Row, Table};
++
++fn row(name: &'static str) -> Ins {
++    Ins::Row { name, operand: 0 }
++}
++
++/// The wasm table plus `mod_total`: `mod`'s circuit and line with the constant-true domain.
++fn twin() -> Table {
++    let t = wasm_table();
++    let mut rows: Vec<Row> = t
++        .names()
++        .into_iter()
++        .map(|n| {
++            let r = t.row(n).unwrap();
++            Row { name: r.name, class: r.class, meaning: r.meaning, dom: r.dom, line: r.line }
++        })
++        .collect();
++    rows.push(Row { name: "mod_total", class: Class::Word, meaning: |_c, m, _| constant_n(rem_s, m.n), dom: dom_true, line: |_| "i64.rem_s".to_string() });
++    let add = t.row("add").unwrap();
++    rows.push(Row { name: "add_g", class: add.class, meaning: add.meaning, dom: nonzero_second, line: add.line });
++    Table::new(rows)
++}
++
++type Build = fn(&mut TermStore) -> Hash;
++
++/// The gate's verdict on `mk`'s fragment with its code edited by `edit`, against the twin table when `use_twin`, with
++/// the machine's Word guard dropped when `drop_guard`.
++fn run(mk: Build, edit: fn(Vec<Ins>) -> Vec<Ins>, use_twin: bool, drop_guard: bool) -> Verdict {
++    big(move || {
++        let (s, h, frag) = compiled(&mk);
++        let frag = with_entry(frag, |e| Entry { code: edit(e.code.clone()), ..e });
++        tatic_wasm::machine::spike_drop_guard(drop_guard);
++        let v = if use_twin { gate(&twin(), &s, h, &frag) } else { gate(wasm_table(), &s, h, &frag) };
++        tatic_wasm::machine::spike_drop_guard(false);
++        v
++    })
++}
++
++fn same(c: Vec<Ins>) -> Vec<Ins> {
++    c
++}
++fn to_total(c: Vec<Ins>) -> Vec<Ins> {
++    let out = mutate(&c, &|i| (i == &row("mod")).then_some(row("mod_total")));
++    assert!(out != c, "the code holds a mod site");
++    out
++}
++
++fn to_guarded_add(c: Vec<Ins>) -> Vec<Ins> {
++    let out = mutate(&c, &|i| (i == &row("add")).then_some(row("add_g")));
++    assert!(out != c, "the code holds an add site");
++    out
++}
++fn add_plain(s: &mut TermStore) -> Hash {
++    source(s, r"\a b. a + b")
++}
++
++/// Y1 controls: the source folds `mod`'s guard while the machine keeps it; the machine guards a total (`add`) site by a
++/// condition that is not the literal 1 while the source folds it.
++#[test]
++fn y1_controls() {
++    crate::proof::gate::spike_fold_all(true);
++    let v = run(gcd, same, false, false);
++    crate::proof::gate::spike_fold_all(false);
++    println!("Y1 control fold-mod gcd: {v:?}");
++    assert!(matches!(v, Verdict::Rejected(..)), "{v:?}");
++    let v = run(add_plain, same, true, false);
++    println!("Y1 add twin unmutated: {v:?}");
++    assert_eq!(v, Verdict::Accepted);
++    let v = run(add_plain, to_guarded_add, true, false);
++    println!("Y1 control add_g (machine guard y != 0 on a total site): {v:?}");
++    assert!(matches!(v, Verdict::Rejected(..)), "{v:?}");
++}
++
++fn mod_if(s: &mut TermStore) -> Hash {
++    source(s, r"\a b. if a % b == 0 then a else b")
++}
++fn mod_chain(s: &mut TermStore) -> Hash {
++    source(s, r"\a b c. a % (b % c)")
++}
++fn mod_plain(s: &mut TermStore) -> Hash {
++    source(s, r"\a b. a % b")
++}
++
++#[test]
++fn x1_verdicts() {
++    let cases: [(&str, Build); 5] = [
++        ("gcd", gcd),
++        ("gcd_with_two_base_cases", gcd_with_two_base_cases),
++        ("if a % b == 0 then a else b", mod_if),
++        ("a % (b % c)", mod_chain),
++        ("a % b", mod_plain),
++    ];
++    for (name, mk) in cases {
++        let v = run(mk, same, false, false);
++        println!("X1 verdict {name}: {v:?}");
++    }
++    for (name, mk) in [("gcd", gcd as Build), ("gcd2", gcd_with_two_base_cases)] {
++        assert_eq!(run(mk, same, false, false), Verdict::Accepted, "{name}");
++    }
++}
++
++#[test]
++fn x1_controls() {
++    // the twin table alone changes nothing
++    assert_eq!(run(gcd, same, true, false), Verdict::Accepted, "gcd against the twin table");
++    // (i) the machine reads mod_total (domain constant true), the source reads mod (domain y != 0)
++    for (name, mk) in [("gcd", gcd as Build), ("gcd2", gcd_with_two_base_cases)] {
++        let v = run(mk, to_total, true, false);
++        println!("X1 control i {name}: {v:?}");
++        assert!(matches!(v, Verdict::Rejected(Layer::Walk, _)), "{name}: {v:?}");
++    }
++    // (ii) the machine's guard dropped for the Word sites (gcd's only Word row is mod)
++    for (name, mk) in [("gcd", gcd as Build), ("gcd2", gcd_with_two_base_cases)] {
++        let v = run(mk, same, false, true);
++        println!("X1 control ii {name}: {v:?}");
++        assert!(matches!(v, Verdict::Rejected(..)), "{name}: {v:?}");
++    }
++}
++
++/// Right-nested `a % (b % (a % ... b))` with `d` operators: the y operand of every level is a guarded prim result.
++fn chain_src(d: usize) -> String {
++    let mut e = "b".to_string();
++    for k in 0..d {
++        e = format!("({} % {})", if k % 2 == 0 { "a" } else { "b" }, e);
++    }
++    format!(r"\a b. {e}")
++}
++
++/// (accepted, check work, build work) of the nested chain at depth `d`.
++fn chain_work(d: usize) -> (bool, u64, u64) {
++    big(move || {
++        let src = chain_src(d);
++        let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
++        tatic_kernel::scoped(|| {
++            let b0 = tatic_kernel::work();
++            let (p, st) = super::gate::built(&s, h, &frag);
++            let b1 = tatic_kernel::work();
++            let w0 = tatic_kernel::work();
++            let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
++            (ok, tatic_kernel::work() - w0, b1 - b0)
++        })
++    })
++}
++
++#[test]
++fn x1_mod_chain_work() {
++    for d in [4usize, 8, 16, 32, 64, 128, 256] {
++        let (ok, check, build) = chain_work(d);
++        println!("X1 chain d={d} accepted={ok} check_work={check} build_work={build}");
++        assert!(ok, "d={d}");
++    }
++}

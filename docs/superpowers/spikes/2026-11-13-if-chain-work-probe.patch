@@ -1,0 +1,33 @@
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index fc23d89..515ed6c 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -562,3 +562,28 @@ fn time_call_family() {
+         k *= 2;
+     }
+ }
++
++/// PROBE (throwaway): check and build work of a nested if-else chain on main.
++#[test]
++#[ignore]
++fn ifchain_probe() {
++    for d in [4usize, 8, 16, 32, 64, 128] {
++        let mut e = "a".to_string();
++        for k in (0..d).rev() {
++            e = format!("if a == {k} then {} else {e}", k + 7);
++        }
++        let src = format!(r"\a. {e}");
++        let (ok, check, build) = big(move || {
++            let (s, h, frag) = compiled(&move |s: &mut TermStore| crate::support::samples::source(s, &src));
++            tatic_kernel::scoped(|| {
++                let b0 = tatic_kernel::work();
++                let (p, st) = built(&s, h, &frag);
++                let b1 = tatic_kernel::work();
++                let w0 = tatic_kernel::work();
++                let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
++                (ok, tatic_kernel::work() - w0, b1 - b0)
++            })
++        });
++        println!("IFCHAIN d={d} accepted={ok} check_work={check} build_work={build}");
++    }
++}

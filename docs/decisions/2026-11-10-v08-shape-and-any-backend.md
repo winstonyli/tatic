@@ -213,8 +213,9 @@ in `jit/shape.rs#wasm_table` over `tatic_wasm::wasm::table()`, which builds a fr
 - Picked 2026-11-13: (a), with a domain on every Word/Bit row; the cost spike that conditioned it is doc 15, "A
   domain on every row: a cost spike (2026-11-13)". Narrowed the same day to Word rows only, with every guard through
   the walk's probe; the spec is `docs/superpowers/specs/2026-11-13-partial-row-and-gcd-design.md`. Its spike passes
-  gcd but fails on check cost (unfolded constant-true guards; doc 15, "Word-row guards through the probe: a spike
-  (2026-11-13)"); the choice between folding them and another shape is open.
+  gcd but fails on check cost (doc 15, "Word-row guards through the probe: a spike
+  (2026-11-13)"). Option 2 (fold plus a step at 1) fails the same way, and main's `If` chains grow alike: the walk's
+  step over a branch is the cost; the next choice is in the spec's Open section.
 
 ## Open for the spec: tail calls and the state shape (surveys, 2026-11-10)
 
