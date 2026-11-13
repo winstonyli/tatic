@@ -3,9 +3,9 @@
 use super::tests::{konst, row};
 use super::*;
 
-/// The test's `MeaningEnv` at the answer type `r`: no `choose`, the environment of no functions (a call answers 0 at
+/// The test's `MeaningEnv` at the answer type `r` with the guard's else answer `z`: no `choose`, the environment of no functions (a call answers 0 at
 /// the memory it was given), and `restart` as given.
-fn meaning_env(c: &mut Cx, w: &Machine, r: At, restart: At) -> MeaningEnv {
+fn meaning_env(c: &mut Cx, w: &Machine, r: At, z: At, restart: At) -> MeaningEnv {
     let n = w.n;
     let none = c.lam(w.v(), |c, _j| {
         c.lam(w.fr(), |c, _fr| {
@@ -17,7 +17,7 @@ fn meaning_env(c: &mut Cx, w: &Machine, r: At, restart: At) -> MeaningEnv {
         })
     });
     let none = c.mark(none);
-    MeaningEnv { r, ch: None, calls: none, restart }
+    MeaningEnv { r, ch: None, z, calls: none, restart }
 }
 
 /// A `restart` for tests whose code holds no `Br`, or whose `Br` is not taken: `\fr mu. kk fr (0, s) mu` (`R` is
@@ -52,7 +52,7 @@ fn local_set_writes_one_slot() {
     let t = crate::wasm::table();
     let w = Machine { n: 8, fw: 3, table: t };
     let n = w.n;
-    // S R k a0 a1 a2 z s mu
+    // S R k a0 a1 a2 z s mu Z
     let law_for = |i: usize, j: usize, read_old: bool| {
         let tys: Vec<Ty> = vec![
             ty!(|_c, _x| sort(2)),
@@ -64,13 +64,14 @@ fn local_set_writes_one_slot() {
             ty!(|_c, _x| bv_ty(n)),
             ty!(|c, x| c.at(x[0])),
             ty!(|c, x| w.mem(c, x[1])),
+            ty!(|c, x| c.at(x[1])),
         ];
         let code = [get(1), konst(1), row("add"), set(i as i64), get(j as i64)];
         law(&tys, move |c, x| {
             let p = w.prog(c, &code, &[], x[0], &[]);
             let p = c.mark(p);
             let restart = restart_via(c, &w, x[1], x[0], x[2], x[7]);
-            let me = meaning_env(c, &w, x[1], restart);
+            let me = meaning_env(c, &w, x[1], x[9], restart);
             let slots = [x[3], x[4], x[5], x[6]];
             let fr = var_frame(c, &w, slots, &|_| None);
             let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[7]), c.at(x[8]));
@@ -106,7 +107,7 @@ fn br_restarts_on_the_current_frame() {
         ("[konst 1, Br, add]", vec![konst(1), Ins::Br, row("add")], false),
         ("[Br]", vec![Ins::Br], false),
     ];
-    // S R k restart a0 a1 a2 z s mu
+    // S R k restart a0 a1 a2 z s mu Z
     let law_for = |code: &[Ins], writes: bool, old_frame: bool| {
         assert_eq!(out_stack(&t, code, vec![], &[]), vec![K::W], "the list is [word]");
         let tys: Vec<Ty> = vec![
@@ -120,12 +121,13 @@ fn br_restarts_on_the_current_frame() {
             ty!(|_c, _x| bv_ty(n)),
             ty!(|c, x| c.at(x[0])),
             ty!(|c, x| w.mem(c, x[1])),
+            ty!(|c, x| c.at(x[1])),
         ];
         let code = code.to_vec();
         law(&tys, move |c, x| {
             let p = w.prog(c, &code, &[], x[0], &[]);
             let p = c.mark(p);
-            let me = meaning_env(c, &w, x[1], x[3]);
+            let me = meaning_env(c, &w, x[1], x[10], x[3]);
             let slots = [x[4], x[5], x[6], x[7]];
             let fr = var_frame(c, &w, slots, &|_| None);
             let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[8]), c.at(x[9]));
@@ -161,7 +163,7 @@ fn a_frame_write_flows_across_the_join() {
     ];
     assert_eq!(out_stack(&t, &code, vec![], &[]), vec![K::W]);
     assert!(shape_check(&t, &[Some(&Entry { arity: 1, env: EnvAccess::Params(0), code: code.clone() })]).is_ok());
-    // S R k s mu
+    // S R k s mu Z
     let law_for = |answer: u128| {
         let tys: Vec<Ty> = vec![
             ty!(|_c, _x| sort(2)),
@@ -169,13 +171,14 @@ fn a_frame_write_flows_across_the_join() {
             ty!(|c, x| { let t = w.sty(c, &[K::W], x[0]); w.g(c, x[1], t) }),
             ty!(|c, x| c.at(x[0])),
             ty!(|c, x| w.mem(c, x[1])),
+            ty!(|c, x| c.at(x[1])),
         ];
         let code = code.clone();
         law(&tys, move |c, x| {
             let p = w.prog(c, &code, &[], x[0], &[]);
             let p = c.mark(p);
             let restart = restart_via(c, &w, x[1], x[0], x[2], x[3]);
-            let me = meaning_env(c, &w, x[1], restart);
+            let me = meaning_env(c, &w, x[1], x[5], restart);
             let l = app3(w.meaning(c, p, x[2], &me), w.frame(&[lit(n, 2)]), c.at(x[3]), c.at(x[4]));
             let want = app3(c.at(x[2]), w.frame(&[lit(n, 5)]), mkpair(c.at(x[0]), lit(n, answer), c.at(x[3])), c.at(x[4]));
             (refl(l), id(c.at(x[1]), l, want))

@@ -2,7 +2,8 @@
 //! instruction list the JIT prints, run on `tatic_wasm`'s machine at n = 64, simulates the source term for every
 //! fuel. The statement is `tatic_wasm::machine::statement`'s (trusted); `tatic_wasm::machine::sim::prove` (untrusted)
 //! makes the proof. The source side is built from the term, never from `code` (`source_fn`), so a lowering bug cannot
-//! cancel itself. Both sides read operators from the one table (`tatic_wasm::wasm::table`, the row's `meaning`), so a wrong
+//! cancel itself. Both sides read operators from the one table (`tatic_wasm::wasm::table`, the row's `meaning`), and both guard
+//! every Word site by the row's `dom` through the walk's probe (`choose(dom x y, K, z)`), so a wrong
 //! row is the table check's to catch (`jit/op_table_tests.rs`), not the gate's. The answer is a `Verdict`: what the
 //! source reading takes is `Accepted` or `Rejected` for good, the rest is `NotCovered` and goes to `kernel_verify`.
 
@@ -139,7 +140,13 @@ fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> 
         Src::Lit(v) => k(c, lit(e.n, *v)),
         Src::Prim(o, a, b) => cps(w, e, c, a, &|c, x| {
             let x = c.mark(x);
-            cps(w, e, c, b, &|c, y| k(c, app2(row_term(w, o), c.at(x), y)))
+            cps(w, e, c, b, &|c, y| {
+                // the Word row's domain guard `choose(dom x y, K, z)`, as the machine's binop carries it
+                let y = c.mark(y);
+                let kk = k(c, app2(row_term(w, o), c.at(x), c.at(y)));
+                let dom = tatic_wasm::encoding::constant_n(w.table.row(o).expect("parse admits only table rows").dom.circuit, w.n);
+                e.choose(c, app2(dom, c.at(x), c.at(y)), kk, c.at(e.z))
+            })
         }),
         Src::If(o, a, b, t, f) => cps(w, e, c, a, &|c, x| {
             let x = c.mark(x);

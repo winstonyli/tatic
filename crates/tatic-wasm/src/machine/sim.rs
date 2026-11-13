@@ -351,6 +351,10 @@ impl Sim<'_, '_> {
             all.extend([mu2, k2, ks2, rel2]);
             return Ok(apps(c.at(rule.law), all));
         }
+        // last resort: the two sides are the same term (a guard's else branch, `z` against `z`), closed by `refl`
+        if def_eq(&mw, &sw) {
+            return Ok(refl(m));
+        }
         Err(format!("{path}: the machine {mk} but the source {sk}"))
     }
 }

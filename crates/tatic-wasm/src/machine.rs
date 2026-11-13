@@ -5,12 +5,14 @@
 //! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> const -> word -> bit -> if -> call -> set -> br -> F S` (one leaf
 //! constructor per row class, in `ctor_list` order), where each
 //! constructor takes the rest of the program (`const : Pi A. Op -> F (V,A) -> F A`, with the operand
-//! `Op = Fr -> Pi R:Sort0. (V -> R) -> R` handing its word to a continuation). Its meaning `M p R k` interprets `F A` as `Fr -> A -> Mem -> R` for an answer type `R : Sort0`: words are width-n Church vectors
+//! `Op = Fr -> Pi R:Sort0. (V -> R) -> R` handing its word to a continuation; `word : Pi A. (V -> V -> V) ->
+//! (V -> V -> Bv_1) -> F (V,A) -> F (V,V,A)` also takes the row's domain). Its meaning `M p R k` interprets `F A` as `Fr -> A -> Mem -> R` for an answer type `R : Sort0`: words are width-n Church vectors
 //! (`encoding.rs`), stacks are nested `Sigma` pairs, the locals are a frame `Fr = V^fw x V` of nested word pairs
 //! passed into every interpreter and on to the rest of the program (a `const`-class operand projects it; a
 //! `set`-class operand rebuilds it with one slot replaced), memory is the opaque
 //! `Mem = V -> (V -> R) -> R` that nothing reads, and an `if` chooses between its two continuations by its one-bit
-//! condition (`choose`, as only the taken branch runs). Nothing is postulated.
+//! condition (`choose`, as only the taken branch runs). A `word` site is guarded the same way: `choose(dom x y,
+//! rest(op x y), z)`, with `z` the statement's out-of-fuel answer (`MeaningEnv::z`). Nothing is postulated.
 use super::*;
 
 /// `choose w x y = w (Lift R) (\c Y g. g (c R x y)) R id`, with `Lift R = Pi Y:Sort0. (R -> Y) -> Y`: a one-bit word
@@ -43,7 +45,7 @@ pub fn choose_fn() -> Expr {
 }
 
 /// An interpreter case's body from `A`, its operator if any, `rest`, the frame, the stack and the memory.
-type Body<'a> = dyn Fn(&mut Cx, At, Option<At>, At, At, At, At) -> Expr + 'a;
+type Body<'a> = dyn Fn(&mut Cx, At, &[At], At, At, At, At) -> Expr + 'a;
 
 /// What a stack slot holds: an n-bit word or a one-bit word (a compare's result).
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -53,7 +55,7 @@ pub enum K {
 }
 
 /// The shape of a row: its stack effect and the constructor class it is built through. `Const` is 0 to 1 with a word
-/// result, `Word` 2 to 1 word-valued, `Bit` 2 to 1 bit-valued.
+/// result, `Word` 2 to 1 word-valued and guarded by its row's domain, `Bit` 2 to 1 bit-valued and unguarded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Class {
     Const,
@@ -278,7 +280,8 @@ enum Ctor {
     Br,
 }
 
-/// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, the count).
+/// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, the count). Only `Word` takes the
+/// row's domain circuit after its operator (`ctor_ty`).
 fn ctor_list() -> [Ctor; 7] {
     [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call, Ctor::Leaf(Class::Set), Ctor::Br]
 }
@@ -308,6 +311,8 @@ pub struct MeaningEnv {
     pub ch: Option<At>,
     pub calls: At,
     pub restart: At,
+    /// The `R`-typed answer a Word guard's else branch takes (the statement's out-of-fuel answer `z`).
+    pub z: At,
 }
 
 const F_TY: fn() -> Expr = || arrow(sort(2), sort(2));
@@ -403,6 +408,7 @@ impl Machine<'_> {
     fn row(&self, name: &str) -> &Row {
         self.table.row(name).unwrap_or_else(|| panic!("no row {name:?}"))
     }
+    /// Constructor `k`'s type over the family `f`; a `Word` leaf takes the operator, then the domain `V -> V -> Bv_1`.
     fn ctor_ty(&self, c: &mut Cx, f: At, k: Ctor) -> Expr {
         let (v, v1) = (self.v(), bv_ty(1));
         c.pi(sort(2), |c, a_at| {
@@ -411,7 +417,7 @@ impl Machine<'_> {
             let (va, vva, v1a) = (prod(v, a), prod(v, prod(v, a)), prod(v1, a));
             match k {
                 Ctor::Leaf(Class::Const) => arrow(self.operand_ty(), arrow(fa(va), fa(a))),
-                Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(fa(va), fa(vva))),
+                Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(arrow(v, arrow(v, v1)), arrow(fa(va), fa(vva)))),
                 Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
                 Ctor::Leaf(Class::Set) => arrow(self.setter_ty(), arrow(fa(a), fa(va))),
@@ -478,7 +484,13 @@ impl Machine<'_> {
                     None => below(pops),
                 });
                 let meaning = (row.meaning)(c, self, *operand);
-                cons(c, i, vec![ty(c, &below(pops)), meaning, r])
+                let mut args = vec![ty(c, &below(pops)), meaning];
+                // a Word row also carries its domain `V -> V -> Bv_1`, built at this site through `constant_n`
+                if row.class == Class::Word {
+                    args.push(constant_n(row.dom.circuit, self.n));
+                }
+                args.push(r);
+                cons(c, i, args)
             }
             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
             Ins::Br => {
@@ -539,49 +551,69 @@ impl Machine<'_> {
         sigrec(motive, step, c.at(st))
     }
     /// The constructors' meanings.
-    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: At, restart: At) -> Vec<Expr> {
+    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, z: At, calls: At, restart: At) -> Vec<Expr> {
         let (v, v1) = (self.v(), bv_ty(1));
         let w = *self;
         let fr_ty = self.fr();
-        // `\A [op] rest fr st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`
-        let shape = |c: &mut Cx, extra: Option<Expr>, rest_ty: &dyn Fn(Expr) -> Expr, st_ty: &dyn Fn(Expr) -> Expr,
+        // `\A [ops..] rest fr st mu. body`, with `rest : G (rest_ty A)` and `st : st_ty A`; `extras` are the operand types
+        let shape = |c: &mut Cx, extras: &[Expr], rest_ty: &dyn Fn(Expr) -> Expr, st_ty: &dyn Fn(Expr) -> Expr,
                      body: &Body| {
+            fn bind(c: &mut Cx, tys: &[Expr], ops: &mut Vec<At>, k: &mut dyn FnMut(&mut Cx, &[At]) -> Expr) -> Expr {
+                match tys.split_first() {
+                    None => k(c, ops),
+                    Some((t, rest)) => c.lam(*t, |c, op| {
+                        ops.push(op);
+                        bind(c, rest, ops, k)
+                    }),
+                }
+            }
             c.lam(sort(2), |c, a| {
-                let inner = |c: &mut Cx, op: Option<At>| {
+                bind(c, extras, &mut vec![], &mut |c, ops| {
                     let rt = w.g(c, r, rest_ty(c.at(a)));
                     c.lam(rt, |c, rest| {
                         c.lam(fr_ty, |c, fr| {
                             c.lam(st_ty(c.at(a)), |c, st| {
                                 let m = w.mem(c, r);
-                                c.lam(m, |c, mu| body(c, a, op, rest, fr, st, mu))
+                                c.lam(m, |c, mu| body(c, a, ops, rest, fr, st, mu))
                             })
                         })
-                    })
-                };
-                match extra {
-                    Some(t) => c.lam(t, |c, op| inner(c, Some(op))),
-                    None => inner(c, None),
-                }
-            })
-        };
-        // a 0-to-1 row pushes its operand's value at the frame
-        let konst = shape(c, Some(self.operand_ty()), &|a| prod(v, a), &|a| a, &|c, a, op, rest, fr, st, mu| {
-            let kont = c.lam(v, |c, x| app3(c.at(rest), c.at(fr), mkpair(c.at(a), c.at(x), c.at(st)), c.at(mu)));
-            app3(c.at(op.unwrap()), c.at(fr), c.at(r), kont)
-        });
-        let binop = |c: &mut Cx, out: Expr| {
-            shape(c, Some(arrow(v, arrow(v, out))), &|a| prod(out, a), &|a| prod(v, prod(v, a)), &|c, a, op, rest, fr, st, mu| {
-                let below = c.mark(prod(v, c.at(a)));
-                w.split(c, r, v, below, st, |c, y, rs| {
-                    w.split(c, r, v, a, rs, |c, x, s| {
-                        let val = app2(c.at(op.unwrap()), c.at(x), c.at(y));
-                        app3(c.at(rest), c.at(fr), mkpair(c.at(a), val, c.at(s)), c.at(mu))
                     })
                 })
             })
         };
-        let bin = binop(c, v);
-        let cmp = binop(c, v1);
+        // `choose R cond t e`, through the proof's opaque probe when there is one
+        let pick = |c: &Cx, cond: Expr, t: Expr, e: Expr| match ch {
+            Some(f) => apps(c.at(f), vec![c.at(r), cond, t, e]),
+            None => choose(c.at(r), cond, t, e),
+        };
+        // a 0-to-1 row pushes its operand's value at the frame
+        let konst = shape(c, &[self.operand_ty()], &|a| prod(v, a), &|a| a, &|c, a, ops, rest, fr, st, mu| {
+            let kont = c.lam(v, |c, x| app3(c.at(rest), c.at(fr), mkpair(c.at(a), c.at(x), c.at(st)), c.at(mu)));
+            app3(c.at(ops[0]), c.at(fr), c.at(r), kont)
+        });
+        // a 2-to-1 row pops `y` then `x` and pushes `op x y`; a Word row first guards on its domain `dom x y`
+        // (else branch `z`, the statement's no-value answer), through `pick`
+        let binop = |c: &mut Cx, out: Expr, guarded: bool| {
+            let mut extras = vec![arrow(v, arrow(v, out))];
+            if guarded {
+                extras.push(arrow(v, arrow(v, v1)));
+            }
+            shape(c, &extras, &|a| prod(out, a), &|a| prod(v, prod(v, a)), &|c, a, ops, rest, fr, st, mu| {
+                let below = c.mark(prod(v, c.at(a)));
+                w.split(c, r, v, below, st, |c, y, rs| {
+                    w.split(c, r, v, a, rs, |c, x, s| {
+                        let val = app2(c.at(ops[0]), c.at(x), c.at(y));
+                        let kk = app3(c.at(rest), c.at(fr), mkpair(c.at(a), val, c.at(s)), c.at(mu));
+                        if !guarded {
+                            return kk;
+                        }
+                        pick(c, app2(c.at(ops[1]), c.at(x), c.at(y)), kk, c.at(z))
+                    })
+                })
+            })
+        };
+        let bin = binop(c, v, true);
+        let cmp = binop(c, v1, false);
         let if_ = c.lam(sort(2), |c, a| {
             let ga = w.g(c, r, c.at(a));
             c.lam(ga, |c, th| {
@@ -594,10 +626,7 @@ impl Machine<'_> {
                                 w.split(c, r, v1, a, st, |c, b, s| {
                                     let (fr, s, mu) = (c.at(fr), c.at(s), c.at(mu));
                                     let (x, y) = (app3(c.at(th), fr.clone(), s.clone(), mu.clone()), app3(c.at(el), fr, s, mu));
-                                    match ch {
-                                        Some(f) => apps(c.at(f), vec![c.at(r), c.at(b), x, y]),
-                                        None => choose(c.at(r), c.at(b), x, y),
-                                    }
+                                    pick(c, c.at(b), x, y)
                                 })
                             })
                         })
@@ -636,14 +665,14 @@ impl Machine<'_> {
             })
         });
         // `\A op rest fr st mu`: pop the word, write it to the frame through `op`, run `rest` at the new frame
-        let set = shape(c, Some(self.setter_ty()), &|a| a, &|a| prod(v, a), &|c, a, op, rest, fr, st, mu| {
+        let set = shape(c, &[self.setter_ty()], &|a| a, &|a| prod(v, a), &|c, a, ops, rest, fr, st, mu| {
             w.split(c, r, v, a, st, |c, x, s| {
-                let fr2 = app2(c.at(op.expect("set takes an operand")), c.at(fr), c.at(x));
+                let fr2 = app2(c.at(ops[0]), c.at(fr), c.at(x));
                 app3(c.at(rest), fr2, c.at(s), c.at(mu))
             })
         });
         // `\A rest fr st mu`: the activation's own entry again at the current frame (the stack and the rest are dropped)
-        let br = shape(c, None, &|a| prod(v, a), &|a| a, &|c, _a, _op, _rest, fr, _st, mu| app2(c.at(restart), c.at(fr), c.at(mu)));
+        let br = shape(c, &[], &|a| prod(v, a), &|a| a, &|c, _a, _ops, _rest, fr, _st, mu| app2(c.at(restart), c.at(fr), c.at(mu)));
         let built = [
             (Ctor::Leaf(Class::Const), konst),
             (Ctor::Leaf(Class::Word), bin),
@@ -660,7 +689,7 @@ impl Machine<'_> {
         let r = me.r;
         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
         let mut args = vec![gfam, c.at(k)];
-        args.extend(self.interp(c, r, me.ch, me.calls, me.restart));
+        args.extend(self.interp(c, r, me.ch, me.z, me.calls, me.restart));
         apps(c.at(p), args)
     }
     /// `GoodNat N = Pi P:(Nat2 -> Sort3). P 0 -> (Pi j. P j -> P (S j)) -> P N`: induction over fuel, as a hypothesis.
@@ -772,7 +801,7 @@ mod tests {
         let n = w.n;
         let get = |i| Ins::Row { name: "local.get", operand: i };
         let code = [get(1), get(0), row("sub")];
-        // S R k a b fr s mu
+        // S R k a b s mu Z
         let law_for = |b_minus_a: bool| {
             let tys: Vec<Ty> = vec![
                 ty!(|_c, _x| sort(2)),
@@ -782,6 +811,7 @@ mod tests {
                 ty!(|_c, _x| bv_ty(n)),
                 ty!(|c, x| c.at(x[0])),
                 ty!(|c, x| w.mem(c, x[1])),
+                ty!(|c, x| c.at(x[1])),
             ];
             law(&tys, |c, x| {
                 let p = w.prog(c, &code, &[], x[0], &[]);
@@ -805,7 +835,7 @@ mod tests {
                     c.lam(mem, |c, mu2| app3(c.at(x[2]), c.at(fr2), mkpair(c.at(x[0]), lit(n, 0), c.at(x[5])), c.at(mu2)))
                 });
                 let restart = c.mark(restart);
-                let me = MeaningEnv { r, ch: None, calls: none, restart };
+                let me = MeaningEnv { r, ch: None, z: x[7], calls: none, restart };
                 let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[5]), c.at(x[6]));
                 let (p, q) = if b_minus_a { (x[4], x[3]) } else { (x[3], x[4]) };
                 let val = app2(sub(n), c.at(p), c.at(q));

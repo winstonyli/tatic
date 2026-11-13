@@ -30,6 +30,8 @@ use std::cell::RefCell;
 pub struct SEnv {
     pub n: usize,
     pub r: At,
+    /// The `R`-typed answer a Word guard's else branch takes (the statement's out-of-fuel answer `z`).
+    pub z: At,
     pub g: At,
     pub params: Vec<At>,
     pub ch: Option<At>,
@@ -159,7 +161,7 @@ impl<'t> G<'t> {
     }
     /// `Bm = \env fr mu k. M (prog code) fr 0 mu`, the body's answer passed to `k`; `ch` is the generator's probe, and
     /// `table` builds the module's callee environment from `env` (the entry's own fuel-unrolled step).
-    pub fn bm(&self, c: &mut Cx, r: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
+    pub fn bm(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
         let (w, n) = (self.w, self.w.n);
         let hm = self.hm(c, r);
         c.lam(hm, |c, env| {
@@ -188,7 +190,7 @@ impl<'t> G<'t> {
                             c.lam(mem, |c, mu2| app3(c.at(env), c.at(fr2), c.at(mu2), c.at(k)))
                         });
                         let restart = c.mark(restart);
-                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: tbl, restart });
+                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, z, calls: tbl, restart });
                         app3(m, c.at(fr), lit(n, 0), c.at(mu))
                     })
                 })
@@ -196,7 +198,7 @@ impl<'t> G<'t> {
         })
     }
     /// `Bs = \g x.. ks. src`, `src` built by the entry's source closure; `fuel` and `callees` are the module's.
-    pub fn bs(&self, c: &mut Cx, r: At, ch: Option<At>, src: &SrcFn, fuel: At, own: usize, callees: &[(usize, At)]) -> Expr {
+    pub fn bs(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, src: &SrcFn, fuel: At, own: usize, callees: &[(usize, At)]) -> Expr {
         let n = self.w.n;
         let hs = self.hs(c, r);
         c.lam(hs, |c, g| {
@@ -204,7 +206,7 @@ impl<'t> G<'t> {
             tele(c, &vs, &mut vec![], &lam, &mut |c, xs| {
                 let rs = self.ret_s(c, r);
                 c.lam(rs, |c, ks| {
-                    let env = SEnv { n, r, g, params: xs.to_vec(), ch, fuel, own, callees: callees.to_vec() };
+                    let env = SEnv { n, r, z, g, params: xs.to_vec(), ch, fuel, own, callees: callees.to_vec() };
                     src(c, &env, &|c, v| app(c.at(ks), v))
                 })
             })
@@ -312,9 +314,9 @@ impl<'a> Ctxt<'a> {
     pub fn bm_bs(&self, c: &mut Cx, k: usize, probe: Option<At>) -> (Expr, Expr) {
         let (e, g) = (self.entry(k), self.g(k));
         let cs: Vec<(usize, Real)> = callees(k, &e.entry.code).into_iter().map(|p| (p, self.real(c, p))).collect();
-        let bm = g.bm(c, self.r, probe, &e.entry.code, &self.arities, &|c, env| self.table(c, k, env, &cs));
+        let bm = g.bm(c, self.r, self.z, probe, &e.entry.code, &self.arities, &|c, env| self.table(c, k, env, &cs));
         let scs: Vec<(usize, At)> = cs.iter().map(|(p, re)| (*p, re.sc)).collect();
-        let bs = g.bs(c, self.r, probe, e.src, self.fuel, k, &scs);
+        let bs = g.bs(c, self.r, self.z, probe, e.src, self.fuel, k, &scs);
         (bm, bs)
     }
     /// Entry `k`'s real (probe-free) pieces, built once.

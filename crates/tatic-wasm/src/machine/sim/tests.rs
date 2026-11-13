@@ -45,7 +45,10 @@ fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> 
             let x = c.mark(x);
             cps(w, e, c, b, &|c, y| {
                 let op = (w.table.row(o).unwrap().meaning)(c, w, 0);
-                k(c, app2(op, c.at(x), y))
+                let y = c.mark(y);
+                let kk = k(c, app2(op, c.at(x), c.at(y)));
+                let dom = constant_n(w.table.row(o).unwrap().dom.circuit, w.n);
+                e.choose(c, app2(dom, c.at(x), c.at(y)), kk, c.at(e.z))
             })
         }),
         If(o, a, b, t, f) => cps(w, e, c, a, &|c, x| {
