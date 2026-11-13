@@ -89,8 +89,8 @@ try (`pfl-bench-a2-timed1`).
   instantiate work is not caused by the 11 leading binders. The next bullet
   finds where it does come from. This agrees with
   v0.7's -6.5%. gcd is not in the table: the gate does not cover it (`NotCovered`: "position 0 is outside what the
-  source reading takes"), because `%` has no row in the gate's table yet (`PARKED.md`, "The partial row and gcd (after
-  v0.8)"; pinned by `proof/tests/gate.rs#what_cps_cannot_take_is_not_covered` and `baseline.rs`'s `VERDICTS`). It
+  source reading takes"), because `%` had no row in the gate's table then (it has one since: doc 15, "The partial row and gcd through
+  the gate (2026-11-13)"; pinned by `proof/tests/gate.rs#what_cps_cannot_take_is_not_covered` and `baseline.rs`'s `VERDICTS`). It
   installs through the older chain, so its cold row carries no gate check, which is why it still matches v0.8's
   S2b table.
 - Where the shift and instantiate work comes from, by kernel call site (`check-origin2`, rerun byte-identical as

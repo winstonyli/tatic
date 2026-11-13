@@ -236,12 +236,23 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   `docs/tier-cycle/`, "Locals as a frame passed in, with and without the memory: a spike" (`local.set i` is a row that
   rebuilds the concrete frame; temporaries widen the frame), verified 2026-11-11; the law telescope then gains the
   temporaries binder (`docs/tier-cycle/`, "One call rule for self-calls and callees: a spike"). Status: parked.
-- **The partial row and gcd (after v0.8)** — why parked: the rung after v0.8 by decision
-  (`docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Decided: division and remainder by zero"). Trigger: v0.8
-  tagged. Evidence: `docs/tier-cycle/`, "The partial row's cost, and gcd through the generator", verified 2026-11-11.
-  Open: where the domain lives (`eval` depending on the JIT, a one-sided mismatch, or op and row). gcd is `NotCovered`
-  until it lands, so its JIT row installs through the older chain with no gate check (`docs/tier-cycle/`, "The proved
-  loop form: measurements"). Status: parked; trigger met (`v0.8.0` tagged 2026-11-11, checked 2026-11-12), not started.
+- **Div as a partial row** — what: a `div` row (`i64.div_s`, domain `y != 0`), so `/` is covered by the gate like
+  `%`; with it, rows could carry each operator's concrete semantics and `lang/eval.rs#apply_prim`'s match go. Why
+  parked: `MIN / -1` wraps in the source but traps in wasm, so the lowering emits a wrapping sequence
+  (`jit/lower_wat.rs#emit_wrapping_div`) that the machine would need modelled as instructions (the partial-row spec,
+  `docs/superpowers/specs/2026-11-13-partial-row-and-gcd-design.md`, "Not in scope"). Trigger: a gate target that
+  divides. Evidence: `jit/lower_wat.rs#emit_wrapping_div`, `lang/eval.rs#apply_prim` (`Div` keeps its own zero
+  check), verified 2026-11-13. Status: parked.
+- **Fold total-row guards** — what: drop the guard `choose(dom x y, .., z)` at Word sites whose domain is constant
+  true (every row but `mod`), on both sides. Why parked: by decision (option 1, d1: every Word guard through the
+  probe, the constant factor accepted, check up to 4x at `doubling(12)`). Trigger: the gate's check time on
+  Word-heavy programs matters (a budget or a JIT-latency target it misses). Evidence:
+  `docs/superpowers/spikes/2026-11-13-fold-and-step-at-1-spike.patch`; `docs/tier-cycle/`, "Word-row guards through
+  the probe: a spike (2026-11-13)" and "The gate's branch step made linear (2026-11-13)"; the cost table in
+  `docs/tier-cycle/`, "The partial row and gcd through the gate (2026-11-13)", verified 2026-11-13. Status: parked.
+- **Guard Bit sites** — what: carry the row's domain at Bit (comparison) sites as at Word sites. Why parked: every Bit
+  row is total today, so the guard would always be taken. Trigger: the first partial Bit row. Evidence:
+  `tatic-wasm/src/machine.rs#interp` (its `binop` guards only Word rows), verified 2026-11-13. Status: parked.
 - **Bit rows (`wrap`, `extend`, `shl`, `or`; terms 25 and 28)** — why parked: outside v0.8's goals (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`). Trigger:
   v0.8 tagged. Evidence: the census, `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code
   stands", verified 2026-11-11. Status: parked.

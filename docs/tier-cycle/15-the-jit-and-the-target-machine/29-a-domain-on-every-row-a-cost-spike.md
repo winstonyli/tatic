@@ -2,7 +2,7 @@
 
 The question: the user picked a domain condition on every Word and Bit row, constant true on the total ones, over an
 8th constructor for partial rows (t1, "if a cost spike passes"; `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`,
-"Open: where the domain lives (recon, 2026-11-12)"). What does carrying the guard `choose(r, dom x y, K, z)` cost the
+"Decided: where the domain lives (2026-11-13)"). What does carrying the guard `choose(r, dom x y, K, z)` cost the
 gate's programs? Throwaway, three rounds; patches against `a4ff039` in `docs/superpowers/spikes/`:
 `2026-11-13-domain-on-every-row-M2-spike.patch` (machine guard only), `-MS2-` (machine and source guards) and `-MS3-`
 (MS2 with `choose` taking its branches as arguments). Each includes the `p1_probe` work probe, which counts build

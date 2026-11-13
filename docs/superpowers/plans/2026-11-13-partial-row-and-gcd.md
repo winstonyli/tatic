@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # The partial row, and gcd through the gate: implementation plan

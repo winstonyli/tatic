@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # The partial row, and gcd through the gate
@@ -59,7 +59,7 @@ Not picked:
 - **An 8th constructor for partial rows** ("option 3"): the same constant-factor saving, for a constructor, an
   `Option<Dom>` and a case in each dispatcher; turned down 2026-11-13.
 - **Keep the cache in `jit/shape.rs` and have eval call it** (spec review, 2026-11-13: drops the cache move and its
-  caller churn): this is option (c) of the decision file's "Open: where the domain lives", an upward `lang -> jit`
+  caller churn): this is option (c) of the decision file's "Decided: where the domain lives (2026-11-13)", an upward `lang -> jit`
   edge, turned down when (a) was picked; the reason still holds, since `lang` imports nothing outside `lang` today.
 
 ## Design

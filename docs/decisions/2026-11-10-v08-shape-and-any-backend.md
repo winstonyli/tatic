@@ -188,9 +188,12 @@ remainder circuit answers `x`; the machine has no trap channel.
 - Correction (2026-11-12): "language, evaluator and lowering are unchanged" does not hold for any placement of the
   domain: `lang/eval.rs#apply_prim`'s `Mod` zero check and `jit/lower_wat.rs#node`'s raw `i64.rem_s` arm change.
 
-### Open: where the domain lives (recon, 2026-11-12)
+### Decided: where the domain lives (2026-11-13)
 
-Three readers, three designers and a skeptic, over main at `9151850`; nothing built. Facts checked by hand:
+Decided 2026-11-13: (a), Word rows guarded through the probe; built on branch `partial-row` from the spec
+`docs/superpowers/specs/2026-11-13-partial-row-and-gcd-design.md` (measurements: doc 15, "The partial row and gcd
+through the gate (2026-11-13)"). The recon (2026-11-12): three readers, three designers and a skeptic, over main at
+`9151850`; nothing built. Facts checked by hand then:
 `PrimOp::{Div, Mod}` (`lang/term.rs`) have no machine row; `apply_prim` holds the only two zero checks; `lang` imports
 nothing outside `lang`; `tatic` depends on `tatic-wasm`, which cannot see `PrimOp`; the cached table is a `OnceLock`
 in `jit/shape.rs#wasm_table` over `tatic_wasm::wasm::table()`, which builds a fresh `Table` per call; `Row` is

@@ -68,4 +68,4 @@ the same file, and the timed bench run `pfl-bench-b1` (closure loop warm 4.416 u
 `docs/superpowers/plans/2026-11-12-proved-loop-form.md`; findings in `docs/tier-cycle/`, "The proved loop form:
 measurements".
 
-No milestone is open. Candidates are in `PARKED.md` (the partial row and gcd, whose trigger is met).
+No milestone is open. Candidates are in `PARKED.md`.
