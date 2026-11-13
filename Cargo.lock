@@ -167,7 +167,7 @@ checksum = "9330f8b2ff13f34540b44e946ef35111825727b38d33286ef986142615121801"
 
 [[package]]
 name = "church-bv"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "hashbrown 0.16.1",
  "mimalloc",
@@ -1456,7 +1456,7 @@ checksum = "adb6935a6f5c20170eeceb1a3835a49e12e19d792f6dd344ccc76a985ca5a6ca"
 
 [[package]]
 name = "tatic"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "blake3",
  "criterion",
@@ -1471,7 +1471,7 @@ dependencies = [
 
 [[package]]
 name = "tatic-kernel"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "hashbrown 0.16.1",
  "im",
@@ -1482,11 +1482,11 @@ dependencies = [
 
 [[package]]
 name = "tatic-rng"
-version = "0.8.0"
+version = "0.9.0"
 
 [[package]]
 name = "tatic-wasm"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "hashbrown 0.16.1",
  "mimalloc",

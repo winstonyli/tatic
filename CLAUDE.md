@@ -1,6 +1,6 @@
 # tatic
 
-`kind: experiment` (see VERSIONING.md). Version field: `[workspace.package]` in the root `Cargo.toml` (`0.8.0`, tagged `v0.1.0` to `v0.8.0`); no changelog: tag messages are
+`kind: experiment` (see VERSIONING.md). Version field: `[workspace.package]` in the root `Cargo.toml` (`0.9.0`, tagged `v0.1.0` to `v0.9.0`); no changelog: tag messages are
 the history (`git tag -n99`).
 
 - Main goals, in `ROADMAP.md` ("Goals"): a JIT on proved equivalence; a kernel that improves itself (mined rules, its

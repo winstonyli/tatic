@@ -2,7 +2,7 @@
 
 The project's goals, then ordered milestones, each the question it answers (format: `~/.claude/VERSIONING.md`).
 `kind: experiment`: a tag marks a step and its message is the milestone sentence; tagging moves the line out of this
-file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) `v0.5.0` (2026-10-31), `v0.6.0` (2026-10-31) `v0.7.0` (2026-11-10) and `v0.8.0` (2026-11-11; `git tag -n99`). Deferred work is in
+file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) `v0.5.0` (2026-10-31), `v0.6.0` (2026-10-31) `v0.7.0` (2026-11-10), `v0.8.0` (2026-11-11) and `v0.9.0` (2026-11-12; `git tag -n99`). Deferred work is in
 `PARKED.md`. The cleanup break from v0.5 (`docs/superpowers/plans/2026-10-26-cleanup.md`) is done (2026-10-27).
 
 ## Goals
@@ -60,8 +60,12 @@ and `toy_table.rs` (the toy's "installs" read as the gate's verdict, confirmed a
 (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`); findings in `docs/tier-cycle/`, "v0.8's build:
 measurements and checks" and "v0.8's modules: measurements".
 
-- v0.9 **Proved loop form** (goal 1) - a self-tail-recursive function installs as a wasm loop whose text the kernel
-  proved, and runs at the v0.7 loop's speed. Spec and plan: `docs/superpowers/specs/2026-11-12-proved-loop-form-design.md`,
-  `docs/superpowers/plans/2026-11-12-proved-loop-form.md`.
-  - Done when: `capturing_closure_loop` and `held_out_b` gate `Accepted` with `br $top` in their text, and a timed
-    `jit_warm_cache_hit` run puts the closure loop within noise of 4.4 us.
+v0.9 (`git tag -n99 v0.9.0`; goal 1) closed with a self-tail-recursive function installing as a wasm loop whose text
+the kernel proved, at the v0.7 loop's speed. What showed it: `proof/tests/loop_form.rs#the_shipped_loops_install_in_loop_form`
+(`capturing_closure_loop` and `held_out_b` gate `Accepted` with `br $top` and no self `return_call`), the 54 mutants in
+the same file, and the timed bench run `pfl-bench-b1` (closure loop warm 4.416 us against v0.7's 4.4 us and main's
+25.6 to 27.2 us). Spec and plan: `docs/superpowers/specs/2026-11-12-proved-loop-form-design.md`,
+`docs/superpowers/plans/2026-11-12-proved-loop-form.md`; findings in `docs/tier-cycle/`, "The proved loop form:
+measurements".
+
+No milestone is open. Candidates are in `PARKED.md` (the partial row and gcd, whose trigger is met).
