@@ -768,7 +768,7 @@ fn an_operand_if_installs_through_the_chain() {
     let h = crate::support::samples::source(&mut s, r"\a b. 1 + (if a < b then a else b)");
     let c = crate::jit::compile::compile_specialised(&s, h).unwrap();
     assert!(matches!(
-        crate::proof::gate::gate(crate::jit::shape::wasm_table(), &s, h, &c.frag),
+        crate::proof::gate::gate(tatic_wasm::wasm::table(), &s, h, &c.frag),
         crate::proof::gate::Verdict::NotCovered(_)
     ));
     let mut jit = JitEngine::new();

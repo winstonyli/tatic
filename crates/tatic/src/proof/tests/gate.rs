@@ -4,7 +4,6 @@
 use tatic_wasm::machine::Ins;
 
 use crate::jit::compile::{compile_specialised, CompiledFragment};
-use crate::jit::shape::wasm_table;
 use crate::lang::term::{Hash, PrimOp, TermStore};
 use crate::jit::JitEngine;
 use crate::proof::gate::{build, gate, Layer, Verdict, CALL_WEIGHT, MAX_GATE_TREE};
@@ -57,7 +56,7 @@ fn gate_accepts_the_fragment_table() {
     for (name, build, arity) in table {
         let (s, h, frag) = compiled(&*build);
         assert_eq!(frag.arity, arity, "{name}");
-        assert_eq!(gate(wasm_table(), &s, h, &frag), Verdict::Accepted, "{name}: the gate should accept its emitted body");
+        assert_eq!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::Accepted, "{name}: the gate should accept its emitted body");
     }
 }
 
@@ -144,7 +143,7 @@ fn gate_check_work_is_linear_in_an_if_chain() {
 
 /// `(proof, statement)` for a fragment term and its emitted body, built apart from the check.
 pub(super) fn built(s: &TermStore, h: Hash, frag: &CompiledFragment) -> (tatic_kernel::Expr, tatic_kernel::Expr) {
-    let (st, p) = build(wasm_table(), s, h, frag).expect("a covered term with a well-formed body");
+    let (st, p) = build(tatic_wasm::wasm::table(), s, h, frag).expect("a covered term with a well-formed body");
     (p.expect("the generator proves a fragment term"), st)
 }
 
@@ -349,7 +348,7 @@ fn gate_accepts_the_goal_1_targets() {
         let (v, secs) = big(move || {
             let (s, h, frag) = compiled(&b);
             let t = std::time::Instant::now();
-            (gate(wasm_table(), &s, h, &frag), t.elapsed().as_secs_f64())
+            (gate(tatic_wasm::wasm::table(), &s, h, &frag), t.elapsed().as_secs_f64())
         });
         assert_eq!(v, Verdict::Accepted, "{name}");
         println!("{name}: gate {secs:.2} s");
@@ -371,7 +370,7 @@ fn rec_of(s: &mut TermStore, arity: usize, body: Hash) -> Hash {
 fn gate_accepts_a_permuting_tail_call() {
     let b = |s: &mut TermStore| source(s, "rec f a b = if a <= 0 then b else f b (a - 1)");
     let (s, h, frag) = compiled(&b);
-    assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted);
+    assert_eq!(big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag)), Verdict::Accepted);
     let mut s = TermStore::new();
     let h = b(&mut s);
     applies_like_eval(&s, h, &[&[3, 7], &[0, 5]]);
@@ -392,7 +391,7 @@ fn gate_accepts_extreme_literals_in_call_arguments() {
         rec_of(s, 2, body)
     };
     let (s, h, frag) = compiled(&b);
-    assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted);
+    assert_eq!(big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag)), Verdict::Accepted);
     let mut s = TermStore::new();
     let h = b(&mut s);
     applies_like_eval(&s, h, &[&[1, 0], &[-5, 9]]);
@@ -403,7 +402,7 @@ fn gate_accepts_extreme_literals_in_call_arguments() {
 fn gate_accepts_a_call_in_a_condition() {
     let b = |s: &mut TermStore| source(s, "rec f n = if n <= 0 then 1 else if f (n - 1) < 5 then f (n - 1) + 1 else 0");
     let (s, h, frag) = compiled(&b);
-    assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted);
+    assert_eq!(big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag)), Verdict::Accepted);
     let mut s = TermStore::new();
     let h = b(&mut s);
     applies_like_eval(&s, h, &[&[3], &[0], &[6]]);
@@ -414,7 +413,7 @@ fn gate_accepts_a_call_in_a_condition() {
 fn gate_accepts_mixed_tail_and_non_tail_calls() {
     let b = |s: &mut TermStore| source(s, "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + f (n - 1) 0)");
     let (s, h, frag) = compiled(&b);
-    assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted);
+    assert_eq!(big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag)), Verdict::Accepted);
     let mut s = TermStore::new();
     let h = b(&mut s);
     applies_like_eval(&s, h, &[&[4, 1], &[0, 3]]);
@@ -424,7 +423,7 @@ fn gate_accepts_mixed_tail_and_non_tail_calls() {
 fn a_record_with_an_env_parameter_is_rejected_by_the_shape_check() {
     let (s, h, frag) = compiled(&factorial);
     let frag = with_entry(frag, |e| tatic_wasm::machine::Entry { env: tatic_wasm::machine::EnvAccess::Params(1), ..e });
-    assert!(matches!(gate(wasm_table(), &s, h, &frag), Verdict::Rejected(Layer::Shape, _)));
+    assert!(matches!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::Rejected(Layer::Shape, _)));
 }
 
 #[test]
@@ -435,7 +434,7 @@ fn covered_code_with_raw_or_ill_formed_is_rejected_and_not_installed() {
     let short = code[..code.len() - 1].to_vec();
     for (what, bad) in [("a Raw line", raw), ("a dropped last instruction", short)] {
         let f = with_entry(compiled(&factorial).2, |e| tatic_wasm::machine::Entry { code: bad, ..e });
-        let v = gate(wasm_table(), &s, h, &f);
+        let v = gate(tatic_wasm::wasm::table(), &s, h, &f);
         assert!(matches!(v, Verdict::Rejected(Layer::Shape, _)), "{what}: {v:?}");
         assert!(!JitEngine::prove_install(&s, h, &f), "{what} was installed");
     }
@@ -467,7 +466,7 @@ fn what_cps_cannot_take_is_not_covered() {
         };
         // a term that does not compile has no fragment to gate: it goes to the chain on its own
         if let Some(frag) = frag {
-            let v = gate(wasm_table(), &s, h, &frag);
+            let v = gate(tatic_wasm::wasm::table(), &s, h, &frag);
             assert!(matches!(v, Verdict::NotCovered(_)), "{name}: {v:?}");
         }
         // and the chain decides it, as before: the JIT agrees with the evaluator
@@ -482,7 +481,7 @@ fn what_cps_cannot_take_is_not_covered() {
 fn a_term_over_the_budget_is_not_covered() {
     let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 13));
     assert!(crate::jit::compile::tree_size(&s, h) > MAX_GATE_TREE);
-    assert!(matches!(gate(wasm_table(), &s, h, &frag), Verdict::NotCovered(_)));
+    assert!(matches!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::NotCovered(_)));
     let mut s = TermStore::new();
     let h = doubling(&mut s, 13);
     applies_like_eval(&s, h, &[&[3]]);
@@ -495,7 +494,7 @@ fn a_term_over_the_budget_is_not_covered() {
         let tree = crate::jit::compile::tree_size(&s, h);
         let sites = crate::proof::gate::call_sites(&s, h);
         if tree <= MAX_GATE_TREE && tree + CALL_WEIGHT * sites > MAX_GATE_TREE {
-            assert!(matches!(gate(wasm_table(), &s, h, &frag), Verdict::NotCovered(_)), "k={k}");
+            assert!(matches!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::NotCovered(_)), "k={k}");
             found = true;
             break;
         }
@@ -507,7 +506,7 @@ fn a_term_over_the_budget_is_not_covered() {
 fn a_closed_straight_line_term_takes_the_gate() {
     let (s, h, frag) = compiled(&|s: &mut TermStore| source(s, "3 + 4"));
     assert_eq!(frag.arity, 0);
-    assert_eq!(gate(wasm_table(), &s, h, &frag), Verdict::Accepted);
+    assert_eq!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::Accepted);
 }
 
 #[test]
@@ -520,7 +519,7 @@ fn extra_calls_in_covered_code_are_rejected_not_uncovered() {
     let inserted = [&code[..code.len() - 1], &calls[..], &code[code.len() - 1..]].concat();
     for (what, bad) in [("appended", appended), ("inserted", inserted)] {
         let f = with_entry(compiled(&factorial).2, |e| tatic_wasm::machine::Entry { code: bad, ..e });
-        let v = gate(wasm_table(), &s, h, &f);
+        let v = gate(tatic_wasm::wasm::table(), &s, h, &f);
         assert!(matches!(v, Verdict::Rejected(..)), "{what}: {v:?}");
         assert!(!JitEngine::prove_install(&s, h, &f), "{what} was installed");
     }

@@ -280,7 +280,7 @@ impl JitEngine {
     /// `kernel_verify`, whose theorems are about `proof.rs`'s model of the
     /// compiler, not the code that runs (`docs/related-work/` 28).
     pub(crate) fn prove_install(terms: &TermStore, h: Hash, frag: &compile::CompiledFragment) -> bool {
-        match proof::gate::gate(shape::wasm_table(), terms, h, frag) {
+        match proof::gate::gate(tatic_wasm::wasm::table(), terms, h, frag) {
             proof::gate::Verdict::Accepted => true,
             proof::gate::Verdict::Rejected(..) => false,
             proof::gate::Verdict::NotCovered(_) => Self::kernel_verify(terms, h, frag.arity),

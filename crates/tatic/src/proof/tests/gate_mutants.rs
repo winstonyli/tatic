@@ -8,7 +8,6 @@ use tatic_wasm::machine::{Class, Entry, Ins, Table};
 use super::baseline::census;
 use super::gate::{big, compiled, the_five};
 use crate::jit::compile::{compile_specialised, CompiledFragment};
-use crate::jit::shape::wasm_table;
 use crate::lang::term::{Hash, TermStore};
 use crate::proof::gate::{build, gate, Layer, Verdict};
 use crate::support::samples::{capturing_closure_loop, factorial, fib, source, straight_line};
@@ -71,7 +70,7 @@ pub(super) fn check_frag(label: &str, subject: Subject, mutant: CompiledFragment
     let (s, h, frag) = subject();
     let label = label.to_string();
     big(move || {
-        let table = wasm_table();
+        let table = tatic_wasm::wasm::table();
         rejected_by(gate(table, &s, h, &mutant), layer, &label);
         match scoped(|| build(table, &s, h, &mutant).map(|_| ())) {
             Ok(()) => forged_rejected(table, (&s, h, &frag), (&s, h, &mutant)),
@@ -124,7 +123,7 @@ fn gate_rejects_mutations() {
         let subject = || compiled(&*b);
         let code = code_of(&subject);
         let (s, h, frag) = subject();
-        assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted, "{name}: the unmutated body should pass");
+        assert_eq!(big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag)), Verdict::Accepted, "{name}: the unmutated body should pass");
         for (what, f, applies) in &mutations {
             let mutated = mutate(&code, &**f);
             let layer = applies.iter().find(|(n, _)| *n == name).map(|(_, l)| *l);
@@ -163,7 +162,7 @@ fn at_each_site(name: &str, what: &str, subject: Subject, arity: usize, layer: L
     let mut applied = 0;
     for site in 0..count_call_sites(&code, 0) {
         let changed = std::cell::Cell::new(false);
-        let mutated = edit_call_site(&code, site, 0, arity, wasm_table(), &|b, i, args| changed.set(edit(b, i, args)));
+        let mutated = edit_call_site(&code, site, 0, arity, tatic_wasm::wasm::table(), &|b, i, args| changed.set(edit(b, i, args)));
         if changed.get() {
             assert_ne!(mutated, code, "{name}: '{what}' at site {site} did not change the body");
             check(&format!("{name}: {what} (site {site})"), subject, mutated, layer);
@@ -324,7 +323,7 @@ fn census_subject(i: usize) -> Option<(TermStore, Hash, CompiledFragment)> {
 /// this test, swapped `eq` to `lt`.
 #[test]
 fn every_row_has_an_operator_swap_mutant() {
-    let t = wasm_table();
+    let t = tatic_wasm::wasm::table();
     let rows: Vec<&str> = t.names().into_iter().filter(|n| matches!(t.row(n).unwrap().class, Class::Word | Class::Bit)).collect();
     let next = |r: &str| {
         let class = t.row(r).unwrap().class;
@@ -354,7 +353,7 @@ fn every_row_has_an_operator_swap_mutant() {
                 let code = code_of(&subject);
                 assert!(format!("{code:?}").contains(&format!("name: \"{from}\"")), "{name} holds {from}");
                 let (s, h, frag) = subject();
-                assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted, "{name} is covered");
+                assert_eq!(big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag)), Verdict::Accepted, "{name} is covered");
                 let mutated = mutate(&code, &|ins| (ins == &row(from)).then_some(row(to)));
                 check(&format!("{name}: {from} -> {to}"), &subject, mutated, Walk);
             }
@@ -383,7 +382,7 @@ fn factorials_proof_does_not_prove_fibs_statement() {
     let ((sf, hf, ff), (sb, hb, fb)) = (compiled(&factorial), compiled(&fib));
     big(move || {
         scoped(|| {
-            let table = wasm_table();
+            let table = tatic_wasm::wasm::table();
             let (_, proof) = build(table, &sf, hf, &ff).expect("factorial builds");
             let (fib_stmt, _) = build(table, &sb, hb, &fb).expect("fib builds");
             assert!(holds(&proof.expect("factorial's proof"), &fib_stmt).is_err());

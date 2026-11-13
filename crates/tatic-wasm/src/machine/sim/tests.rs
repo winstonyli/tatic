@@ -93,7 +93,7 @@ fn run(n: usize, (_, arity, code, src): &Case) -> Result<(), String> {
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn_scoped(s, || {
                 let t = crate::wasm::table();
-                let w = Machine { n, fw: 0, table: &t };
+                let w = Machine { n, fw: 0, table: t };
                 let entry = Entry { arity: *arity, env: EnvAccess::Params(0), code: code.clone() };
                 let f = |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| cps(&w, e, c, src, k);
                 let module = [Some(ModEntry { entry: &entry, src: &f })];
@@ -177,7 +177,7 @@ fn two_entries(n: usize, swap: bool) -> Result<(), String> {
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn_scoped(s, || {
                 let t = crate::wasm::table();
-                let w = Machine { n, fw: 0, table: &t };
+                let w = Machine { n, fw: 0, table: t };
                 let callee = Entry { arity: 2, env: EnvAccess::Params(0), code: vec![get(0), get(1), row("sub")] };
                 let args = if swap { vec![konst(1), get(0)] } else { vec![get(0), konst(1)] };
                 let main = Entry { arity: 1, env: EnvAccess::Params(0), code: [args, vec![Ins::Call(0), konst(2), row("mul")]].concat() };
@@ -213,7 +213,7 @@ fn sum_loop_against(cl: &Clauses) -> Result<(), String> {
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn_scoped(s, || {
                 let t = crate::wasm::table();
-                let w = Machine { n: 8, fw: 0, table: &t };
+                let w = Machine { n: 8, fw: 0, table: t };
                 let (_, arity, code, src) = sum_loop();
                 let entry = Entry { arity, env: EnvAccess::Params(0), code };
                 let f = |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| cps(&w, e, c, &src, k);

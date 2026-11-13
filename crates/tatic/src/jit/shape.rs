@@ -7,9 +7,7 @@
 
 use hashbrown::HashMap;
 
-use std::sync::OnceLock;
-
-use tatic_wasm::machine::{Class, Table};
+use tatic_wasm::machine::Class;
 
 use crate::lang::term::{Hash, PrimOp, Term, TermStore};
 
@@ -164,16 +162,7 @@ pub(crate) fn classify(store: &TermStore, h: Hash, arity: usize, self_idx: Optio
 /// `classify_tree` relies on for soundness. Defined by the table itself, as a
 /// source op whose row (`PrimOp::name`) is bit-valued, so the two cannot drift.
 pub(crate) fn is_comparison(op: PrimOp) -> bool {
-    wasm_table().row(op.name()).is_some_and(|r| r.class == Class::Bit)
-}
-
-/// The one table of machine rows (the lowering, the gate's source side and
-/// the fragment predicate all read it; `PrimOp::name` pairs a source
-/// operator with its row). `Div` and `Mod` have none: the lowering emits
-/// `i64.div_s` (inside `emit_wrapping_div`) and `i64.rem_s` as `Raw` lines.
-pub fn wasm_table() -> &'static Table {
-    static TABLE: OnceLock<Table> = OnceLock::new();
-    TABLE.get_or_init(tatic_wasm::wasm::table)
+    tatic_wasm::wasm::table().row(op.name()).is_some_and(|r| r.class == Class::Bit)
 }
 
 /// Finds what a lambda literal (peeled to `own_arity`/`body`/`is_rec`,

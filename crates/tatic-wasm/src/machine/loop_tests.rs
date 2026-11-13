@@ -50,7 +50,7 @@ fn var_frame(c: &Cx, w: &Machine, s: [At; 4], word: &dyn Fn(usize) -> Option<Exp
 #[test]
 fn local_set_writes_one_slot() {
     let t = crate::wasm::table();
-    let w = Machine { n: 8, fw: 3, table: &t };
+    let w = Machine { n: 8, fw: 3, table: t };
     let n = w.n;
     // S R k a0 a1 a2 z s mu
     let law_for = |i: usize, j: usize, read_old: bool| {
@@ -98,7 +98,7 @@ fn local_set_writes_one_slot() {
 #[test]
 fn br_restarts_on_the_current_frame() {
     let t = crate::wasm::table();
-    let w = Machine { n: 8, fw: 3, table: &t };
+    let w = Machine { n: 8, fw: 3, table: t };
     let n = w.n;
     let cases: [(&str, Vec<Ins>, bool); 4] = [
         ("[konst 1, Set 0, konst 9, Br, add]", vec![konst(1), set(0), konst(9), Ins::Br, row("add")], true),
@@ -149,7 +149,7 @@ fn br_restarts_on_the_current_frame() {
 #[test]
 fn a_frame_write_flows_across_the_join() {
     let t = crate::wasm::table();
-    let w = Machine { n: 8, fw: 1, table: &t };
+    let w = Machine { n: 8, fw: 1, table: t };
     let n = w.n;
     let code = vec![
         konst(0),

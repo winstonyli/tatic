@@ -1,4 +1,4 @@
-//! The wasm table (`shape::wasm_table`) checked three ways per row:
+//! The wasm table (`tatic_wasm::wasm::table`) checked three ways per row:
 //! the interpreter (`eval::apply_term`), the production lowering run under
 //! wasmtime, and the row's kernel circuit (its `meaning`) by `def_eq`. A row
 //! that prints the wrong line, or whose circuit means something else,
@@ -12,7 +12,7 @@ use tatic_wasm::encoding::{lit, Cx};
 use tatic_wasm::machine::{Class, Machine, Row, K};
 
 use crate::jit::compile::try_compile;
-use crate::jit::shape::{is_comparison, wasm_table};
+use crate::jit::shape::is_comparison;
 use crate::lang::eval::apply_term;
 use crate::lang::term::{PrimOp, TermStore};
 
@@ -25,7 +25,7 @@ const SOURCE_OPS: [PrimOp; 8] =
 
 /// A 2-to-1 row's circuit at width `n`.
 fn circuit(row: &Row, n: usize) -> tatic_kernel::Expr {
-    (row.meaning)(&mut Cx::default(), &Machine { n, fw: 0, table: wasm_table() }, 0)
+    (row.meaning)(&mut Cx::default(), &Machine { n, fw: 0, table: tatic_wasm::wasm::table() }, 0)
 }
 
 fn mask(n: usize, v: u64) -> u64 {
@@ -55,7 +55,7 @@ fn source(s: &mut TermStore, p: PrimOp, kind: K) -> crate::lang::term::Hash {
 fn agree(n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
     let engine = wasmtime::Engine::default();
     for p in SOURCE_OPS {
-        let Some(o) = wasm_table().row(p.name()) else { continue };
+        let Some(o) = tatic_wasm::wasm::table().row(p.name()) else { continue };
         let start = Instant::now();
         let mut s = TermStore::new();
         let pushed = o.class.push().expect("a source operator's row pushes its result");
@@ -83,7 +83,7 @@ fn agree(n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
         println!("row {} done {} ms", o.name, start.elapsed().as_millis());
     }
     let start = Instant::now();
-    let term = circuit(wasm_table().row("lt_u").expect("lt_u row"), n);
+    let term = circuit(tatic_wasm::wasm::table().row("lt_u").expect("lt_u row"), n);
     for (x, y) in pairs() {
         let (x, y) = (mask(n, x), mask(n, y));
         let got = app2(term.clone(), lit(n, x as u128), lit(n, y as u128));
@@ -96,7 +96,7 @@ fn agree(n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
 #[test]
 fn every_prim_op_with_a_row_names_it() {
     for p in SOURCE_OPS {
-        let row = wasm_table().row(p.name());
+        let row = tatic_wasm::wasm::table().row(p.name());
         assert_eq!(row.is_some(), !matches!(p, PrimOp::Div | PrimOp::Mod), "{p:?}");
         assert_eq!(is_comparison(p), row.is_some_and(|r| r.class == Class::Bit), "{p:?}");
     }

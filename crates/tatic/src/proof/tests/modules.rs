@@ -2,7 +2,6 @@
 //! terms pair with the records (`gate::pairing`), and `NotCovered` when a callee is outside what `cps` reads.
 use super::gate::{applies_like_eval, big, compiled};
 use super::*;
-use crate::jit::shape::wasm_table;
 use crate::jit::JitEngine;
 use crate::proof::gate::{gate, Verdict};
 use crate::support::samples::{source, tail_recursive_loop_with_pap_producing_root_self_call_arg, twice_inc_5};
@@ -19,7 +18,7 @@ use tatic_wasm::encoding::holds;
 fn verdict(b: fn(&mut TermStore) -> Hash) -> (Verdict, usize) {
     big(move || {
         let (s, h, frag) = compiled(&b);
-        (gate(wasm_table(), &s, h, &frag), frag.records().iter().flatten().count())
+        (gate(tatic_wasm::wasm::table(), &s, h, &frag), frag.records().iter().flatten().count())
     })
 }
 
@@ -29,7 +28,7 @@ fn raw_verdict(b: fn(&mut TermStore) -> Hash) -> (Verdict, usize, String) {
         let mut s = TermStore::new();
         let h = b(&mut s);
         let frag = crate::jit::compile::try_compile(&s, h).expect("compiles");
-        (gate(wasm_table(), &s, h, &frag), frag.records().iter().flatten().count(), frag.wat())
+        (gate(tatic_wasm::wasm::table(), &s, h, &frag), frag.records().iter().flatten().count(), frag.wat())
     })
 }
 
@@ -74,7 +73,7 @@ fn a_callee_tail_loop_runs_a_million_iterations() {
     let b = |s: &mut TermStore| source(s, r"\n. (rec g n acc = if n <= 0 then acc else g (n - 1) (acc + n)) n 0");
     let (v, wat) = big(move || {
         let (s, h, frag) = compiled(&b);
-        (gate(wasm_table(), &s, h, &frag), frag.wat())
+        (gate(tatic_wasm::wasm::table(), &s, h, &frag), frag.wat())
     });
     assert_eq!(v, Verdict::Accepted);
     let start = wat.find("(func $c0").expect("the callee is at position 0");
@@ -109,7 +108,7 @@ fn code_that_calls_another_position_than_its_source_is_rejected_by_the_pairing()
             code: e.code.iter().map(|i| if let Ins::Call(_) = i { Ins::Call(0) } else { i.clone() }).collect(),
             ..e
         });
-        gate(wasm_table(), &s, h, &frag)
+        gate(tatic_wasm::wasm::table(), &s, h, &frag)
     });
     assert!(matches!(v, Verdict::Rejected(Layer::Pairing, _)), "{v:?}");
 }
@@ -169,7 +168,7 @@ fn call_sites(frag: &CompiledFragment) -> (Vec<(usize, usize, usize)>, Vec<usize
 fn edit_site(frag: &CompiledFragment, (caller, callee, site): (usize, usize, usize), edit: SiteEdit) -> Option<CompiledFragment> {
     let arity = frag.records()[callee].unwrap().arity;
     let changed = std::cell::Cell::new(false);
-    let code = edit_call_site(&frag.records()[caller].unwrap().code, site, callee, arity, wasm_table(), &|b, i, args| changed.set(edit(b, i, args)));
+    let code = edit_call_site(&frag.records()[caller].unwrap().code, site, callee, arity, tatic_wasm::wasm::table(), &|b, i, args| changed.set(edit(b, i, args)));
     changed.get().then(|| with_record(dup(frag), caller, |e| Entry { code, ..e }))
 }
 
@@ -281,7 +280,7 @@ fn a_call_terms_proof_does_not_prove_another_statement() {
     let ((s1, h1, f1), (s2, h2, f2)) = (compiled(&twice_inc_5), compiled(&tc::let_bound_factorial_10));
     big(move || {
         scoped(|| {
-            let table = wasm_table();
+            let table = tatic_wasm::wasm::table();
             let (stmt1, proof1) = build(table, &s1, h1, &f1).expect("twice_inc_5 builds");
             let (stmt2, proof2) = build(table, &s2, h2, &f2).expect("let_bound_factorial_10 builds");
             let (proof1, proof2) = (proof1.expect("a proof"), proof2.expect("a proof"));
@@ -298,7 +297,7 @@ fn two_callee_terms_prove_in_one_module() {
         let (s, h, frag) = compiled(&*b);
         let callees = frag.records().iter().flatten().count() - 1;
         assert!(callees >= 2, "{name}: {callees} callees\n{}", frag.wat());
-        assert_eq!(big(move || gate(wasm_table(), &s, h, &frag)), Verdict::Accepted, "{name}");
+        assert_eq!(big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag)), Verdict::Accepted, "{name}");
     }
 }
 
@@ -339,7 +338,7 @@ fn swapped_registry_entries_are_refused() {
         let (Item::Func { entry: e0, source: s0, .. }, Item::Func { entry: e1, source: s1, .. }) = (frag.module[i0].clone(), frag.module[i1].clone()) else { unreachable!() };
         frag.module[i0] = Item::Func { pos: 0, entry: e1, source: s1 };
         frag.module[i1] = Item::Func { pos: 1, entry: e0, source: s0 };
-        let v = big(move || gate(wasm_table(), &s, h, &frag));
+        let v = big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag));
         // the other terms' callees call nothing, so the sets agree and the walk finds the exchange; a callee that calls
         // another has its set exchanged too
         rejected_by(v, if name == "callee calls callee" { Layer::Pairing } else { Layer::Walk }, name);
@@ -354,7 +353,7 @@ fn a_cyclic_registry_is_never_accepted() {
         for (pos, to) in [(0, 1), (1, 0)] {
             frag = with_record(frag, pos, |e| Entry { code: vec![get(0), Ins::Call(to)], ..e });
         }
-        let v = big(move || gate(wasm_table(), &s, h, &frag));
+        let v = big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag));
         assert!(matches!(v, Verdict::NotCovered(_) | Verdict::Rejected(..)), "{name}: {v:?}");
         println!("{name}: {v:?}");
     }
@@ -380,14 +379,14 @@ fn a_callee_loop_form_is_accepted_and_its_mutants_rejected() {
     let accepted = with_g(&[1, 0], &[]);
     let wat = accepted.wat();
     assert!(wat.contains("br $top"), "{wat}");
-    let v = big(move || gate(wasm_table(), &s, h, &accepted));
+    let v = big(move || gate(tatic_wasm::wasm::table(), &s, h, &accepted));
     assert_eq!(v, Verdict::Accepted);
     check_frag("callee: [konst 1, add] after the If", &subject, with_g(&[1, 0], &[konst(1), Ins::Row { name: "add", operand: 0 }]), Layer::Walk);
     check_frag("callee: Sets in forward order", &subject, with_g(&[0, 1], &[]), Layer::Walk);
     let past = with_g(&[2, 0], &[]);
     check_frag("callee: Set 2 past the arity", &subject, dup(&past), Layer::Shape);
     let (s, h, _) = subject();
-    match big(move || gate(wasm_table(), &s, h, &past)) {
+    match big(move || gate(tatic_wasm::wasm::table(), &s, h, &past)) {
         Verdict::Rejected(Layer::Shape, why) => assert!(why.contains("local.set 2"), "{why}"),
         other => panic!("Set 2: {other:?}"),
     }

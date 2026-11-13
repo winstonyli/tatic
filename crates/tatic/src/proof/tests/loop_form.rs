@@ -8,7 +8,6 @@ use super::gate::{big, compiled};
 use super::gate_mutants::{clip, get, konst};
 use crate::jit::compile::{CompiledFragment, Item};
 use crate::jit::lower_wat::{loop_form, rev_slots};
-use crate::jit::shape::wasm_table;
 use crate::lang::term::{Hash, TermStore};
 use crate::proof::gate::{gate, Layer, Verdict};
 use crate::support::samples::{
@@ -101,7 +100,7 @@ fn run(b: &Build, code: &dyn Fn(&[Ins], usize, usize) -> Vec<Ins>) -> (Verdict, 
     let (own, arity) = (frag.entry_pos, frag.entry().arity);
     let new = code(&frag.entry().code, own, arity);
     let mutant = with_code(frag, new.clone());
-    (big(move || gate(wasm_table(), &s, h, &mutant)), new)
+    (big(move || gate(tatic_wasm::wasm::table(), &s, h, &mutant)), new)
 }
 
 fn the_loop_form(c: &[Ins], own: usize, arity: usize) -> Vec<Ins> {
@@ -315,7 +314,7 @@ fn dead_code_after_br_validates() {
     for code in lists {
         let e = Entry { arity: 2, env: tatic_wasm::machine::EnvAccess::Params(0), code: code.clone() };
         let mut wat = String::from("(module\n");
-        tatic_wasm::print::print_func(&wasm_table(), 0, 0, &e, &mut wat);
+        tatic_wasm::print::print_func(&tatic_wasm::wasm::table(), 0, 0, &e, &mut wat);
         wat.push_str("  (export \"f\" (func $f))\n)\n");
         let bytes = wat::parse_str(&wat).unwrap_or_else(|err| panic!("{code:?} parses: {err}\n{wat}"));
         wasmtime::Module::new(&engine, &bytes).unwrap_or_else(|err| panic!("{code:?} validates: {err}\n{wat}"));
@@ -340,7 +339,7 @@ fn the_shipped_loops_install_in_loop_form() {
     for (name, b) in shipped {
         let (v, wat) = big(move || {
             let (s, h, frag) = compiled(&*b);
-            (gate(wasm_table(), &s, h, &frag), frag.wat())
+            (gate(tatic_wasm::wasm::table(), &s, h, &frag), frag.wat())
         });
         assert_eq!(v, Verdict::Accepted, "{name}");
         assert!(wat.contains("br $top"), "{name}: {wat}");

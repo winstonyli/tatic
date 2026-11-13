@@ -241,7 +241,7 @@ fn every_function_header_declares_the_scratch_locals() {
             for (pos, rec) in frag.records().iter().enumerate() {
                 let Some(e) = rec else { continue };
                 let mut text = String::new();
-                tatic_wasm::print::print_func(crate::jit::shape::wasm_table(), pos, frag.entry_pos, e, &mut text);
+                tatic_wasm::print::print_func(tatic_wasm::wasm::table(), pos, frag.entry_pos, e, &mut text);
                 assert!(wat.contains(&text), "{name}: wat() lacks the function at {pos}");
                 for local in ["(local $envtmp i32)", "(local $papenv i64)", "(local $diva i64)", "(local $divb i64)"] {
                     assert!(text.contains(local), "{name}: the function at {pos} lacks {local}");
@@ -269,8 +269,8 @@ fn measure_verdict(s: &TermStore, h: Hash) -> (Kind, bool) {
     let Some(c) = compile::compile_specialised(s, h) else { return (Kind::NotCovered, false) };
     let raw = c.frag.records().iter().flatten().any(|e| has_raw(&e.code) || e.env == tatic_wasm::machine::EnvAccess::Pointer);
     let v = match &c.specialised {
-        Some((s2, h2)) => gate(crate::jit::shape::wasm_table(), s2, *h2, &c.frag),
-        None => gate(crate::jit::shape::wasm_table(), s, h, &c.frag),
+        Some((s2, h2)) => gate(tatic_wasm::wasm::table(), s2, *h2, &c.frag),
+        None => gate(tatic_wasm::wasm::table(), s, h, &c.frag),
     };
     let k = match v {
         Verdict::Accepted => Kind::Accepted,

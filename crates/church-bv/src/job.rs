@@ -686,7 +686,7 @@ fn hidden_state_is_classified() {
         ("../tatic-wasm/src/encoding/tables.rs", "BODIES", "gen_memo: closed case-tree bodies by truth table"),
         ("work.rs", "SLOT", "this thread's work counts: no task reads them, the worker prints them after it"),
     ];
-    const PROCESS_WIDE: [(&str, &str, &str); 9] = [
+    const PROCESS_WIDE: [(&str, &str, &str); 10] = [
         ("work.rs", "SLOTS", "every thread's work counts, read only by take"),
         ("rewrite/term.rs", "TABLE", "the term table: interning is pure"),
         ("classes.rs", "CLASSES", "the class table: built once from the baked-in key, pure"),
@@ -696,6 +696,7 @@ fn hidden_state_is_classified() {
         ("job.rs", "PROCESS_SETUP", "the one-test process's Setup; tasks build their own"),
         ("job.rs", "NEXT_JOB", "job ids, unique per process on purpose"),
         ("driver.rs", "REENTRY", "how this exe is started as a worker: set once by the binary's main, before any task"),
+        ("../tatic-wasm/src/wasm.rs", "TABLE", "the wasm table: built once, pure"),
     ];
     // the encodings' memos live in tatic-wasm, which church-bv runs on: its files are keyed `../tatic-wasm/src/<file>`
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");

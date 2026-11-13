@@ -4,7 +4,6 @@
 use tatic_wasm::machine::{out_stack, well_formed, Entry, EnvAccess, Ins, K};
 use tatic_wasm::print::{print_body, print_func};
 
-use crate::jit::shape::wasm_table;
 
 fn konst(v: i64) -> Ins {
     Ins::Row { name: "const", operand: v }
@@ -21,12 +20,12 @@ fn atoms() -> Vec<Ins> {
 
 /// Whether `code` runs from an empty stack beside a one-argument callee at position 0.
 fn runs(code: &[Ins]) -> bool {
-    well_formed(wasm_table(), code, &[], &[Some(1)])
+    well_formed(tatic_wasm::wasm::table(), code, &[], &[Some(1)])
 }
 
 /// Whether `code` runs and leaves exactly one word.
 fn ends_on_word(code: &[Ins]) -> bool {
-    runs(code) && out_stack(wasm_table(), code, vec![], &[Some(1)]) == vec![K::W]
+    runs(code) && out_stack(tatic_wasm::wasm::table(), code, vec![], &[Some(1)]) == vec![K::W]
 }
 
 /// Arms that run alone under `if (result i64)`: from an empty stack to one word, at most 2 atoms.
@@ -92,7 +91,7 @@ fn instantiate(wat: &str) -> (wasmtime::Store<()>, wasmtime::Instance) {
 /// the ones that differ must be many: a wrong rule (a `return_call` before the `add` of `1 + f x`) skips code.
 #[test]
 fn tail_rule_matches_call_everywhere_under_wasmtime() {
-    let t = wasm_table();
+    let t = tatic_wasm::wasm::table();
     let callee = Entry { arity: 1, env: EnvAccess::Params(0), code: vec![Ins::Row { name: "local.get", operand: 0 }, konst(100), row("add")] };
     let mut wat = String::from("(module\n");
     print_func(t, 0, usize::MAX, &callee, &mut wat);

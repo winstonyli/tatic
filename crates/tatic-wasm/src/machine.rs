@@ -695,7 +695,7 @@ mod tests {
     #[test]
     fn sty_is_the_nested_prods() {
         let t = crate::wasm::table();
-        let w = Machine { n: 64, fw: 0, table: &t };
+        let w = Machine { n: 64, fw: 0, table: t };
         Cx::default().under(|c, base| {
             c.under(|c, _| {
                 for ks in [vec![], vec![K::W], vec![K::B, K::W], vec![K::W, K::W, K::B, K::W, K::W]] {
@@ -766,7 +766,7 @@ mod tests {
     #[test]
     fn local_get_reads_the_frame() {
         let t = crate::wasm::table();
-        let w = Machine { n: 8, fw: 2, table: &t };
+        let w = Machine { n: 8, fw: 2, table: t };
         let n = w.n;
         let get = |i| Ins::Row { name: "local.get", operand: i };
         let code = [get(1), get(0), row("sub")];
@@ -818,7 +818,7 @@ mod tests {
         });
         let out_of_range = std::panic::catch_unwind(|| {
             let t = crate::wasm::table();
-            let w = Machine { n: 8, fw: 2, table: &t };
+            let w = Machine { n: 8, fw: 2, table: t };
             Cx::default().under(|c, base| {
                 w.prog(c, &[Ins::Row { name: "local.get", operand: 2 }], &[], base, &[]);
                 sort(0)
@@ -835,7 +835,7 @@ mod tests {
     #[test]
     fn call_constructor_types_with_sort_binders() {
         let t = crate::wasm::table();
-        let w = Machine { n: 8, fw: 3, table: &t };
+        let w = Machine { n: 8, fw: 3, table: t };
         let ar = [Some(1), Some(2), Some(3)];
         let calls: [(&str, Vec<Ins>); 3] = [
             ("one argument", vec![konst(1), Ins::Call(0)]),
@@ -854,7 +854,7 @@ mod tests {
     #[test]
     fn frame_pads_with_zeros() {
         let t = crate::wasm::table();
-        let w = Machine { n: 8, fw: 3, table: &t };
+        let w = Machine { n: 8, fw: 3, table: t };
         let z = lit(8, 0);
         let xv = lit(8, 5);
         let want = mkpair(w.words(2, w.v()), xv, mkpair(w.words(1, w.v()), z, mkpair(w.words(0, w.v()), z, z)));

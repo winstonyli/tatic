@@ -114,7 +114,7 @@ fn print_body_shapes() {
         Ins::If(vec![konst(1)], vec![konst(2)]),
     ];
     let mut out = String::new();
-    print_body(&crate::wasm::table(), &code, 4, true, 1, &mut out);
+    print_body(crate::wasm::table(), &code, 4, true, 1, &mut out);
     let want = "    local.get $p0
     i64.const -1
     i64.add

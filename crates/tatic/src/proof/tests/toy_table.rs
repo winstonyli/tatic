@@ -3,7 +3,6 @@
 //! argument and not the wasm table.
 use super::*;
 use crate::jit::compile::{CompiledFragment, Item};
-use crate::jit::shape::wasm_table;
 use crate::proof::gate::{gate, Verdict};
 use crate::support::samples::source;
 use tatic_kernel::{app2, lam};
@@ -12,7 +11,7 @@ use tatic_wasm::machine::{Class, Entry, EnvAccess, Ins, Row, Table};
 
 /// The wasm `name` row's meaning and line under the toy.
 fn as_wasm(name: &'static str) -> Row {
-    let r = wasm_table().row(name).unwrap_or_else(|| panic!("no wasm row {name:?}"));
+    let r = tatic_wasm::wasm::table().row(name).unwrap_or_else(|| panic!("no wasm row {name:?}"));
     Row { name: r.name, class: r.class, meaning: r.meaning, line: r.line }
 }
 

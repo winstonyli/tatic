@@ -24,7 +24,7 @@ pub enum PrimOp {
 }
 
 impl PrimOp {
-    /// The name of the machine row that runs this operator (`jit::shape::wasm_table`); `div` and `mod` have no row.
+    /// The name of the machine row that runs this operator (`tatic_wasm::wasm::table`); `div` and `mod` have no row.
     pub fn name(self) -> &'static str {
         match self {
             PrimOp::Add => "add",

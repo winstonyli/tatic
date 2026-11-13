@@ -201,7 +201,6 @@ use tatic_wasm::print::map_tail_calls;
 
 use crate::jit::compile::{CompiledFragment, Item};
 use crate::jit::ir::{Combinator, Dispatch, Func, Module, Node, Read};
-use crate::jit::shape::wasm_table;
 use crate::lang::term::PrimOp;
 
 mod templates;
@@ -430,13 +429,13 @@ impl Lowering<'_> {
                 match *op {
                     PrimOp::Div => emit_wrapping_div(w),
                     PrimOp::Mod => raw(w, "i64.rem_s"),
-                    op => w.push(row_of(op, Class::Word, "ir::check: Arith carries an arithmetic op (wasm_table)")),
+                    op => w.push(row_of(op, Class::Word, "ir::check: Arith carries an arithmetic op (wasm::table)")),
                 }
             }
             Node::If { cmp, a, b, then, els } => {
                 self.node(cx, a, w);
                 self.node(cx, b, w);
-                w.push(row_of(*cmp, Class::Bit, "ir::check: If carries a comparison (wasm_table)"));
+                w.push(row_of(*cmp, Class::Bit, "ir::check: If carries a comparison (wasm::table)"));
                 let (mut t, mut e) = (Vec::new(), Vec::new());
                 self.node(cx, then, &mut t);
                 self.node(cx, els, &mut e);
@@ -620,7 +619,7 @@ fn konst(v: i64) -> Ins {
 
 /// The table row of `op`, which must be of class `class`; `what` is the panic message otherwise.
 fn row_of(op: PrimOp, class: Class, what: &str) -> Ins {
-    let row = wasm_table().row(op.name()).filter(|r| r.class == class).expect(what);
+    let row = tatic_wasm::wasm::table().row(op.name()).filter(|r| r.class == class).expect(what);
     Ins::Row { name: row.name, operand: 0 }
 }
 
@@ -630,7 +629,7 @@ fn raw(w: &mut Vec<Ins>, s: &str) {
 }
 
 /// Emits `Div`'s own operator, in place of a bare `i64.div_s` (`Div` has
-/// no `wasm_table` row) -- that single instruction traps on exactly one input
+/// no `wasm::table` row) -- that single instruction traps on exactly one input
 /// (`i64::MIN / -1`, the one case where the mathematical quotient
 /// overflows `i64`), per the WebAssembly spec, while `eval.rs`'s
 /// reference semantics use `wrapping_div` there, silently wrapping back

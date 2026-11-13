@@ -31,7 +31,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use hashbrown::HashMap;
 
 use crate::jit::ir;
-use crate::jit::shape::{ArityUse, Shape, classify, free_vars, infer_closure_arities, is_comparison, local_index, peel, wasm_table};
+use crate::jit::shape::{ArityUse, Shape, classify, free_vars, infer_closure_arities, is_comparison, local_index, peel};
 use crate::lang::term::{Hash, Term, TermStore};
 use tatic_wasm::machine::Entry;
 use tatic_wasm::print::print_func;
@@ -77,7 +77,7 @@ impl CompiledFragment {
         for item in &self.module {
             match item {
                 Item::Text(s) => w.push_str(s),
-                Item::Func { pos, entry, .. } => print_func(wasm_table(), *pos, self.entry_pos, entry, &mut w),
+                Item::Func { pos, entry, .. } => print_func(tatic_wasm::wasm::table(), *pos, self.entry_pos, entry, &mut w),
             }
         }
         w

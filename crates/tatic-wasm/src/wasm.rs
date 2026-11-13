@@ -4,9 +4,11 @@ use machine::{Class, Table};
 use ops::{circuit_row, const_row, local_get_row, local_set_row};
 
 /// The wasm rows: `const`, `local.get`, `local.set`, the word rows `add` `sub` `mul`, and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
-/// source operator; it serves the `lt`-for-`lt_u` control only).
-pub fn table() -> Table {
-    Table::new(vec![
+/// source operator; it serves the `lt`-for-`lt_u` control only). Built once per process: every reader (the lowering,
+/// the gate's two sides, the fragment predicate, eval) shares this one table.
+pub fn table() -> &'static Table {
+    static TABLE: std::sync::OnceLock<Table> = std::sync::OnceLock::new();
+    TABLE.get_or_init(|| Table::new(vec![
         const_row(),
         local_get_row(),
         local_set_row(),
@@ -17,7 +19,7 @@ pub fn table() -> Table {
         circuit_row!("le", Class::Bit, le_s, "i64.le_s"),
         circuit_row!("eq", Class::Bit, eq_bit, "i64.eq"),
         circuit_row!("lt_u", Class::Bit, lt_u, "i64.lt_u"),
-    ])
+    ]))
 }
 
 #[cfg(test)]
@@ -31,7 +33,7 @@ mod tests {
     fn wasm_rows_are_closed_and_typed() {
         let n = 8;
         let t = table();
-        let m = Machine { n, fw: 2, table: &t };
+        let m = Machine { n, fw: 2, table: t };
         let v = bv_ty(n);
         assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "lt", "le", "eq", "lt_u"]);
         let cases: [(&str, i64); 11] = [
