@@ -1,0 +1,150 @@
+diff --git a/crates/tatic-kernel/src/expr.rs b/crates/tatic-kernel/src/expr.rs
+index bf3ea1f..16f9ca6 100644
+--- a/crates/tatic-kernel/src/expr.rs
++++ b/crates/tatic-kernel/src/expr.rs
+@@ -280,6 +280,14 @@ pub fn work() -> u64 {
+     with_spaces(|s| s.work())
+ }
+ 
++/// SPIKE i1 (throwaway): nodes in the open region, and `e[0 := a]` through the kernel's own instantiate.
++pub fn spike_region_nodes() -> usize {
++    with_spaces(|s| s.region_nodes())
++}
++pub fn spike_inst(e: &Expr, a: &Expr) -> Expr {
++    with_spaces(|s| crate::subst::instantiate(s, e, a, 0))
++}
++
+ /// A map key naming a node: its resolved `Ref`'s bits.
+ pub(crate) type Key = u32;
+ 
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index 4639e0c..f750b5b 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -277,6 +277,11 @@ impl Spaces {
+         self.work.get()
+     }
+ 
++    /// SPIKE i1 (throwaway): nodes in the open region.
++    pub(crate) fn region_nodes(&self) -> usize {
++        self.get().region.cols.nodes.len()
++    }
++
+     #[inline(always)]
+     fn get(&self) -> &Inner {
+         // SAFETY: see the module doc; no `&mut` from `inner()` is live across a call to this.
+diff --git a/crates/tatic/src/proof/tests.rs b/crates/tatic/src/proof/tests.rs
+index d1e1e90..4e8f0f2 100644
+--- a/crates/tatic/src/proof/tests.rs
++++ b/crates/tatic/src/proof/tests.rs
+@@ -37,3 +37,4 @@ mod gate_mutants;
+ mod modules;
+ mod loop_form;
+ mod toy_table;
++mod closed_spike;
+diff --git a/crates/tatic/src/proof/tests/closed_spike.rs b/crates/tatic/src/proof/tests/closed_spike.rs
+new file mode 100644
+index 0000000..88cf947
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/closed_spike.rs
+@@ -0,0 +1,100 @@
++//! SPIKE i1 (2026-11-12, throwaway): the gate's check on the open statement (`holds`, today) against the same instance
++//! closed, its leading Pi binders opened onto postulated constants and checked by `Postulates::check`. Each arm runs in
++//! its own fresh region on its own `CHECK_STACK` thread, so neither warms the other's memos. Counts kernel work for the
++//! build, the opening (postulate pushes and instantiation) and the check, and the region's nodes after each.
++use super::gate::{compiled, the_five};
++use crate::jit::shape::wasm_table;
++use crate::lang::term::{Hash, TermStore};
++use crate::proof::gate::build;
++use crate::support::samples::{capturing_closure_loop, gcd, straight_line};
++use crate::testing::test_corpus::doubling;
++use tatic_kernel::{app, spike_inst, spike_region_nodes, work, Node, Postulates};
++
++type Build = Box<dyn Fn(&mut TermStore) -> Hash + Send + Sync>;
++
++struct Arm {
++    build: u64,
++    open: u64,
++    check: u64,
++    nodes_built: usize,
++    nodes_end: usize,
++    binders: usize,
++    ms: f64,
++    ok: bool,
++}
++
++impl tatic_kernel::Escape for Arm {
++    fn escape(self) -> Self {
++        self
++    }
++}
++
++fn arm(b: &'static (dyn Fn(&mut TermStore) -> Hash + Send + Sync), closed: bool) -> Option<Arm> {
++    std::thread::Builder::new()
++        .stack_size(tatic_kernel::CHECK_STACK)
++        .spawn(move || {
++            let (s, h, frag) = compiled(b);
++            tatic_kernel::scoped(|| {
++                let w0 = work();
++                let Ok((st, Ok(p))) = build(wasm_table(), &s, h, &frag) else { return None };
++                let (w1, nodes_built) = (work(), spike_region_nodes());
++                let t0 = std::time::Instant::now();
++                let (mut e, mut t, mut ps, mut n) = (p, st, Postulates::new(), 0);
++                if closed {
++                    while let Node::Pi(dom, cod) = t.node() {
++                        let pos = ps.push(dom);
++                        let c = ps.get(pos);
++                        e = match e.node() {
++                            Node::Lam(_, body) => spike_inst(&body, &c),
++                            _ => app(e, c),
++                        };
++                        t = spike_inst(&cod, &c);
++                        n += 1;
++                    }
++                }
++                let w2 = work();
++                let ok = if closed { ps.check(&e, &t) } else { tatic_wasm::encoding::holds(&e, &t) };
++                let ms = t0.elapsed().as_secs_f64() * 1e3;
++                Some(Arm { build: w1 - w0, open: w2 - w1, check: work() - w2, nodes_built, nodes_end: spike_region_nodes(), binders: n, ms, ok: ok.is_ok() })
++            })
++        })
++        .unwrap()
++        .join()
++        .unwrap()
++}
++
++#[test]
++#[ignore]
++fn closed_instance_spike() {
++    let mut progs: Vec<(String, Build)> = vec![
++        ("capturing_closure_loop".into(), Box::new(capturing_closure_loop)),
++        ("gcd".into(), Box::new(gcd)),
++        ("straight_line".into(), Box::new(straight_line)),
++    ];
++    for d in 1..=6u32 {
++        progs.push((format!("doubling_{d}"), Box::new(move |s: &mut TermStore| doubling(s, d))));
++    }
++    for (name, _, _) in the_five() {
++        if !progs.iter().any(|(n, _)| n == name) && name != "straight_line" {
++            let f: Build = match name {
++                "inc" => Box::new(crate::support::samples::inc),
++                "a_capturing_closure_call" => Box::new(crate::support::samples::a_capturing_closure_call),
++                "a_pap_capturing" => Box::new(crate::support::samples::a_pap_capturing),
++                _ => continue,
++            };
++            progs.push((name.into(), f));
++        }
++    }
++    println!("SPIKE program | open: build check nodes_end ms | closed: binders open check nodes_end ms | closed/open (open+check)");
++    for (name, b) in progs {
++        let b: &'static (dyn Fn(&mut TermStore) -> Hash + Send + Sync) = Box::leak(b);
++        let (Some(o), Some(c)) = (arm(b, false), arm(b, true)) else { println!("SPIKE {name} | not covered by the gate here"); continue };
++        assert!(o.ok && c.ok, "{name}: open ok {} closed ok {}", o.ok, c.ok);
++        assert_eq!(o.build, c.build, "{name}: the build is the same in both arms");
++        println!(
++            "SPIKE {name} | build {} nodes {} | open: check {} nodes_end {} {:.3} ms | closed: binders {} open {} check {} nodes_end {} {:.3} ms | {:.3}",
++            o.build, o.nodes_built, o.check, o.nodes_end, o.ms, c.binders, c.open, c.check, c.nodes_end, c.ms,
++            (c.open + c.check) as f64 / o.check as f64
++        );
++    }
++}

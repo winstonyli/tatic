@@ -59,10 +59,39 @@ try (`pfl-bench-a2-timed1`).
   phase: definitional equality 12618, instantiating application types 4829, the statement's own inference 1695. A
   check memo would save little: 16130 check calls cover 6377 distinct keys, but repeated calls hold only 46 units.
   Checking the instance closed, with the 11 binders opened onto postulated constants, took 13081 units plus 537 to
-  infer the binder types, against 23552 open. That figure leaves out building the opened instance. The same
+  infer the binder types, against 23552 open. That figure leaves out building the opened instance, and it ran
+  after the open check in the same region, with warm memos; the spike in the next bullet removes both. The same
   opening on v0.7's encoding gate at doubling d = 13 saved only 6.5% and built more nodes (`docs/tier-cycle/`, "v0.7's build: measurements
   and checks", its "Closed parameters, the falsifier"), on a different proof shape. Persisting memos across gate calls
   saved nothing (26926 units), because each call is a fresh region. Only 42 of the 3205 inferred nodes are closed.
+- Checking the instance closed does not pay (`closed-spike-2`, test profile; patch
+  `docs/runs/2026-11-12/patches/closed-instance-spike.patch`, reverted). For each program, each arm ran in a fresh
+  region on its own `CHECK_STACK` thread. Arm O checks with `holds`, as the gate does now. Arm C opens the statement's
+  leading binders onto `Postulates` constants (10 or 11 of them) and instantiates the proof the same way, counting
+  that work, then checks with `Postulates::check`. The build is identical in both arms.
+
+  | program | build | open check | closed: opening + check | closed / open |
+  |---|---|---|---|---|
+  | closure loop | 6804 | 23552 | 1007 + 21799 | 0.968 |
+  | straight_line | 3955 | 33989 | 1007 + 32685 | 0.991 |
+  | doubling 1 | 2707 | 5509 | 884 + 5146 | 1.095 |
+  | doubling 2 | 3129 | 5992 | 884 + 5617 | 1.085 |
+  | doubling 3 | 3732 | 6935 | 884 + 6544 | 1.071 |
+  | doubling 4 | 4889 | 8798 | 884 + 8383 | 1.053 |
+  | doubling 5 | 7154 | 12501 | 884 + 12046 | 1.034 |
+  | doubling 6 | 11635 | 19884 | 884 + 19357 | 1.018 |
+  | inc | 2677 | 5513 | 884 + 5150 | 1.095 |
+  | a_pap_capturing | 2854 | 6053 | 884 + 5604 | 1.072 |
+
+  Closing saves 2 to 8% of the check, and the opening costs about as much, so the net runs from 3% less to 10% more.
+  It also ends with more nodes in the region on every program but the closure loop and straight_line. With cold
+  memos, the survey's 13081 does not reproduce: the closure loop's closed check is 21799. So most of the shift and
+  instantiate work is not caused by the 11 leading binders. Inference: it comes from the proof's own lambdas and the
+  application types it instantiates, and those stay open whichever way the statement is checked. This agrees with
+  v0.7's -6.5%. gcd did not build through this helper (`NotCovered`: "position 0 is outside what the source reading
+  takes"), so it is not in the table.
+- The bench's cold row keeps the cost of the stacker segment, by decision (2026-11-12): it is what a caller on a
+  1 MiB thread pays, as criterion's main thread is.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
   that `return_call` costs invisible beside the call into the module; confirming it would take a gcd input with many
   steps.
