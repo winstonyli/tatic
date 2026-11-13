@@ -1,0 +1,115 @@
+diff --git a/crates/tatic-kernel/src/reduce.rs b/crates/tatic-kernel/src/reduce.rs
+index 74acce6..ac4bddb 100644
+--- a/crates/tatic-kernel/src/reduce.rs
++++ b/crates/tatic-kernel/src/reduce.rs
+@@ -280,6 +280,53 @@ thread_local! {
+     static EQUAL: std::cell::RefCell<hashbrown::HashSet<u64>> = std::cell::RefCell::new(hashbrown::HashSet::new());
+ }
+ 
++/// PROBE (n4 mode 4 on the p1 memo): `N4_PRE=4`, read once, default off.
++fn head_beta_probe() -> bool {
++    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
++    *ON.get_or_init(|| std::env::var("N4_PRE").is_ok_and(|v| v == "4"))
++}
++
++/// PROBE: `e`, an application whose spine head is a syntactic lambda, contracted one step (the lambda telescope against the
++/// arguments, as `beta_spine` does, the result not reduced further). One tick, like a `whnf_step`.
++fn head_beta1(s: &Spaces, e: &Expr) -> Option<Expr> {
++    let head = spine(s, e).0;
++    let Node::Lam(_, first) = s.node(&head) else { return None };
++    s.tick();
++    let mut args: Vec<Expr> = Vec::new();
++    let mut sp = *e;
++    while let Node::App(g, b) = s.node(&sp) {
++        args.push(b);
++        sp = g;
++    }
++    args.reverse();
++    let (mut body, mut taken) = (first, 1);
++    while taken < args.len()
++        && let Node::Lam(_, inner) = s.node(&body)
++    {
++        body = inner;
++        taken += 1;
++    }
++    let used: Vec<&Expr> = args[..taken].iter().collect();
++    let mut r = instantiate_n(s, &body, &used, 0);
++    for a in &args[taken..] {
++        r = app(r, *a);
++    }
++    Some(r)
++}
++
++/// PROBE: one syntactic head-beta step of either side, then pointer equality with the other side.
++fn pre_head_beta(s: &Spaces, a: &Expr, b: &Expr) -> bool {
++    for (x, y) in [(a, b), (b, a)] {
++        if matches!(s.node(x), Node::App(..))
++            && let Some(r) = head_beta1(s, x)
++            && s.same(&r, y)
++        {
++            return true;
++        }
++    }
++    false
++}
++
+ /// `def_eq`'s comparison. Syntactically equal sides are equal without
+ /// reducing, since `nf` is a function; most calls from `infer` are
+ /// (`docs/related-work/` §56), and with the spaces hash-consed that test is
+@@ -303,6 +350,10 @@ fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
+     if EQUAL.with(|m| m.borrow().contains(&pair)) {
+         return true;
+     }
++    if head_beta_probe() && pre_head_beta(s, a, b) {
++        EQUAL.with(|m| m.borrow_mut().insert(pair));
++        return true;
++    }
+     let equal = conv_whnf(s, &whnf_in(s, a), &whnf_in(s, b));
+     if equal {
+         EQUAL.with(|m| m.borrow_mut().insert(pair));
+diff --git a/crates/tatic/src/proof/gate.rs b/crates/tatic/src/proof/gate.rs
+index de5b5a4..7b532d5 100644
+--- a/crates/tatic/src/proof/gate.rs
++++ b/crates/tatic/src/proof/gate.rs
+@@ -279,7 +279,7 @@ pub(crate) fn build(table: &Table, store: &TermStore, h: Hash, frag: &CompiledFr
+             },
+         });
+     }
+-    if module_cost(store, h, frag) > MAX_GATE_TREE {
++    if module_cost(store, h, frag) > std::env::var("DG_BUDGET").ok().and_then(|v| v.parse().ok()).unwrap_or(MAX_GATE_TREE) /* PROBE: env override */ {
+         return Err(Verdict::NotCovered(format!("over the budget of {MAX_GATE_TREE}")));
+     }
+     shape_check(table, &records).map_err(|m| Verdict::Rejected(Layer::Shape, m))?;
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index 9aebb18..85c3b1c 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -520,3 +520,28 @@ fn time_call_family() {
+         k *= 2;
+     }
+ }
++
++/// PROBE: the check's kernel work for the loop programs and doubling, one line each (flag `N4_PRE` read by the kernel).
++#[test]
++#[ignore]
++fn p1_probe() {
++    let progs: Vec<(&str, Box<dyn Fn(&mut TermStore) -> Hash + Send>)> = vec![
++        ("capturing_closure_loop", Box::new(capturing_closure_loop)),
++        ("straight_line", Box::new(straight_line)),
++        ("held_out_b", Box::new(crate::testing::test_corpus::held_out_b)),
++        ("doubling(6)", Box::new(|s: &mut TermStore| doubling(s, 6))),
++        ("doubling(12)", Box::new(|s: &mut TermStore| doubling(s, 12))),
++    ];
++    for (name, mk) in progs {
++        let w = big(move || {
++            let (s, h, frag) = compiled(&*mk);
++            tatic_kernel::scoped(|| {
++                let (p, st) = built(&s, h, &frag);
++                let w0 = tatic_kernel::work();
++                let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
++                (ok, tatic_kernel::work() - w0)
++            })
++        });
++        println!("P1 {name} accepted={} check_work={}", w.0, w.1);
++    }
++}

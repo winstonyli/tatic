@@ -120,8 +120,8 @@ pub fn low(s: &Spaces, x: &Expr) -> bool {
 }
 
 /// The small id of an `instantiate_n` argument list, by the keys of its arguments in order; the same list gets the same
-/// id for the rest of the region. A known list allocates nothing (the lookup borrows a `&[u32]`), and a list of up to
-/// eight arguments is keyed from a stack buffer.
+/// id for the rest of the region. A known list of up to eight arguments allocates nothing: it is keyed from a stack
+/// buffer and the lookup borrows a `&[u32]`. A longer list builds a `Vec` on every call, hit or miss.
 pub fn inst_args_id(s: &Spaces, args: &[&Expr]) -> u32 {
     let mut buf = [0u32; 8];
     let heap: Vec<u32>;

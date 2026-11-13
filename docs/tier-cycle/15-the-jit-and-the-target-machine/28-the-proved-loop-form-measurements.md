@@ -183,7 +183,7 @@ try (`pfl-bench-a2-timed1`).
 - A memo of instantiation across calls (`inst-memo-programs-*`, `inst-memo-doubling-*`, `inst-memo-d16-lean-*`,
   `inst-memo-suite-*`, two reviewers' `ref*-` and `inst-sound*` reruns; patch
   `docs/runs/2026-11-12/patches/inst-memo-spike.patch`, which applies to a clean main and includes the doubling probe
-  and the reviewer's region test; never merged). Arm A keeps whole `instantiate_n` calls for the region, keyed by
+  and the reviewer's region test). Arm B's design is merged (next bullet); arm A was not. Arm A keeps whole `instantiate_n` calls for the region, keyed by
   (term, the argument list interned to an id, depth), cleared with the `whnf` memo when the region closes; a hit
   ticks nothing, as the other memos' hits do. Arm B also keeps the inner entries across calls, with the argument
   list's id in their key. Check work, all verdicts unchanged:
@@ -208,6 +208,24 @@ try (`pfl-bench-a2-timed1`).
   memo's field directly). A reviewer's test over 40 regions, with persisted arguments and their region twins,
   matches a reference substitution and fails when the memo is not cleared at close. Not measured: time (each
   top-level call builds and hashes a key of up to 64 argument keys, unticked), and church-bv's tests.
+- The merged memo (2026-11-12, by decision; `subst.rs#instantiate_n`, `hc.rs#inst_args_id`): one memo for the
+  region, keyed (node, depth, argument-list id), which stores each call's root and, as before, the shared nodes
+  above `hc::low`; the per-call clear (`inst_begin`) and its re-entry guard are gone. Its check work equals arm B's on
+  all five programs measured (`p1-work`: 20668, 32467, 42983, 10798, 369820), no other test's work count moved,
+  and the workspace suite passes (`p1-suite`: 822, the 819 before plus three memo tests). The timed A/B
+  (`time_doubling_12`, six alternating runs per arm) was refused three times on a busy machine (`p1-ab-doubling12`,
+  `-r2`, `-r3`), so the claim is "does less work", not "faster", until it runs.
+- The head-beta shortcut on top of the merged memo (`hb-*`, a reviewer's `hb2-*`; patch
+  `docs/runs/2026-11-12/patches/head-beta-on-memo-probe.patch`; never merged). The shortcut is the one in "Where
+  the depth-4 telescopes come from": before `whnf`, one syntactic head beta on a side, then pointer equality with
+  the other. Check work, memo alone against memo plus head beta: `capturing_closure_loop` 20668 to 19075 (-7.7%),
+  `held_out_b` 42983 to 41380 (-3.7%), `straight_line` 32467 to 32092 (-1.2%), `doubling(6)` 10798 to 10779,
+  `doubling(12)` 369820 to 369801; all `Accepted`. The memo had already taken most of what it saved on main. A
+  failed attempt costs at most one contraction per side and a pointer compare, with no recursion into conversion,
+  and the rejection tests do not blow up: `swapped_call_indices_are_rejected` passes in 0.3 s, `proof::` passes
+  116 in 1.9 s against 1.7 s off, `gate_mutants` and `jit::` pass. One kernel test fails with it on,
+  `whnf_memo_outlives_one_def_eq_in_a_scope`, because conversion settles that pair without calling `whnf`, so no
+  `whnf` entry is written.
 - The bench's cold row keeps the cost of the stacker segment, by decision (2026-11-12): it is what a caller on a
   1 MiB thread pays, as criterion's main thread is.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
