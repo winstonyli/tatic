@@ -52,6 +52,17 @@ try (`pfl-bench-a2-timed1`).
   `holds` kept out of line, or a deeper samply stack limit, would confirm it. In this profile, then, the share of a
   caller of kernel work reads low, because its samples on a segment or deeper than 256 frames never reach the
   caller's frame. The leaf shares are not affected.
+- Where the check's 23552 units of work go (a survey with counters added to the kernel, test profile; patch
+  `docs/runs/2026-11-12/patches/check-breakdown-probe.patch`, never merged). Shift is 10918 and instantiate 8838, so 84% is
+  re-indexing and substituting terms with loose variables under the statement's 11 leading binders and the proof's
+  lambdas. Infer is 3205, whnf 364 and full conversion 227; 16154 of the conversion attempts are pointer-equal. By
+  phase: definitional equality 12618, instantiating application types 4829, the statement's own inference 1695. A
+  check memo would save little: 16130 check calls cover 6377 distinct keys, but repeated calls hold only 46 units.
+  Checking the instance closed, with the 11 binders opened onto postulated constants, took 13081 units plus 537 to
+  infer the binder types, against 23552 open. That figure leaves out building the opened instance. The same
+  opening on v0.7's encoding gate at doubling d = 13 saved only 6.5% and built more nodes (`docs/tier-cycle/`, "v0.7's build: measurements
+  and checks", its "Closed parameters, the falsifier"), on a different proof shape. Persisting memos across gate calls
+  saved nothing (26926 units), because each call is a fresh region. Only 42 of the 3205 inferred nodes are closed.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
   that `return_call` costs invisible beside the call into the module; confirming it would take a gcd input with many
   steps.

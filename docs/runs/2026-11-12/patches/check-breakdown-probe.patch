@@ -1,0 +1,1481 @@
+diff --git a/crates/tatic-kernel/src/check.rs b/crates/tatic-kernel/src/check.rs
+index f5a9f25..15aaae7 100644
+--- a/crates/tatic-kernel/src/check.rs
++++ b/crates/tatic-kernel/src/check.rs
+@@ -300,6 +300,7 @@ fn ctx_lookup(s: &Spaces, ctx: &CtxScope, k: u32) -> Result<Expr, String> {
+     // current length requires shifting by `k + 1`, not `k` — e.g. for
+     // `Var(0)` itself (k=0), its stored type was written one binder
+     // shallower than "now", so it still needs a shift of 1.
++    let _p = prof::phase(prof::P_VAR);
+     Ok(shift_in(s, ty, 0, k as i32 + 1))
+ }
+ 
+@@ -316,6 +317,7 @@ fn const_type(s: &Spaces, g: &Globals, l: u32) -> Result<Expr, String> {
+ 
+ 
+ pub(super) fn expect_sort(s: &Spaces, e: &Expr) -> Result<u32, String> {
++    let _p = prof::phase(prof::P_EXPECT);
+     let w = whnf_in(s, e);
+     match s.node(&w) {
+         Node::Sort(i) => Ok(i),
+@@ -324,6 +326,7 @@ pub(super) fn expect_sort(s: &Spaces, e: &Expr) -> Result<u32, String> {
+ }
+ 
+ fn expect_pi(s: &Spaces, e: &Expr) -> Result<(Expr, Expr), String> {
++    let _p = prof::phase(prof::P_EXPECT);
+     let w = whnf_in(s, e);
+     match s.node(&w) {
+         Node::Pi(a, b) => Ok((a, b)),
+@@ -473,6 +476,7 @@ impl Checker<'_> {
+     fn infer(&mut self, e: &Expr) -> Result<Expr, String> {
+         let s = self.s;
+         if !s.shared(e) {
++            prof::inc(prof::C::InferUnshared);
+             return self.infer_node(e);
+         }
+         // Keyed by the window of binders the node can depend on, not the whole context, so one
+@@ -480,16 +484,47 @@ impl Checker<'_> {
+         // 96 to 99.5% of the whole-context misses were such repeats).
+         let key = (s.key(e), self.ic.memo_context(s, self.cid, e));
+         if let Some(ty) = self.ic.types.get(&key) {
++            prof::inc(prof::C::InferHit);
+             return Ok(s.expr_of(ty));
+         }
++        prof::inc(prof::C::InferMiss);
+         let ty = self.infer_node(e)?;
+         self.ic.types.insert(key, s.key(&ty));
+         Ok(ty)
+     }
+ 
+     fn infer_node(&mut self, e: &Expr) -> Result<Expr, String> {
++        let s = self.s;
++        let tok = prof::ref_enter(0, s.key(e), s.loose(e) == 0);
++        let r = self.infer_node0(e);
++        prof::ref_exit(tok);
++        r
++    }
++
++    fn infer_node0(&mut self, e: &Expr) -> Result<Expr, String> {
+         let s = self.s;
+         s.tick();
++        prof::inc(prof::C::InferNode);
++        prof::rep(0, s.key(e) as u64, self.cid as u64);
++        prof::rep(1, s.key(e) as u64, 0);
++        let _f = prof::frame(match s.node(e) {
++            Node::Var(_) => "inf:Var",
++            Node::Sort(_) => "inf:Sort",
++            Node::Const(_) => "inf:Const",
++            Node::Free(_) => "inf:Free",
++            Node::Pi(..) => "inf:Pi",
++            Node::Lam(..) => "inf:Lam",
++            Node::App(..) => "inf:App",
++            Node::Id(..) => "inf:Id",
++            Node::Refl(..) => "inf:Refl",
++            Node::J { .. } => "inf:J",
++            Node::W(..) => "inf:W",
++            Node::Sup(..) => "inf:Sup",
++            Node::WRec { .. } => "inf:WRec",
++            Node::Sigma(..) => "inf:Sigma",
++            Node::Pair(..) => "inf:Pair",
++            Node::SigRec { .. } => "inf:SigRec",
++        });
+         grow(|| match s.node(e) {
+             Node::Var(k) => ctx_lookup(s, &self.ctx, k),
+             Node::Sort(i) => i.checked_add(1).map(sort).ok_or_else(|| format!("universe overflow: no successor sort above Type{i}")),
+@@ -523,17 +558,20 @@ impl Checker<'_> {
+                 args.reverse();
+                 let mut ty = self.infer(&head)?;
+                 let mut pending: Vec<&Expr> = vec![];
+-                for a in &args {
++                for (ai, a) in args.iter().enumerate() {
+                     if !matches!(s.node(&ty), Node::Pi(..)) && !pending.is_empty() {
++                        let _p = prof::phase(prof::P_APPINST);
+                         ty = instantiate_n(s, &ty, &pending, 0);
+                         pending.clear();
+                     }
+                     let (dom, cod) = expect_pi(s, &ty)?;
+-                    let dom = if pending.is_empty() { dom } else { instantiate_n(s, &dom, &pending, 0) };
++                    let dom = if pending.is_empty() { dom } else { let _p = prof::phase(prof::P_APPINST); instantiate_n(s, &dom, &pending, 0) };
++                    let _f = prof::frame(prof::ARG[ai.min(19)]);
+                     self.check(a, &dom)?;
+                     pending.push(a);
+                     ty = cod;
+                 }
++                let _p = prof::phase(prof::P_APPINST);
+                 Ok(instantiate_n(s, &ty, &pending, 0))
+             }
+             Node::Id(a, x, y) => {
+@@ -612,21 +650,58 @@ impl Checker<'_> {
+ 
+     fn check(&mut self, e: &Expr, expected: &Expr) -> Result<(), String> {
+         let s = self.s;
++        let tok = prof::check_enter((s.key(e), s.key(expected), self.cid));
++        let r = self.check0(e, expected);
++        prof::check_exit(tok);
++        r
++    }
++
++    fn check0(&mut self, e: &Expr, expected: &Expr) -> Result<(), String> {
++        let s = self.s;
++        prof::rep(9, s.key(e) as u64, s.key(expected) as u64);
++        prof::rep(10, s.key(e) as u64, self.cid as u64);
++        prof::rep(11, s.key(e) as u64, (s.key(expected) as u64) << 32 | self.cid as u64);
+         grow(|| {
+             if let Node::Lam(a, body) = s.node(e)
+-                && let Node::Pi(dom, cod) = s.node(&whnf_in(s, expected))
++                && let Node::Pi(dom, cod) = {
++                    let _p = prof::phase(prof::P_BINDER);
++                    let _f = prof::frame("chk:Lam.whnf(expected)");
++                    s.node(&whnf_in(s, expected))
++                }
+             {
+                 // As `infer`'s `Lam` rule does: `def_eq` alone would accept an
+                 // ill-typed annotation that reduces to `dom`.
+-                expect_sort(s, &self.infer(&a)?)?;
+-                if !def_eq_in(s, &a, &dom) {
++                {
++                    let _p = prof::phase(prof::P_BINDER);
++                    let _f = prof::frame("chk:Lam.infer(dom)");
++                    expect_sort(s, &self.infer(&a)?)?;
++                }
++                let ok = {
++                    let _p = prof::phase(prof::P_BINDER);
++                    let _f = prof::frame("chk:Lam.defeq(dom)");
++                    def_eq_in(s, &a, &dom)
++                };
++                if !ok {
+                     return Err(format!("lambda domain mismatch: {} vs {}", brief(&a), brief(&dom)));
+                 }
+                 let cid2 = self.ic.enter(s, self.cid, &a);
++                let _f = prof::frame("chk:Lam.body");
+                 return self.under(a, cid2, |c| c.check(&body, &cod));
+             }
++            let _f = prof::frame(match s.node(e) {
++                Node::App(..) => "chk:App",
++                Node::Refl(..) => "chk:Refl",
++                Node::J { .. } => "chk:J",
++                Node::Var(..) => "chk:Var",
++                _ => "chk:other",
++            });
+             let inferred = self.infer(e)?;
+-            if def_eq_in(s, &inferred, expected) {
++            let eq = {
++                let _p = prof::phase(prof::P_DEFEQ);
++                let _f2 = prof::frame("chk.defeq(inferred,expected)");
++                def_eq_in(s, &inferred, expected)
++            };
++            if eq {
+                 Ok(())
+             } else {
+                 Err(format!(
+@@ -705,7 +780,13 @@ pub fn check_in(globals: &Globals, ctx: &Ctx, e: &Expr, expected: &Expr) -> Resu
+             let body = || {
+                 with_infer_cache(|ic| {
+                     let mut c = Checker { s, g: globals, ic, ctx: CtxScope::new(ctx), cid: 0 };
+-                    expect_sort(s, &c.infer(expected)?)?;
++                    {
++                        let _p = prof::phase(prof::P_STMT);
++                        let _f = prof::frame("STMT infer(expected)");
++                        expect_sort(s, &c.infer(expected)?)?;
++                    }
++                    let _p = prof::phase(prof::P_BODY);
++                    let _f = prof::frame("PROOF check(e,expected)");
+                     c.check(e, expected)
+                 })
+             };
+diff --git a/crates/tatic-kernel/src/lib.rs b/crates/tatic-kernel/src/lib.rs
+index e1328d2..64ea096 100644
+--- a/crates/tatic-kernel/src/lib.rs
++++ b/crates/tatic-kernel/src/lib.rs
+@@ -60,6 +60,7 @@ pub use reduce::*;
+ pub use postulates::*;
+ 
+ pub mod bin;
++pub mod prof;
+ 
+ #[cfg(test)]
+ mod tests;
+diff --git a/crates/tatic-kernel/src/prof.rs b/crates/tatic-kernel/src/prof.rs
+new file mode 100644
+index 0000000..bb6bcaf
+--- /dev/null
++++ b/crates/tatic-kernel/src/prof.rs
+@@ -0,0 +1,366 @@
++//! PROBE (worktree only, never merged): counters, phases, repeat stats and a path trie over the kernel's work.
++use std::cell::{Cell, RefCell};
++use std::collections::HashMap;
++
++macro_rules! ctrs {
++    ($($n:ident),* $(,)?) => {
++        #[derive(Clone, Copy, Debug)]
++        #[repr(usize)]
++        pub enum C { $($n),* }
++        pub const NAMES: &[&str] = &[$(stringify!($n)),*];
++    };
++}
++ctrs!(
++    // ticks (the six workers; WhnfApp/J/WRec/SigRec split whnf_step)
++    Shift, Inst, WhnfApp, WhnfJ, WhnfWRec, WhnfSigRec, NfWhnf, ConvWhnf, InferNode,
++    // whnf_step results
++    WhnfStuck, WhnfReduced,
++    // whnf_step App paths
++    PathClosedPrefix, PathBetaSpine, PathSingleBeta, PathStuckApp,
++    // memos
++    WhnfTrivial, WhnfHit, WhnfMiss, NfHit, NfMiss, ShiftHit, ShiftMiss, InstHit, InstMiss, InstNoMemo,
++    SpineHit, SpineMiss, HnfHit, HnfMiss, InferHit, InferMiss, InferUnshared,
++    // conv
++    DefEqCall, ConvSame, ConvEqualHit, ConvFull, ConvFalse,
++    // instantiate
++    InstTop, InstTopArgs, UsesCall, InstNoUseShift, InstLeafSubst,
++    // hash-consing
++    BuildCall, BuildNew,
++    // shift_in calls that return early (loose <= cutoff) vs. go to shift_unchecked
++    ShiftInEarly, ShiftInWork,
++);
++pub const NC: usize = NAMES.len();
++
++pub const PHASES: &[&str] = &["OUT", "STMT infer(expected)", "BINDER Lam-check(dom,whnf)", "BODY infer/check", "DEFEQ check", "VARLOOKUP shift", "APP inst types", "EXPECT whnf"];
++pub const NP: usize = PHASES.len();
++pub const P_OUT: usize = 0;
++pub const P_STMT: usize = 1;
++pub const P_BINDER: usize = 2;
++pub const P_BODY: usize = 3;
++pub const P_DEFEQ: usize = 4;
++pub const P_VAR: usize = 5;
++pub const P_APPINST: usize = 6;
++pub const P_EXPECT: usize = 7;
++
++#[derive(Default)]
++pub struct TN {
++    pub label: &'static str,
++    pub parent: usize,
++    pub kids: Vec<(&'static str, usize)>,
++    pub calls: u64,
++    pub incl: u64,
++}
++
++thread_local! {
++    static ON: Cell<bool> = const { Cell::new(false) };
++    static PHASE: Cell<usize> = const { Cell::new(0) };
++    static COUNTS: RefCell<Vec<u64>> = RefCell::new(vec![0; NC * NP]);
++    static PTIME: RefCell<Vec<f64>> = RefCell::new(vec![0.0; NP]);
++    static PSTART: Cell<Option<std::time::Instant>> = const { Cell::new(None) };
++    static REPEAT: RefCell<HashMap<(u8, u64, u64), u32>> = RefCell::new(HashMap::new());
++    static TRIE: RefCell<Vec<TN>> = RefCell::new(vec![TN { label: "root", ..Default::default() }]);
++    static CUR: Cell<usize> = const { Cell::new(0) };
++}
++
++pub fn on() -> bool {
++    ON.with(|o| o.get())
++}
++
++pub fn reset(enable: bool) {
++    ON.with(|o| o.set(enable));
++    PHASE.with(|p| p.set(0));
++    COUNTS.with(|c| c.borrow_mut().iter_mut().for_each(|x| *x = 0));
++    PTIME.with(|c| c.borrow_mut().iter_mut().for_each(|x| *x = 0.0));
++    PSTART.with(|c| c.set(Some(std::time::Instant::now())));
++    REPEAT.with(|c| c.borrow_mut().clear());
++    TRIE.with(|c| *c.borrow_mut() = vec![TN { label: "root", ..Default::default() }]);
++    CUR.with(|c| c.set(0));
++    clear_defeq_log();
++    clear_ref_stats();
++}
++
++#[inline]
++pub fn inc(c: C) {
++    add(c, 1)
++}
++
++#[inline]
++pub fn add(c: C, n: u64) {
++    if on() {
++        let p = PHASE.with(|p| p.get());
++        COUNTS.with(|x| x.borrow_mut()[p * NC + c as usize] += n);
++    }
++}
++
++pub fn counts() -> Vec<Vec<u64>> {
++    COUNTS.with(|x| x.borrow().chunks(NC).map(|c| c.to_vec()).collect())
++}
++pub fn ptimes() -> Vec<f64> {
++    PTIME.with(|x| x.borrow().clone())
++}
++
++fn flush_time() {
++    let now = std::time::Instant::now();
++    if let Some(t0) = PSTART.with(|c| c.replace(Some(now))) {
++        let p = PHASE.with(|p| p.get());
++        PTIME.with(|x| x.borrow_mut()[p] += (now - t0).as_secs_f64() * 1e3);
++    }
++}
++
++pub struct PhaseGuard(usize, bool);
++pub fn phase(p: usize) -> PhaseGuard {
++    if !on() {
++        return PhaseGuard(0, false);
++    }
++    flush_time();
++    let prev = PHASE.with(|c| c.replace(p));
++    PhaseGuard(prev, true)
++}
++impl Drop for PhaseGuard {
++    fn drop(&mut self) {
++        if self.1 {
++            flush_time();
++            PHASE.with(|c| c.set(self.0));
++        }
++    }
++}
++
++#[inline]
++pub fn rep(kind: u8, a: u64, b: u64) {
++    if on() {
++        REPEAT.with(|m| *m.borrow_mut().entry((kind, a, b)).or_insert(0) += 1);
++    }
++}
++/// (distinct, total) per kind.
++pub fn repeats() -> Vec<(u8, usize, u64)> {
++    REPEAT.with(|m| {
++        let mut by: HashMap<u8, (usize, u64)> = HashMap::new();
++        for (&(k, _, _), &n) in m.borrow().iter() {
++            let e = by.entry(k).or_default();
++            e.0 += 1;
++            e.1 += n as u64;
++        }
++        let mut v: Vec<_> = by.into_iter().map(|(k, (d, t))| (k, d, t)).collect();
++        v.sort();
++        v
++    })
++}
++/// Histogram of multiplicities for a kind: (times seen, how many keys).
++pub fn rep_hist(kind: u8) -> Vec<(u32, usize)> {
++    REPEAT.with(|m| {
++        let mut h: HashMap<u32, usize> = HashMap::new();
++        for (&(k, _, _), &n) in m.borrow().iter() {
++            if k == kind {
++                *h.entry(n).or_default() += 1;
++            }
++        }
++        let mut v: Vec<_> = h.into_iter().collect();
++        v.sort();
++        v
++    })
++}
++pub fn rep_top(kind: u8, n: usize) -> Vec<((u64, u64), u32)> {
++    REPEAT.with(|m| {
++        let mut v: Vec<_> = m.borrow().iter().filter(|(k, _)| k.0 == kind).map(|(k, &c)| ((k.1, k.2), c)).collect();
++        v.sort_by(|a, b| b.1.cmp(&a.1));
++        v.truncate(n);
++        v
++    })
++}
++
++pub struct FrameGuard(usize, u64, bool);
++pub fn frame(label: &'static str) -> FrameGuard {
++    if !on() {
++        return FrameGuard(0, 0, false);
++    }
++    note_depth();
++    let w0 = crate::work();
++    let cur = CUR.with(|c| c.get());
++    let idx = TRIE.with(|t| {
++        let mut t = t.borrow_mut();
++        let found = t[cur].kids.iter().find(|(l, _)| std::ptr::eq(*l, label) || *l == label).map(|(_, i)| *i);
++        let idx = match found {
++            Some(i) => i,
++            None => {
++                let i = t.len();
++                t.push(TN { label, parent: cur, ..Default::default() });
++                t[cur].kids.push((label, i));
++                i
++            }
++        };
++        t[idx].calls += 1;
++        idx
++    });
++    CUR.with(|c| c.set(idx));
++    FrameGuard(cur, w0, true)
++}
++impl Drop for FrameGuard {
++    fn drop(&mut self) {
++        if self.2 {
++            let w = crate::work() - self.1;
++            let cur = CUR.with(|c| c.get());
++            TRIE.with(|t| t.borrow_mut()[cur].incl += w);
++            CUR.with(|c| c.set(self.0));
++        }
++    }
++}
++pub fn trie() -> Vec<TN> {
++    TRIE.with(|t| {
++        t.borrow()
++            .iter()
++            .map(|n| TN { label: n.label, parent: n.parent, kids: n.kids.clone(), calls: n.calls, incl: n.incl })
++            .collect()
++    })
++}
++
++pub const ARG: [&str; 20] = [
++    "arg0", "arg1", "arg2", "arg3", "arg4", "arg5", "arg6", "arg7", "arg8", "arg9", "arg10", "arg11", "arg12", "arg13", "arg14", "arg15",
++    "arg16", "arg17", "arg18", "arg19+",
++];
++
++thread_local! {
++    static BASE: Cell<usize> = const { Cell::new(0) };
++    static MIN: Cell<usize> = const { Cell::new(usize::MAX) };
++}
++#[inline(never)]
++pub fn mark_base() {
++    let x = 0u8;
++    BASE.with(|b| b.set(&x as *const u8 as usize));
++    MIN.with(|b| b.set(usize::MAX));
++}
++#[inline(never)]
++pub fn note_depth() {
++    let x = 0u8;
++    let a = &x as *const u8 as usize;
++    MIN.with(|m| {
++        if a < m.get() {
++            m.set(a)
++        }
++    });
++}
++/// Deepest native stack use (bytes) since `mark_base`.
++pub fn max_depth_bytes() -> usize {
++    BASE.with(|b| MIN.with(|m| b.get().saturating_sub(m.get())))
++}
++
++thread_local! {
++    static DLOG: RefCell<Vec<(u64, usize, crate::Expr, crate::Expr)>> = const { RefCell::new(Vec::new()) };
++}
++pub fn log_defeq(work: u64, a: &crate::Expr, b: &crate::Expr) {
++    if on() && work > 0 {
++        let cur = CUR.with(|c| c.get());
++        DLOG.with(|d| d.borrow_mut().push((work, cur, *a, *b)));
++    }
++}
++pub fn defeq_log() -> Vec<(u64, usize, crate::Expr, crate::Expr)> {
++    DLOG.with(|d| d.borrow().clone())
++}
++pub fn clear_defeq_log() {
++    DLOG.with(|d| d.borrow_mut().clear());
++}
++/// The labels from the root to trie node `i`, run-length encoded.
++pub fn path_of(i: usize) -> String {
++    let t = TRIE.with(|t| t.borrow().iter().map(|n| (n.label, n.parent)).collect::<Vec<_>>());
++    let mut labels = vec![];
++    let mut cur = i;
++    while cur != 0 {
++        labels.push(t[cur].0);
++        cur = t[cur].1;
++    }
++    labels.reverse();
++    let mut out: Vec<(&str, usize)> = vec![];
++    for l in labels {
++        match out.last_mut() {
++            Some((p, n)) if *p == l => *n += 1,
++            _ => out.push((l, 1)),
++        }
++    }
++    out.iter().map(|(l, n)| if *n > 1 { format!("{l} x{n}") } else { l.to_string() }).collect::<Vec<_>>().join(" > ")
++}
++
++thread_local! {
++    static SEEN_CHECK: RefCell<std::collections::HashSet<(u32, u32, u32)>> = RefCell::new(Default::default());
++    static IN_REPEAT: Cell<bool> = const { Cell::new(false) };
++    static REPEAT_WORK: Cell<(u64, u64)> = const { Cell::new((0, 0)) };
++    static REFSET: RefCell<std::collections::HashSet<u32>> = RefCell::new(Default::default());
++    static IN_REF: Cell<[bool; 4]> = const { Cell::new([false; 4]) };
++    // [kind][0 = closed node in refset, 1 = closed node, 2 = any node in refset] -> (calls, work)
++    static REFWORK: Cell<[[(u64, u64); 3]; 2]> = const { Cell::new([[(0, 0); 3]; 2]) };
++}
++pub struct CheckTok(bool, u64);
++pub fn check_enter(key: (u32, u32, u32)) -> CheckTok {
++    if !on() {
++        return CheckTok(false, 0);
++    }
++    let first = SEEN_CHECK.with(|s| s.borrow_mut().insert(key));
++    if !first && !IN_REPEAT.with(|c| c.get()) {
++        IN_REPEAT.with(|c| c.set(true));
++        return CheckTok(true, crate::work());
++    }
++    CheckTok(false, 0)
++}
++pub fn check_exit(t: CheckTok) {
++    if t.0 {
++        let w = crate::work() - t.1;
++        REPEAT_WORK.with(|c| {
++            let (a, b) = c.get();
++            c.set((a + 1, b + w))
++        });
++        IN_REPEAT.with(|c| c.set(false));
++    }
++}
++/// (outermost repeated check calls, work inside them).
++pub fn repeat_check_work() -> (u64, u64) {
++    REPEAT_WORK.with(|c| c.get())
++}
++pub fn set_ref(keys: impl IntoIterator<Item = u32>) {
++    REFSET.with(|s| *s.borrow_mut() = keys.into_iter().collect());
++}
++pub fn clear_ref_stats() {
++    REFWORK.with(|c| c.set([[(0, 0); 3]; 2]));
++    SEEN_CHECK.with(|s| s.borrow_mut().clear());
++    REPEAT_WORK.with(|c| c.set((0, 0)));
++}
++pub fn ref_stats() -> [[(u64, u64); 3]; 2] {
++    REFWORK.with(|c| c.get())
++}
++pub struct RefTok([bool; 3], usize, u64);
++pub fn ref_enter(kind: usize, key: u32, closed: bool) -> RefTok {
++    if !on() {
++        return RefTok([false; 3], 0, 0);
++    }
++    let in_ref = REFSET.with(|s| s.borrow().contains(&key));
++    let want = [closed && in_ref, closed, in_ref];
++    let mut flags = IN_REF.with(|c| c.get());
++    let mut take = [false; 3];
++    for i in 0..3 {
++        if want[i] && !flags[i] {
++            take[i] = true;
++            flags[i] = true;
++        }
++    }
++    // the flags are shared across kinds: a nested node of the other kind inside an outermost one is not double counted
++    IN_REF.with(|c| c.set(flags));
++    RefTok(take, kind, crate::work())
++}
++pub fn ref_exit(t: RefTok) {
++    if t.0.iter().any(|x| *x) {
++        let w = crate::work() - t.2;
++        let mut flags = IN_REF.with(|c| c.get());
++        let mut r = REFWORK.with(|c| c.get());
++        for i in 0..3 {
++            if t.0[i] {
++                r[t.1][i].0 += 1;
++                r[t.1][i].1 += w;
++                flags[i] = false;
++            }
++        }
++        REFWORK.with(|c| c.set(r));
++        IN_REF.with(|c| c.set(flags));
++    }
++}
++
++/// `subst_top` for the probes.
++pub fn inst1(body: &crate::Expr, a: &crate::Expr) -> crate::Expr {
++    crate::with_spaces(|s| crate::subst::subst_top(s, body, a))
++}
+diff --git a/crates/tatic-kernel/src/reduce.rs b/crates/tatic-kernel/src/reduce.rs
+index 74acce6..73fcd6f 100644
+--- a/crates/tatic-kernel/src/reduce.rs
++++ b/crates/tatic-kernel/src/reduce.rs
+@@ -17,8 +17,10 @@ fn spine(s: &Spaces, e: &Expr) -> (Expr, Option<Expr>) {
+         return (f, closed);
+     }
+     if let Some(hit) = hc::spine_get(s, e) {
++        prof::inc(prof::C::SpineHit);
+         return hit;
+     }
++    prof::inc(prof::C::SpineMiss);
+     let (head, below) = grow(|| spine(s, &f));
+     let info = (head, closed.or(below));
+     hc::spine_put(s, e, info);
+@@ -106,8 +108,10 @@ fn closed_prefix_spine(s: &Spaces, e: &Expr, p: &Expr) -> Option<Expr> {
+ /// longer prefix holds only its sub-diagram (docs/tier-cycle/, "Full head normal form").
+ fn hnf_rc(s: &Spaces, p: &Expr) -> Expr {
+     if let Some(hit) = hc::hnf_get(s, p) {
++        prof::inc(prof::C::HnfHit);
+         return hit;
+     }
++    prof::inc(prof::C::HnfMiss);
+     let r = match s.node(p) {
+         Node::App(f, a) => {
+             let hf = hnf_rc(s, &f);
+@@ -142,7 +146,22 @@ fn under_lams(s: &Spaces, w: Expr) -> Expr {
+ /// a copy missed them, so each level of a stuck spine reduced the whole
+ /// spine below it again (`docs/related-work/` §48, §59).
+ fn whnf_step(s: &Spaces, e: &Expr) -> Option<Expr> {
++    let tok = prof::ref_enter(1, s.key(e), s.loose(e) == 0);
++    let r = whnf_step0(s, e);
++    prof::ref_exit(tok);
++    prof::inc(if r.is_some() { prof::C::WhnfReduced } else { prof::C::WhnfStuck });
++    r
++}
++
++fn whnf_step0(s: &Spaces, e: &Expr) -> Option<Expr> {
+     s.tick();
++    prof::rep(2, s.key(e) as u64, 0);
++    prof::inc(match s.node(e) {
++        Node::App(..) => prof::C::WhnfApp,
++        Node::J { .. } => prof::C::WhnfJ,
++        Node::WRec { .. } => prof::C::WhnfWRec,
++        _ => prof::C::WhnfSigRec,
++    });
+     grow(|| match s.node(e) {
+         Node::App(f, a) => {
+             // `e`'s spine facts from `f`'s, asked for only as needed: `f` itself is the common
+@@ -151,20 +170,26 @@ fn whnf_step(s: &Spaces, e: &Expr) -> Option<Expr> {
+             if let Some(p) = closed
+                 && let Some(r) = closed_prefix_spine(s, e, &p)
+             {
++                prof::inc(prof::C::PathClosedPrefix);
+                 return Some(r);
+             }
+             if matches!(s.node(&f), Node::App(..))
+                 && let Some(r) = beta_spine(s, e, &spine(s, &f).0)
+             {
++                prof::inc(prof::C::PathBetaSpine);
+                 return Some(r);
+             }
+             let wf = whnf_in(s, &f);
+             match s.node(&wf) {
+                 Node::Lam(_, body) => {
++                    prof::inc(prof::C::PathSingleBeta);
+                     let r = subst_top(s, &body, &a);
+                     Some(whnf_in(s, &r))
+                 }
+-                _ => (!s.same(&wf, &f)).then(|| app(wf, a)),
++                _ => {
++                    prof::inc(prof::C::PathStuckApp);
++                    (!s.same(&wf, &f)).then(|| app(wf, a))
++                }
+             }
+         }
+         Node::J { motive, base, a, b, p } => {
+@@ -227,11 +252,14 @@ fn whnf_sigrec(s: &Spaces, motive: Expr, step: Expr, target: Expr) -> Option<Exp
+ /// recursive call already did), and later asks hit that.
+ pub(super) fn whnf_in(s: &Spaces, e: &Expr) -> Expr {
+     if !matches!(s.node(e), Node::App(..) | Node::J { .. } | Node::WRec { .. } | Node::SigRec { .. }) {
++        prof::inc(prof::C::WhnfTrivial);
+         return *e;
+     }
+     if let Some(hit) = hc::whnf_get(s, e) {
++        prof::inc(prof::C::WhnfHit);
+         return hit;
+     }
++    prof::inc(prof::C::WhnfMiss);
+     let result = whnf_step(s, e).unwrap_or(*e);
+     hc::whnf_put(s, e, &result);
+     // The contract is that `result` is in whnf; the kernel's own tests check it, elsewhere the check would cost work.
+@@ -243,8 +271,10 @@ pub(super) fn whnf_in(s: &Spaces, e: &Expr) -> Expr {
+ /// Full normal form: `whnf`, then recurse structurally into subterms, cached per node.
+ pub(super) fn nf_in(s: &Spaces, e: &Expr) -> Expr {
+     if let Some(hit) = hc::nf_get(s, e) {
++        prof::inc(prof::C::NfHit);
+         return hit;
+     }
++    prof::inc(prof::C::NfMiss);
+     let w = whnf_in(s, e);
+     let result = nf_whnf(s, &w);
+     hc::nf_put(s, e, &result);
+@@ -255,6 +285,8 @@ pub(super) fn nf_in(s: &Spaces, e: &Expr) -> Expr {
+ /// the `nf` of each child.
+ fn nf_whnf(s: &Spaces, w: &Expr) -> Expr {
+     s.tick();
++    prof::inc(prof::C::NfWhnf);
++    prof::rep(8, s.key(w) as u64, 0);
+     grow(|| match s.node(w) {
+         Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *w,
+         n => s.mk(n.map_kids(|c, _| nf_in(s, &c))),
+@@ -272,7 +304,14 @@ pub fn def_eq(a: &Expr, b: &Expr) -> bool {
+ /// [`def_eq`] inside the kernel.
+ pub(super) fn def_eq_in(s: &Spaces, a: &Expr, b: &Expr) -> bool {
+     EQUAL.with(|m| m.borrow_mut().clear());
+-    conv(s, a, b)
++    prof::inc(prof::C::DefEqCall);
++    let w0 = s.work();
++    let r = {
++        let _f = prof::frame("defeq");
++        conv(s, a, b)
++    };
++    prof::log_defeq(s.work() - w0, a, b);
++    r
+ }
+ 
+ thread_local! {
+@@ -297,15 +336,20 @@ thread_local! {
+ /// pairs need no entry: the first one ends the call.
+ fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
+     if s.same(a, b) {
++        prof::inc(prof::C::ConvSame);
+         return true;
+     }
+     let pair = (s.key(a) as u64) << 32 | s.key(b) as u64;
+     if EQUAL.with(|m| m.borrow().contains(&pair)) {
++        prof::inc(prof::C::ConvEqualHit);
+         return true;
+     }
++    prof::inc(prof::C::ConvFull);
+     let equal = conv_whnf(s, &whnf_in(s, a), &whnf_in(s, b));
+     if equal {
+         EQUAL.with(|m| m.borrow_mut().insert(pair));
++    } else {
++        prof::inc(prof::C::ConvFalse);
+     }
+     equal
+ }
+@@ -314,6 +358,8 @@ fn conv(s: &Spaces, a: &Expr, b: &Expr) -> bool {
+ /// each pair of children, in the order `nf_in` visits them.
+ fn conv_whnf(s: &Spaces, x: &Expr, y: &Expr) -> bool {
+     s.tick();
++    prof::inc(prof::C::ConvWhnf);
++    prof::rep(3, s.key(x) as u64, s.key(y) as u64);
+     let (nx, ny) = (s.node(x), s.node(y));
+     grow(|| nx.same_shape(&ny, |p, q| conv(s, p, q)))
+ }
+diff --git a/crates/tatic-kernel/src/spaces.rs b/crates/tatic-kernel/src/spaces.rs
+index 4639e0c..f83f5b2 100644
+--- a/crates/tatic-kernel/src/spaces.rs
++++ b/crates/tatic-kernel/src/spaces.rs
+@@ -359,6 +359,7 @@ impl Spaces {
+     /// first, taking only a hit below `w` (one at or above is a copy, whose twin the region lookup finds). Then it is found
+     /// in the region or built there, without the search when a region child has no parent yet. With no region open, it is found or built in the persistent space.
+     pub(crate) fn build(&self, n: Node<Ref>) -> Ref {
++        crate::prof::inc(crate::prof::C::BuildCall);
+         let h = hash(&n);
+         let i = self.inner();
+         let (mut persistent_kids, mut fresh_kid) = (true, false);
+@@ -390,6 +391,7 @@ impl Spaces {
+                 }
+             };
+             let (ranges, height) = derive(&mut i.persistent.cols, cols, &n);
++            crate::prof::inc(crate::prof::C::BuildNew);
+             let r = cols.push(true, n, ranges, 0, height);
+             match vacant {
+                 Some(v) => drop(v.insert((h, r))),
+diff --git a/crates/tatic-kernel/src/subst.rs b/crates/tatic-kernel/src/subst.rs
+index ab3219d..1df1c89 100644
+--- a/crates/tatic-kernel/src/subst.rs
++++ b/crates/tatic-kernel/src/subst.rs
+@@ -14,8 +14,10 @@ pub(super) fn shift_in(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
+     // Adding 0 changes no index, and a term whose loose variables all sit
+     // below `cutoff` has none to change: either way `e` comes back as is.
+     if amount == 0 || s.loose(e) <= cutoff {
++        prof::inc(prof::C::ShiftInEarly);
+         return *e;
+     }
++    prof::inc(prof::C::ShiftInWork);
+     shift_unchecked(s, e, cutoff, amount)
+ }
+ 
+@@ -23,6 +25,9 @@ pub(super) fn shift_in(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
+ /// `cutoff` (and `amount != 0`).
+ fn shift_unchecked(s: &Spaces, e: &Expr, cutoff: u32, amount: i32) -> Expr {
+     s.tick();
++    prof::inc(prof::C::Shift);
++    prof::rep(6, s.key(e) as u64, (cutoff as u64) << 32 | amount as u32 as u64);
++    prof::rep(7, s.key(e) as u64, 0);
+     grow(|| match s.node(e) {
+         Node::Var(k) if k >= cutoff => var((k as i32 + amount) as u32),
+         Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *e,
+@@ -36,8 +41,10 @@ fn shift_child(s: &Spaces, x: &Expr, cutoff: u32, amount: i32) -> Expr {
+         return *x;
+     }
+     if let Some(r) = hc::shift_get(s, x, cutoff, amount) {
++        prof::inc(prof::C::ShiftHit);
+         return r;
+     }
++    prof::inc(prof::C::ShiftMiss);
+     let r = shift_unchecked(s, x, cutoff, amount);
+     hc::shift_put(s, x, cutoff, amount, &r);
+     r
+@@ -75,6 +82,8 @@ pub(super) fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Exp
+     if s.loose(e) <= d {
+         return *e;
+     }
++    prof::inc(prof::C::InstTop);
++    prof::add(prof::C::InstTopArgs, args.len() as u64);
+     hc::inst_begin(s);
+     debug_assert!(!s.inst_open.replace(true), "instantiate_n re-entered: its memo is per call");
+     let r = inst_rec(s, e, args, d);
+@@ -85,19 +94,31 @@ pub(super) fn instantiate_n(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Exp
+ /// `instantiate_n`'s recursion; the memo is per top-level call (nothing below calls `instantiate_n`).
+ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
+     s.tick();
++    prof::inc(prof::C::Inst);
++    prof::rep(4, s.key(e) as u64, d as u64);
++    prof::rep(5, s.key(e) as u64, 0);
+     let m = args.len() as u32;
+     let go = |x: Expr, under: bool| {
+         let d = d + under as u32;
+         if s.loose(&x) <= d {
+             return x;
+         }
++        prof::inc(prof::C::UsesCall);
+         if s.loose(&x) != u32::MAX && !hc::uses(s, &x, d, m) {
++            prof::inc(prof::C::InstNoUseShift);
+             return shift_child(s, &x, d + m, -(m as i32));
+         }
+         let memo = s.shared(&x) && !hc::low(s, &x);
++        if !memo {
++            prof::inc(prof::C::InstNoMemo);
++        }
+         if memo && let Some(r) = hc::inst_get(s, &x, d) {
++            prof::inc(prof::C::InstHit);
+             return r;
+         }
++        if memo {
++            prof::inc(prof::C::InstMiss);
++        }
+         let r = inst_rec(s, &x, args, d);
+         if memo {
+             hc::inst_put(s, &x, d, &r);
+@@ -106,7 +127,7 @@ fn inst_rec(s: &Spaces, e: &Expr, args: &[&Expr], d: u32) -> Expr {
+     };
+     grow(|| match s.node(e) {
+         Node::Var(k) if k >= d + m => var(k - m),
+-        Node::Var(k) if k >= d => shift_in(s, args[(m - 1 - (k - d)) as usize], 0, d as i32),
++        Node::Var(k) if k >= d => { prof::inc(prof::C::InstLeafSubst); shift_in(s, args[(m - 1 - (k - d)) as usize], 0, d as i32) }
+         Node::Var(_) | Node::Sort(_) | Node::Const(_) | Node::Free(_) => *e,
+         n => s.mk(n.map_kids(&go)),
+     })
+diff --git a/crates/tatic/src/proof/tests.rs b/crates/tatic/src/proof/tests.rs
+index d1e1e90..fa49bb0 100644
+--- a/crates/tatic/src/proof/tests.rs
++++ b/crates/tatic/src/proof/tests.rs
+@@ -37,3 +37,6 @@ mod gate_mutants;
+ mod modules;
+ mod loop_form;
+ mod toy_table;
++mod cold_gap;
++mod check_breakdown;
++mod check_experiments;
+diff --git a/crates/tatic/src/proof/tests/check_breakdown.rs b/crates/tatic/src/proof/tests/check_breakdown.rs
+new file mode 100644
+index 0000000..25ff201
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/check_breakdown.rs
+@@ -0,0 +1,346 @@
++//! PROBE (worktree only): where the gate's `holds` work goes for `capturing_closure_loop`, by kernel operation, by
++//! phase of `check_in`, by path in the proof term, with repeat and memo statistics; and what repeats across calls.
++use super::gate::compiled;
++use crate::jit::shape::wasm_table;
++use crate::proof::gate::build;
++use crate::support::samples::capturing_closure_loop;
++use tatic_kernel::prof;
++use tatic_kernel::{persist, scoped, term_sizes, work, Expr, Node};
++use tatic_wasm::encoding::holds;
++
++fn on(f: impl FnOnce() + Send + 'static) {
++    std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn(f).unwrap().join().unwrap();
++}
++
++fn kind(e: &Expr) -> &'static str {
++    match e.node() {
++        Node::Var(_) => "Var",
++        Node::Sort(_) => "Sort",
++        Node::Const(_) => "Const",
++        Node::Free(_) => "Free",
++        Node::Pi(..) => "Pi",
++        Node::Lam(..) => "Lam",
++        Node::App(..) => "App",
++        Node::Id(..) => "Id",
++        Node::Refl(..) => "Refl",
++        Node::J { .. } => "J",
++        Node::W(..) => "W",
++        Node::Sup(..) => "Sup",
++        Node::WRec { .. } => "WRec",
++        Node::Sigma(..) => "Sigma",
++        Node::Pair(..) => "Pair",
++        Node::SigRec { .. } => "SigRec",
++    }
++}
++
++fn describe(label: &str, e: &Expr) {
++    let mut cur = *e;
++    let mut binders = 0;
++    while let Node::Lam(_, b) | Node::Pi(_, b) = cur.node() {
++        binders += 1;
++        cur = b;
++    }
++    let (d, t) = term_sizes(e);
++    println!("DESC {label}: distinct nodes {d}, tree size {t}; {binders} leading binders; body is {}", kind(&cur));
++    if let Node::Id(a, x, y) = cur.node() {
++        for (n, z) in [("R", a), ("lhs", x), ("rhs", y)] {
++            let (d, t) = term_sizes(&z);
++            println!("DESC   Id.{n}: {} distinct {d} tree {t}", kind(&z));
++        }
++    }
++    let (mut args, mut h) = (vec![], cur);
++    while let Node::App(f, a) = h.node() {
++        args.push(a);
++        h = f;
++    }
++    args.reverse();
++    println!("DESC   body spine head {} with {} args", kind(&h), args.len());
++    for (i, a) in args.iter().enumerate() {
++        let (d, t) = term_sizes(a);
++        let mut c = *a;
++        let mut b = 0;
++        while let Node::Lam(_, bb) | Node::Pi(_, bb) = c.node() {
++            b += 1;
++            c = bb;
++        }
++        println!("DESC   arg{i}: {} ({b} binders, body {}) distinct {d} tree {t}", kind(a), kind(&c));
++    }
++}
++
++pub(super) fn dump(total_work: u64) {
++    let counts = prof::counts();
++    println!("PROF total work {total_work}");
++    print!("PROF {:<18}", "counter");
++    for p in prof::PHASES {
++        print!(" {:>9}", &p.split(' ').next().unwrap()[..p.split(' ').next().unwrap().len().min(9)]);
++    }
++    println!(" {:>9}", "TOTAL");
++    for (i, n) in prof::NAMES.iter().enumerate() {
++        let tot: u64 = counts.iter().map(|c| c[i]).sum();
++        if tot == 0 {
++            continue;
++        }
++        print!("PROF {n:<18}");
++        for c in &counts {
++            print!(" {:>9}", c[i]);
++        }
++        println!(" {tot:>9}");
++    }
++    let tick_names = ["Shift", "Inst", "WhnfApp", "WhnfJ", "WhnfWRec", "WhnfSigRec", "NfWhnf", "ConvWhnf", "InferNode"];
++    print!("PROF {:<18}", "TICKS (work)");
++    let mut all = 0;
++    for p in 0..prof::NP {
++        let s: u64 = tick_names.iter().map(|n| counts[p][prof::NAMES.iter().position(|x| x == n).unwrap()]).sum();
++        all += s;
++        print!(" {s:>9}");
++    }
++    println!(" {all:>9}");
++    print!("PROF {:<18}", "phase wall ms");
++    for t in prof::ptimes() {
++        print!(" {t:>9.3}");
++    }
++    println!();
++    println!("PROF phases: {:?}", prof::PHASES);
++    let names = [
++        "infer (node,ctx)",
++        "infer node",
++        "whnf_step node",
++        "conv_whnf (x,y)",
++        "inst_rec (node,d)",
++        "inst_rec node",
++        "shift_unchecked (node,cut,amt)",
++        "shift_unchecked node",
++        "nf_whnf node",
++        "check (e,expected)",
++        "check (e,cid)",
++        "check (e,expected,cid)",
++    ];
++    for (k, d, t) in prof::repeats() {
++        println!("REPEAT {:<32} distinct {d:>6} total {t:>6} ratio {:.2}", names[k as usize], t as f64 / d as f64);
++    }
++    let (rc, rw) = prof::repeat_check_work();
++    println!("CHECKREP outermost repeated check(e,expected,cid) calls {rc}, work inside them {rw} ({:.1}% of {total_work})", 100.0 * rw as f64 / total_work as f64);
++    let rs = prof::ref_stats();
++    for (k, name) in ["infer_node", "whnf_step"].iter().enumerate() {
++        println!(
++            "REFSTAT {name}: closed&in-reference-set calls {} work {}; closed (any) calls {} work {}; in-reference-set (any) calls {} work {}",
++            rs[k][0].0, rs[k][0].1, rs[k][1].0, rs[k][1].1, rs[k][2].0, rs[k][2].1
++        );
++    }
++    println!("DEPTH max native stack use {} KiB", prof::max_depth_bytes() / 1024);
++    for k in [1u8, 2, 3, 5, 7, 8, 11] {
++        let h = prof::rep_hist(k);
++        println!("HIST {:<22} (times seen: keys) {:?}", names[k as usize], &h[..h.len().min(14)]);
++    }
++}
++
++pub(super) fn print_defeq() {
++    let mut log = prof::defeq_log();
++    let all: u64 = log.iter().map(|x| x.0).sum();
++    println!("DEFEQ {} def_eq calls did work, total work {all}", log.len());
++    log.sort_by_key(|x| std::cmp::Reverse(x.0));
++    for (w, cur, a, b) in log.iter().take(14) {
++        let (da, ta) = term_sizes(a);
++        let (db, tb) = term_sizes(b);
++        println!(
++            "DEFEQ work {w:>5}  {}({da} distinct/{ta} tree) vs {}({db}/{tb})  at {}",
++            kind(a),
++            kind(b),
++            prof::path_of(*cur)
++        );
++    }
++    // by site (path), summed
++    let mut by: std::collections::HashMap<String, (u64, u64)> = Default::default();
++    for (w, cur, _, _) in &log {
++        let e = by.entry(prof::path_of(*cur)).or_default();
++        e.0 += 1;
++        e.1 += w;
++    }
++    let mut v: Vec<_> = by.into_iter().collect();
++    v.sort_by_key(|x| std::cmp::Reverse(x.1 .1));
++    for (p, (n, w)) in v.iter().take(8) {
++        println!("DEFEQSITE calls {n:>4} work {w:>6}  {p}");
++    }
++}
++
++pub(super) fn print_trie(total: u64, min_frac: f64) {
++    let t = prof::trie();
++    // flat profile by label: calls, inclusive, exclusive
++    let mut flat: std::collections::HashMap<&str, (u64, u64, u64)> = Default::default();
++    for (i, n) in t.iter().enumerate().skip(1) {
++        let kids: u64 = n.kids.iter().map(|k| t[k.1].incl).sum();
++        let e = flat.entry(n.label).or_default();
++        e.0 += n.calls;
++        e.2 += n.incl.saturating_sub(kids);
++        let _ = i;
++    }
++    let mut fl: Vec<_> = flat.into_iter().collect();
++    fl.sort_by_key(|x| std::cmp::Reverse(x.1 .2));
++    for (l, (c, _, ex)) in fl {
++        println!("FLAT {l:<32} calls {c:>7}  exclusive work {ex:>6} = {:.1}%", 100.0 * ex as f64 / total as f64);
++    }
++    fn go2(t: &[prof::TN], i: usize, depth: usize, total: u64, min_frac: f64) {
++        // follow the heavy child while one carries >= 98% of the node's work; run-length the labels
++        let mut labels: Vec<(&str, usize)> = vec![(t[i].label, 1)];
++        let mut cur = i;
++        loop {
++            let heavy = t[cur].kids.iter().map(|k| k.1).find(|&k| t[cur].incl > 0 && t[k].incl as f64 >= 0.98 * t[cur].incl as f64);
++            match heavy {
++                Some(k) => {
++                    cur = k;
++                    if labels.last().unwrap().0 == t[k].label {
++                        labels.last_mut().unwrap().1 += 1;
++                    } else {
++                        labels.push((t[k].label, 1));
++                    }
++                }
++                None => break,
++            }
++        }
++        let chain: Vec<String> = labels.iter().map(|(l, n)| if *n > 1 { format!("{l} x{n}") } else { l.to_string() }).collect();
++        let kids_incl: u64 = t[cur].kids.iter().map(|k| t[k.1].incl).sum();
++        println!(
++            "TRIE {:>width$}{} [calls {}, incl {} = {:.1}%, excl-at-end {}]",
++            "",
++            chain.join(" > "),
++            t[cur].calls,
++            t[cur].incl,
++            100.0 * t[cur].incl as f64 / total as f64,
++            t[cur].incl.saturating_sub(kids_incl),
++            width = depth.min(30) * 2
++        );
++        let mut kids: Vec<usize> = t[cur].kids.iter().map(|k| k.1).collect();
++        kids.sort_by_key(|&k| std::cmp::Reverse(t[k].incl));
++        for k in kids {
++            if t[k].incl as f64 >= min_frac * total as f64 {
++                go2(t, k, depth + 1, total, min_frac);
++            }
++        }
++    }
++    for k in t[0].kids.iter().map(|k| k.1).collect::<Vec<_>>() {
++        go2(&t, k, 0, total, min_frac);
++    }
++}
++
++#[allow(dead_code)]
++fn print_trie_old(total: u64, min_frac: f64) {
++    let t = prof::trie();
++    fn go(t: &[prof::TN], i: usize, depth: usize, total: u64, min_frac: f64) {
++        let mut chain = t[i].label.to_string();
++        let mut cur = i;
++        // collapse a single heavy child chain
++        loop {
++            let heavy: Vec<usize> = t[cur].kids.iter().map(|k| k.1).filter(|&k| t[k].incl as f64 >= 0.98 * t[cur].incl as f64 && t[cur].incl > 0).collect();
++            if t[cur].kids.len() == 1 && heavy.len() == 1 {
++                cur = heavy[0];
++                chain.push_str(" > ");
++                chain.push_str(t[cur].label);
++            } else {
++                break;
++            }
++        }
++        let kids_incl: u64 = t[cur].kids.iter().map(|k| t[k.1].incl).sum();
++        let excl = t[cur].incl.saturating_sub(kids_incl);
++        println!(
++            "TRIE {:>width$}{} [calls {}, incl {} = {:.1}%, excl {}]",
++            "",
++            chain,
++            t[cur].calls,
++            t[cur].incl,
++            100.0 * t[cur].incl as f64 / total as f64,
++            excl,
++            width = depth.min(40) * 2
++        );
++        let mut kids: Vec<usize> = t[cur].kids.iter().map(|k| k.1).collect();
++        kids.sort_by_key(|&k| std::cmp::Reverse(t[k].incl));
++        for k in kids {
++            if t[k].incl as f64 >= min_frac * total as f64 {
++                go(t, k, depth + 1, total, min_frac);
++            }
++        }
++    }
++    let kids: Vec<usize> = t[0].kids.iter().map(|k| k.1).collect();
++    for k in kids {
++        go(&t, k, 0, total, min_frac);
++    }
++}
++
++#[test]
++#[ignore]
++fn check_breakdown() {
++    on(|| {
++        let (s, h, frag) = compiled(&capturing_closure_loop);
++        // A: the instrumented check, in the region the gate uses (build then holds)
++        scoped(|| {
++            let (w0, t0) = (work(), std::time::Instant::now());
++            let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++            let p = p.expect("proves");
++            let w1 = work();
++            println!("RUN build work {} ({:.3} ms)", w1 - w0, t0.elapsed().as_secs_f64() * 1e3);
++            describe("statement", &st);
++            describe("proof", &p);
++            prof::reset(true);
++            prof::mark_base();
++            let (w1, t1) = (work(), std::time::Instant::now());
++            holds(&p, &st).expect("holds");
++            let (w2, ms) = (work(), t1.elapsed().as_secs_f64() * 1e3);
++            println!("RUN holds work {} ({ms:.3} ms with probe on)", w2 - w1);
++            dump(w2 - w1);
++            print_trie(w2 - w1, 0.02);
++            print_defeq();
++            prof::reset(false);
++            (st, p)
++        });
++        // B: what repeats across calls in one thread
++        for i in 0..3 {
++            scoped(|| {
++                let (w0, t0) = (work(), std::time::Instant::now());
++                let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++                let p = p.expect("proves");
++                let (w1, t1) = (work(), std::time::Instant::now());
++                holds(&p, &st).expect("holds");
++                let (w2, t2) = (work(), std::time::Instant::now());
++                println!(
++                    "CALLS fresh region #{i}: build work {} ({:.3} ms), holds work {} ({:.3} ms)",
++                    w1 - w0,
++                    (t1 - t0).as_secs_f64() * 1e3,
++                    w2 - w1,
++                    (t2 - t1).as_secs_f64() * 1e3
++                );
++            });
++        }
++        // C: the same check repeated inside one region (memos kept)
++        scoped(|| {
++            let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++            let p = p.expect("proves");
++            for i in 0..4 {
++                let (w0, t0) = (work(), std::time::Instant::now());
++                holds(&p, &st).expect("holds");
++                println!("CALLS same region holds #{i}: work {} ({:.3} ms)", work() - w0, t0.elapsed().as_secs_f64() * 1e3);
++            }
++        });
++        // D: holds with cold memos on persisted terms (what the check costs without the build's memos)
++        let (st, p) = scoped(|| {
++            let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++            (st, p.expect("proves"))
++        });
++        for i in 0..3 {
++            scoped(|| {
++                let (w0, t0) = (work(), std::time::Instant::now());
++                holds(&p, &st).expect("holds");
++                println!("CALLS persisted terms, cold memos #{i}: holds work {} ({:.3} ms)", work() - w0, t0.elapsed().as_secs_f64() * 1e3);
++            });
++        }
++        let _ = persist;
++        // E: instrumented, cold memos, persisted terms
++        scoped(|| {
++            prof::reset(true);
++            let w0 = work();
++            holds(&p, &st).expect("holds");
++            let w = work() - w0;
++            println!("RUN (cold memos, persisted terms) holds work {w}");
++            dump(w);
++            prof::reset(false);
++        });
++    });
++}
+diff --git a/crates/tatic/src/proof/tests/check_experiments.rs b/crates/tatic/src/proof/tests/check_experiments.rs
+new file mode 100644
+index 0000000..aab9690
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/check_experiments.rs
+@@ -0,0 +1,185 @@
++//! PROBE (worktree only): first call on a fresh thread; the check of a closed instance (the statement's binders as
++//! postulates, so nothing is open); the cost of the statement's own type-check apart from the proof's.
++use super::gate::compiled;
++use crate::jit::shape::wasm_table;
++use crate::proof::gate::build;
++use crate::support::samples::capturing_closure_loop;
++use tatic_kernel::prof;
++use tatic_kernel::{app, check_in, infer_in, mk, persist, scoped, whnf, work, Ctx, Expr, Globals, Node};
++use tatic_wasm::encoding::holds;
++
++fn on_stack(stack: usize, f: impl FnOnce() + Send + 'static) {
++    std::thread::Builder::new().stack_size(stack).spawn(f).unwrap().join().unwrap();
++}
++
++/// The first, second, third `build + holds` on a brand-new thread, with no probe on, by stack size.
++#[test]
++#[ignore]
++fn check_first_call() {
++    for (label, stack) in [("256MiB", tatic_kernel::CHECK_STACK), ("1MiB", 1 << 20)] {
++        on_stack(stack, move || {
++            let (s, h, frag) = compiled(&capturing_closure_loop);
++            for i in 0..4 {
++                scoped(|| {
++                    let t0 = std::time::Instant::now();
++                    let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++                    let p = p.expect("proves");
++                    let t1 = std::time::Instant::now();
++                    let w1 = work();
++                    holds(&p, &st).expect("holds");
++                    println!(
++                        "FIRST thread stack {label} call #{i}: build {:.3} ms, holds {:.3} ms (work {})",
++                        (t1 - t0).as_secs_f64() * 1e3,
++                        t1.elapsed().as_secs_f64() * 1e3,
++                        work() - w1
++                    );
++                });
++            }
++        });
++    }
++}
++
++/// The statement's binders as postulates (`Const`), so the checked term and type have no loose variable; the work of
++/// `check_in` on that against the work of `holds` on the open statement.
++#[test]
++#[ignore]
++fn check_closed_instance() {
++    on_stack(tatic_kernel::CHECK_STACK, || {
++        let (s, h, frag) = compiled(&capturing_closure_loop);
++        for round in 0..2 {
++            scoped(|| {
++                let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++                let p = p.expect("proves");
++                let (w0, t0) = (work(), std::time::Instant::now());
++                holds(&p, &st).expect("holds");
++                let open = work() - w0;
++                println!("CLOSED reference: open holds {:.3} ms", t0.elapsed().as_secs_f64() * 1e3);
++                // close the instance
++                let mut g: Globals = Globals::new();
++                let (mut e, mut t): (Expr, Expr) = (p, st);
++                let mut dom_work = 0u64;
++                let mut n = 0;
++                while let Node::Pi(dom, cod) = t.node() {
++                    assert_eq!(dom.loose(), 0, "binder {n}'s type is open");
++                    let w = work();
++                    let ty = infer_in(&g, &Ctx::new(), &dom).expect("dom infers");
++                    let _ = whnf(&ty);
++                    dom_work += work() - w;
++                    g.push_back(persist(dom));
++                    let c = mk(Node::Const(n));
++                    e = match e.node() {
++                        Node::Lam(_, b) => prof::inst1(&b, &c),
++                        _ => app(e, c),
++                    };
++                    t = prof::inst1(&cod, &c);
++                    n += 1;
++                }
++                if round == 1 {
++                    prof::reset(true);
++                    prof::mark_base();
++                }
++                let (w1, t1) = (work(), std::time::Instant::now());
++                check_in(&g, &Ctx::new(), &e, &t).expect("closed instance holds");
++                let closed = work() - w1;
++                if round == 0 {
++                    println!("CLOSED timing (probe off): check_in {:.3} ms vs open holds timed in CALLS lines", t1.elapsed().as_secs_f64() * 1e3);
++                }
++                if round == 1 {
++                    super::check_breakdown::dump(closed);
++                    super::check_breakdown::print_trie(closed, 0.03);
++                    super::check_breakdown::print_defeq();
++                    prof::reset(false);
++                }
++                println!(
++                    "CLOSED round {round}: open statement holds work {open}; closed instance ({n} binders as postulates) check_in work {closed} + binder-type inference work {dom_work} = {}",
++                    closed + dom_work
++                );
++            });
++        }
++    });
++}
++
++fn keys_of(e: &Expr, out: &mut std::collections::HashSet<u32>) {
++    let k = tatic_kernel::node_key(e) as u32;
++    if out.insert(k) {
++        e.node().for_kids(|c, _| keys_of(c, out));
++    }
++}
++
++/// How much of A's check touches nodes that also occur in B's statement and proof (persisted, so ids are stable
++/// across regions): the shape of what a cross-call memo for closed nodes could reuse.
++#[test]
++#[ignore]
++fn check_cross_call() {
++    use crate::support::samples::source;
++    let sum = |s: &mut crate::lang::term::TermStore| source(s, "rec f n acc = if n <= 0 then acc else f (n - 1) (acc + n)");
++    let sum2 = |s: &mut crate::lang::term::TermStore| source(s, "rec f acc n = if n <= 0 then acc else f (acc + n) (n - 1)");
++    on_stack(tatic_kernel::CHECK_STACK, move || {
++        let mk_pair = |f: &dyn Fn(&mut crate::lang::term::TermStore) -> crate::lang::term::Hash| {
++            let (s, h, frag) = compiled(f);
++            scoped(|| {
++                let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++                (st, p.expect("proves"))
++            })
++        };
++        let a = mk_pair(&capturing_closure_loop);
++        for (name, b) in [("sum", mk_pair(&sum)), ("sum2", mk_pair(&sum2)), ("itself", mk_pair(&capturing_closure_loop))] {
++            let (mut ka, mut kb) = (std::collections::HashSet::new(), std::collections::HashSet::new());
++            for e in [&a.0, &a.1] {
++                keys_of(e, &mut ka);
++            }
++            for e in [&b.0, &b.1] {
++                keys_of(e, &mut kb);
++            }
++            let shared = ka.intersection(&kb).count();
++            scoped(|| {
++                prof::reset(true);
++                prof::set_ref(kb.iter().copied());
++                let w0 = work();
++                holds(&a.1, &a.0).expect("holds");
++                let w = work() - w0;
++                let rs = prof::ref_stats();
++                println!(
++                    "CROSS A=capturing_closure_loop B={name}: A's distinct nodes {}, also in B {shared}; holds work {w}; infer_node outermost closed-in-B calls {} work {}; whnf_step {} work {}; in-B any infer {} work {}",
++                    ka.len(),
++                    rs[0][0].0,
++                    rs[0][0].1,
++                    rs[1][0].0,
++                    rs[1][0].1,
++                    rs[0][2].0,
++                    rs[0][2].1
++                );
++                prof::reset(false);
++            });
++        }
++    });
++}
++
++/// The statement's type-check alone (`infer` on it) and the proof's check with the statement's type-check skipped
++/// (checking against an already-known type is the same call minus the claim's `infer`): work of each.
++#[test]
++#[ignore]
++fn check_statement_alone() {
++    on_stack(tatic_kernel::CHECK_STACK, || {
++        let (s, h, frag) = compiled(&capturing_closure_loop);
++        scoped(|| {
++            let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++            let p = p.expect("proves");
++            let (w0, t0) = (work(), std::time::Instant::now());
++            let _ = infer_in(&Globals::new(), &Ctx::new(), &st).expect("statement infers");
++            println!("STMT alone: infer(statement) work {} ({:.3} ms; memos warm from build)", work() - w0, t0.elapsed().as_secs_f64() * 1e3);
++            let (w1, t1) = (work(), std::time::Instant::now());
++            holds(&p, &st).expect("holds");
++            println!("STMT then holds in the same region: holds work {} ({:.3} ms)", work() - w1, t1.elapsed().as_secs_f64() * 1e3);
++        });
++        for _ in 0..3 {
++            scoped(|| {
++                let (st, p) = build(wasm_table(), &s, h, &frag).expect("builds");
++                let p = p.expect("proves");
++                let (w1, t1) = (work(), std::time::Instant::now());
++                holds(&p, &st).expect("holds");
++                println!("STMT: holds alone work {} ({:.3} ms)", work() - w1, t1.elapsed().as_secs_f64() * 1e3);
++            });
++        }
++    });
++}
+diff --git a/crates/tatic/src/proof/tests/cold_gap.rs b/crates/tatic/src/proof/tests/cold_gap.rs
+new file mode 100644
+index 0000000..6b99384
+--- /dev/null
++++ b/crates/tatic/src/proof/tests/cold_gap.rs
+@@ -0,0 +1,88 @@
++//! PROBE (g1, 2026-11-12, reverted): why the closure loop's gate build reads 0.7 ms in the O3 spike's debug test and
++//! 2.7 ms in the release `execution` bench. Times `build` and `holds` apart, with the kernel's work count and stack
++//! segment switches, on a `CHECK_STACK` thread (the spike's test) and on a 1 MiB thread (criterion's main thread),
++//! with one store reused (the spike) or a fresh store and compile per run (the bench); then the whole cold
++//! `jit.apply` per run on each thread.
++use super::gate::compiled;
++use crate::jit::shape::wasm_table;
++use crate::jit::JitEngine;
++use crate::lang::term::TermStore;
++use crate::proof::gate::build;
++use crate::support::samples::capturing_closure_loop;
++
++const RUNS: usize = 20;
++const MAIN_STACK: usize = 1024 * 1024;
++
++fn on(stack: usize, f: impl FnOnce() + Send + 'static) {
++    std::thread::Builder::new().stack_size(stack).spawn(f).unwrap().join().unwrap();
++}
++
++fn med(mut x: Vec<f64>) -> f64 {
++    x.sort_by(|p, q| p.partial_cmp(q).unwrap());
++    (x[x.len() / 2 - 1] + x[x.len() / 2]) / 2.0
++}
++
++fn gate_parts(label: &'static str, fresh: bool) {
++    let shared = compiled(&capturing_closure_loop);
++    let (mut bt, mut ct, mut bw, mut cw, mut bs, mut cs) = (vec![], vec![], vec![], vec![], vec![], vec![]);
++    for i in 0..RUNS + 1 {
++        let own;
++        let (s, h, frag) = if fresh {
++            own = compiled(&capturing_closure_loop);
++            (&own.0, own.1, &own.2)
++        } else {
++            (&shared.0, shared.1, &shared.2)
++        };
++        let (b, c, w1, w2, s1, s2) = tatic_kernel::scoped(|| {
++            let (w0, s0, t0) = (tatic_kernel::work(), tatic_kernel::segment_switches(), std::time::Instant::now());
++            let (st, p) = build(wasm_table(), s, h, frag).expect("builds");
++            let p = p.expect("proves");
++            let (w1, s1, t1) = (tatic_kernel::work(), tatic_kernel::segment_switches(), std::time::Instant::now());
++            assert!(tatic_wasm::encoding::holds(&p, &st).is_ok());
++            let (w2, s2) = (tatic_kernel::work(), tatic_kernel::segment_switches());
++            let ms = |d: std::time::Duration| d.as_secs_f64() * 1e3;
++            (ms(t1 - t0), ms(t1.elapsed()), w1 - w0, w2 - w1, s1 - s0, s2 - s1)
++        });
++        if i > 0 {
++            bt.push(b);
++            ct.push(c);
++            bw.push(w1 as f64);
++            cw.push(w2 as f64);
++            bs.push(s1 as f64);
++            cs.push(s2 as f64);
++        }
++    }
++    println!(
++        "PROBE {label}: build {:.3} ms (work {}, segments {}), check {:.3} ms (work {}, segments {})",
++        med(bt), med(bw), med(bs), med(ct), med(cw), med(cs)
++    );
++}
++
++fn cold_apply(label: &'static str) {
++    let mut t = vec![];
++    let mut segs = vec![];
++    for i in 0..RUNS + 1 {
++        let mut store = TermStore::new();
++        let h = capturing_closure_loop(&mut store);
++        let mut jit = JitEngine::new();
++        let (s0, t0) = (tatic_kernel::segment_switches(), std::time::Instant::now());
++        jit.apply(&store, h, &[5, 0]).unwrap();
++        if i > 0 {
++            t.push(t0.elapsed().as_secs_f64() * 1e3);
++            segs.push((tatic_kernel::segment_switches() - s0) as f64);
++        }
++    }
++    println!("PROBE {label}: cold jit.apply {:.3} ms (segments {})", med(t), med(segs));
++}
++
++#[test]
++#[ignore]
++fn cold_gap_probe() {
++    println!("PROBE profile debug_assertions={}", cfg!(debug_assertions));
++    on(tatic_kernel::CHECK_STACK, || gate_parts("big   shared", false));
++    on(MAIN_STACK, || gate_parts("1MiB  shared", false));
++    on(tatic_kernel::CHECK_STACK, || gate_parts("big   fresh ", true));
++    on(MAIN_STACK, || gate_parts("1MiB  fresh ", true));
++    on(tatic_kernel::CHECK_STACK, || cold_apply("big  "));
++    on(MAIN_STACK, || cold_apply("1MiB "));
++}
