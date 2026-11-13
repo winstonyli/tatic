@@ -1,7 +1,7 @@
 //! The generator on straight-line, `If` and self-call bodies: a mini source language mirrors what `tatic::proof::gate::source_fn`
 //! reads from a `Term`, so these tests need no term store.
 use super::*;
-use crate::machine::statement::{statement, statement_with, Clauses, SEnv, FIXED};
+use crate::machine::statement::{statement, statement_with, Clauses, SEnv, SrcFn, FIXED};
 
 #[derive(Clone, Debug)]
 enum Src {
@@ -82,6 +82,10 @@ type Case = (&'static str, usize, Vec<Ins>, Src);
 fn minus() -> Case {
     ("a - b", 2, vec![get(0), get(1), row("sub")], pr("sub", Param(0), Param(1)))
 }
+/// `\a b. a % b`: the one partial row, its site guarded by `y != 0`
+fn rem() -> Case {
+    ("a % b", 2, vec![get(0), get(1), row("mod")], pr("mod", Param(0), Param(1)))
+}
 /// `\a b. if a < b then a * 2 else b + 1`
 fn branch() -> Case {
     let code = vec![get(0), get(1), row("lt"), Ins::If(vec![get(0), konst(2), row("mul")], vec![get(1), konst(1), row("add")])];
@@ -91,15 +95,24 @@ fn branch() -> Case {
 
 /// Prove and check one case on a `CHECK_STACK` thread: `Err` is the generator's refusal or the kernel's.
 fn run(n: usize, (_, arity, code, src): &Case) -> Result<(), String> {
+    run_with(n, *arity, code, &|w| {
+        let src = src.clone();
+        Box::new(move |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| cps(w, e, c, &src, k))
+    })
+}
+
+/// `run` with the source function built by `mk` from the machine (made on the checking thread), so a test can hand
+/// the walk a source `cps` would not build.
+fn run_with(n: usize, arity: usize, code: &[Ins], mk: &(dyn for<'m> Fn(&'m Machine<'static>) -> Box<SrcFn<'m>> + Sync)) -> Result<(), String> {
     std::thread::scope(|s| {
         std::thread::Builder::new()
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn_scoped(s, || {
                 let t = crate::wasm::table();
                 let w = Machine { n, fw: 0, table: t };
-                let entry = Entry { arity: *arity, env: EnvAccess::Params(0), code: code.clone() };
-                let f = |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| cps(&w, e, c, src, k);
-                let module = [Some(ModEntry { entry: &entry, src: &f })];
+                let entry = Entry { arity, env: EnvAccess::Params(0), code: code.to_vec() };
+                let f = mk(&w);
+                let module = [Some(ModEntry { entry: &entry, src: &*f })];
                 let stmt = statement(&w, &module, 0);
                 let proof = prove(&w, &module, 0)?;
                 holds(&proof, &stmt)
@@ -113,10 +126,75 @@ fn run(n: usize, (_, arity, code, src): &Case) -> Result<(), String> {
 #[test]
 fn prove_accepts_straight_line_and_if() {
     for n in [8, 64] {
-        for case in [minus(), branch()] {
+        for case in [minus(), rem(), branch()] {
             run(n, &case).unwrap_or_else(|e| panic!("n={n} {}: {e}", case.0));
         }
     }
+}
+
+/// `\a b. a % b`'s source with a wrong guard, built as `cps` builds it (`y` marked, `k(op x y)` first): the condition
+/// the literal 1 in place of `dom x y`, or (`vacuous`) the else `k(op x y)` in place of `z`.
+fn wrong_guard<'m>(w: &'m Machine<'static>, vacuous: bool) -> Box<SrcFn<'m>> {
+    Box::new(move |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| {
+        let row = w.table.row("mod").unwrap();
+        let x = e.params[0];
+        let y = c.mark(c.at(e.params[1]));
+        let op = (row.meaning)(c, w, 0);
+        let kk = k(c, app2(op, c.at(x), c.at(y)));
+        let dom = app2(constant_n(row.dom.circuit, w.n), c.at(x), c.at(y));
+        if vacuous { e.choose(c, dom, kk, kk) } else { e.choose(c, lit(1, 1), kk, c.at(e.z)) }
+    })
+}
+fn guard_always<'m>(w: &'m Machine<'static>) -> Box<SrcFn<'m>> {
+    wrong_guard(w, false)
+}
+fn guard_vacuous<'m>(w: &'m Machine<'static>) -> Box<SrcFn<'m>> {
+    wrong_guard(w, true)
+}
+
+/// The machine's guard is the table's; a source whose guard differs (always taken, or with no else of its own) is
+/// refused by the walk.
+#[test]
+fn prove_refuses_a_wrong_guard() {
+    let (_, arity, code, _) = rem();
+    for (name, mk) in [("condition 1", guard_always as for<'a> fn(&'a Machine<'static>) -> Box<SrcFn<'a>>), ("else k(op x y)", guard_vacuous)] {
+        let err = run_with(8, arity, &code, &mk).expect_err(name);
+        println!("{name}: {err}");
+    }
+}
+
+/// `z` pinned: out of `mod`'s domain the source side answers the statement's `z`, not `k(op x y)`. The gate shows the
+/// machine equals the source, both reading `z` from one binder, so a wrong else on both sides would pass it.
+#[test]
+fn out_of_domain_answers_z() {
+    std::thread::Builder::new()
+        .stack_size(tatic_kernel::CHECK_STACK)
+        .spawn(|| {
+            let n = 8;
+            let w0 = Machine { n, fw: 0, table: crate::wasm::table() };
+            let (_, arity, code, src) = rem();
+            let entry = Entry { arity, env: EnvAccess::Params(0), code };
+            let f = |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| cps(&w0, e, c, &src, k);
+            let module = [Some(ModEntry { entry: &entry, src: &f })];
+            let w = widen(&w0, &module);
+            // R z a ks
+            let tys = vec![
+                ty!(|_c, _x| sort(0)),
+                ty!(|c, x| c.at(x[0])),
+                ty!(|_c, _x| bv_ty(n)),
+                ty!(|c, x| arrow(bv_ty(n), c.at(x[0]))),
+            ];
+            let got = tele(&mut Cx::default(), &tys, &mut vec![], &lam, &mut |c, x| {
+                let fuel = c.mark(nat2_lit(2));
+                let sc = Ctxt::new(c, w, &module, fuel, x[0], x[1]).real(c, 0).sc;
+                app3(c.at(sc), c.at(x[2]), lit(n, 0), c.at(x[3]))
+            });
+            let want = tele(&mut Cx::default(), &tys, &mut vec![], &lam, &mut |c, x| c.at(x[1]));
+            assert!(def_eq(&got, &want), "a % 0 does not answer z");
+        })
+        .unwrap()
+        .join()
+        .unwrap();
 }
 
 #[test]
