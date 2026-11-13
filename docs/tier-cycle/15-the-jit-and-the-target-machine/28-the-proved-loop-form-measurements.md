@@ -214,7 +214,12 @@ try (`pfl-bench-a2-timed1`).
   all five programs measured (`p1-work`: 20668, 32467, 42983, 10798, 369820), no other test's work count moved,
   and the workspace suite passes (`p1-suite`: 822, the 819 before plus three memo tests). The timed A/B
   (`time_doubling_12`, six alternating runs per arm) was refused four times on a busy machine (`p1-ab-doubling12`,
-  `-r2` to `-r4`; a game held CPUs 8 and 9), so the claim is "does less work", not "faster", until it runs.
+  `-r2` to `-r4`; a game held CPUs 8 and 9) and ran on 2026-11-13 (`p1-ab-doubling12-r5`, quiet: total 13%, CPUs
+  8 and 9 under 4%; A is main at `54efbb7`, B the memo). Check: A 99.5-104.7 ms, B 83.7-88.2 ms (best 99.5 against
+  83.7, -16%, every B run below every A run). Build: A 82.2-93.3 ms, B 93.9-116.1 ms (best +14%, every B run above
+  every A run), though build work does not move; the sums of build and check are level (best 181.8 against 177.6).
+  So the memo is faster on the check and slower on the build by about as much. That the build's extra time is the
+  memo's unticked key building and hashing is an inference, untested (a profile of the build span would show it).
   church-bv on the memo (`r4-churchbv-ignored`, `r4-rskc-ab-3`, `r4-held11-abab`): `held_out_replacements_prove`
   and both stream pins pass, and `search::rule_set_kernel_check` prints the same output, built just before the memo
   (`54efbb7`) and with it, on three law files: `floor/cmp3d.txt` (92 laws) and `floor/add3.txt` (37), counts
