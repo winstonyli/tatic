@@ -24,8 +24,6 @@ use crate::lang::term::{PrimOp, TermStore};
 /// (`mul`'s circuit nearly all of it), against the plan's 1 s for a default
 /// test, so it runs ignored (`op_table_agrees_at_n64_on_all_edges`).
 const EDGES: [i64; 5] = [i64::MIN, -1, 0, 1, i64::MAX];
-const SOURCE_OPS: [PrimOp; 8] =
-    [PrimOp::Add, PrimOp::Sub, PrimOp::Mul, PrimOp::Div, PrimOp::Mod, PrimOp::Lt, PrimOp::Le, PrimOp::Eq];
 
 /// A 2-to-1 row's circuit at width `n`, over the table `t`.
 fn circuit(t: &Table, row: &Row, n: usize) -> tatic_kernel::Expr {
@@ -60,7 +58,7 @@ fn source(s: &mut TermStore, p: PrimOp, kind: K) -> crate::lang::term::Hash {
 /// domain checks.
 fn agree(t: &Table, n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, u64)>>) {
     let engine = wasmtime::Engine::default();
-    for p in SOURCE_OPS {
+    for p in PrimOp::ALL {
         let Some(o) = t.row(p.name()) else { continue };
         let start = Instant::now();
         let mut s = TermStore::new();
@@ -117,11 +115,14 @@ fn agree(t: &Table, n: usize, pairs: &dyn Fn() -> Box<dyn Iterator<Item = (u64, 
     }
 }
 
-/// Every source operator but `Div` has a row, and `is_comparison` is the Bit class.
+/// Every source operator but `Div` has a row, `PrimOp::row` is the row its name finds (`ALL` is in discriminant
+/// order, which the index relies on), and `is_comparison` is the Bit class.
 #[test]
 fn every_prim_op_with_a_row_names_it() {
-    for p in SOURCE_OPS {
+    for (i, p) in PrimOp::ALL.into_iter().enumerate() {
+        assert_eq!(p as usize, i, "{p:?}");
         let row = tatic_wasm::wasm::table().row(p.name());
+        assert_eq!(p.row().map(|r| r as *const Row), row.map(|r| r as *const Row), "{p:?}");
         assert_eq!(row.is_some(), !matches!(p, PrimOp::Div), "{p:?}");
         assert_eq!(is_comparison(p), row.is_some_and(|r| r.class == Class::Bit), "{p:?}");
     }

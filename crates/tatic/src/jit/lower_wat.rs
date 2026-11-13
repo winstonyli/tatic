@@ -618,7 +618,7 @@ fn konst(v: i64) -> Ins {
 
 /// The table row of `op`, which must be of class `class`; `what` is the panic message otherwise.
 fn row_of(op: PrimOp, class: Class, what: &str) -> Ins {
-    let row = tatic_wasm::wasm::table().row(op.name()).filter(|r| r.class == class).expect(what);
+    let row = op.row().filter(|r| r.class == class).expect(what);
     Ins::Row { name: row.name, operand: 0 }
 }
 

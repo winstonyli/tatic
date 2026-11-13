@@ -162,7 +162,7 @@ pub(crate) fn classify(store: &TermStore, h: Hash, arity: usize, self_idx: Optio
 /// `classify_tree` relies on for soundness. Defined by the table itself, as a
 /// source op whose row (`PrimOp::name`) is bit-valued, so the two cannot drift.
 pub(crate) fn is_comparison(op: PrimOp) -> bool {
-    tatic_wasm::wasm::table().row(op.name()).is_some_and(|r| r.class == Class::Bit)
+    op.row().is_some_and(|r| r.class == Class::Bit)
 }
 
 /// Finds what a lambda literal (peeled to `own_arity`/`body`/`is_rec`,

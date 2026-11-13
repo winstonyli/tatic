@@ -24,6 +24,17 @@ pub enum PrimOp {
 }
 
 impl PrimOp {
+    /// Every operator, in discriminant order (`row` indexes by it).
+    pub const ALL: [PrimOp; 8] =
+        [PrimOp::Add, PrimOp::Sub, PrimOp::Mul, PrimOp::Div, PrimOp::Mod, PrimOp::Lt, PrimOp::Le, PrimOp::Eq];
+
+    /// The `tatic_wasm::wasm::table` row that runs this operator (`None` for `div`): the row `name` finds, looked up
+    /// once for every operator, so eval's per-operator domain check is an index rather than a search.
+    pub fn row(self) -> Option<&'static tatic_wasm::machine::Row> {
+        static ROWS: std::sync::OnceLock<[Option<&'static tatic_wasm::machine::Row>; 8]> = std::sync::OnceLock::new();
+        ROWS.get_or_init(|| PrimOp::ALL.map(|p| tatic_wasm::wasm::table().row(p.name())))[self as usize]
+    }
+
     /// The name of the machine row that runs this operator (`tatic_wasm::wasm::table`); `div` has no row (`mod` is the partial row `rem_s`, domain `y != 0`).
     pub fn name(self) -> &'static str {
         match self {
