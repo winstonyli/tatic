@@ -1,0 +1,57 @@
+--- a/crates/tatic-kernel/src/prof.rs
++++ b/crates/tatic-kernel/src/prof.rs
+@@ -94,6 +94,18 @@
+         if matches!(c, C::Shift | C::Inst) {
+             attribute(c, n);
+         }
++        // referee addition: stage-split infer counters (node, hit, miss, unshared)
++        let k = match c {
++            C::InferNode => Some(0),
++            C::InferHit => Some(1),
++            C::InferMiss => Some(2),
++            C::InferUnshared => Some(3),
++            _ => None,
++        };
++        if let Some(k) = k {
++            let st = STAGE.with(|c| c.get()).min(1);
++            STAGEC.with(|x| x.borrow_mut()[st][k] += n);
++        }
+     }
+ }
+ 
+@@ -102,6 +114,7 @@
+     static SITE: Cell<Option<&'static str>> = const { Cell::new(None) };
+     static DEPTH: Cell<usize> = const { Cell::new(0) };
+     static STAGE: Cell<usize> = const { Cell::new(0) };
++    static STAGEC: RefCell<[[u64; 4]; 2]> = const { RefCell::new([[0; 4]; 2]) };
+     static SITE_CTX: Cell<(usize, usize)> = const { Cell::new((0, 0)) };
+     static SITES: RefCell<std::collections::BTreeMap<&'static str, SiteStat>> = RefCell::new(Default::default());
+     static DEPTHS: RefCell<std::collections::BTreeMap<(usize, usize), (u64, u64)>> = RefCell::new(Default::default());
+@@ -177,7 +190,12 @@
+ pub fn depth_hist() -> Vec<((usize, usize), (u64, u64))> {
+     DEPTHS.with(|m| m.borrow().iter().map(|(k, v)| (*k, *v)).collect())
+ }
++/// referee addition: [stage][node, hit, miss, unshared] infer counts.
++pub fn stage_infer() -> [[u64; 4]; 2] {
++    STAGEC.with(|x| *x.borrow())
++}
+ fn reset_sites() {
++    STAGEC.with(|x| *x.borrow_mut() = [[0; 4]; 2]);
+     SITE.with(|c| c.set(None));
+     DEPTH.with(|c| c.set(0));
+     STAGE.with(|c| c.set(0));
+--- a/crates/tatic/src/proof/tests/doubling_growth.rs
++++ b/crates/tatic/src/proof/tests/doubling_growth.rs
+@@ -80,6 +80,12 @@
+         let l0: Vec<&Rec> = log.iter().filter(|r| r.stage == 0).collect();
+         let l1: Vec<&Rec> = log.iter().filter(|r| r.stage == 1).collect();
+         let sum = |v: &Vec<&Rec>, f: fn(&Rec) -> u64| v.iter().map(|r| f(r)).sum::<u64>();
++        let si = prof::stage_infer();
++        println!(
++            "DG d={d} REFEREE infer stmt: nodes {} hit {} miss {} unshared {}; proof: nodes {} hit {} miss {} unshared {}; heavy-site calls per tree node {:.3}",
++            si[0][0], si[0][1], si[0][2], si[0][3], si[1][0], si[1][1], si[1][2], si[1][3],
++            l0.iter().filter(|r| r.units >= 60).count() as f64 / (1u64 << (d + 1)) as f64
++        );
+         println!("DG d={d} BUILD work {bw} ({build_ms:.1} ms) region_nodes_after_build {region_after_build}");
+         println!(
+             "DG d={d} CHECK{} holds={:?} work {cw} ({check_ms:.1} ms probe on): shift {sh} inst {inst}; stmt-stage work {stmt_w} (shift {s_sh} inst {s_in}), proof-stage work {proof_w} (shift {p_sh} inst {p_in}); region_nodes_after_check {}",

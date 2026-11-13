@@ -114,13 +114,47 @@ try (`pfl-bench-a2-timed1`).
   `docs/runs/2026-11-12/patches/check-origin-closedness-addon.patch`) split the beta by whether the lambda has loose
   variables: 6202 of the 7637 beta shift units (81%) are on open lambdas, and 5170 on open lambdas with open
   arguments. Beta of closed lambdas, the closed-prefix site, is 1435 shift and 2157 instantiate. So the bulk is
-  conversion reducing open terms of the proof, not instantiating the statement's binders. Inference: it is the
-  proof's top redex, a 4-binder lambda applied to its arguments, being evaluated by conversion; the largest share sits
-  at context depth 4. Which binders the loose variables belong to was not measured: the probe's depth split is the
+  conversion reducing open terms of the proof, not instantiating the statement's binders. The largest share sits at
+  context depth 4 (the next bullet shows it is not one top redex). Which binders the loose variables belong to was not measured: the probe's depth split is the
   checker's context size at the call, not the term's own binders. The other programs differ. In straight_line
   (shift 4812, instantiate 4162) the work is spread across beta, application types and `Var` lifts. doubling 6 is
   instantiate-heavy (10708 of 19884 work), and 8928 of that is instantiating application domains while inferring
   the statement, the opposite of the closure loop.
+- What triggers that beta, and whether sharing a redex would remove it (`beta-trigger-3`, test profile; patch
+  `docs/runs/2026-11-12/patches/beta-trigger-probe.patch`, with a reviewer's rerun and extra counters in
+  `beta-trigger-probe-verified.patch` and `beta-trigger-levels-addon.patch`; never merged). Each beta is charged to
+  the caller of the outermost `whnf` that missed the memo, so trigger shares are first-toucher shares too. For the
+  closure loop, the `def_eq(inferred, expected)` nested inside `check` holds 80% of the beta's shift and 94% of its
+  instantiate units. Two clusters make it up. At context depth 4, after the proof's four leading lambdas, conversion
+  under 11 to 21 binders it opened itself does 43 betas: 61.5% of the beta units (3195 shift, 4910 instantiate). They
+  are mostly distinct 64-argument applications of 64-lambda telescopes, and 4-argument closed-prefix ones, and nearly
+  all of them are on the inferred side (2754 shift and 4726 instantiate against 441 and 206 on the expected side). At
+  depth 26 the conversion inside `J`'s rule does 33 betas, 2946 shift and 278 instantiate. So it is not one
+  4-binder top redex. Sharing would not help: no redex repeats exactly, because `whnf`'s memo
+  already shares exact repeats, and keyed with its free variables anchored to the context only 30 of the 211 calls
+  repeat, for 78 shift and 86 instantiate units (about 1.2% of the beta units, 0.8% of the shift and instantiate
+  work). A lambda reused with new arguments still pays for its substitution. So a gain would have to come from making
+  the substitutions cheaper or from not reducing the inferred side before comparing it. Which term the depth-4
+  telescopes come from was not measured. The earlier 81% of beta shift on open lambdas reads 75.6% with this probe's
+  cut (lambda has a free variable); the difference was not traced.
+- How the gate's work grows with program size (`dg-build-d1-12`, `dg-d14-16`, `dg-lean-d14-17`, `dg-lean-d18-19`,
+  test profile; patch `docs/runs/2026-11-12/patches/doubling-growth-probe.patch`, which applies to a clean main and
+  includes the reviewer's `doubling-growth-referee-addon.patch`; it also lifts the gate's 8192 and the JIT's 16384
+  size caps behind an environment variable, so d past 12 could be measured; never merged). For doubling d, d = 1 to
+  19, build and check work are linear in the compiled module's size, which has 2^(d+1) - 1 instructions; the source
+  DAG's d + 2 nodes do not matter. Fitted over d = 8 to 15: check = 5256 + 115.0 per instruction, build = 2967 + 69.3
+  per instruction, within 0.3%. Successive ratios reach 1.999 to 2.000 from d = 13 and hold to d = 19 (120.6 M check
+  units), so there is no superlinear break like v0.7's hnf at d = 13. At d = 6 a fixed cost of about 5000 units is
+  still 27% of the check. Inferring the statement is 96.5% of the check at d = 15; the proof stage adds only 4 units
+  per instruction. One site dominates: instantiating an application's Pi domain while inferring the statement is
+  exactly 240 + 68.0 units per instruction, 59% of the check from d = 12 on (45% at d = 6). Each Add in the statement
+  applies a 64-bit word's eliminator, whose continuation's type is a telescope of 64 Pi binders ending in the result
+  variable. Instantiating it with the one pending argument costs 66 units, at two context depths (27 and 91) per Add.
+  Each Add is a separate single-use node, and `infer` skips its cache for those by design (2,327,037 of 2,327,552
+  statement nodes at d = 15), while `instantiate_n`'s memo lasts one call. Across all of those calls there are only 3
+  distinct (domain, argument) pairs, so nearly all of the 59% recomputes the same three instantiations. That
+  redundancy is what a memo across calls, or a statement that shares those types, would remove. Whether it pays was
+  not measured. Untimed wall time, on a shared machine: check 1.0 s at d = 14 and 29.5 s at d = 19.
 - The bench's cold row keeps the cost of the stacker segment, by decision (2026-11-12): it is what a caller on a
   1 MiB thread pays, as criterion's main thread is.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration

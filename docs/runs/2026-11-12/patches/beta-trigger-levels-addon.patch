@@ -1,0 +1,107 @@
+--- "C:\\Users\\WINSTO~1\\AppData\\Local\\Temp/prof_beta.before.rs"	2026-11-12 17:28:30.892150200 -0800
++++ crates/tatic-kernel/src/prof_beta.rs	2026-11-12 17:29:14.775663800 -0800
+@@ -48,6 +48,11 @@
+     inp: u32,
+     lam_canon: u64,
+     red_canon: u64,
++    lam_a: u64,
++    lam_b: u64,
++    red_a: u64,
++    red_b: u64,
++    inp_loose: bool,
+     sh: u64,
+     inst: u64,
+     lam_loose: bool,
+@@ -274,6 +279,41 @@
+     h
+ }
+ 
++/// ADDON: structural hash with loose variables anchored to the checker context. A var past the `c` conv-opened
++/// binders is its absolute context level (so a term moved to another conv depth hashes alike); one below `c` is
++/// kept as its index from the innermost (mode 0: equal modulo a shift with cutoff c) or from the outermost opened
++/// binder (mode 1: same position in the conv-opened prefix).
++fn canon2(s: &Spaces, e: &Expr, depth: u32, c: usize, d: usize, mode: u8, memo: &mut std::collections::HashMap<(u32, u32), u64>) -> u64 {
++    let k = (s.key(e), depth);
++    if let Some(h) = memo.get(&k) {
++        return *h;
++    }
++    let h = match s.node(e) {
++        Node::Var(i) if i >= depth => {
++            let j = (i - depth) as usize;
++            if j < c {
++                h2(0xCC, if mode == 0 { j } else { c - 1 - j } as u64)
++            } else if j - c < d {
++                h2(0xDD, (d - 1 - (j - c)) as u64)
++            } else {
++                h2(0xEE, (j - c - d) as u64)
++            }
++        }
++        Node::Var(i) => h2(0xBB, i as u64),
++        n => {
++            let (t, l) = n.tag_leaf();
++            let mut h = h2(t as u64, l as u64);
++            n.for_kids(|ch, under| {
++                let chh = canon2(s, ch, depth + under as u32, c, d, mode, memo);
++                h = h2(h, chh);
++            });
++            h
++        }
++    };
++    memo.insert(k, h);
++    h
++}
++
+ fn lam_telescope(s: &Spaces, e: &Expr) -> usize {
+     let mut n = 0;
+     let mut cur = *e;
+@@ -356,6 +396,16 @@
+     for a in &t.args {
+         red_canon = h2(red_canon, canon(s, a, 0, if all == 0 { 0 } else { all_off }, &mut memo2));
+     }
++    let mut lvl = [(0u64, 0u64); 2];
++    for mode in 0..2u8 {
++        let mut m = Default::default();
++        let l = canon2(s, &t.lam, 0, c, d, mode, &mut m);
++        let mut r = l;
++        for a in &t.args {
++            r = h2(r, canon2(s, a, 0, c, d, mode, &mut m));
++        }
++        lvl[mode as usize] = (l, r);
++    }
+     let mut red = s.key(&t.lam) as u64;
+     for a in &t.args {
+         red = h2(red, s.key(a) as u64);
+@@ -380,6 +430,11 @@
+             inp: s.key(&t.inp),
+             lam_canon,
+             red_canon,
++            lam_a: lvl[0].0,
++            lam_b: lvl[1].0,
++            red_a: lvl[0].1,
++            red_b: lvl[1].1,
++            inp_loose: s.loose(&t.inp) > 0,
+             sh,
+             inst,
+             lam_loose: lam_mask != 0,
+@@ -430,6 +485,8 @@
+         let all4 = sum(&|_| true);
+         p(format!("all four (with hnf_rc): calls {} shift {} inst {}", all4.0, all4.1, all4.2));
+         let loose = sum(&|e| e.site < 3 && e.lam_loose);
++        let il = sum(&|e| e.site < 3 && e.inp_loose);
++        p(format!("ADDON three sites, whnf input term has loose vars: calls {} shift {} ({:.1}% of beta shift) inst {}", il.0, il.1, 100.0 * il.1 as f64 / b3.1.max(1) as f64, il.2));
+         p(format!("three sites, lambda has loose vars: calls {} shift {} ({:.1}% of beta shift) inst {}", loose.0, loose.1, 100.0 * loose.1 as f64 / b3.1.max(1) as f64, loose.2));
+ 
+         // 1. trigger x site
+@@ -462,7 +519,11 @@
+         // 2. repetition
+         p("== 2. REPETITION (three beta sites; keys over (lambda, args) etc.): distinct / calls | units first (sh/in) | units on repeats (sh/in) | calls that are repeats".into());
+         type KeyFn = fn(&Ev) -> u64;
+-        let keyfns: [(&str, KeyFn); 5] = [
++        let keyfns: [(&str, KeyFn); 9] = [
++            ("ADDON lambda alone, ctx-anchored (cutoff-shift equal)", |e| e.lam_a),
++            ("ADDON lambda alone, ctx-anchored (same opened position)", |e| e.lam_b),
++            ("ADDON redex, ctx-anchored (cutoff-shift equal)", |e| e.red_a),
++            ("ADDON redex, ctx-anchored (same opened position)", |e| e.red_b),
+             ("redex (lambda,args) identity", |e| e.red),
+             ("whnf input term identity", |e| e.inp as u64),
+             ("lambda alone", |e| e.lam as u64),
