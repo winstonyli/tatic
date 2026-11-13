@@ -210,6 +210,8 @@ in `jit/shape.rs#wasm_table` over `tatic_wasm::wasm::table()`, which builds a fr
   `machine/sim.rs#Sim::sim_step` closes two identical stuck sides by `refl`. Under any option the gate accepts a domain
   that is wrong the same way on both sides; only the table test catches it. Not confirmed: that nothing besides the
   missing row keeps gcd `NotCovered` after v0.9.
+- Picked 2026-11-13: (a), with a domain on every Word/Bit row; the cost spike that conditioned it is doc 15, "A
+  domain on every row: a cost spike (2026-11-13)".
 
 ## Open for the spec: tail calls and the state shape (surveys, 2026-11-10)
 

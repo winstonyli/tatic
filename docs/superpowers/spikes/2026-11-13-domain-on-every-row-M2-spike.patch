@@ -1,0 +1,235 @@
+diff --git a/crates/tatic-wasm/src/machine.rs b/crates/tatic-wasm/src/machine.rs
+index 61e9776..3abba48 100644
+--- a/crates/tatic-wasm/src/machine.rs
++++ b/crates/tatic-wasm/src/machine.rs
+@@ -286,6 +286,8 @@ pub struct MeaningEnv {
+     pub ch: Option<At>,
+     pub calls: At,
+     pub restart: At,
++    /// SPIKE: the R-typed answer a guard's else branch takes (the statement's `z`); `None` (tests) falls back to the continuation.
++    pub z: Option<At>,
+ }
+ 
+ const F_TY: fn() -> Expr = || arrow(sort(2), sort(2));
+@@ -377,6 +379,10 @@ impl Machine<'_> {
+             c.lam(sort(0), |c, r| c.lam(arrow(self.v(), c.at(r)), |c, k| self.nth(c, i, self.fw, fr, r, k)))
+         })
+     }
++    /// SPIKE: the constant-true domain `\x y. 1 : V -> V -> Bv_1` every Word/Bit row carries.
++    pub fn dom_true(&self) -> Expr {
++        lam(self.v(), lam(self.v(), lit(1, 1)))
++    }
+     /// The row `name` of the table; panics on a name the table lacks (`well_formed` rejects those first).
+     fn row(&self, name: &str) -> &Row {
+         self.table.row(name).unwrap_or_else(|| panic!("no row {name:?}"))
+@@ -389,8 +395,8 @@ impl Machine<'_> {
+             let (va, vva, v1a) = (prod(v, a), prod(v, prod(v, a)), prod(v1, a));
+             match k {
+                 Ctor::Leaf(Class::Const) => arrow(self.operand_ty(), arrow(fa(va), fa(a))),
+-                Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(fa(va), fa(vva))),
+-                Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
++                Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(arrow(v, arrow(v, v1)), arrow(fa(va), fa(vva)))),
++                Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva)))),
+                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
+                 Ctor::Leaf(Class::Set) => arrow(self.setter_ty(), arrow(fa(a), fa(va))),
+                 Ctor::Br => arrow(fa(va), fa(a)),
+@@ -456,7 +462,13 @@ impl Machine<'_> {
+                     None => below(pops),
+                 });
+                 let meaning = (row.meaning)(c, self, *operand);
+-                cons(c, i, vec![ty(c, &below(pops)), meaning, r])
++                let mut args = vec![ty(c, &below(pops)), meaning];
++                // SPIKE: a Word/Bit row also carries its domain `V -> V -> Bv_1`, constant true for every row
++                if matches!(row.class, Class::Word | Class::Bit) {
++                    args.push(self.dom_true());
++                }
++                args.push(r);
++                cons(c, i, args)
+             }
+             Ins::Raw(s) => unreachable!("prog's out_stack rejects Raw({s:?})"),
+             Ins::Br => {
+@@ -517,7 +529,7 @@ impl Machine<'_> {
+         sigrec(motive, step, c.at(st))
+     }
+     /// The constructors' meanings.
+-    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, calls: At, restart: At) -> Vec<Expr> {
++    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, z: Option<At>, calls: At, restart: At) -> Vec<Expr> {
+         let (v, v1) = (self.v(), bv_ty(1));
+         let w = *self;
+         let fr_ty = self.fr();
+@@ -548,12 +560,31 @@ impl Machine<'_> {
+             app3(c.at(op.unwrap()), c.at(fr), c.at(r), kont)
+         });
+         let binop = |c: &mut Cx, out: Expr| {
+-            shape(c, Some(arrow(v, arrow(v, out))), &|a| prod(out, a), &|a| prod(v, prod(v, a)), &|c, a, op, rest, fr, st, mu| {
+-                let below = c.mark(prod(v, c.at(a)));
+-                w.split(c, r, v, below, st, |c, y, rs| {
+-                    w.split(c, r, v, a, rs, |c, x, s| {
+-                        let val = app2(c.at(op.unwrap()), c.at(x), c.at(y));
+-                        app3(c.at(rest), c.at(fr), mkpair(c.at(a), val, c.at(s)), c.at(mu))
++            // SPIKE: `\A op dom rest fr st mu. choose(r, dom x y, K, K)`, K the continuation at `op x y`
++            c.lam(sort(2), |c, a| {
++                c.lam(arrow(v, arrow(v, out)), |c, op| {
++                    c.lam(arrow(v, arrow(v, v1)), |c, dom| {
++                        let rt = w.g(c, r, prod(out, c.at(a)));
++                        c.lam(rt, |c, rest| {
++                            c.lam(fr_ty, |c, fr| {
++                                c.lam(prod(v, prod(v, c.at(a))), |c, st| {
++                                    let m = w.mem(c, r);
++                                    c.lam(m, |c, mu| {
++                                        let below = c.mark(prod(v, c.at(a)));
++                                        w.split(c, r, v, below, st, |c, y, rs| {
++                                            w.split(c, r, v, a, rs, |c, x, s| {
++                                                let val = app2(c.at(op), c.at(x), c.at(y));
++                                                let kk = app3(c.at(rest), c.at(fr), mkpair(c.at(a), val, c.at(s)), c.at(mu));
++                                                let cond = app2(c.at(dom), c.at(x), c.at(y));
++                                                // the REAL `choose` even under the probe; else branch the statement's `z`
++                                                let zz = z.map_or(kk, |z| c.at(z));
++                                                choose(c.at(r), cond, kk, zz)
++                                            })
++                                        })
++                                    })
++                                })
++                            })
++                        })
+                     })
+                 })
+             })
+@@ -638,7 +669,7 @@ impl Machine<'_> {
+         let r = me.r;
+         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
+         let mut args = vec![gfam, c.at(k)];
+-        args.extend(self.interp(c, r, me.ch, me.calls, me.restart));
++        args.extend(self.interp(c, r, me.ch, me.z, me.calls, me.restart));
+         apps(c.at(p), args)
+     }
+     /// `GoodNat N = Pi P:(Nat2 -> Sort3). P 0 -> (Pi j. P j -> P (S j)) -> P N`: induction over fuel, as a hypothesis.
+@@ -783,7 +814,7 @@ mod tests {
+                     c.lam(mem, |c, mu2| app3(c.at(x[2]), c.at(fr2), mkpair(c.at(x[0]), lit(n, 0), c.at(x[5])), c.at(mu2)))
+                 });
+                 let restart = c.mark(restart);
+-                let me = MeaningEnv { r, ch: None, calls: none, restart };
++                let me = MeaningEnv { r, ch: None, z: None, calls: none, restart };
+                 let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[5]), c.at(x[6]));
+                 let (p, q) = if b_minus_a { (x[4], x[3]) } else { (x[3], x[4]) };
+                 let val = app2(sub(n), c.at(p), c.at(q));
+diff --git a/crates/tatic-wasm/src/machine/loop_tests.rs b/crates/tatic-wasm/src/machine/loop_tests.rs
+index b8fd5be..34ff7d3 100644
+--- a/crates/tatic-wasm/src/machine/loop_tests.rs
++++ b/crates/tatic-wasm/src/machine/loop_tests.rs
+@@ -17,7 +17,7 @@ fn meaning_env(c: &mut Cx, w: &Machine, r: At, restart: At) -> MeaningEnv {
+         })
+     });
+     let none = c.mark(none);
+-    MeaningEnv { r, ch: None, calls: none, restart }
++    MeaningEnv { r, ch: None, z: None, calls: none, restart }
+ }
+ 
+ /// A `restart` for tests whose code holds no `Br`, or whose `Br` is not taken: `\fr mu. kk fr (0, s) mu` (`R` is
+diff --git a/crates/tatic-wasm/src/machine/statement.rs b/crates/tatic-wasm/src/machine/statement.rs
+index a73e7e1..e15021d 100644
+--- a/crates/tatic-wasm/src/machine/statement.rs
++++ b/crates/tatic-wasm/src/machine/statement.rs
+@@ -30,6 +30,8 @@ use std::cell::RefCell;
+ pub struct SEnv {
+     pub n: usize,
+     pub r: At,
++    /// SPIKE: the R-typed answer a guard's else branch takes (the statement's `z`).
++    pub z: At,
+     pub g: At,
+     pub params: Vec<At>,
+     pub ch: Option<At>,
+@@ -39,6 +41,10 @@ pub struct SEnv {
+ }
+ 
+ impl SEnv {
++    /// SPIKE: a row's domain guard, the REAL `choose R cond k z` (never the probe).
++    pub fn guard(&self, c: &Cx, cond: Expr, k: Expr) -> Expr {
++        choose(c.at(self.r), cond, k, c.at(self.z))
++    }
+     /// `choose R cond t e`, through the probe in the proof.
+     pub fn choose(&self, c: &Cx, cond: Expr, t: Expr, e: Expr) -> Expr {
+         match self.ch {
+@@ -159,7 +165,7 @@ impl<'t> G<'t> {
+     }
+     /// `Bm = \env fr mu k. M (prog code) fr 0 mu`, the body's answer passed to `k`; `ch` is the generator's probe, and
+     /// `table` builds the module's callee environment from `env` (the entry's own fuel-unrolled step).
+-    pub fn bm(&self, c: &mut Cx, r: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
++    pub fn bm(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
+         let (w, n) = (self.w, self.w.n);
+         let hm = self.hm(c, r);
+         c.lam(hm, |c, env| {
+@@ -188,7 +194,7 @@ impl<'t> G<'t> {
+                             c.lam(mem, |c, mu2| app3(c.at(env), c.at(fr2), c.at(mu2), c.at(k)))
+                         });
+                         let restart = c.mark(restart);
+-                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, calls: tbl, restart });
++                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, z: Some(z), calls: tbl, restart });
+                         app3(m, c.at(fr), lit(n, 0), c.at(mu))
+                     })
+                 })
+@@ -196,7 +202,7 @@ impl<'t> G<'t> {
+         })
+     }
+     /// `Bs = \g x.. ks. src`, `src` built by the entry's source closure; `fuel` and `callees` are the module's.
+-    pub fn bs(&self, c: &mut Cx, r: At, ch: Option<At>, src: &SrcFn, fuel: At, own: usize, callees: &[(usize, At)]) -> Expr {
++    pub fn bs(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, src: &SrcFn, fuel: At, own: usize, callees: &[(usize, At)]) -> Expr {
+         let n = self.w.n;
+         let hs = self.hs(c, r);
+         c.lam(hs, |c, g| {
+@@ -204,7 +210,7 @@ impl<'t> G<'t> {
+             tele(c, &vs, &mut vec![], &lam, &mut |c, xs| {
+                 let rs = self.ret_s(c, r);
+                 c.lam(rs, |c, ks| {
+-                    let env = SEnv { n, r, g, params: xs.to_vec(), ch, fuel, own, callees: callees.to_vec() };
++                    let env = SEnv { n, r, z, g, params: xs.to_vec(), ch, fuel, own, callees: callees.to_vec() };
+                     src(c, &env, &|c, v| app(c.at(ks), v))
+                 })
+             })
+@@ -312,9 +318,9 @@ impl<'a> Ctxt<'a> {
+     pub fn bm_bs(&self, c: &mut Cx, k: usize, probe: Option<At>) -> (Expr, Expr) {
+         let (e, g) = (self.entry(k), self.g(k));
+         let cs: Vec<(usize, Real)> = callees(k, &e.entry.code).into_iter().map(|p| (p, self.real(c, p))).collect();
+-        let bm = g.bm(c, self.r, probe, &e.entry.code, &self.arities, &|c, env| self.table(c, k, env, &cs));
++        let bm = g.bm(c, self.r, self.z, probe, &e.entry.code, &self.arities, &|c, env| self.table(c, k, env, &cs));
+         let scs: Vec<(usize, At)> = cs.iter().map(|(p, re)| (*p, re.sc)).collect();
+-        let bs = g.bs(c, self.r, probe, e.src, self.fuel, k, &scs);
++        let bs = g.bs(c, self.r, self.z, probe, e.src, self.fuel, k, &scs);
+         (bm, bs)
+     }
+     /// Entry `k`'s real (probe-free) pieces, built once.
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index 9aebb18..d45562e 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -520,3 +520,30 @@ fn time_call_family() {
+         k *= 2;
+     }
+ }
++
++/// PROBE: the check's kernel work for the loop programs and doubling, one line each.
++#[test]
++#[ignore]
++fn p1_probe() {
++    let progs: Vec<(&str, Box<dyn Fn(&mut TermStore) -> Hash + Send>)> = vec![
++        ("capturing_closure_loop", Box::new(capturing_closure_loop)),
++        ("straight_line", Box::new(straight_line)),
++        ("held_out_b", Box::new(crate::testing::test_corpus::held_out_b)),
++        ("doubling(6)", Box::new(|s: &mut TermStore| doubling(s, 6))),
++        ("doubling(12)", Box::new(|s: &mut TermStore| doubling(s, 12))),
++    ];
++    for (name, mk) in progs {
++        let w = big(move || {
++            let (s, h, frag) = compiled(&*mk);
++            tatic_kernel::scoped(|| {
++                let b0 = tatic_kernel::work();
++                let (p, st) = built(&s, h, &frag);
++                let b1 = tatic_kernel::work();
++                let w0 = tatic_kernel::work();
++                let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
++                (ok, tatic_kernel::work() - w0, b1 - b0)
++            })
++        });
++        println!("P1 {name} accepted={} check_work={} build_work={}", w.0, w.1, w.2);
++    }
++}
