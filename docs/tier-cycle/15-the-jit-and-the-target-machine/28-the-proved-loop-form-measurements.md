@@ -178,8 +178,36 @@ try (`pfl-bench-a2-timed1`).
   Each Add is a separate single-use node, and `infer` skips its cache for those by design (2,327,037 of 2,327,552
   statement nodes at d = 15), while `instantiate_n`'s memo lasts one call. Across all of those calls there are only 3
   distinct (domain, argument) pairs, so nearly all of the 59% recomputes the same three instantiations. That
-  redundancy is what a memo across calls, or a statement that shares those types, would remove. Whether it pays was
-  not measured. Untimed wall time, on a shared machine: check 1.0 s at d = 14 and 29.5 s at d = 19.
+  redundancy is what a memo across calls, or a statement that shares those types, would remove (measured in the next
+  bullet). Untimed wall time, on a shared machine: check 1.0 s at d = 14 and 29.5 s at d = 19.
+- A memo of instantiation across calls (`inst-memo-programs-*`, `inst-memo-doubling-*`, `inst-memo-d16-lean-*`,
+  `inst-memo-suite-*`, two reviewers' `ref*-` and `inst-sound*` reruns; patch
+  `docs/runs/2026-11-12/patches/inst-memo-spike.patch`, which applies to a clean main and includes the doubling probe
+  and the reviewer's region test; never merged). Arm A keeps whole `instantiate_n` calls for the region, keyed by
+  (term, the argument list interned to an id, depth), cleared with the `whnf` memo when the region closes; a hit
+  ticks nothing, as the other memos' hits do. Arm B also keeps the inner entries across calls, with the argument
+  list's id in their key. Check work, all verdicts unchanged:
+
+  | program | off | A | B |
+  |---|---|---|---|
+  | `capturing_closure_loop` | 23552 | 21589 (-8.3%) | 20668 (-12.2%) |
+  | `straight_line` | 33989 | 32493 (-4.4%) | 32467 (-4.5%) |
+  | `held_out_b` | 46284 | 43908 (-5.1%) | 42983 (-7.1%) |
+  | `doubling(6)` | 19884 | 10798 (-45.7%) | 10798 |
+  | `doubling(12)` | 947382 | 369820 (-61.0%) | 369820 |
+  | `doubling(14)` | 3773668 | 1463510 (-61.2%) | 1463510 |
+  | `doubling(16)` | 15078674 | 5838096 (-61.3%) | 5838096 |
+
+  Build work does not move (B: 2 units less on the loops). On doubling the Pi-domain site falls from 557296 to 374
+  units at d = 12, and the check's slope from 115.0 to 44.5 units per instruction, still linear. The saving is the
+  instantiate drop (611548 to 42176) plus a shift drop (35289 to 27099); inference and conversion ticks do not
+  change. 77% of top-level calls hit at d = 12 (25 to 27% on the loop programs); the memo ends with 37125 entries at
+  d = 12 and 590093 at d = 16. B saves nothing more on doubling and adds inner entries, 1.3 times A's count
+  (196645 against 147721 at d = 14). The kernel tests, `proof::` (rejection and mutant tests included) and
+  `jit::` pass in every arm at about the same untimed wall time (B fails one kernel test that reads the per-call
+  memo's field directly). A reviewer's test over 40 regions, with persisted arguments and their region twins,
+  matches a reference substitution and fails when the memo is not cleared at close. Not measured: time (each
+  top-level call builds and hashes a key of up to 64 argument keys, unticked), and church-bv's tests.
 - The bench's cold row keeps the cost of the stacker segment, by decision (2026-11-12): it is what a caller on a
   1 MiB thread pays, as criterion's main thread is.
 - gcd's warm call does not move (126 against 127 ns). Inference: its few iterations make the 1.25 ns per iteration
