@@ -301,6 +301,7 @@ fn a_deeper_stream_restricted_is_the_shallow_one() {
 }
 
 /// FNV-1a 64 of the laws' text, one `lhs = rhs` line each: what the pinned sequences are pinned by.
+#[cfg(test)]
 fn laws_digest(laws: &[(Term, Term)]) -> u64 {
     use std::fmt::Write;
     Fnv::of(|h| {
@@ -317,6 +318,7 @@ fn laws_digest(laws: &[(Term, Term)]) -> u64 {
 /// The sequences at the loops' and the extras' growth counts (`STREAM_LEVELS`, and the deepest held band's) at `salt`,
 /// from one build as a sweep's parent asks for them (`stream_sequences`), and checked against the pinned length and
 /// digest of their laws' text.
+#[cfg(test)]
 fn assert_sequences_pinned(salt: usize, pinned: [(usize, usize, u64); 2]) {
     let seqs = stream_sequences(salt, &pinned.map(|(levels, ..)| levels));
     let got: Vec<(usize, usize, u64)> = pinned

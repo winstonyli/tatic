@@ -109,6 +109,7 @@ pub fn law_proof(job: &mut Job, n: usize, k: usize, t1: &Term, t2: &Term, plan: 
 // which every sum bit equals the target bit. Both are decided by truth table before anything is built.
 
 /// The constant carry value (as a literal bit) that works for `add a b = t`, if any.
+#[cfg(test)]
 pub fn find_constant_carry(a: &Term, b: &Term, t: &Term) -> Option<bool> {
     [false, true].into_iter().find(|&r| {
         // the initial carry is `false`, so only `false` can be maintained from the start
@@ -122,6 +123,7 @@ pub fn find_constant_carry(a: &Term, b: &Term, t: &Term) -> Option<bool> {
 
 /// Proof of `t1 = t2` where `t1 = add A B` (bitwise `A`, `B`) and `t2` is bitwise, over two good vectors, by the
 /// discovered constant-carry invariant; `None` when no constant carry works.
+#[cfg(test)]
 pub fn carry_chain_law(n: usize, t1: &Term, t2: &Term) -> Option<(Expr, Expr)> {
     let Node::Op(ADD, a_term, b_term) = *t1.node() else { return None };
     if a_term.uses_add() || b_term.uses_add() || t2.uses_add() || t1.max_var().max(t2.max_var()) > 1 {

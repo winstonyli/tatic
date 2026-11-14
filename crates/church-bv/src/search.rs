@@ -341,11 +341,13 @@ pub fn encoding_search_rediscovers_library_lemmas_from_statements() {
 // partial products over bits, `row_i[j] = y_i & x_(j-i)`, summed by ripple adders. Laws are proved per width by case
 // analysis on all 2n input bits with `refl` leaves, so they are finite and compare circuits only (no numeric meaning).
 
+#[cfg(test)]
 pub type KBitsFn<'a> = &'a dyn Fn(&[Vec<Expr>]) -> Vec<Expr>;
 
 /// `Pi x y. GoodBv x -> GoodBv y -> Id(Bv_n, L x y, R x y)` where `L`, `R` are the circuits of the output-bit
 /// functions `l`, `r` of the `n` bits of `x` and of `y`. Per output bit, case analysis on all `2n` input bits with
 /// `refl` leaves, then `cong_n` and the witness eliminations (the skeleton of `bitwise_law_k`).
+#[cfg(test)]
 pub fn circuit_law(n: usize, l: BitsFn, r: BitsFn) -> (Expr, Expr) {
     let (lc, rc) = (bits_circuit(n, l), bits_circuit(n, r));
     circuit_law_k(n, 2, &|a| (app2(lc, a[0], a[1]), app2(rc, a[0], a[1])), &|v| l(&v[0], &v[1]), &|v| r(&v[0], &v[1]))
@@ -353,6 +355,7 @@ pub fn circuit_law(n: usize, l: BitsFn, r: BitsFn) -> (Expr, Expr) {
 
 /// As `circuit_law` over `k` vectors: `sides(vectors)` builds the two sides from circuits, `l`/`r` give their output
 /// bits from the `k` vectors' bits (the sides must reduce to those bits by conversion).
+#[cfg(test)]
 pub fn circuit_law_k(n: usize, k: usize, sides: &dyn Fn(&[Expr]) -> (Expr, Expr), l: KBitsFn, r: KBitsFn) -> (Expr, Expr) {
     let split = |v: &[Expr]| -> Vec<Vec<Expr>> { (0..k).map(|i| v[i * n..(i + 1) * n].to_vec()).collect() };
     let lemmas: Vec<Expr> = (0..n)
@@ -375,6 +378,7 @@ pub fn circuit_law_k(n: usize, k: usize, sides: &dyn Fn(&[Expr]) -> (Expr, Expr)
     })
 }
 
+#[cfg(test)]
 pub fn const_bits(n: usize, c: u128) -> Vec<Expr> {
     (0..n).map(|i| bit((c >> i) & 1 == 1)).collect()
 }
@@ -440,6 +444,7 @@ pub fn mul_circuit_three_vector_laws() {
 }
 
 /// Whether `l -> r` decreases in the rule order and is provable at widths 3 and 4 (the admission test for a rule).
+#[cfg(test)]
 pub fn rule_admissible(job: &mut Job, l: &Term, r: &Term) -> bool {
     rule_order_ok(l, r) && [3usize, 4].iter().all(|&n| prove_rule(job, n, l.max_var().max(r.max_var()) + 1, l, r).is_some())
 }
@@ -813,12 +818,14 @@ pub fn closed_terms_fold_to_constants() {
 /// The kernel's cost for a true law under the installed rules: whole-term machine proofs and rule steps (of a `LAW_STEPS` budget) that
 /// `rewrite_law` used, and whether it proved the law at all. The difficulty grade a proposer is scored by.
 #[derive(Debug, PartialEq, Eq, Clone, Copy)]
+#[cfg(test)]
 pub struct Cost {
     pub fallbacks: u64,
     pub steps: i64,
     pub proved: bool,
 }
 
+#[cfg(test)]
 impl Cost {
     /// The band the miner learns from: laws that still need a machine proof (the ones M counts), or were not proved.
     pub fn hard(&self) -> bool {
@@ -827,6 +834,7 @@ impl Cost {
 }
 
 /// The `Cost` of `t1 = t2` under the job's rules (a `LAW_STEPS` budget, width 4).
+#[cfg(test)]
 pub fn law_cost(job: &mut Job, kv: usize, t1: &Term, t2: &Term) -> Cost {
     let (proved, spent) = job.measured(LAW_STEPS, |job| rewrite_plan(job, 4, kv, t1, t2).is_some());
     Cost { fallbacks: spent.fallbacks, steps: spent.steps, proved }
@@ -835,6 +843,7 @@ pub fn law_cost(job: &mut Job, kv: usize, t1: &Term, t2: &Term) -> Cost {
 /// Per-proposal credit for a mined library `rules` (docs/tier-cycle/, "Per-proposal credit"). Each rule's held-out gain is how many more `held` laws are hard
 /// without it; a proposal uses a rule when it is cheap under `rules` but hard without that rule; each rule's gain is split evenly over
 /// the proposals that use it. Returns the per-rule gains, the per-rule user counts and the per-proposal credits.
+#[cfg(test)]
 pub fn proposal_credit(job: &mut Job, rules: &[(Term, Term)], kv: usize, held: &[(Term, Term)], props: &[(Term, Term)]) -> (Vec<i64>, Vec<usize>, Vec<f64>) {
     let hard = |job: &mut Job, set: &[(Term, Term)], laws: &[(Term, Term)]| -> Vec<bool> {
         job.with_mined(set.to_vec(), |job| laws.iter().map(|(a, b)| law_cost(job, kv, a, b).hard()).collect())

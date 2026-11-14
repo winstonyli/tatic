@@ -52,6 +52,7 @@ impl Key {
     }
 
     /// The key file's text.
+    #[cfg(test)]
     pub fn text(&self) -> String {
         let mut s = Key::header() + "\n";
         for (w, ins) in &self.sets {
@@ -71,6 +72,7 @@ impl Key {
     }
 
     /// The refinement's start: the 8 tuples of 0s and 1s, at width 8.
+    #[cfg(test)]
     pub fn start() -> Key {
         let mut k = Key { sets: vec![] };
         for i in 0..8u128 {
@@ -485,12 +487,14 @@ pub type NormalForms = hashbrown::HashMap<Term, Term>;
 
 /// The key refinement's refuter (R8 of the plan): 4096 pseudo-random width-8 inputs, every width-4 input, every width-3
 /// input, then the screen's width-8 inputs.
+#[cfg(test)]
 struct Refuter {
     r8: ValueMemo<u8>,
     e4: ValueMemo<u8>,
     e3: ValueMemo<u8>,
 }
 
+#[cfg(test)]
 impl Refuter {
     const TESTS: usize = 4096;
     fn new() -> Refuter {
@@ -576,7 +580,9 @@ fn regenerate_key() {
 /// sweep salt or draw shift reaches (spec decision 10, plan R6). Bands 15 and 17 lie past the loops' sizes (class-table
 /// phase 3 plan, D1); the gate reads the files, and `held_files_are_the_bands` keeps them equal to this list.
 pub const HELD_BANDS: [usize; 4] = [11, 13, 15, 17];
+#[cfg(test)]
 pub const HELD_PER_BAND: usize = 1000;
+#[cfg(test)]
 pub const HELD_SALT: usize = 7_777_777;
 const REGENERATE_HELD: &str = "<exe> classes::regenerate_held --exact --ignored --nocapture";
 
@@ -599,6 +605,7 @@ fn held_header(band: usize) -> String {
 }
 
 /// A held-out file's text: its header, then `lhs = rhs` lines.
+#[cfg(test)]
 pub fn held_text(band: usize, laws: &[(Term, Term)]) -> String {
     let mut s = held_header(band) + "\n";
     for (a, b) in laws {

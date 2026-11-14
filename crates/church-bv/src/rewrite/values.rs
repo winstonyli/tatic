@@ -3,6 +3,7 @@ use super::*;
 /// How `ValueMemo` stores a value: one byte for exhaustive signatures (width at most 8), `u128` for the screen.
 pub trait Word: Copy + Eq + std::hash::Hash {
     fn of(x: u128) -> Self;
+    #[cfg(test)]
     fn get(self) -> u128;
     /// The operator's function on this type.
     fn pick(w: &Words) -> fn(Self, Self, Self) -> Self;
@@ -12,6 +13,7 @@ impl Word for u8 {
     fn of(x: u128) -> u8 {
         x as u8
     }
+    #[cfg(test)]
     fn get(self) -> u128 {
         self as u128
     }
@@ -25,6 +27,7 @@ impl Word for u128 {
     fn of(x: u128) -> u128 {
         x
     }
+    #[cfg(test)]
     fn get(self) -> u128 {
         self
     }
@@ -200,6 +203,7 @@ impl<W: Word> ValueMemo<W> {
     }
 
     /// Input `i`, one value per variable.
+    #[cfg(test)]
     pub fn input(&self, i: usize) -> Vec<u128> {
         self.vars.iter().map(|c| c[i].get()).collect()
     }
@@ -250,6 +254,7 @@ impl ValueMemo<u128> {
 
 /// Leaves, each of `add`, `and`, `or` and `xor` applied to two leaves, and (with `deep`) each applied to such a term and a
 /// leaf, in either order.
+#[cfg(test)]
 pub(super) fn terms(nvars: usize, deep: bool) -> Vec<Term> {
     let mut leaves: Vec<Term> = (0..nvars).map(Term::v).collect();
     leaves.push(Term::ZERO);
@@ -281,6 +286,7 @@ pub(super) fn terms(nvars: usize, deep: bool) -> Vec<Term> {
 /// Generic proof of `t1(x, y) = t2(x, y)` for bitwise terms over two good vectors, with no lemma-specific
 /// template: per bit, case analysis on the two `GoodBool` witnesses with `refl` leaves (the kernel decides
 /// each leaf), then `cong_n` and the two witness eliminations. A false conjecture fails to check.
+#[cfg(test)]
 pub fn bitwise_law(n: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
     bitwise_law_k(n, 2, t1, t2)
 }
@@ -307,9 +313,11 @@ pub fn bitwise_law_k(n: usize, k: usize, t1: &Term, t2: &Term) -> (Expr, Expr) {
     })
 }
 
+#[cfg(test)]
 pub type BitFn<'a> = &'a dyn Fn(usize) -> Expr;
 pub type VarBitFn<'a> = &'a dyn Fn(usize, usize) -> Expr;
 /// The skeleton of two-variable laws: see `k_var_law`; `per_bit(a, ga, b, gb)` gets the bit and witness variables.
+#[cfg(test)]
 pub fn two_var_law(n: usize, t1: &Term, t2: &Term, per_bit: &dyn Fn(BitFn, BitFn, BitFn, BitFn) -> BitTriple) -> (Expr, Expr) {
     k_var_law(n, 2, t1, t2, &|bits, goods| per_bit(&|i| bits(0, i), &|i| goods(0, i), &|i| bits(1, i), &|i| goods(1, i)))
 }

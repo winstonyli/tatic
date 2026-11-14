@@ -6,6 +6,9 @@ use std::sync::{Arc, Mutex};
 /// The counted sites, in the order of `NAMES`.
 #[derive(Clone, Copy)]
 pub enum Site {
+    /// Counted only by `Term::interp_in`, which only the tests reach, so a shipped `WORK` line reads `interp=0`
+    /// (`PARKED.md`, "The always-zero interp work count").
+    #[cfg_attr(not(test), allow(dead_code))]
     Interp,
     Walk,
     Match,

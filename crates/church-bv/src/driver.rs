@@ -281,6 +281,7 @@ fn extra_slices_refuse_a_short_list() {
 }
 
 /// Distinct laws for the selection tests: law `i` is `add(.. add(x, y) .. y) = 0` with `i` additions, so its size grows with `i`.
+#[cfg(test)]
 fn nested_laws(count: usize) -> Vec<(Term, Term)> {
     (0..count).map(|i| ((0..i).fold(Term::v(0), |t, _| Term::op(ADD, t, Term::v(1))), Term::ZERO)).collect()
 }

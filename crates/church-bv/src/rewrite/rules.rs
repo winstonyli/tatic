@@ -34,6 +34,7 @@ impl Rules {
     }
 
     /// These rules, printing every rule application or not.
+    #[cfg(test)]
     pub fn tracing(&self, on: bool) -> Rules {
         Rules { trace_rules: on, ..self.clone() }
     }
@@ -614,6 +615,7 @@ fn match_in(p: &Term, t: &Term, sub: &mut [Option<Term>], nodes: &mut u64) -> bo
 }
 
 /// Syntactic unification of `a` and `b` (variables shared, bindings in `sub`), with the occurs check.
+#[cfg(test)]
 pub fn unify(a: &Term, b: &Term, sub: &mut Vec<Option<Term>>) -> bool {
     fn resolve(t: &Term, sub: &[Option<Term>]) -> Term {
         match *t.node() {
@@ -648,6 +650,7 @@ pub fn unify(a: &Term, b: &Term, sub: &mut Vec<Option<Term>>) -> bool {
 /// The overlaps among `rules`: (i, j, at root) for each rule j whose left side unifies with a non-variable subterm of rule i's left
 /// side (variables renamed apart; a rule with itself only below the root). Where two left sides overlap, first-match order decides
 /// which rule rewrites, so these are the pairs a rule order (or completion) has to settle.
+#[cfg(test)]
 pub fn rule_overlaps(rules: &[(Term, Term)]) -> Vec<(usize, usize, bool)> {
     fn shift(t: &Term, k: usize) -> Term {
         match *t.node() {

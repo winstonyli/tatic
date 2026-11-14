@@ -543,6 +543,13 @@ A finding is cited by section or paragraph title, never by line (its lines drift
 
 ## Code hygiene
 
+- **The always-zero interp work count** - what: `work::Site::Interp` is counted only by `Term::interp_in`, which only
+  the tests reach, so every shipped `WORK` line reads `interp=0` and the variant carries the crate's one dead-code
+  allow (`crates/church-bv/src/work.rs#Site`). Why parked: dropping the site changes the `WORK` line that the gate
+  summaries and `scripts/gate/ablations.sh` (its `tols`) read, a format decision left for the user (2026-11-14, o2).
+  Trigger: the next change to the `WORK` line, or a shipped path that screens with `interp` again. Evidence:
+  `crates/church-bv/src/lib.rs` (`deny(dead_code, unused_imports)`), verified 2026-11-14. Status: parked (stopgap).
+
 - **A shared children walk for `Shape` (AR8)** - what: one helper giving a `Shape`'s child terms, for `scan_for_closure_calls` and any `classify` consumer that recurses the same way. Why parked: left out of SR2 to keep it a pure move; not yet shown that the consumers (`build_node`, the provers) share a walk rather than per-shape translations. Trigger: a new `Shape` case that has to be added to more than one walker. Evidence: SR2 in `docs/superpowers/plans/2026-11-04-cleanup-restructure.md`, `crates/tatic/src/jit/shape.rs#classify`, verified 2026-11-05. Status: parked.
 - **Module cycle in `jit/`** - what: `compile <-> lower_wat` through `CompiledFragment` and `Item`; moving them beside the IR would remove it. (The other cycle, `ir -> shape -> lower_wat -> ir` through `cmp_instr`, ended in v0.7: the `PrimOp` to row map is now `PrimOp::name` over the one wasm table (v0.8 T3; `tatic_wasm::wasm::table` since 2026-11-13), and `shape` does not import the lowering.) Why parked: SR2 was a pure move. Trigger: a further `jit/` split. Evidence: `crates/tatic/src/jit/lower_wat.rs` imports, `crates/tatic/src/jit/compile.rs#CompiledFragment`, verified 2026-11-08. Status: parked.
 - **Cite forms `cite_check` does not read** - what: a bare `§N` with no path beside it, the second title of a two-title cite, cites into `PARKED.md`, `ROADMAP.md` and `docs/*.md`, and TOUR directory cites matched anywhere in the directory. Why parked: a one-off scan found every bare `§N` and second title resolving; only five old cites into `PARKED.md` name no entry (probably deleted when fixed, which a guard would have to allow). Trigger: a wrong cite of one of these forms found by a reader, or a renamed PARKED entry. Evidence: `scripts/check/cite_check.pl` header, `scripts/check/tour_check.sh`, verified 2026-11-05. Status: parked.

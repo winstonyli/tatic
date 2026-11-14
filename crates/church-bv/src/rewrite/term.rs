@@ -385,6 +385,7 @@ impl Term {
         }
     }
     /// The value on the width-`n` operands `vals`, in plain integers (a cheap screen for false laws).
+    #[cfg(test)]
     pub fn interp(&self, n: usize, vals: &[u128]) -> u128 {
         let mut nodes = 0;
         let v = self.interp_in(low_bits(n), vals, &mut nodes);
@@ -392,6 +393,7 @@ impl Term {
         v
     }
     /// `interp` under `mask`, adding the nodes it evaluates to `nodes`.
+    #[cfg(test)]
     fn interp_in(&self, mask: u128, vals: &[u128], nodes: &mut u64) -> u128 {
         *nodes += 1;
         match *self.node() {
@@ -409,14 +411,17 @@ impl Term {
         (1..=6).all(|w| self.plausibly_equals(other, w, k))
     }
     /// The smallest width in 1..=6 and an input tuple (over `k` variables) where the two sides differ, if the screen finds one.
+    #[cfg(test)]
     pub fn refute(&self, other: &Term, k: usize) -> Option<(usize, Vec<u128>)> {
         (1..=6).find_map(|w| self.counterexample(other, w, k).map(|vals| (w, vals)))
     }
     /// The first of the corners and 202 pseudo-random width-`n` tuples over `k` variables on which the two sides differ.
+    #[cfg(test)]
     pub fn counterexample(&self, other: &Term, n: usize, k: usize) -> Option<Vec<u128>> {
         self.counterexample_in(other, n, k, SCREEN_INPUTS)
     }
     /// `counterexample` over the first `tries` tuples only (values memoized per term, `ValueMemo`).
+    #[cfg(test)]
     pub fn counterexample_in(&self, other: &Term, n: usize, k: usize, tries: usize) -> Option<Vec<u128>> {
         with_screen(n, k, |m| m.first_difference(self, other, tries).map(|i| m.input(i)))
     }

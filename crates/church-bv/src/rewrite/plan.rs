@@ -49,6 +49,7 @@ pub fn shared_lemma(job: &mut Job, key: String, build: impl FnOnce(&mut Job) -> 
 /// `body` with the job's lemma parameters discharged, innermost first: `(\r_0. .. ((\r_m. body) P_m) ..) P_0`, a closed
 /// term whose check re-checks every lemma proof `P_i` once. Ends the job's lemmas and everything that mentions them, so a
 /// lemma asked for later is bound afresh.
+#[cfg(test)]
 pub fn discharge(job: &mut Job, body: Expr) -> Expr {
     let Some((mut ps, scopes)) = std::mem::take(&mut job.lemmas).params else { return body };
     scopes.into_iter().rev().fold(body, |b, (sc, p)| app(ps.close(sc, Binder::Lam, b), p.expect("discharge needs every lemma's proof: run without LEMMA_CACHE").get()))

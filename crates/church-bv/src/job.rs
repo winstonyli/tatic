@@ -70,6 +70,7 @@ impl Setup {
     }
 
     /// The process's setup with `pairs` over its environment and no result file: a test's job with a switch set.
+    #[cfg(test)]
     pub fn with_env(pairs: Vec<(String, String)>) -> Arc<Setup> {
         Arc::new(Setup::from_env(merge_env(process_env(), exe_env().as_deref(), &pairs)))
     }
@@ -326,6 +327,7 @@ impl Job {
     }
 
     /// `f` with `mined` in place of the job's mined rules, its switches kept (`with_rules`).
+    #[cfg(test)]
     pub fn with_mined<T>(&mut self, mined: Vec<(Term, Term)>, f: impl FnOnce(&mut Job) -> T) -> T {
         let rules = self.rules.with_mined(&self.setup, mined);
         self.with_rules(rules, f)
@@ -543,6 +545,7 @@ fn every_job_has_its_own_id() {
 
 /// State a church_bv source line holds outside `Setup` and `Job`, or a step around `Job`'s guards.
 #[derive(Debug, PartialEq)]
+#[cfg(test)]
 enum Hidden<'a> {
     /// a static inside a `thread_local!` block
     ThreadLocal(&'a str),
@@ -558,6 +561,7 @@ enum Hidden<'a> {
 }
 
 /// The `static` declared on `line`: whether `mut`, its name and its type.
+#[cfg(test)]
 fn declared(line: &str) -> Option<(bool, &str, &str)> {
     let rest = ["pub(crate) static ", "pub static ", "static "].iter().find_map(|p| line.trim_start().strip_prefix(p))?;
     let (is_mut, rest) = rest.strip_prefix("mut ").map_or((false, rest), |r| (true, r));
@@ -566,6 +570,7 @@ fn declared(line: &str) -> Option<(bool, &str, &str)> {
 }
 
 /// Whether `line` swaps, replaces, takes or assigns a whole job (not one of its fields).
+#[cfg(test)]
 fn job_swap(line: &str) -> bool {
     let assigned = line.trim_start().strip_prefix("*job").is_some_and(|r| r.trim_start().strip_prefix('=').is_some_and(|r| !r.starts_with('=')));
     let moved = ["mem::swap(", "mem::replace(", "mem::take("].iter().any(|m| {
@@ -581,6 +586,7 @@ fn job_swap(line: &str) -> bool {
 
 /// The name a job is bound to on `line` when it is not `job`: a parameter or field typed `Job`, `&Job` or `&mut Job`, or a
 /// `let` of `Job::new` (the whole pattern, for a tuple).
+#[cfg(test)]
 fn job_alias(line: &str) -> Option<&str> {
     let ident = |c: char| c.is_alphanumeric() || c == '_';
     for ty in [": &mut Job", ": &Job", ": Job"] {
@@ -604,6 +610,7 @@ fn job_alias(line: &str) -> Option<&str> {
 
 /// What `text` (one source file) holds or does that `hidden_state_is_classified` checks, by line number. A static inside a
 /// `thread_local!` block is a `ThreadLocal`, whatever its type; comment lines are skipped.
+#[cfg(test)]
 fn hidden(text: &str) -> Vec<(usize, Hidden<'_>)> {
     let mut out = vec![];
     // the brace depth inside a `thread_local!` block, 0 outside one

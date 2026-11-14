@@ -788,6 +788,7 @@ pub fn pos_law<T: PosTerm>(n: usize, k: usize, t1: &T, t2: &T) -> (Expr, Expr) {
 }
 
 /// `x << k` or `x >> k` as `k` one-bit shifts.
+#[cfg(test)]
 pub fn shift_k(k: usize, left: bool, a: Term) -> Term {
     (0..k).fold(a, |acc, _| Term::op(if left { 6 } else { 7 }, acc, Term::ZERO))
 }
@@ -879,6 +880,7 @@ pub fn shifts_inside_sums_are_machines_and_their_laws_check() {
 }
 
 /// `c * t` (mod 2^n) as shift-and-add: the sum of `shl1^i t` over the set bits `i` of `c`.
+#[cfg(test)]
 pub fn mul_const(c: u32, t: &Term) -> Term {
     let shl = |a: Term, k: u32| (0..k).fold(a, |acc, _| Term::op(SHL1, acc, Term::ZERO));
     let mut parts = (0..32).filter(|i| c >> i & 1 == 1).map(|i| shl(*t, i));
