@@ -232,7 +232,10 @@ A finding is cited by section or paragraph title, never by line (its lines drift
 - **Scratch locals (`local.set` past the parameters)** — why parked: `local.set` to a parameter slot is built (the loop
   form, 2026-11-12, `docs/superpowers/specs/2026-11-12-proved-loop-form-design.md`; the shape check bounds its operand by the arity), but no target writes a temporary.
   Trigger: the first gate target whose body writes a local past its parameters or emits `local.tee` (wrapping
-  division, the closure environment). Evidence:
+  division, the closure environment). Of the 13 census rows still `NotCovered` (27 of 40 are `Accepted`; `open_redex_probe`
+  has no fragment and `oversized_source_with_a_shrinking_step` is over the tree budget), 11 write scratch locals, and
+  all 6 heap rows are among them (counted from the census's columns, `docs/tier-cycle/`, "What blocks the NotCovered
+  rows: a census", which "Closures through the gate" did not recount). Evidence:
   `docs/tier-cycle/`, "Locals as a frame passed in, with and without the memory: a spike" (`local.set i` is a row that
   rebuilds the concrete frame; temporaries widen the frame), verified 2026-11-11; the law telescope then gains the
   temporaries binder (`docs/tier-cycle/`, "One call rule for self-calls and callees: a spike"). Status: parked.
@@ -256,22 +259,20 @@ A finding is cited by section or paragraph title, never by line (its lines drift
 - **Guard Bit sites** — what: carry the row's domain at Bit (comparison) sites as at Word sites. Why parked: every Bit
   row is total today, so the guard would always be taken. Trigger: the first partial Bit row (`tatic-wasm/src/wasm.rs#wasm_rows_are_closed_and_typed` fails on one). Evidence:
   `tatic-wasm/src/machine.rs#interp` (its `binop` guards only Word rows), verified 2026-11-13. Status: parked.
-- **Bit rows (`wrap`, `extend`, `shl`, `or`, `shr_u`: the closure word's split)** — why parked: every row that needs
-  them also needs the source reading to take closure values, and all but 2 need `call_indirect` too
-  (`docs/tier-cycle/`, "What blocks the NotCovered rows: a census"); alone they install nothing. Trigger: work on the
-  closure convention starts (they are its first step). Evidence: that census, run `2026-11-13-p5-notcovered-census`,
-  verified 2026-11-13. Status: parked.
 - **The heap relation on the frame (after v0.8)** — what: `Mem` becomes `V x Heap` and the `Store`/`Load` rows
   return; the machine's types, call row and interpreters stay as v0.8 leaves them, and the generator binds the memory's
   parts separately. Why parked: no v0.8 target allocates. Trigger: the first gate target that allocates or reads a
-  record (the 6 heap rows of `docs/tier-cycle/`, "What blocks the NotCovered rows: a census"). Evidence: `docs/tier-cycle/`, "The heap on the frame, behind one memory
+  record (the 6 heap rows of `docs/tier-cycle/`, "What blocks the NotCovered rows: a census"; all 6 are still `NotCovered` after "Closures through the gate", which moved none of them). Evidence: `docs/tier-cycle/`, "The heap on the frame, behind one memory
   argument: a spike" and "A caller's cell across a call to another function: a spike"; what is shown and open is in
   `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Open: a heap relation for callees", verified 2026-11-11.
   Status: parked.
-- **`call_indirect` and the table** — why parked: the 12 table-call rows without the heap (`docs/tier-cycle/`, "What blocks the NotCovered rows: a census") also need the closure convention
-  (`docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code stands"). Trigger: the heap relation
-  built (entry above), or a table-only closure target picked. Evidence: same section, verified 2026-11-11. Status:
-  parked.
+- **Direct calls into `Pointer` records** (decision y1, 2026-11-13) — what: the gate takes a module whose lowering
+  emits a direct `call $cK` into a record reached through `$env`, with the environment pushed first. Why parked: `Call`
+  pops one word too few for such a record, and the fix (a `Call` that drops the environment word) needs the arity
+  table to carry `(arity, env)` through `shape`, `seq_step`, `Ctxt.arities` and `check_code`, and changes `Call`'s
+  meaning for every statement; the gate refuses these modules today. Trigger: a census row that calls a bare-value
+  combinator directly. Evidence: `crates/tatic/src/jit/lower_wat.rs` (the known-call arm), `docs/tier-cycle/`,
+  "Closures through the gate (2026-11-14)", verified 2026-11-14. Status: parked.
 - **A call budget that bounds gate time** - what: `proof/gate.rs#cost` is tree nodes plus `CALL_WEIGHT` (228) per
   call site, fitted only on `rec f n = if n <= 0 then 0 else f (n - 1) + .. + f (n - 1)` (a tiny tree). A term
   with 16 self-calls and a 1920-node straight-line tail costs 7590, under `MAX_GATE_TREE` (8192), and took about

@@ -1,0 +1,64 @@
+diff --git a/crates/tatic/src/proof/tests/gate.rs b/crates/tatic/src/proof/tests/gate.rs
+index 08df8b4..f2479e4 100644
+--- a/crates/tatic/src/proof/tests/gate.rs
++++ b/crates/tatic/src/proof/tests/gate.rs
+@@ -356,6 +356,59 @@ fn measure_cachegrind() {
+ }
+ 
+ 
++/// PROBE (q2, throwaway): the check's and build's kernel work, one `Q2 name status cost check_work build_work` line per row.
++#[test]
++#[ignore]
++fn q2_probe() {
++    use crate::support::samples as sm;
++    use crate::testing::test_corpus as tc;
++    type Mk = Box<dyn Fn(&mut TermStore) -> Hash + Send>;
++    let progs: Vec<(&str, Mk)> = vec![
++        ("twice", Box::new(sm::twice)),
++        ("iterate", Box::new(sm::iterate)),
++        ("iterate_creating_a_closure_over_g", Box::new(tc::iterate_creating_a_closure_over_g)),
++        ("closure_typed_loop_carried_parameter_loop", Box::new(|s: &mut TermStore| sm::closure_typed_loop_carried_parameter_loop(s, 150))),
++        ("non_tail_closure_carrying_recursion", Box::new(sm::non_tail_closure_carrying_recursion)),
++        ("branching_non_tail_closure_carrying_recursion", Box::new(sm::branching_non_tail_closure_carrying_recursion)),
++        ("tail_recursive_loop_with_if_between_closures_self_call_arg", Box::new(sm::tail_recursive_loop_with_if_between_closures_self_call_arg)),
++        ("inconsistent_arity_saturating_instance", Box::new(tc::inconsistent_arity_saturating_instance)),
++        ("capturing_closure_loop", Box::new(capturing_closure_loop)),
++        ("straight_line", Box::new(straight_line)),
++        ("held_out_b", Box::new(tc::held_out_b)),
++        ("doubling(6)", Box::new(|s: &mut TermStore| doubling(s, 6))),
++        ("gcd", Box::new(sm::gcd)),
++        ("doubling(12)", Box::new(|s: &mut TermStore| doubling(s, 12))),
++    ];
++    for (name, mk) in progs {
++        let w = big(move || {
++            let (s, h, frag) = compiled(&*mk);
++            let cost = crate::proof::gate::module_cost(&s, h, &frag);
++            tatic_kernel::scoped(|| {
++                let b0 = tatic_kernel::work();
++                let r = build(tatic_wasm::wasm::table(), &s, h, &frag);
++                let b1 = tatic_kernel::work();
++                match r {
++                    Ok((st, Ok(p))) => {
++                        let w0 = tatic_kernel::work();
++                        let ok = tatic_wasm::encoding::holds(&p, &st).is_ok();
++                        (if ok { 1u64 } else { 2 }, cost, tatic_kernel::work() - w0, b1 - b0)
++                    }
++                    Ok((_, Err(why))) => {
++                        println!("Q2 {name} walk failed: {why}");
++                        (3, cost, 0, b1 - b0)
++                    }
++                    Err(v) => {
++                        println!("Q2 {name} {v:?}");
++                        (4, cost, 0, b1 - b0)
++                    }
++                }
++            })
++        });
++        let st = ["", "accepted", "kernel-rejected", "walk-failed", "not-built"][w.0 as usize];
++        println!("Q2 {name} {st} cost={} check_work={} build_work={}", w.1, w.2, w.3);
++    }
++}
++
+ /// `f` on a thread with the checker's stack, as the JIT's gate runs.
+ pub(super) fn big<R: Send + 'static>(f: impl FnOnce() -> R + Send + 'static) -> R {
+     std::thread::Builder::new().stack_size(tatic_kernel::CHECK_STACK).spawn(f).unwrap().join().unwrap()

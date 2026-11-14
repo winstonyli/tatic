@@ -66,6 +66,7 @@ The tier-cycle findings log, one file per section (the two long sections are spl
 - [15-the-jit-and-the-target-machine/31-the-gates-branch-step-made-linear.md](15-the-jit-and-the-target-machine/31-the-gates-branch-step-made-linear.md): The gate's branch step made linear (2026-11-13)
 - [15-the-jit-and-the-target-machine/32-the-partial-row-and-gcd-through-the-gate.md](15-the-jit-and-the-target-machine/32-the-partial-row-and-gcd-through-the-gate.md): The partial row and gcd through the gate (2026-11-13)
 - [15-the-jit-and-the-target-machine/33-what-blocks-the-notcovered-rows-a-census.md](15-the-jit-and-the-target-machine/33-what-blocks-the-notcovered-rows-a-census.md): What blocks the NotCovered rows: a census (2026-11-13)
+- [15-the-jit-and-the-target-machine/34-closures-through-the-gate.md](15-the-jit-and-the-target-machine/34-closures-through-the-gate.md): Closures through the gate (2026-11-14)
 - [16-other-theories.md](16-other-theories.md): Other theories
 - [17-learned-and-fixed-parts.md](17-learned-and-fixed-parts.md): Learned and fixed parts
 - [18-related-work-surveyed-2026-10-10.md](18-related-work-surveyed-2026-10-10.md): Related work (surveyed 2026-10-10)

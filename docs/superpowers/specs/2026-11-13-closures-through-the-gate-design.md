@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Closures through the gate: the closure word and `call_indirect`
@@ -108,7 +108,12 @@ the dynamic set of each closure call it makes, against the code's static targets
 `call_indirect`. A closure value adds no callee (`$f` packs `$c1` and never calls it), and the over-application's
 head is a static `CombinatorCall` on the source side and a `call $cK` in the code. Equal sets make every arm of the
 source's dispatch find its callee, so a closure call present on one side only is `Rejected(Pairing)` on a non-empty
-set, not a panic; on an empty set the walk rejects it (corrected at plan time, round 2).
+set, not a panic; on an empty set the walk rejects it (corrected at plan time, round 2). On an empty dynamic set every
+closure call answers `z` on both sides, so a mutant that changes the closure-call count there is unobservable in the
+closed module (its statement is `def_eq` to the positive one, asserted in
+`proof/tests/gate_mutants.rs#a_twice_with_one_closure_call_is_rejected`) and only the walk refuses it; `twice`,
+`iterate` and `iterate_creating_a_closure_over_g` are such empty-set rows (no record reached through `$env`), so their
+`Accepted` says only that each closure call traps on both sides.
 
 So a closure call is a branch over the dynamic set whose every arm is a static call, on both sides: the walk's branch
 step and call rule cover it. Fuel: the two evaluations of the head are calls at the same fuel, so they give the same

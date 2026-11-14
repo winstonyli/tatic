@@ -1,5 +1,5 @@
 ---
-status: active
+status: done
 ---
 
 # Closures through the gate Implementation Plan
