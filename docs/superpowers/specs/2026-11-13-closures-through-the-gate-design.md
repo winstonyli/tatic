@@ -86,7 +86,9 @@ is printed `(param $p0 i64) ..` with no `$env`, so its type is not `$ty_a` and w
 `EnvAccess`, which decides its printed type, is part of the trusted dispatch semantics. Both sides dispatch on
 the index word through the same chain, `(i == p1) (call p1) ((i == p2) (call p2) .. z)`, where `call p` is the
 side's existing static call: `SEnv::call` on the source side, and on the machine side the `call` constructor's meaning
-at the literal `p` (`Ctxt::table` applied to `p`). On the source side `i` is the `wrap` row's meaning applied to the
+at the literal `p` (`Ctxt::table` applied to `p`). Each test `(i == p)` is a `choose` on the `eq` row (the probe `ch`
+in the proof), not `Ctxt::table`'s `eq_bv` pick: the walk branches only on `ch`, and `eq_bv` at a run-time index is
+stuck. On the source side `i` is the `wrap` row's meaning applied to the
 head's word, on the machine side the popped index (itself `wrap` of the word). An index outside the set answers `z`
 on both sides, as wasm traps on it: past the table, `$f`'s index, or a target whose type is not `$ty_a` (so the
 entry's own position, reachable from `Ctxt::table` by a raw index, is never entered by a closure call unless it is in
@@ -101,13 +103,17 @@ not see, so a module with a closure call and any such slot is `NotCovered`, deci
 with no record, or the registry's choice of curried dispatch), never from the `Ins` list. The 8 rows are all `Fast`
 with every slot a record (dump above).
 
-`pairing` is unchanged: it compares static callees only (`callee_heads` against `Ins::Call` targets). A closure value
-and a closure call add no static callee on either side (`$f` packs `$c1` and never calls it), and the
-over-application's head is a static `CombinatorCall` on the source side and a `call $cK` in the code.
+`pairing` keeps its one per-record comparison of callee sets, widened on both sides: the source's static heads plus
+the dynamic set of each closure call it makes, against the code's static targets plus the dynamic set of each
+`call_indirect`. A closure value adds no callee (`$f` packs `$c1` and never calls it), and the over-application's
+head is a static `CombinatorCall` on the source side and a `call $cK` in the code. Equal sets make every arm of the
+source's dispatch find its callee, so a closure call present on one side only is `Rejected(Pairing)` on a non-empty
+set, not a panic; on an empty set the walk rejects it (corrected at plan time, round 2).
 
 So a closure call is a branch over the dynamic set whose every arm is a static call, on both sides: the walk's branch
 step and call rule cover it. Fuel: the two evaluations of the head are calls at the same fuel, so they give the same
-word; the generator applies the callee's law at each. The machine's `call_indirect` is either one more `Prog`
+word; the generator applies the callee's law at each. The source must evaluate the head twice too, not because the
+values differ but because the walk is lockstep: each machine `call $cK` needs a source call head. The machine's `call_indirect` is either one more `Prog`
 constructor whose meaning is that chain, or the existing `call` constructor (which already takes its index as a `V`)
 generalised to take the index from the stack through the set's filter; the builder picks, as long as an index outside
 the set reaches `z`, never `Ctxt::table` at a raw index. It pops the index, then `a` arguments, then the environment word, which it drops. The callees `cs` of
@@ -137,7 +143,11 @@ printed from the same positions and the `$tyK` lines from the same instructions 
 - `shl`, `shr_u`, `or`: `Class::Word`, total (`Dom::TOTAL`), each printing its `i64.*` line. Guarded like every Word
   site (the guard fold stays parked).
 - `wrap` (`i32.wrap_i64`, the low 32 bits) and `extend` (`i64.extend_i32_u`, the identity on a zero-extended word):
-  1 to 1. No class takes one operand, so a `Unary` class with its own `Prog` constructor.
+  1 to 1. No class takes one operand, so a `Unary` class with its own `Prog` constructor. A Unary site is
+  unguarded (the guard is Word-specific: `binop(guarded=true)` and the source's `Src::Prim`), so it adds no branch on
+  either side.
+- None of these rows has a source operator (`PrimOp`): the op-table's `PrimOp::ALL` loop does not reach them, so their
+  circuits are checked by a direct n = 64 test against `u64`, and the operator-swap mutant test iterates only over the rows `carrier()` can build (those with a `PrimOp`).
 - `i32.const`: a `Class::Const` row printing `i32.const k`, its word the low 32 bits of `k`.
 
 ### D3. `i32` values are zero-extended words
@@ -159,7 +169,8 @@ and the modelled ones come from one place.
 `machine::shape_check` admits `EnvAccess::Pointer` records besides `Params(0)`. Such a record prints `$env i32`
 first and then `$p{i}` by its arity (`print.rs#print_func`), and `local.get` prints `$p{i}` by name, so the frame's
 slots and the printed names agree by construction; no modelled instruction reads `$env` (`local.get $env` and memory
-reads stay `Raw`).
+reads stay `Raw`). A direct `call` into a `Pointer` record (the lowering pushes the environment first) is refused by the
+shape check (decision y2, parked with a trigger in `PARKED.md`; plan, "Calls this plan made"); none of the 8 rows has one.
 
 ### D6. Cost
 
@@ -173,8 +184,11 @@ instead of `NotCovered`, which is what the budget exists to prevent.
 ### D7. Cycles
 
 `Ctxt::real` refuses a module whose calls form a cycle (an assert). The dynamic set adds edges: a closure body that
-reaches its caller through the table would be one. The assert becomes an `Err` that `build` returns as `NotCovered`,
-over the same callees (static and dynamic sets) `Ctxt::table` uses, so no second graph walk exists; the set is
+reaches its caller through the table would be one. A precheck `statement.rs#call_cycle`, over the same
+widened `machine.rs#callees` that `Ctxt` builds its table from, finds it before any statement is built, and `build` returns it as
+`NotCovered`; the assert stays as the invariant the precheck guarantees, so `statement` stays infallible (making it
+return `Result` was weighed: `Real` is built inside `c.lam` closures that cannot propagate `?`, and six callers would
+change). The set is
 derived from the records' arities and `EnvAccess`, which the registry fixes, not from the instructions. A module whose static and dynamic call edges (excluding self-edges, which `Ctxt::table`'s `own` branch
 takes as it takes a self-call) form a cycle is `NotCovered`. The dynamic edges over-approximate (every closure call
 reaches its whole set), so a module can be refused for a cycle no run takes; that is `NotCovered`, never a wrong
@@ -201,12 +215,15 @@ verdict. None of the 8 rows has one.
 |---|---|---|---|
 | closure value and closure call in the reading | `proof/gate.rs#parse`, `#cps`, `Src` | nothing (new cases of the one reading) | the "outside what the source reading takes" refusal for these shapes |
 | source dynamic dispatch | `machine/statement.rs#SEnv` | nothing | nothing |
-| `call_indirect` | `machine.rs#Ins`, its meaning the dispatch chain of static calls (a constructor, or `call` reading its index from the stack); `Ctxt::table`'s callees | `Ins::Raw("call_indirect ..")` | the `Raw` lines of the 8 rows |
+| `call_indirect` | `machine.rs#Ins::CallIndirect`, `machine/prog.rs#Ctor::CallIndirect` (its meaning a `choose` chain over `dynamic_set`, each arm the static call); `machine.rs#callees` (moved from `statement.rs`) widened | `Ins::Raw("call_indirect ..")` | the `Raw` lines of the 8 rows |
 | rows `shl` `shr_u` `or` `wrap` `extend` `i32.const`, class `Unary` | `ops.rs`, `wasm.rs#table`, `machine.rs#Class` | `Raw` lines | the PARKED entry "Bit rows (...)" |
 | `$tyK` lines from the instructions | the lowering's printer (`jit/lower_wat.rs`) | `Lowering.call_indirect_arities` | that side list |
 | Pointer records admitted | `machine.rs#shape_check` | the `Params(0)`-only rule | nothing |
-| cycles as `NotCovered` | `machine/statement.rs#Ctxt::real`, `proof/gate.rs#build` | the cycle assert | the assert |
+| the Prog meanings in their own file (after the plan's T0) | `machine/prog.rs` | half of `machine.rs` | nothing |
+| cycles as `NotCovered` | `machine/statement.rs#call_cycle`, `proof/gate.rs#build` | the cycle assert as the only guard | nothing (the assert stays as an invariant) |
 | dynamic sites in the cost | `proof/gate.rs#call_sites` | nothing | nothing |
+| widened callee sets in pairing | `proof/gate.rs#pairing` | static-only sets | nothing |
+| direct calls into Pointer records refused | `machine.rs#shape_check` | nothing | nothing (PARKED entry added) |
 
 PARKED: "Bit rows (...)" and "`call_indirect` and the table" are deleted when this lands; the heap and scratch-local
 entries stay, their row counts restated against the new verdicts. `docs/TOUR.md` gains the closure word, the
@@ -216,8 +233,9 @@ dynamic call and the `Unary` class.
 
 - How the generator (`machine/sim.rs`, untrusted) walks a dynamic call: by the existing branch step over the
   dispatch chain, or by one table lemma per module; whichever keeps the walk linear in call sites.
-- The exact name and signature of the source dispatch on `SEnv`, and of the `call_indirect` instruction.
-- Whether `call_indirect` is a new constructor or the `call` constructor reading its index from the stack (D1).
+- Settled by the plan (`docs/superpowers/plans/2026-11-13-closures-through-the-gate.md`, "Calls this plan made"):
+  the source dispatch is `SEnv::call_dyn`, the instruction `Ins::CallIndirect(arity)`, and `call_indirect` a new
+  constructor rather than `call` reading its index from the stack.
 
 ## Risks
 
@@ -231,7 +249,7 @@ dynamic call and the `Unary` class.
   meanings, the `Unary` constructor and the relaxed shape check.
 - **A `Unary` constructor changes every statement**: `Prog` gains a binder, so every module's statement and the
   generator change, not only the closure rows'. The cost check (accepted rows and `doubling(12)` before and after)
-  measures it.
+  measures it. `Ctor::CallIndirect` adds a second binder, with the same effect and the same check.
 
 ## Decisions (the user, 2026-11-13)
 
