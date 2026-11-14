@@ -278,10 +278,13 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   folded into `fast`); any other module is `NotCovered`. Why parked: dispatch is typed by arity, so under `Fast` a
   closure call that reaches a closure of another arity traps in the code while the term answers, and the reading,
   which dispatches over the module's set of the call's arity, answered `z` on both sides and accepted it (final
-  review of the closures branch). The general fix reads the term's own application on the source side (dispatch
-  over every `Pointer` record, over- and under-application included), so such a module is `Rejected` instead. Trigger:
-  a census row whose closures or closure calls differ in arity. Evidence: `proof/tests/gate.rs`,
-  `a_closure_call_at_another_arity_is_not_covered`, verified 2026-11-14. Status: parked.
+  review of the closures branch). A `Fast` module of mixed arity can never be `Accepted` (its code traps where the
+  term answers), so the guard stays and its verdict stays `NotCovered`: reading it as `Rejected` was weighed and
+  declined (decision n1, 2026-11-14: it moves goldens and buys no row). Only curried code can be `Accepted` at mixed
+  arity; that reading is the open v0.11 candidate (Decide m, 2026-11-14). Trigger: a curried reading lands, or a
+  census row whose `Fast` closures differ in arity. Evidence: `proof/tests/gate.rs`,
+  `a_closure_call_at_another_arity_is_not_covered`, verified 2026-11-14. Status: parked (the curried reading);
+  decided against (`Rejected` for `Fast`).
 - **Curried dispatch whenever closures may differ in arity** (decision g1, 2026-11-14) — the JIT keeps `Fast` dispatch
   with its arity trap (`jit/ir.rs#Dispatch`): the gate's one-arity guard and the fallback prover keep such a fragment
   from installing (`prove_install` false on the guard's probe term), so the change would buy no soundness and would
