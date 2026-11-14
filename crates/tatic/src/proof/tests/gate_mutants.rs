@@ -460,7 +460,16 @@ fn a_twice_with_one_closure_call_is_rejected() {
     let inner = [get(0), row("wrap"), Ins::CallIndirect(1)];
     let mutant = with_entry(subject().2, |e| Entry { code: splice_at(&entry, 9, &inner, &[row("add")]), ..e });
     let (s, h, _) = subject();
-    // no `forged_rejected`: the kernel accepts the positive proof against this mutant's (different) statement
-    // (T5 report, deviation 1), so the generator's refusal is the only layer here
-    big(move || rejected_by(gate(tatic_wasm::wasm::table(), &s, h, &mutant), Walk, "one closure call of two"));
+    // `twice`'s dynamic set is empty, so every closure call answers `z` on both sides and the mutant is unobservable in
+    // the closed module: its statement is `def_eq` to the positive one, so there is no forgery to refuse and the
+    // walk's lockstep refusal is the only layer here
+    big(move || {
+        let table = tatic_wasm::wasm::table();
+        rejected_by(gate(table, &s, h, &mutant), Walk, "one closure call of two");
+        scoped(|| {
+            let (pos, _) = build(table, &s, h, &subject().2).expect("the positive case builds");
+            let (neg, _) = build(table, &s, h, &mutant).expect("the mutant builds");
+            assert!(pos != neg && tatic_kernel::def_eq(&pos, &neg), "the mutant should differ only up to conversion");
+        })
+    });
 }
