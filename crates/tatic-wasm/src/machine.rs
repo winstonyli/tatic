@@ -2,7 +2,7 @@
 //! over a `Table` of rows (`wasm::table` is the wasm one).
 //!
 //! A program is a Church-encoded instruction tree typed by its start and end stacks,
-//! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> const -> word -> bit -> if -> call -> set -> br -> F S` (one leaf
+//! `Prog S T = Pi F:(Sort2 -> Sort2). F T -> const -> word -> bit -> unary -> if -> call -> call_indirect -> set -> br -> F S` (one leaf
 //! constructor per row class, in `ctor_list` order), where each
 //! constructor takes the rest of the program (`const : Pi A. Op -> F (V,A) -> F A`, with the operand
 //! `Op = Fr -> Pi R:Sort0. (V -> R) -> R` handing its word to a continuation; `word : Pi A. (V -> V -> V) ->
@@ -137,6 +137,11 @@ pub enum Ins {
     /// rewrites a tail call to the function's own position to the loop form, `Set`s then `Br`): pops the callee's
     /// arity in words, pushes one. Its meaning continues into the callee environment's entry `j`, then the rest.
     Call(usize),
+    /// `call_indirect (type $ty{a})`, the field being the arity `a` (printed always as `call_indirect`, never the tail
+    /// form): pops the index word, then `a` argument words, then the environment word, and pushes one word. Its meaning
+    /// dispatches on the index over the module's dynamic set for the arity (`dynamic_set`); an index outside it answers
+    /// `z`, as wasm traps on it.
+    CallIndirect(usize),
     /// `br $top`: restart the function's own entry on the current frame with the activation's own return continuation.
     /// Typed like a `Call` with no arguments (pushes one word); its meaning ignores the stack under it and the code
     /// after it, which the printed function never reaches.
@@ -163,8 +168,10 @@ pub struct Entry {
 /// The shape check (trusted; the gate runs it before any statement exists): every record's body runs from `[]` to
 /// `[word]`, holds no `Raw` and no unknown row, reads and writes (`local.get`, `local.set`) only slots below its own
 /// record's arity, calls only
-/// positions that have a record, and every record's env is `Params(0)` (an env parameter would shift the printed
-/// parameter slots off the frame's). `records` is by module position; `None` is scaffolding with no body.
+/// positions that have a record, no `call` reaches a `Pointer` record (it would have to push the environment first;
+/// `CallIndirect` is how they are reached), and every record's env is `Params(0)` or `Pointer` (an env parameter
+/// would shift the printed parameter slots off the frame's). `records` is by module position; `None` is scaffolding
+/// with no body.
 pub fn shape_check(table: &Table, records: &[Option<&Entry>]) -> Result<(), String> {
     let arities: Vec<Option<usize>> = records.iter().map(|r| r.map(|e| e.arity)).collect();
     fn gets(code: &[Ins], arity: usize) -> Result<(), String> {
@@ -186,8 +193,21 @@ pub fn shape_check(table: &Table, records: &[Option<&Entry>]) -> Result<(), Stri
     }
     for (pos, e) in records.iter().enumerate() {
         let Some(e) = e else { continue };
-        if e.env != EnvAccess::Params(0) {
-            return Err(format!("position {pos}: env access {:?}, not Params(0)", e.env));
+        // `Params(k)` with `k > 0` would shift the printed parameter slots off the frame's; `Pointer` prints `$env i32`
+        // first and no modelled instruction reads it (D5)
+        if let EnvAccess::Params(k @ 1..) = e.env {
+            return Err(format!("position {pos}: env access Params({k}), not Params(0) or Pointer"));
+        }
+        let mut direct = None;
+        visit_ins(&e.code, &mut |i| {
+            if let Ins::Call(j) = i {
+                if matches!(records.get(*j), Some(Some(Entry { env: EnvAccess::Pointer, .. }))) {
+                    direct.get_or_insert(*j);
+                }
+            }
+        });
+        if let Some(j) = direct {
+            return Err(format!("position {pos}: a direct call into a record reached through an environment pointer (position {j})"));
         }
         let end = shape(table, &e.code, vec![], &arities).map_err(|m| format!("position {pos}: {m}"))?;
         if end != vec![K::W] {
@@ -239,10 +259,61 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
                 pop(&mut st, &vec![K::W; *n])?;
                 st.insert(0, K::W)
             }
+            Ins::CallIndirect(a) => {
+                pop(&mut st, &vec![K::W; *a + 2])?;
+                st.insert(0, K::W)
+            }
             Ins::Raw(s) => return Err(format!("raw line {s:?}")),
         }
     }
     Ok(st)
+}
+
+/// Calls `f` on every instruction of `code`, in order, recursing into the arms of an `If` after the `If` itself.
+pub(super) fn visit_ins(code: &[Ins], f: &mut dyn FnMut(&Ins)) {
+    for i in code {
+        f(i);
+        if let Ins::If(t, e) = i {
+            visit_ins(t, f);
+            visit_ins(e, f)
+        }
+    }
+}
+
+/// The module's dynamic set for the arity `arity`: the positions `p` (ascending) whose record is reached through an
+/// environment pointer and takes `arity` parameters, which are the only ones a closure call of that arity can enter
+/// (a direct-only record is printed without `$env`, so its type is not `$ty{arity}` and wasm traps on the call). The one
+/// place the set is defined.
+pub fn dynamic_set(records: &[Option<&Entry>], arity: usize) -> Vec<usize> {
+    let hit = |r: &Option<&Entry>| r.is_some_and(|e| e.env == EnvAccess::Pointer && e.arity == arity);
+    records.iter().enumerate().filter(|(_, r)| hit(r)).map(|(p, _)| p).collect()
+}
+
+/// `dynamic_set` for every arity up to the largest record arity, indexed by arity.
+pub fn dynamic_sets(records: &[Option<&Entry>]) -> Vec<Vec<usize>> {
+    let widest = records.iter().flatten().map(|e| e.arity).max().unwrap_or(0);
+    (0..=widest).map(|a| dynamic_set(records, a)).collect()
+}
+
+/// The positions entry `k`'s code calls other than `k` itself, sorted and distinct: its static `Call` targets and, for
+/// each `CallIndirect(a)`, the dynamic set `dynamic[a]` (an arity past `dynamic` contributes nothing).
+pub fn callees(k: usize, code: &[Ins], dynamic: &[Vec<usize>]) -> Vec<usize> {
+    let mut out = vec![];
+    visit_ins(code, &mut |i| match i {
+        Ins::Call(j) => out.push(*j),
+        Ins::CallIndirect(a) => out.extend(dynamic.get(*a).into_iter().flatten()),
+        _ => {}
+    });
+    out.retain(|j| *j != k);
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// A dispatch chain folded from the right over `set`: `step(p1, step(p2, .. z))`, where `step(c, p, rest)` builds one
+/// test-and-arm. The machine's meaning and the source's call both build their chain through it, so the order cannot drift.
+pub fn dispatch_chain(c: &mut Cx, set: &[usize], z: Expr, step: &mut dyn FnMut(&mut Cx, usize, Expr) -> Expr) -> Expr {
+    set.iter().rev().fold(z, |rest, p| step(c, *p, rest))
 }
 
 /// The stack after `code` from `st` (top first); panics on ill-formed code. `arities` as in `shape`.
@@ -382,7 +453,7 @@ mod tests {
                     c.lam(mem, |c, mu2| app3(c.at(x[2]), c.at(fr2), mkpair(c.at(x[0]), lit(n, 0), c.at(x[5])), c.at(mu2)))
                 });
                 let restart = c.mark(restart);
-                let me = MeaningEnv { r, ch: None, z: x[7], calls: none, restart };
+                let me = MeaningEnv { r, ch: None, z: x[7], calls: none, restart, dynamic: &[] };
                 let l = app3(w.meaning(c, p, x[2], &me), fr, c.at(x[5]), c.at(x[6]));
                 let (p, q) = if b_minus_a { (x[4], x[3]) } else { (x[3], x[4]) };
                 let val = app2(sub(n), c.at(p), c.at(q));

@@ -13,8 +13,8 @@ use hashbrown::{HashMap, HashSet};
 use tatic_kernel::{app2, scoped, Expr};
 use tatic_wasm::encoding::{holds, lit, low_bits, At, Cx};
 use tatic_wasm::machine::sim::prove;
-use tatic_wasm::machine::statement::{callees, statement, ModEntry, SEnv, SrcFn};
-use tatic_wasm::machine::{shape_check, Class, Machine, Table};
+use tatic_wasm::machine::statement::{statement, ModEntry, SEnv, SrcFn};
+use tatic_wasm::machine::{callees, shape_check, Class, Machine, Table};
 
 use crate::jit::compile::{tree_size, CompiledFragment};
 use crate::jit::shape::{classify, free_vars, peel, Shape};
@@ -257,7 +257,7 @@ fn pairing(store: &TermStore, frag: &CompiledFragment) -> Result<(), String> {
             return Err(format!("position {p}: the record takes {} parameters, its source {arity:?}", rec.arity));
         }
         let from_source: BTreeSet<usize> = callee_heads(store, *h).into_iter().map(|c| pos_of(c).unwrap_or(usize::MAX)).filter(|c| *c != p).collect();
-        let from_code: BTreeSet<usize> = callees(p, &rec.code).into_iter().collect();
+        let from_code: BTreeSet<usize> = callees(p, &rec.code, &[]).into_iter().collect();
         if from_source != from_code {
             return Err(format!("position {p}: the source calls {from_source:?}, the code {from_code:?}"));
         }

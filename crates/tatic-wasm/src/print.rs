@@ -94,6 +94,8 @@ pub fn print_body(table: &Table, code: &[Ins], depth: usize, tail: bool, entry_p
                 line(out, "end");
             }
             Ins::Call(j) => line(out, &format!("{} {}", if last_tail { "return_call" } else { "call" }, label(*j, entry_pos))),
+            // never the tail form: the lowering prints `call_indirect` in tail position too
+            Ins::CallIndirect(a) => line(out, &format!("call_indirect (type $ty{a})")),
             Ins::Br => line(out, "br $top"),
             Ins::Raw(s) => line(out, s),
         }
@@ -153,4 +155,15 @@ fn call_prints_by_the_tail_rule() {
         f,
         "  (func $c1 (param $e0 i64) (param $p0 i64) (param $p1 i64) (result i64)\n    (local $envtmp i32)\n    (local $papenv i64)\n    (local $diva i64)\n    (local $divb i64)\n    return_call $c1\n  )\n"
     );
+}
+
+/// A closure call prints `call_indirect (type $ty{arity})`, in tail position too (never `return_call_indirect`).
+#[test]
+fn call_indirect_prints_its_arity_type() {
+    let t = crate::wasm::table();
+    for tail in [true, false] {
+        let mut out = String::new();
+        print_body(&t, &[Ins::CallIndirect(2)], 2, tail, 0, &mut out);
+        assert_eq!(out, "  call_indirect (type $ty2)\n");
+    }
 }

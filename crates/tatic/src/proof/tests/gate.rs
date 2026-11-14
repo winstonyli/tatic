@@ -481,6 +481,24 @@ fn a_record_with_an_env_parameter_is_rejected_by_the_shape_check() {
     assert!(matches!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::Rejected(Layer::Shape, _)));
 }
 
+/// A record reached through an environment pointer (a bare-value combinator, printed with `$env`) is a covered shape.
+#[test]
+fn a_pointer_record_passes_the_shape_check() {
+    let get0 = Ins::Row { name: "local.get", operand: 0 };
+    let e = tatic_wasm::machine::Entry { arity: 1, env: tatic_wasm::machine::EnvAccess::Pointer, code: vec![get0] };
+    assert_eq!(tatic_wasm::machine::shape_check(tatic_wasm::wasm::table(), &[Some(&e)]), Ok(()));
+}
+
+/// A direct `call` into such a record would have to push the environment first (decision y1): refused, `PARKED.md`.
+#[test]
+fn a_direct_call_into_a_pointer_record_is_refused() {
+    let (s, h, frag) = compiled(&factorial);
+    let frag = with_entry(frag, |e| tatic_wasm::machine::Entry { env: tatic_wasm::machine::EnvAccess::Pointer, ..e });
+    let v = gate(tatic_wasm::wasm::table(), &s, h, &frag);
+    let Verdict::Rejected(Layer::Shape, why) = &v else { panic!("{v:?}") };
+    assert!(why.contains("a direct call into a record reached through an environment pointer"), "{why}");
+}
+
 #[test]
 fn covered_code_with_raw_or_ill_formed_is_rejected_and_not_installed() {
     let (s, h, frag) = compiled(&factorial);

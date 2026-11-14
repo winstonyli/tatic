@@ -24,12 +24,14 @@ enum Ctor {
     Leaf(Class),
     If,
     Call,
+    /// `call_indirect`: `Call`'s shape, its operand the arity and its index popped from the stack.
+    CallIndirect,
     Br,
 }
 
 /// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, the count). Only `Word` takes the
 /// row's domain circuit after its operator (`ctor_ty`).
-fn ctor_list() -> [Ctor; 8] {
+fn ctor_list() -> [Ctor; 9] {
     [
         Ctor::Leaf(Class::Const),
         Ctor::Leaf(Class::Word),
@@ -37,6 +39,7 @@ fn ctor_list() -> [Ctor; 8] {
         Ctor::Leaf(Class::Unary),
         Ctor::If,
         Ctor::Call,
+        Ctor::CallIndirect,
         Ctor::Leaf(Class::Set),
         Ctor::Br,
     ]
@@ -62,13 +65,15 @@ pub struct Machine<'t> {
 /// into: the activation's own entry run again at a frame and memory with the activation's own return continuation
 /// (`\fr mu. env fr mu k`, filled in `G::bm`).
 #[derive(Clone, Copy)]
-pub struct MeaningEnv {
+pub struct MeaningEnv<'a> {
     pub r: At,
     pub ch: Option<At>,
     pub calls: At,
     pub restart: At,
     /// The `R`-typed answer a Word guard's else branch takes (the statement's out-of-fuel answer `z`).
     pub z: At,
+    /// The module's dynamic sets by arity (`machine::dynamic_sets`): the positions a `CallIndirect` of that arity may enter.
+    pub dynamic: &'a [Vec<usize>],
 }
 
 const F_TY: fn() -> Expr = || arrow(sort(2), sort(2));
@@ -185,6 +190,12 @@ impl Machine<'_> {
                     let (a, sa) = (c.at(a_at), c.at(s));
                     arrow(arrow(sa, prod(self.fr(), a)), arrow(v, arrow(app(c.at(f), prod(v, a)), app(c.at(f), sa))))
                 }),
+                // `Pi S. (S -> V x (Fr x A)) -> V -> F (V, A) -> F S`: `Call`'s, the unpack also handing back the index
+                // word, and the `V` operand the arity (which module arities' dispatch chains the meaning enters)
+                Ctor::CallIndirect => c.pi(sort(2), |c, s| {
+                    let (a, sa) = (c.at(a_at), c.at(s));
+                    arrow(arrow(sa, prod(v, prod(self.fr(), a))), arrow(v, arrow(app(c.at(f), prod(v, a)), app(c.at(f), sa))))
+                }),
             }
         })
     }
@@ -261,6 +272,12 @@ impl Machine<'_> {
                 let r = cont(c, with(&[K::W], m));
                 cons(c, ctor_idx(Ctor::Call), vec![a_ty, s_ty, unpack, lit(self.n, *j as u128), r])
             }
+            Ins::CallIndirect(m) => {
+                let (s_ty, a_ty) = (ty(c, &st), ty(c, &below(m + 2)));
+                let unpack = self.unpack_indirect(c, *m, s_ty.clone(), a_ty.clone());
+                let r = cont(c, with(&[K::W], m + 2));
+                cons(c, ctor_idx(Ctor::CallIndirect), vec![a_ty, s_ty, unpack, lit(self.n, *m as u128), r])
+            }
             Ins::If(t, e) => {
                 let th = self.seq(c, f, ct, base, t, below(1), ar, &cont);
                 let el = self.seq(c, f, ct, base, e, below(1), ar, &cont);
@@ -277,6 +294,30 @@ impl Machine<'_> {
             self.split_args(c, res, a_at, m, s, &mut |c, xs, rest| {
                 let vals: Vec<Expr> = xs.iter().map(|x| c.at(*x)).collect();
                 mkpair(c.at(a_at), self.frame(&vals), c.at(rest))
+            })
+        })
+    }
+    /// The `CallIndirect` operand `unpack : S -> V x (Fr x A)` for `m` arguments: the index word (on top), the arguments
+    /// (the deepest is the first parameter) into the callee's slots `0..m`, every other slot 0, then the environment word,
+    /// dropped; the stack `A` below comes back.
+    fn unpack_indirect(&self, c: &mut Cx, m: usize, s_ty: Expr, a_ty: Expr) -> Expr {
+        let v = self.v();
+        let (s_at, a_at) = (c.mark(s_ty), c.mark(a_ty));
+        c.lam(c.at(s_at), |c, s| {
+            let fa = c.mark(prod(self.fr(), c.at(a_at)));
+            let res = c.mark(prod(v, c.at(fa)));
+            // the stack under the index: `V^m x (V x A)`
+            let under_idx = c.mark(self.words(m, prod(v, c.at(a_at))));
+            let env_a = c.mark(prod(v, c.at(a_at)));
+            self.split(c, res, v, under_idx, s, |c, idx, s1| {
+                self.split_args(c, res, env_a, m, s1, &mut |c, xs, rest| {
+                    self.split(c, res, v, a_at, rest, |c, _env, below| {
+                        // the marks `xs` are read here, under the binders of both splits
+                        let vals: Vec<Expr> = xs.iter().map(|x| c.at(*x)).collect();
+                        let inner = mkpair(c.at(a_at), self.frame(&vals), c.at(below));
+                        mkpair(prod(self.fr(), c.at(a_at)), c.at(idx), inner)
+                    })
+                })
             })
         })
     }
@@ -308,7 +349,7 @@ impl Machine<'_> {
         sigrec(motive, step, c.at(st))
     }
     /// The constructors' meanings.
-    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, z: At, calls: At, restart: At) -> Vec<Expr> {
+    fn interp(&self, c: &mut Cx, r: At, ch: Option<At>, z: At, calls: At, restart: At, dynamic: &[Vec<usize>]) -> Vec<Expr> {
         let (v, v1) = (self.v(), bv_ty(1));
         let w = *self;
         let fr_ty = self.fr();
@@ -428,6 +469,52 @@ impl Machine<'_> {
                 })
             })
         });
+        // `\A S unp op rest fr st mu`: `call`'s, but the index is popped (`unp` hands it back with the callee's frame) and
+        // tested against each position of the dynamic set of the operand's arity: `(op == a1) chain_a1 ((op == a2) chain_a2
+        // .. z)`, `chain_a = (idx == p1) (call p1) ((idx == p2) (call p2) .. z)`. An index outside the set, and an arity
+        // outside the module's, answer `z`. The tests are `eq_bit`, the term the `eq` row is built from, used directly:
+        // the table need not have an `eq` row. The continuation is bound once, outside every chain.
+        let n = self.n;
+        let call_indirect = c.lam(sort(2), |c, a| {
+            c.lam(sort(2), |c, s| {
+                let up_ty = arrow(c.at(s), prod(v, prod(fr_ty, c.at(a))));
+                c.lam(up_ty, |c, unp| {
+                    c.lam(v, |c, op| {
+                        let rt = w.g(c, r, prod(v, c.at(a)));
+                        c.lam(rt, |c, rest| {
+                            c.lam(fr_ty, |c, fr| {
+                                c.lam(c.at(s), |c, st| {
+                                    let m = w.mem(c, r);
+                                    c.lam(m, |c, mu| {
+                                        let ua = c.mark(app(c.at(unp), c.at(st)));
+                                        let fa = c.mark(prod(fr_ty, c.at(a)));
+                                        w.split(c, r, v, fa, ua, |c, idx, fa_pair| {
+                                            w.split(c, r, fr_ty, a, fa_pair, |c, fr2, below| {
+                                                let kont = c.lam(v, |c, y| {
+                                                    let mm = w.mem(c, r);
+                                                    c.lam(mm, |c, mu2| app3(c.at(rest), c.at(fr), mkpair(c.at(a), c.at(y), c.at(below)), c.at(mu2)))
+                                                });
+                                                let mut acc = c.at(z);
+                                                for (arity, set) in dynamic.iter().enumerate().rev().filter(|(_, s)| !s.is_empty()) {
+                                                    let none = c.at(z);
+                                                    let chain = dispatch_chain(c, set, none, &mut |c, p, rest_of_chain| {
+                                                        let cond = app2(eq_bit(n), c.at(idx), lit(n, p as u128));
+                                                        let enter = app(app3(c.at(calls), lit(n, p as u128), c.at(fr2), c.at(mu)), kont);
+                                                        pick(c, cond, enter, rest_of_chain)
+                                                    });
+                                                    acc = app3(app2(eq_bv(n), c.at(op), lit(n, arity as u128)), c.at(r), chain, acc);
+                                                }
+                                                acc
+                                            })
+                                        })
+                                    })
+                                })
+                            })
+                        })
+                    })
+                })
+            })
+        });
         // `\A op rest fr st mu`: pop the word, write it to the frame through `op`, run `rest` at the new frame
         let set = shape(c, &[self.setter_ty()], &|a| a, &|a| prod(v, a), &|c, a, ops, rest, fr, st, mu| {
             w.split(c, r, v, a, st, |c, x, s| {
@@ -444,6 +531,7 @@ impl Machine<'_> {
             (Ctor::Leaf(Class::Unary), un),
             (Ctor::If, if_),
             (Ctor::Call, call),
+            (Ctor::CallIndirect, call_indirect),
             (Ctor::Leaf(Class::Set), set),
             (Ctor::Br, br),
         ];
@@ -454,7 +542,7 @@ impl Machine<'_> {
         let r = me.r;
         let gfam = c.lam(sort(2), |c, a| self.g(c, r, c.at(a)));
         let mut args = vec![gfam, c.at(k)];
-        args.extend(self.interp(c, r, me.ch, me.z, me.calls, me.restart));
+        args.extend(self.interp(c, r, me.ch, me.z, me.calls, me.restart, me.dynamic));
         apps(c.at(p), args)
     }
     /// `GoodNat N = Pi P:(Nat2 -> Sort3). P 0 -> (Pi j. P j -> P (S j)) -> P N`: induction over fuel, as a hypothesis.

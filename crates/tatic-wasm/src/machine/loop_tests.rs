@@ -5,7 +5,7 @@ use super::*;
 
 /// The test's `MeaningEnv` at the answer type `r` with the guard's else answer `z`: no `choose`, the environment of no functions (a call answers 0 at
 /// the memory it was given), and `restart` as given.
-fn meaning_env(c: &mut Cx, w: &Machine, r: At, z: At, restart: At) -> MeaningEnv {
+fn meaning_env(c: &mut Cx, w: &Machine, r: At, z: At, restart: At) -> MeaningEnv<'static> {
     let n = w.n;
     let none = c.lam(w.v(), |c, _j| {
         c.lam(w.fr(), |c, _fr| {
@@ -17,7 +17,7 @@ fn meaning_env(c: &mut Cx, w: &Machine, r: At, z: At, restart: At) -> MeaningEnv
         })
     });
     let none = c.mark(none);
-    MeaningEnv { r, ch: None, z, calls: none, restart }
+    MeaningEnv { r, ch: None, z, calls: none, restart, dynamic: &[] }
 }
 
 /// A `restart` for tests whose code holds no `Br`, or whose `Br` is not taken: `\fr mu. kk fr (0, s) mu` (`R` is

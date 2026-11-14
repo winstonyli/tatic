@@ -17,7 +17,7 @@
 //! way (`Hs = V^m -> (V -> R) -> R`). Every law, the motive, the step and the hypothesis of the generator's induction
 //! (`sim.rs`, untrusted) share ONE telescope `d, a.., mu, km, ks, rel`. `d` is a numeral binder that lifts the
 //! induction motive to Sort3 (the kernel is not cumulative); it is vestigial in the statement. The frame is `Fr`, padded
-//! with zeros to the module's width (the widest entry's arity).
+//! with zeros to the module's width (the widest entry's arity, or the widest `CallIndirect`'s).
 //!
 //! `statement` builds the proposition and `sim.rs` proves it; both take the same pieces from here, so the generator
 //! cannot prove another statement than the one the kernel checks it against.
@@ -26,8 +26,9 @@ use std::cell::RefCell;
 
 /// What a source builder is given: the answer sort `r`, the entry's own fixpoint variable `g`, its parameters, the probe
 /// `ch` that stands for `choose` (the statement uses the real one: `None`), the outer fuel, the entry's own module
-/// position and the callees' source functions (`S_N^c`, by module position).
-pub struct SEnv {
+/// position, the callees' source functions (`S_N^c`, by module position) and the module's dynamic sets by arity
+/// (`machine::dynamic_sets`).
+pub struct SEnv<'a> {
     pub n: usize,
     pub r: At,
     /// The `R`-typed answer a Word guard's else branch takes (the statement's out-of-fuel answer `z`).
@@ -38,9 +39,10 @@ pub struct SEnv {
     pub fuel: At,
     pub own: usize,
     pub callees: Vec<(usize, At)>,
+    pub dynamic: &'a [Vec<usize>],
 }
 
-impl SEnv {
+impl SEnv<'_> {
     /// `choose R cond t e`, through the probe in the proof.
     pub fn choose(&self, c: &Cx, cond: Expr, t: Expr, e: Expr) -> Expr {
         match self.ch {
@@ -48,18 +50,37 @@ impl SEnv {
             None => choose(c.at(self.r), cond, t, e),
         }
     }
-    /// The function at module position `pos` applied to `args`, its answer passed to `k`: `g args (\res. k res)` for
-    /// the entry itself (`pos == own`), `S_N^pos args (\res. k res)` for a callee.
-    pub fn call(&self, c: &mut Cx, pos: usize, args: &[At], k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
-        let f = if pos == self.own {
+    /// The function at module position `pos`: `g` for the entry itself (`pos == own`), else the callee's `S_N^pos`.
+    pub fn callee(&self, pos: usize) -> At {
+        if pos == self.own {
             self.g
         } else {
             self.callees.iter().find(|(p, _)| *p == pos).unwrap_or_else(|| panic!("no callee at position {pos}")).1
-        };
+        }
+    }
+    /// The function at module position `pos` applied to `args`, its answer passed to `k`: `g args (\res. k res)` for
+    /// the entry itself (`pos == own`), `S_N^pos args (\res. k res)` for a callee.
+    pub fn call(&self, c: &mut Cx, pos: usize, args: &[At], k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
+        let f = self.callee(pos);
         let kont = c.lam(bv_ty(self.n), |c, res| k(c, c.at(res)));
         let mut xs: Vec<Expr> = args.iter().map(|a| c.at(*a)).collect();
         xs.push(kont);
         apps(c.at(f), xs)
+    }
+    /// A closure call: the function whose table index is the word `idx`, over the dynamic set for the arity of `args`,
+    /// applied to them, its answer passed to `k`. `(idx == p1) (call p1) ((idx == p2) (call p2) .. z)`, each `call p`
+    /// the static call at `p` and each test a `choose` on `eq_bit` (the machine's `CallIndirect` builds the same chain
+    /// through `dispatch_chain`); an index outside the set answers `z`. `k` is bound once, outside the chain.
+    pub fn call_dyn(&self, c: &mut Cx, idx: Expr, args: &[At], k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
+        let kont = c.lam(bv_ty(self.n), |c, res| k(c, c.at(res)));
+        let set = self.dynamic.get(args.len()).map_or(&[][..], |s| s.as_slice());
+        let z = c.at(self.z);
+        dispatch_chain(c, set, z, &mut |c, p, rest| {
+            let mut xs: Vec<Expr> = args.iter().map(|a| c.at(*a)).collect();
+            xs.push(kont);
+            let cond = app2(eq_bit(self.n), idx, lit(self.n, p as u128));
+            self.choose(c, cond, apps(c.at(self.callee(p)), xs), rest)
+        })
     }
 }
 
@@ -72,9 +93,24 @@ pub struct ModEntry<'a> {
     pub src: &'a SrcFn<'a>,
 }
 
-/// The module's machine at its frame width: the widest entry's arity.
+/// The module's records by position, as the shape check, the dynamic sets and the cycle check take them.
+pub(super) fn records_of<'a>(module: &[Option<ModEntry<'a>>]) -> Vec<Option<&'a Entry>> {
+    module.iter().map(|e| e.as_ref().map(|e| e.entry)).collect()
+}
+
+/// The module's machine at its frame width: the widest record's arity, or the widest closure call's (a call of any
+/// arity builds its callee's frame, so its arity is a width even when no record takes that many).
 pub(super) fn widen<'t>(m: &Machine<'t>, module: &[Option<ModEntry>]) -> Machine<'t> {
-    Machine { fw: module.iter().flatten().map(|e| e.entry.arity).max().unwrap_or(0), ..*m }
+    let mut fw = 0;
+    for e in module.iter().flatten() {
+        fw = fw.max(e.entry.arity);
+        visit_ins(&e.entry.code, &mut |i| {
+            if let Ins::CallIndirect(a) = i {
+                fw = fw.max(*a)
+            }
+        });
+    }
+    Machine { fw, ..*m }
 }
 
 /// The statement's two clauses a mutant may weaken (O3): how the continuation relation hypothesis is stated, and whether
@@ -161,7 +197,8 @@ impl<'t> G<'t> {
     }
     /// `Bm = \env fr mu k. M (prog code) fr 0 mu`, the body's answer passed to `k`; `ch` is the generator's probe, and
     /// `table` builds the module's callee environment from `env` (the entry's own fuel-unrolled step).
-    pub fn bm(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
+    #[allow(clippy::too_many_arguments)]
+    pub fn bm(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, code: &[Ins], arities: &[Option<usize>], dynamic: &[Vec<usize>], table: &dyn Fn(&mut Cx, At) -> Expr) -> Expr {
         let (w, n) = (self.w, self.w.n);
         let hm = self.hm(c, r);
         c.lam(hm, |c, env| {
@@ -190,15 +227,16 @@ impl<'t> G<'t> {
                             c.lam(mem, |c, mu2| app3(c.at(env), c.at(fr2), c.at(mu2), c.at(k)))
                         });
                         let restart = c.mark(restart);
-                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, z, calls: tbl, restart });
+                        let m = w.meaning(c, p, kk, &MeaningEnv { r, ch, z, calls: tbl, restart, dynamic });
                         app3(m, c.at(fr), lit(n, 0), c.at(mu))
                     })
                 })
             })
         })
     }
-    /// `Bs = \g x.. ks. src`, `src` built by the entry's source closure; `fuel` and `callees` are the module's.
-    pub fn bs(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, src: &SrcFn, fuel: At, own: usize, callees: &[(usize, At)]) -> Expr {
+    /// `Bs = \g x.. ks. src`, `src` built by the entry's source closure; `fuel`, `callees` and `dynamic` are the module's.
+    #[allow(clippy::too_many_arguments)]
+    pub fn bs(&self, c: &mut Cx, r: At, z: At, ch: Option<At>, src: &SrcFn, fuel: At, own: usize, callees: &[(usize, At)], dynamic: &[Vec<usize>]) -> Expr {
         let n = self.w.n;
         let hs = self.hs(c, r);
         c.lam(hs, |c, g| {
@@ -206,7 +244,7 @@ impl<'t> G<'t> {
             tele(c, &vs, &mut vec![], &lam, &mut |c, xs| {
                 let rs = self.ret_s(c, r);
                 c.lam(rs, |c, ks| {
-                    let env = SEnv { n, r, z, g, params: xs.to_vec(), ch, fuel, own, callees: callees.to_vec() };
+                    let env = SEnv { n, r, z, g, params: xs.to_vec(), ch, fuel, own, callees: callees.to_vec(), dynamic };
                     src(c, &env, &|c, v| app(c.at(ks), v))
                 })
             })
@@ -262,6 +300,8 @@ pub(super) struct Ctxt<'a> {
     pub tm: At,
     /// `arities[j]`: the words position `j` pops (`None`: no entry there).
     pub arities: Vec<Option<usize>>,
+    /// The module's dynamic sets by arity (`machine::dynamic_sets`), built once from its records.
+    pub dynamic: Vec<Vec<usize>>,
     /// The clauses the entries' telescopes are stated with (`FIXED` unless a test weakens them).
     cl: &'a Clauses,
     memo: RefCell<Vec<Option<Real>>>,
@@ -280,7 +320,8 @@ impl<'a> Ctxt<'a> {
             c.mark(e)
         };
         let arities = module.iter().map(|e| e.as_ref().map(|e| e.entry.arity)).collect();
-        Ctxt { w, module, fuel, r, z, hm, tm, arities, cl: &FIXED, memo: RefCell::new(vec![None; module.len()]), building: RefCell::new(vec![]) }
+        let dynamic = dynamic_sets(&records_of(module));
+        Ctxt { w, module, fuel, r, z, hm, tm, arities, dynamic, cl: &FIXED, memo: RefCell::new(vec![None; module.len()]), building: RefCell::new(vec![]) }
     }
     pub fn entry(&self, k: usize) -> &'a ModEntry<'a> {
         self.module.get(k).and_then(|e| e.as_ref()).unwrap_or_else(|| panic!("no module entry at position {k}"))
@@ -313,10 +354,10 @@ impl<'a> Ctxt<'a> {
     /// `Bm_k` and `Bs_k`, through the probe `probe` if any; the callees' real pieces are those of `real`.
     pub fn bm_bs(&self, c: &mut Cx, k: usize, probe: Option<At>) -> (Expr, Expr) {
         let (e, g) = (self.entry(k), self.g(k));
-        let cs: Vec<(usize, Real)> = callees(k, &e.entry.code).into_iter().map(|p| (p, self.real(c, p))).collect();
-        let bm = g.bm(c, self.r, self.z, probe, &e.entry.code, &self.arities, &|c, env| self.table(c, k, env, &cs));
+        let cs: Vec<(usize, Real)> = callees(k, &e.entry.code, &self.dynamic).into_iter().map(|p| (p, self.real(c, p))).collect();
+        let bm = g.bm(c, self.r, self.z, probe, &e.entry.code, &self.arities, &self.dynamic, &|c, env| self.table(c, k, env, &cs));
         let scs: Vec<(usize, At)> = cs.iter().map(|(p, re)| (*p, re.sc)).collect();
-        let bs = g.bs(c, self.r, self.z, probe, e.src, self.fuel, k, &scs);
+        let bs = g.bs(c, self.r, self.z, probe, e.src, self.fuel, k, &scs, &self.dynamic);
         (bm, bs)
     }
     /// Entry `k`'s real (probe-free) pieces, built once.
@@ -325,7 +366,7 @@ impl<'a> Ctxt<'a> {
         if let Some(re) = cached {
             return re;
         }
-        assert!(!self.building.borrow().contains(&k), "the module's calls form a cycle through position {k}");
+        assert!(!self.building.borrow().contains(&k), "the module's calls form a cycle through position {k} (call_cycle rules this out before a statement is built)");
         self.building.borrow_mut().push(k);
         let g = self.g(k);
         let (bm, bs) = self.bm_bs(c, k, None);
@@ -355,26 +396,32 @@ impl<'a> Ctxt<'a> {
     }
 }
 
-/// The positions entry `k`'s code calls other than `k` itself, sorted and distinct.
-pub fn callees(k: usize, code: &[Ins]) -> Vec<usize> {
-    fn walk(code: &[Ins], out: &mut Vec<usize>) {
-        for i in code {
-            match i {
-                Ins::Call(j) => out.push(*j),
-                Ins::If(t, e) => {
-                    walk(t, out);
-                    walk(e, out)
+/// A position on a cycle of the module's call graph, or `None`: its edges are each record's `callees` (the static
+/// `Call` targets and the dynamic set of every `CallIndirect`, which over-approximates: a closure call reaches its whole
+/// set), self-edges excluded as `Ctxt::table`'s `own` branch takes them. `Ctxt::real` asserts there is none, so the gate
+/// runs this before building a statement (D7).
+pub fn call_cycle(records: &[Option<&Entry>]) -> Option<usize> {
+    fn visit(k: usize, edges: &[Vec<usize>], state: &mut [u8]) -> Option<usize> {
+        state[k] = 1;
+        for &j in &edges[k] {
+            match state.get(j) {
+                Some(1) => return Some(j),
+                Some(0) => {
+                    if let Some(p) = visit(j, edges, state) {
+                        return Some(p);
+                    }
                 }
                 _ => {}
             }
         }
+        state[k] = 2;
+        None
     }
-    let mut out = vec![];
-    walk(code, &mut out);
-    out.retain(|j| *j != k);
-    out.sort_unstable();
-    out.dedup();
-    out
+    let dynamic = dynamic_sets(records);
+    let edges: Vec<Vec<usize>> = records.iter().enumerate().map(|(k, r)| r.map_or(vec![], |e| callees(k, &e.code, &dynamic))).collect();
+    // 0 unseen, 1 on the path, 2 done
+    let mut state = vec![0u8; records.len()];
+    (0..records.len()).find_map(|k| if state[k] == 0 { visit(k, &edges, &mut state) } else { None })
 }
 
 /// `Pi N (GoodNat N) R z, law_entry`: entry `entry` of the module simulates its source, for every fuel. A single

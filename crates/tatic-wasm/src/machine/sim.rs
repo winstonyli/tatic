@@ -14,7 +14,7 @@
 //!     callee's own proof.
 //!
 //! `CH` is a bound variable of the proof only: the statement uses the real `choose`, and `prove` applies the proof to it.
-use super::statement::{callees, head_tys, widen, Ctxt, ModEntry, G};
+use super::statement::{call_cycle, head_tys, records_of, widen, Ctxt, ModEntry, G};
 use super::*;
 use std::cell::RefCell;
 
@@ -116,7 +116,7 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
     check_code(w.table, &e.entry.code, &arities)?;
     let g = G::fixed(w, e.entry.arity);
     let m = g.m;
-    let cs = callees(k, &e.entry.code);
+    let cs = callees(k, &e.entry.code, &dynamic_sets(&records_of(module)));
     let err: RefCell<Option<String>> = RefCell::new(None);
     let tys = head_tys(w, module, &cs, true);
     let proof = Cx::default().lam(ch_ty(), |c, ch| {
@@ -187,18 +187,15 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
 }
 
 /// The closed proof of entry `k`'s law, `Pi N gn R z, law_k`: the probe applied to the real `choose`, every callee's
-/// law discharged by that callee's own closed proof (at the module's frame width). `path` holds the entries being
-/// proved, so a cycle of calls is refused.
-fn closed(w: Machine, module: &[Option<ModEntry>], k: usize, path: &mut Vec<usize>) -> Result<Expr, String> {
-    if path.contains(&k) {
-        return Err(format!("the module's calls form a cycle through position {k}"));
-    }
+/// law discharged by that callee's own closed proof (at the module's frame width). The module's calls, static and
+/// dynamic alike, form no cycle: `call_cycle` has refused one before any statement or proof is built.
+fn closed(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr, String> {
+    let records = records_of(module);
+    debug_assert!(call_cycle(&records).is_none(), "the module's calls form a cycle; call_cycle must refuse it first");
     let open = app(proof_open(w, module, k)?, choose_fn());
     let e = module[k].as_ref().expect("proof_open found the entry");
-    let cs = callees(k, &e.entry.code);
-    path.push(k);
-    let closed_callees: Vec<Expr> = cs.iter().map(|p| closed(w, module, *p, path)).collect::<Result<_, _>>()?;
-    path.pop();
+    let cs = callees(k, &e.entry.code, &dynamic_sets(&records));
+    let closed_callees: Vec<Expr> = cs.iter().map(|p| closed(w, module, *p)).collect::<Result<_, _>>()?;
     let tys = head_tys(w, module, &cs, false);
     Ok(tele(&mut Cx::default(), &tys, &mut vec![], &lam, &mut |c, x| {
         let nzs: Vec<At> = x.to_vec();
@@ -219,7 +216,7 @@ fn closed(w: Machine, module: &[Option<ModEntry>], k: usize, path: &mut Vec<usiz
 /// reach; the kernel decides whether an `Ok` proof holds.
 pub fn prove(m: &Machine, module: &[Option<ModEntry>], entry: usize) -> Result<Expr, String> {
     let w = widen(m, module);
-    closed(w, module, entry, &mut vec![])
+    closed(w, module, entry)
 }
 
 /// One walk's fixed names.

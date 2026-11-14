@@ -78,3 +78,11 @@ fn a_comparison_the_toy_lacks_is_not_covered() {
     let v = verdict(r"\a b. if a <= b then a else b", code);
     assert!(matches!(v, Verdict::NotCovered(..)), "{v:?}");
 }
+
+/// The toy has no `eq` row, and `Ctor::CallIndirect` (whose dispatch tests an index with `eq_bit`, never a row lookup)
+/// exists for every table: the toy's verdicts stand.
+#[test]
+fn a_table_without_eq_still_gates() {
+    assert!(toy().row("eq").is_none());
+    assert_eq!(verdict(r"\a b. a - b", vec![get(0), get(1), row("sub")]), Verdict::Accepted);
+}

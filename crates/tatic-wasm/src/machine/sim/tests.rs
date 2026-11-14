@@ -15,6 +15,14 @@ enum Src {
     SelfCall(Vec<Src>),
     /// A call of the callee at a module position.
     Callee(usize, Vec<Src>),
+    /// A closure call as the lowering emits it: the head's environment half (a guarded `shr_u` site, its word
+    /// dropped), the arguments, the head again, then `call_dyn` on the head's index word.
+    Apply(Box<Src>, Vec<Src>),
+    /// `Apply` with the head evaluated once and its word reused for the index (the walk is lockstep, so it must refuse it
+    /// against code that evaluates the head twice).
+    ApplyOnce(Box<Src>, Vec<Src>),
+    /// `Apply` that dispatches through a static call of the module position instead of `call_dyn`.
+    ApplyStatic(usize, Box<Src>, Vec<Src>),
 }
 use Src::*;
 
@@ -37,6 +45,47 @@ fn cps_list(w: &Machine, e: &SEnv, c: &mut Cx, args: &[Src], done: Vec<At>, k: &
     }
 }
 
+/// A word row's site on the marked operands `x`, `y`: `choose(dom x y, k(op x y), z)`.
+fn site(w: &Machine, e: &SEnv, c: &mut Cx, o: &str, x: At, y: At, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
+    let op = (w.table.row(o).unwrap().meaning)(c, w, 0);
+    let kk = k(c, app2(op, c.at(x), c.at(y)));
+    let dom = constant_n(w.table.row(o).unwrap().dom.circuit, w.n);
+    e.choose(c, app2(dom, c.at(x), c.at(y)), kk, c.at(e.z))
+}
+
+/// How a closure call's source side finishes after the head's environment half and the arguments.
+#[derive(Clone, Copy)]
+enum Dispatch {
+    Twice,
+    Once,
+    Static(usize),
+}
+
+/// `Apply`: read in the lowering's order (see `Src::Apply`).
+fn apply(w: &Machine, e: &SEnv, c: &mut Cx, head: &Src, args: &[Src], k: &dyn Fn(&mut Cx, Expr) -> Expr, how: Dispatch) -> Expr {
+    cps(w, e, c, head, &|c, h| {
+        let h = c.mark(h);
+        let shift = c.mark(lit(e.n, 32));
+        site(w, e, c, "shr_u", h, shift, &|c, _env| {
+            cps_list(w, e, c, args, vec![], &|c, xs| {
+                let index = |c: &mut Cx, h: At| app((w.table.row("wrap").unwrap().meaning)(c, w, 0), c.at(h));
+                match how {
+                    Dispatch::Once => {
+                        let idx = index(c, h);
+                        e.call_dyn(c, idx, xs, k)
+                    }
+                    Dispatch::Twice => cps(w, e, c, head, &|c, h2| {
+                        let h2 = c.mark(h2);
+                        let idx = index(c, h2);
+                        e.call_dyn(c, idx, xs, k)
+                    }),
+                    Dispatch::Static(pos) => e.call(c, pos, xs, k),
+                }
+            })
+        })
+    })
+}
+
 fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> Expr) -> Expr {
     tatic_kernel::grow(|| match s {
         Param(i) => k(c, c.at(e.params[*i])),
@@ -44,13 +93,13 @@ fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> 
         Prim(o, a, b) => cps(w, e, c, a, &|c, x| {
             let x = c.mark(x);
             cps(w, e, c, b, &|c, y| {
-                let op = (w.table.row(o).unwrap().meaning)(c, w, 0);
                 let y = c.mark(y);
-                let kk = k(c, app2(op, c.at(x), c.at(y)));
-                let dom = constant_n(w.table.row(o).unwrap().dom.circuit, w.n);
-                e.choose(c, app2(dom, c.at(x), c.at(y)), kk, c.at(e.z))
+                site(w, e, c, o, x, y, k)
             })
         }),
+        Apply(head, args) => apply(w, e, c, head, args, k, Dispatch::Twice),
+        ApplyOnce(head, args) => apply(w, e, c, head, args, k, Dispatch::Once),
+        ApplyStatic(pos, head, args) => apply(w, e, c, head, args, k, Dispatch::Static(*pos)),
         If(o, a, b, t, f) => cps(w, e, c, a, &|c, x| {
             let x = c.mark(x);
             cps(w, e, c, b, &|c, y| {
@@ -360,4 +409,156 @@ fn a_unary_site_adds_no_branch() {
     }
     let err = run_with(8, 1, &code, &unary_guarded).expect_err("a guard the machine does not have");
     assert_eq!(err, "body: the machine returns but the source branches");
+}
+
+/// One record of a module under test and the mirror source it must simulate; the position is the index.
+type Rec = (Entry, Src);
+
+/// `f` over the module `recs`, on a `CHECK_STACK` thread, each record's source function built by `cps`.
+fn on_module<T: Send>(n: usize, recs: &[Rec], f: impl FnOnce(&Machine<'static>, &[Option<ModEntry>]) -> T + Send) -> T {
+    std::thread::scope(|s| {
+        std::thread::Builder::new()
+            .stack_size(tatic_kernel::CHECK_STACK)
+            .spawn_scoped(s, || {
+                let w = Machine { n, fw: 0, table: crate::wasm::table() };
+                let fs: Vec<Box<SrcFn>> = recs
+                    .iter()
+                    .map(|(_, src)| {
+                        let (src, w) = (src.clone(), &w);
+                        Box::new(move |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| cps(w, e, c, &src, k)) as Box<SrcFn>
+                    })
+                    .collect();
+                let module: Vec<Option<ModEntry>> = recs.iter().zip(&fs).map(|((e, _), f)| Some(ModEntry { entry: e, src: &**f })).collect();
+                f(&w, &module)
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+}
+
+fn rec(arity: usize, env: EnvAccess, code: Vec<Ins>, src: Src) -> Rec {
+    (Entry { arity, env, code }, src)
+}
+
+/// `\f. f 5 .. 5` (`args` fives) as the lowering emits it: the head's environment half (`shr_u 32`), the arguments, the
+/// head again as an index (`wrap`), then the dispatch.
+fn apply_code(args: usize) -> Vec<Ins> {
+    [vec![get(0), konst(32), row("shr_u")], vec![konst(5); args], vec![get(0), row("wrap"), Ins::CallIndirect(args)]].concat()
+}
+fn apply_fives(args: usize) -> Src {
+    Apply(Box::new(Param(0)), vec![Lit(5); args])
+}
+
+/// The base module of the dynamic-call tests: `\x. x + 1` reached through an environment pointer (position 0), a
+/// direct-only `\a b c. a` (1), and the entry `\f. f 5` (2).
+fn dyn_records() -> Vec<Rec> {
+    vec![
+        rec(1, EnvAccess::Pointer, vec![get(0), konst(1), row("add")], pr("add", Param(0), Lit(1))),
+        rec(3, EnvAccess::Params(0), vec![get(0)], Param(0)),
+        rec(1, EnvAccess::Params(0), apply_code(1), apply_fives(1)),
+    ]
+}
+
+/// Whether the entry `k`'s real machine side `hc` and source side `sc`, at fuel 3 and the head word `head`, both answer `z`.
+fn answers_z(recs: &[Rec], k: usize, head: u128) -> (bool, bool) {
+    let n = 64;
+    on_module(n, recs, |w0, module| {
+        let w = widen(w0, module);
+        let tys = || -> Vec<Ty> {
+            vec![
+                ty!(|_c, _x| sort(0)),
+                ty!(|c, x| c.at(x[0])),
+                ty!(|c, x| w.mem(c, x[0])),
+                ty!(|c, x| {
+                    let mem = w.mem(c, x[0]);
+                    arrow(bv_ty(n), arrow(mem, c.at(x[0])))
+                }),
+                ty!(|c, x| arrow(bv_ty(n), c.at(x[0]))),
+            ]
+        };
+        let want = tele(&mut Cx::default(), &tys(), &mut vec![], &lam, &mut |c, x| c.at(x[1]));
+        let side = |machine: bool| {
+            let got = tele(&mut Cx::default(), &tys(), &mut vec![], &lam, &mut |c, x| {
+                let fuel = c.mark(nat2_lit(3));
+                let re = Ctxt::new(c, w, module, fuel, x[0], x[1]).real(c, k);
+                if machine {
+                    app3(c.at(re.hc), w.frame(&[lit(n, head)]), c.at(x[2]), c.at(x[3]))
+                } else {
+                    app2(c.at(re.sc), lit(n, head), c.at(x[4]))
+                }
+            });
+            def_eq(&got, &want)
+        };
+        (side(true), side(false))
+    })
+}
+
+#[test]
+fn prove_takes_a_dynamic_call() {
+    let recs = dyn_records();
+    on_module(64, &recs, |w, module| {
+        let stmt = statement(w, module, 2);
+        let proof = prove(w, module, 2)?;
+        holds(&proof, &stmt)
+    })
+    .unwrap_or_else(|e| panic!("{e}"));
+}
+
+/// A head outside the arity's set answers `z` on both sides, as wasm traps on it: position 1 is not reached through a
+/// pointer, 2 is the entry itself, 9 is past the table.
+#[test]
+fn a_dynamic_call_outside_the_set_answers_z() {
+    for head in [1, 2, 9] {
+        assert_eq!(answers_z(&dyn_records(), 2, head), (true, true), "head {head}");
+    }
+}
+
+#[test]
+fn a_dynamic_call_of_another_arity_answers_z() {
+    let mut recs = dyn_records();
+    recs[0].0.arity = 2;
+    assert_eq!(answers_z(&recs, 2, 0), (true, true), "the set for arity 1 is empty");
+}
+
+/// A closure call wider than every record: the frame is widened to it, so building the callee's frame does not trip
+/// `frame`'s assert, and the arity past the table's answers `z`.
+#[test]
+fn a_closure_call_wider_than_every_record_answers_z() {
+    let mut recs = dyn_records();
+    recs[2] = rec(1, EnvAccess::Params(0), apply_code(4), apply_fives(4));
+    assert_eq!(answers_z(&recs, 2, 0), (true, true));
+}
+
+#[test]
+fn prove_refuses_a_dynamic_call_against_a_static_one() {
+    let mut recs = dyn_records();
+    recs[2].1 = ApplyStatic(0, Box::new(Param(0)), vec![Lit(5)]);
+    let err = on_module(64, &recs, |w, module| prove(w, module, 2).map(|_| ())).expect_err("the code dispatches, the source calls");
+    assert!(err.contains("branches") && err.contains("calls"), "{err}");
+}
+
+/// Review Focus 5: the code evaluates the head through `call $c1` twice; a source that calls it once and reuses the
+/// word is refused (each machine call needs a source call).
+#[test]
+fn a_closure_call_with_its_head_evaluated_once_is_rejected() {
+    let head = || Callee(1, vec![Param(0)]);
+    let code = [vec![get(0), Ins::Call(1), konst(32), row("shr_u"), konst(5), get(0), Ins::Call(1), row("wrap"), Ins::CallIndirect(1)]].concat();
+    let mut recs = dyn_records();
+    recs[1] = rec(1, EnvAccess::Params(0), vec![get(0)], Param(0));
+    recs[2] = rec(1, EnvAccess::Params(0), code, Apply(Box::new(head()), vec![Lit(5)]));
+    on_module(64, &recs, |w, module| holds(&prove(w, module, 2)?, &statement(w, module, 2)))
+        .unwrap_or_else(|e| panic!("the head evaluated twice on both sides: {e}"));
+    recs[2].1 = ApplyOnce(Box::new(head()), vec![Lit(5)]);
+    let err = on_module(64, &recs, |w, module| prove(w, module, 2).map(|_| ())).expect_err("the head is evaluated once");
+    assert!(err.contains("the machine calls a function but the source"), "{err}");
+}
+
+#[test]
+fn a_dynamic_cycle_is_found() {
+    let reach = vec![get(0), konst(32), row("shr_u"), konst(1), get(0), row("wrap"), Ins::CallIndirect(1)];
+    let (a, mut b) = (Entry { arity: 1, env: EnvAccess::Pointer, code: reach.clone() }, Entry { arity: 1, env: EnvAccess::Pointer, code: reach });
+    assert!(call_cycle(&[Some(&a), Some(&b)]).is_some());
+    b.code = vec![get(0)];
+    assert_eq!(call_cycle(&[Some(&a), Some(&b)]), None, "a self-edge and an edge to 1 are no cycle");
 }
