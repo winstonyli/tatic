@@ -20,19 +20,7 @@ Every milestone serves at least one of these; work that serves none needs a stat
 3. **The KR&R tier of a cycle with a GPU model.** A learned model on the GPU tier (nothing
    built; the idea came from the tiered-AI direction of the inactive scratchtape repo, which this repo does not rely on) proposes what to explore; the kernel checks and proves it, and returns rules and signals.
    The model's output is untrusted (`docs/tier-cycle/`, "Idea").
-   Between the two, a calibrated belief layer (design note, 2026-10-22; its first milestone stopped at its gate, see
-   `PARKED.md`, "Belief layer stage 2", and `docs/tier-cycle/`, "The belief layer's calibration milestone stops at its first gate"). For each claimed equality it
-   would estimate P(the kernel proves it) from the claim's shape and its evidence: random tests passed, small widths
-   checked exhaustively, the model's score. Evidence that decides a claim outright sets it to 1, such as a pure bitwise
-   term's values on the 0/1 inputs; a counterexample sets it to 0 for good. It learns from the outcomes: kernel-checked proofs and counterexamples. It
-   would order and budget work (which claims to test, prove or train the model on) and never accept a claim:
-   probabilities never reach the kernel. That would make fixed pass/fail filters such as the screen (`SCREEN_INPUTS`)
-   one input among others. Open: whether a high-belief claim may enter the kernel as a tracked postulate (a `Const`,
-   proved later). Its first calibration: `docs/tier-cycle/`, "How much random testing is worth", where a test's worth
-   depends on the kind of claim.
-   **Held (2026-11-07):** no claim source in reach has a label costly or uncertain enough for a model to save work
-   (`docs/tier-cycle/`, "No claim source with room for a model"). Trigger: a claim source whose labels cost far more
-   than a model's prediction, or are not decided by cheap checks.
+   **Held (2026-11-07):** no claim source in reach has a label costly or uncertain enough for a model to save work (`docs/tier-cycle/`, "No claim source with room for a model"); trigger: a claim source whose labels cost far more than a model's prediction. The calibrated belief layer designed for between model and kernel was deleted (2026-11-14, aed1363; restore with `git revert aed1363`; `PARKED.md`, "Belief layer stage 2").
 
 Goals 1 and 2 meet in compiled hot transformations with learned compilations. That is not a milestone yet: the mined
 rules find no work in the JIT's programs (`PARKED.md`, "Compile hot transformations", with its trigger; results in

@@ -22,7 +22,7 @@
   reframing as cost prediction was not run (`PARKED.md`, "Belief layer stage 2"). No GPU model exists (goal 3, held
   since 2026-11-07, `ROADMAP.md`). In this domain the kernel's cheap checks decide almost every claim in milliseconds, which leaves a model
   little to save; a survey of five claim sources found none with room ("No claim source with room for a model").
-- **Laws uniform in the width** (goal D): `wfold.rs` proves stream laws (no `shr1` or `mul`, `lt` only at the root) at
+- **Laws uniform in the width** (goal D): `wfold.rs` (deleted 2026-11-14 in aed1363) proved stream laws (no `shr1` or `mul`, `lt` only at the root) at
   every width with no per-law code, built as kernel terms since the w1 port ("One generator proves stream laws at all
   widths"). Nothing consumes a uniform law yet (`PARKED.md`, "Search alongside execution, and laws uniform in the width").
 - **The JIT** (goal 1) compiles a fragment of higher-order terms once their compiled form is kernel-proved equal ("The JIT
