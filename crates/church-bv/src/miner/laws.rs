@@ -12,36 +12,27 @@ pub(super) struct Laws {
 
 /// The laws of `cfg` and their stragglers under the rules installed on this thread (P1, P2), each rewritten under `budget`
 /// steps.
-pub(super) fn laws(job: &mut Job, cfg: &MinerConfig, base: &[(Term, Term)], budget: i64, clock: &Clock) -> Laws {
+pub(super) fn laws(job: &mut Job, cfg: &MinerConfig, budget: i64, clock: &Clock) -> Laws {
     let named = read_named_laws(&cfg.lawfile);
     clock.phase("law building");
-    laws_for(job, named, cfg, base, budget, clock, true)
+    laws_for(job, named, cfg, budget, clock, true)
 }
 
 /// `laws_of` over the laws a mine reads: all of `named`, or, with `extras`, its served laws and `extras.n` of the pool after
 /// them. `First` cuts the pool before classifying, so it costs and chooses what a file without the pool does; `Small`
 /// classifies the pool and keeps its stragglers first, the fewest rewrite steps then the smallest normal form first.
-pub(super) fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, cfg: &MinerConfig, base: &[(Term, Term)], budget: i64, clock: &Clock, loud: bool) -> Laws {
+pub(super) fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, cfg: &MinerConfig, budget: i64, clock: &Clock, loud: bool) -> Laws {
     let (guard_k, fast) = (cfg.guard, cfg.fast);
     let Some(x) = &cfg.extras else { return laws_of(job, named, guard_k, fast, budget, clock, loud) };
     if x.by == Keep::First {
-        if let Some(prefix) = &cfg.pool_dump {
-            dump_pool(job, &named, x.from, cfg, base, budget, clock, prefix);
-        }
         named = kept_indices(named.len(), x.from, x.n, &|_| None).into_iter().map(|i| named[i].clone()).collect();
         return laws_of(job, named, guard_k, fast, budget, clock, loud);
     }
     let outcomes = classify(job, &named, budget, fast, loud);
     let from = x.from.min(named.len());
-    let by_steps = |i: usize| match outcomes[i] {
+    let rank = |i: usize| match outcomes[i] {
         Outcome::Straggler(ref s, _, steps) => Some((steps, (s.3[0].size() + s.3[1].size()) as i64)),
         _ => None,
-    };
-    // `Ctx` ranks the same stragglers by the model's score (position 0 = highest) instead of by cost
-    let by_model = (x.by == Keep::Ctx).then(|| ctx_pool_ranks(&named, &outcomes, from, cfg));
-    let rank = |i: usize| match &by_model {
-        Some(ranks) => ranks[i - from].map(|pos| (pos, 0)),
-        None => by_steps(i),
     };
     let keep = kept_indices(named.len(), x.from, x.n, &rank);
     if loud {
@@ -50,84 +41,9 @@ pub(super) fn laws_for(job: &mut Job, mut named: Vec<(String, Term, Term)>, cfg:
         let steps = |it: &mut dyn Iterator<Item = usize>| it.filter_map(|i| rank(i).map(|_| i)).fold((0i64, 0i64, 0usize), |(s, m, c), i| match outcomes[i] { Outcome::Straggler(.., v) => (s + v, m.max(v), c + 1), _ => (s, m, c) });
         let (kept, all) = (steps(&mut keep.iter().copied().filter(|&i| i >= from)), steps(&mut (from..named.len())));
         println!("RULEMINER extras steps: kept {} stragglers, sum {}, max {}; pool {} stragglers, sum {}, max {}", kept.2, kept.0, kept.1, all.2, all.0, all.1);
-        if by_model.is_some() {
-            let small = kept_indices(named.len(), x.from, x.n, &by_steps);
-            println!("RULEMINER extras ctx-vs-small: {} of {} kept differ", kept_differ(&keep, &small, from), keep.len() - from);
-        }
         clock.phase("extras selection");
     }
     assemble(keep.into_iter().map(|i| outcomes[i].clone()).collect(), guard_k, loud, clock)
-}
-
-/// The context scorer's view of `named` (outcomes `outcomes`, pool from `from`): each pool law with its raw facts (`uncovered`
-/// is false: that needs a served-only cover, `dump_pool`) and the served stragglers' normal forms. One home for the facts the
-/// dump writes and the `Ctx` rank scores.
-pub(super) fn pool_laws(named: &[(String, Term, Term)], outcomes: &[Outcome], from: usize) -> (Vec<crate::ctx_scorer::PoolLaw>, Vec<(Term, Term)>) {
-    let pool = (from..named.len())
-        .map(|i| {
-            let (steps, size, fallbacks) = match &outcomes[i] {
-                Outcome::Straggler(s, _, steps) => (*steps, (s.3[0].size() + s.3[1].size()) as i64, s.4),
-                _ => (0, 0, 0),
-            };
-            crate::ctx_scorer::PoolLaw { law: (named[i].1.clone(), named[i].2.clone()), straggler: matches!(outcomes[i], Outcome::Straggler(..)), steps, size, fallbacks: fallbacks as _, uncovered: false }
-        })
-        .collect();
-    let served = outcomes[..from]
-        .iter()
-        .filter_map(|o| match o {
-            Outcome::Straggler(s, ..) => Some((s.3[0].clone(), s.3[1].clone())),
-            _ => None,
-        })
-        .collect();
-    (pool, served)
-}
-
-/// The rank of each pool law (indexed `i - from`) under the context model `RULEMINER_CTX_WEIGHTS` names: the stragglers by
-/// descending score (`ctx_scorer::ctx_ranks`), `None` for the rest. A model that cannot be read or does not fit the miner's
-/// features stops the mine.
-fn ctx_pool_ranks(named: &[(String, Term, Term)], outcomes: &[Outcome], from: usize, cfg: &MinerConfig) -> Vec<Option<i64>> {
-    use crate::ctx_scorer::{ctx_ranks, runtime_cols, runtime_rows, Model, LAYOUT};
-    fn refuse(path: &str, why: impl std::fmt::Display) -> ! {
-        panic!("RULEMINER_CTX_WEIGHTS={path}: {why}")
-    }
-    let path = cfg.ctx_weights.as_deref().expect("RULEMINER_EXTRAS_BY=ctx needs RULEMINER_CTX_WEIGHTS (the model's weights file)");
-    let text = std::fs::read_to_string(path).unwrap_or_else(|e| refuse(path, e));
-    let model = Model::from_text(&text, LAYOUT).unwrap_or_else(|e| refuse(path, e));
-    if model.width() != runtime_cols().len() {
-        refuse(path, format!("model width {} is not the miner's {}", model.width(), runtime_cols().len()));
-    }
-    let (pool, served) = pool_laws(named, outcomes, from);
-    if pool.is_empty() {
-        return vec![];
-    }
-    let scores: Vec<f64> = runtime_rows(&pool, &served).iter().map(|r| model.score(r)).collect();
-    ctx_ranks(&scores, &pool.iter().map(|p| p.straggler).collect::<Vec<_>>())
-}
-
-/// How many of the pool laws (indices `>= from`) in `keep` are not in `other`.
-pub(super) fn kept_differ(keep: &[usize], other: &[usize], from: usize) -> usize {
-    keep.iter().filter(|&&i| i >= from && !other.contains(&i)).count()
-}
-
-/// The pool dump (`MinerConfig::pool_dump`) of `named`, whose pool starts at line `from`: classify every law under the
-/// installed base, cover the served stragglers alone (a quiet `cover`), and write, per pool law, whether it is a straggler
-/// (steps, normal-form size, machine proofs) and whether it stays one under `base` plus those rules, with the served
-/// stragglers' normal forms. Nothing here changes what the mine goes on to do.
-#[allow(clippy::too_many_arguments)]
-fn dump_pool(job: &mut Job, named: &[(String, Term, Term)], from: usize, cfg: &MinerConfig, base: &[(Term, Term)], budget: i64, clock: &Clock, prefix: &str) {
-    let from = from.min(named.len());
-    let outcomes = classify(job, named, budget, cfg.fast, false);
-    let (pool, served_forms) = pool_laws(named, &outcomes, from);
-    let served_normal_forms: String = served_forms.iter().map(|(l, r)| format!("{} = {}\n", l.show(), r.show())).collect();
-    let (chosen, _) = cover(job, &assemble(outcomes[..from].to_vec(), cfg.guard, false, clock), cfg, base, clock, &[], true);
-    let uncovered = still_stragglers(job, base, &chosen, &named[from..], budget, cfg.fast);
-    let rows: Vec<(usize, String, Option<(i64, i64, u64)>, bool)> = pool
-        .iter()
-        .enumerate()
-        .map(|(j, p)| (j, named[from + j].0.clone(), p.straggler.then_some((p.steps, p.size, p.fallbacks)), uncovered[j] && p.straggler))
-        .collect();
-    std::fs::write(format!("{prefix}_pool.tsv"), crate::ctx_scorer::pool_tsv(&rows)).expect("write the pool dump");
-    std::fs::write(format!("{prefix}_served.txt"), served_normal_forms).expect("write the served stragglers");
 }
 
 /// The indices of the `len` laws a mine reads, ascending: the served laws `..from` and `n` of the pool `from..`. The pool's

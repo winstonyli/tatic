@@ -49,54 +49,35 @@ fn mine(setup: &Arc<Setup>, extra: &[(Term, Term)]) -> (Vec<String>, usize) {
         job.with_rules(base_rules, |job| {
             // base rules may loop; a step budget per law bounds them (the built-in rules never reach it)
             let budget = if base.is_empty() { UNBOUNDED } else { LAW_STEPS };
-            let laws = laws(job, &cfg, &base, budget, &clock);
-            let (chosen, rolled_back) = cover(job, &laws, &cfg, &base, &clock, extra, false);
+            let laws = laws(job, &cfg, budget, &clock);
+            let (chosen, rolled_back) = cover(job, &laws, &cfg, &base, &clock, extra);
             (chosen.iter().map(rule_show).collect(), rolled_back)
         })
     })
 }
 
 /// The rounds of a mine over `laws`: the chosen rules and how many winners failed their proofs and rolled the rounds back.
-/// `quiet` mines without a trace: no `chosen` record, no report or time lines (`mine` is loud; the pool dump covers the
-/// served stragglers alone and must leave the loop's `rules.txt` and the logs as a mine without it does).
-fn cover(job: &mut Job, laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)], clock: &Clock, extra: &[(Term, Term)], quiet: bool) -> (Vec<(Term, Term)>, usize) {
-    let (cands, rivals) = candidates(laws, cfg.no_dup_lhs, base, extra, !quiet);
-    if !quiet {
-        clock.phase("candidate generation");
-    }
+fn cover(job: &mut Job, laws: &Laws, cfg: &MinerConfig, base: &[(Term, Term)], clock: &Clock, extra: &[(Term, Term)]) -> (Vec<(Term, Term)>, usize) {
+    let (cands, rivals) = candidates(laws, cfg.no_dup_lhs, base, extra);
+    clock.phase("candidate generation");
     // keep candidates whose left side matches a subterm of some straggler's normalized terms
     let applicable = |l: &Term| laws.stragglers.iter().any(|s| reaches(l, s));
     let cands: Vec<(Term, Term)> = cands.into_iter().filter(|(l, _)| applicable(l)).take(CANDIDATE_CAP).collect();
-    if !quiet {
-        println!("RULEMINER {} applicable candidates (cap {CANDIDATE_CAP})", cands.len());
-    }
+    println!("RULEMINER {} applicable candidates (cap {CANDIDATE_CAP})", cands.len());
     // each candidate is proved independently, on `RULEMINER_THREADS` workers; the proving reads the base rules of
     // this thread, so the workers copy them. `RULEMINER_FAST` scores without rule proofs (`shared_lemma`), so there only a
     // round's winner is proved (`proved_lazily`), and an unprovable one gives way to the next best
     let rules = job.rules().mined().to_vec();
     let prover = Prover { rules, n: laws.n };
     let provable: Vec<(Term, Term)> = if cfg.fast { cands.clone() } else { prover.filter(job, &cands, cfg.threads).into_iter().map(|i| cands[i]).collect() };
-    if !quiet {
         println!("RULEMINER {} provable candidates of {} proposed", provable.len(), cands.len());
-        clock.phase("provable filter");
-    }
+    clock.phase("provable filter");
     let scorer = Scorer::new(laws, cfg, base.to_vec());
     let mut rounds = Rounds::new(&scorer, &prover, &provable, &rivals, cfg, clock);
-    rounds.quiet = quiet;
     // the main job's join work from here on
     let (Chosen { chosen, covered, .. }, main) = job.spent(|job| rounds.play(job));
-    if !quiet {
-        rounds.report(&covered, main.join);
-    }
+    rounds.report(&covered, main.join);
     (chosen, rounds.proofs.iter().filter(|p| **p == Some(false)).count())
-}
-
-/// Whether each of the pool's `laws` is still a straggler with the `base` rules and the `chosen` ones installed (`mine`'s
-/// own installation), each rewritten under `budget` steps.
-fn still_stragglers(job: &mut Job, base: &[(Term, Term)], chosen: &[(Term, Term)], pool: &[(String, Term, Term)], budget: i64, fast: bool) -> Vec<bool> {
-    let setup = job.setup().clone();
-    let rules = job.rules().with_mined(&setup, base.iter().chain(chosen).cloned().collect());
-    job.with_rules(rules, |job| classify(job, pool, budget, fast, false).iter().map(|o| matches!(o, Outcome::Straggler(..))).collect())
 }
 
 /// A worker thread's result sent to the thread waiting on it: the worker panicked.

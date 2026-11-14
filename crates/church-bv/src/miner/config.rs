@@ -27,34 +27,26 @@ pub struct MinerConfig {
     pub guard: usize,
     /// `RULEMINER_NODUPLHS` (switch, on by default): drop candidates whose left side already has a rule in `base`.
     pub no_dup_lhs: bool,
-    /// `RULEMINER_EXTRAS_FROM=<i>`, `_KEEP=<n>`, `_BY=first|small|ctx` (all three or none): the lawfile's laws from line `i` are a
+    /// `RULEMINER_EXTRAS_FROM=<i>`, `_KEEP=<n>`, `_BY=first|small` (all three or none): the lawfile's laws from line `i` are a
     /// pool of extras and the mine keeps `n` of them (`kept_indices`); the laws before `i` are always read.
     pub extras: Option<ExtrasKeep>,
-    /// `RULEMINER_POOL_DUMP=<prefix>` (with `extras` by `first`): before cutting the pool, classify it and write the raw facts
-    /// the context scorer needs to `<prefix>_pool.tsv` (`ctx_scorer::pool_tsv`) and `<prefix>_served.txt` (the served
-    /// stragglers' normal forms); the mine itself runs as without it.
-    pub pool_dump: Option<String>,
-    /// `RULEMINER_CTX_WEIGHTS=<file>` (required by `_BY=ctx`): the context model's weights (`ctx_scorer::LAYOUT`).
-    pub ctx_weights: Option<String>,
 }
 
 /// How a mine picks its extras from the pool: `First` the first `n`, `Small` the stragglers the base rules leave, fewest
 /// rewrite steps then smallest normal form first, any shortfall filled with the pool's other laws in order
-/// (docs/superpowers/specs/2026-10-31-context-aware-selector-design.md); `Ctx` the same stragglers, highest context-model score
-/// first (`RULEMINER_CTX_WEIGHTS`, docs/superpowers/specs/2026-11-01-context-aware-scorer-design.md).
+/// (docs/superpowers/specs/2026-10-31-context-aware-selector-design.md).
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Keep {
     First,
     Small,
-    Ctx,
 }
 
 impl Keep {
-    const NAMES: [(&'static str, Keep); 3] = [("first", Keep::First), ("small", Keep::Small), ("ctx", Keep::Ctx)];
+    const NAMES: [(&'static str, Keep); 2] = [("first", Keep::First), ("small", Keep::Small)];
 
     /// The driver variable `EXTRAS_SELECT` / `RULEMINER_EXTRAS_BY`.
     pub fn parse(s: &str) -> Result<Keep, String> {
-        Keep::NAMES.iter().find(|(n, _)| *n == s).map(|&(_, k)| k).ok_or_else(|| format!("EXTRAS_SELECT: expected first, small or ctx, got {s}"))
+        Keep::NAMES.iter().find(|(n, _)| *n == s).map(|&(_, k)| k).ok_or_else(|| format!("EXTRAS_SELECT: expected first or small, got {s}"))
     }
 
     fn name(self) -> &'static str {
@@ -71,7 +63,7 @@ pub struct ExtrasKeep {
 }
 
 /// The driver's extras variables, parsed and checked once (`driver::scope_extras`) and written to a mine's environment by
-/// `child_env`, which `MinerConfig::new` reads back as `extras`, `ctx_weights` and `pool_dump`.
+/// `child_env`, which `MinerConfig::new` reads back as `extras`.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ExtrasPlan {
     /// `EXTRAS_N`: the laws each mine keeps.
@@ -80,10 +72,6 @@ pub struct ExtrasPlan {
     pub pool: usize,
     /// `EXTRAS_SELECT`: unset is today's draw (the mine's `n` extras as they come); a pool of more than one needs a selector.
     pub by: Option<Keep>,
-    /// `CTX_WEIGHTS`: the context model's weights file, required by, and only meaningful with, `by` = `ctx`.
-    pub ctx_weights: Option<String>,
-    /// `POOL_DUMP` (switch): the miner also writes the pool's raw facts, which it reads only of a `first` pool.
-    pub pool_dump: bool,
 }
 
 impl ExtrasPlan {
@@ -94,22 +82,10 @@ impl ExtrasPlan {
         }
         let by = match s.var("EXTRAS_SELECT") {
             Some(v) => Some(Keep::parse(v)?),
-            None if pool > 1 => return Err(format!("POOL {pool} needs EXTRAS_SELECT=first|small|ctx")),
+            None if pool > 1 => return Err(format!("POOL {pool} needs EXTRAS_SELECT=first or small")),
             None => None,
         };
-        let ctx_weights = s.var("CTX_WEIGHTS").map(String::from);
-        match (by == Some(Keep::Ctx), &ctx_weights) {
-            (true, None) => return Err("EXTRAS_SELECT=ctx needs CTX_WEIGHTS=<weights file>".to_string()),
-            (false, Some(_)) => return Err("CTX_WEIGHTS is only read with EXTRAS_SELECT=ctx".to_string()),
-            _ => {}
-        }
-        let pool_dump = s.flag("POOL_DUMP", false);
-        if let (true, Some(by)) = (pool_dump, by) {
-            if by != Keep::First {
-                return Err(format!("POOL_DUMP dumps the pool of a `first` mine, not of EXTRAS_SELECT={}", by.name()));
-            }
-        }
-        Ok(ExtrasPlan { n, pool, by, ctx_weights, pool_dump })
+        Ok(ExtrasPlan { n, pool, by })
     }
 
     /// The laws a mine is handed: its whole pool when `by` cuts it, else its `n`.
@@ -117,20 +93,14 @@ impl ExtrasPlan {
         if self.by.is_some() { self.pool * self.n } else { self.n }
     }
 
-    /// A mine's `RULEMINER_*` variables for a pool read from line `from` of its lawfile (none without `by`); a pool dump
-    /// goes to `dump`.
-    pub fn child_env(&self, from: usize, dump: &std::path::Path) -> Vec<(String, String)> {
+    /// A mine's `RULEMINER_*` variables for a pool read from line `from` of its lawfile (none without `by`).
+    pub fn child_env(&self, from: usize) -> Vec<(String, String)> {
         let Some(by) = self.by else { return vec![] };
-        let mut env = vec![
+        vec![
             ("RULEMINER_EXTRAS_FROM".to_string(), from.to_string()),
             ("RULEMINER_EXTRAS_KEEP".to_string(), self.n.to_string()),
             ("RULEMINER_EXTRAS_BY".to_string(), by.name().to_string()),
-        ];
-        env.extend(self.ctx_weights.iter().map(|w| ("RULEMINER_CTX_WEIGHTS".to_string(), w.clone())));
-        if self.pool_dump {
-            env.push(("RULEMINER_POOL_DUMP".to_string(), dump.display().to_string()));
-        }
-        env
+        ]
     }
 }
 
@@ -153,8 +123,6 @@ impl MinerConfig {
                     by: Keep::parse(need("RULEMINER_EXTRAS_BY")).unwrap_or_else(|e| panic!("RULEMINER_EXTRAS_BY: {e}")),
                 }
             }),
-            pool_dump: s.var("RULEMINER_POOL_DUMP").map(String::from),
-            ctx_weights: s.var("RULEMINER_CTX_WEIGHTS").map(String::from),
         }
     }
 }

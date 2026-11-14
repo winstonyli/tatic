@@ -189,8 +189,6 @@ pub(super) struct Rounds<'a> {
     /// rivals' proofs (`best_rival`), proved and failed, and their time: unlike a winner's, on this thread
     rival_proofs: [usize; 2],
     rival_time: std::time::Duration,
-    /// no `chosen` record and no progress lines (`cover`)
-    pub(super) quiet: bool,
 }
 
 /// The candidates a round scores, by their gain's bound, largest first, ties to the earlier: those not chosen already. A
@@ -238,14 +236,11 @@ impl<'a> Rounds<'a> {
             skipped: 0,
             rival_proofs: [0; 2],
             rival_time: std::time::Duration::ZERO,
-            quiet: false,
         }
     }
 
     fn phase(&self, label: &str) {
-        if !self.quiet {
-            self.clock.phase(label);
-        }
+        self.clock.phase(label);
     }
 
     fn resolve(&mut self, i: usize) -> bool {
@@ -431,11 +426,11 @@ impl<'a> Rounds<'a> {
         let Some(i) = winner else { return None };
         let g = results[i].as_ref().unwrap().0;
         // in the rivals' order, as when they were scored one after another here
-        let (t, mut proved, quiet) = (Instant::now(), [0usize; 2], self.quiet);
+        let (t, mut proved) = (Instant::now(), [0usize; 2]);
         let rival = best_rival(rivals_of(i), &rival_gains, g, chosen, |rv| {
             let b = self.prover.prove(job, rv);
             proved[!b as usize] += 1;
-            if !b && !quiet {
+            if !b {
                 println!("RULEMINER rival not provable: {}", rule_show(rv));
             }
             b
@@ -451,15 +446,11 @@ impl<'a> Rounds<'a> {
         while open.len() > keep {
             let o = open.remove(0);
             if o.proof.is_none_or(|i| self.resolve(i)) {
-                if !self.quiet {
-                    println!("{}", o.line);
-                    job.setup().result("chosen", &o.rule);
-                }
+                println!("{}", o.line);
+                job.setup().result("chosen", &o.rule);
                 continue;
             }
-            if !self.quiet {
-                println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(&self.provable[i])));
-            }
+            println!("RULEMINER rolled back to round {}: its winner {} is not provable", o.round, o.proof.map_or(String::new(), |i| rule_show(&self.provable[i])));
             for v in open.drain(..) {
                 if let Some(i) = v.proof {
                     self.resolve(i);

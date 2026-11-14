@@ -9,7 +9,7 @@ pub(super) fn reaches(l: &Term, s: &Scored) -> bool {
 }
 
 /// The candidate rules for the stragglers (P3, P4), one per left side, and the other right sides of each left side (`rivals`).
-pub(super) fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Term, Term)], loud: bool) -> (Vec<(Term, Term)>, hashbrown::HashMap<Term, Vec<(Term, Term)>>) {
+pub(super) fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], extra: &[(Term, Term)]) -> (Vec<(Term, Term)>, hashbrown::HashMap<Term, Vec<(Term, Term)>>) {
     let (n, kv, stragglers) = (laws.n, laws.kv, &laws.stragglers);
     // the pool's rules go down in the rule order, ties broken by `tie_greater` (reassociation rules; section 70); the step
     // budget and the same-term check in `rule_step` still back up termination, and soundness is unaffected
@@ -17,9 +17,7 @@ pub(super) fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], e
     // at most `POOL_VARS` variables (cutting subterms into variables), and look for a smaller term over the same variables
     // with the same values (`Pool`)
     let mut pool = Pool::new(n);
-    if loud {
-        println!("RULEMINER pool of {} terms, {} distinct functions", pool.terms, pool.index.len());
-    }
+    println!("RULEMINER pool of {} terms, {} distinct functions", pool.terms, pool.index.len());
     // patterns seen (`None`), and cross-side rules seen (`Some(rhs)`)
     let mut seen_pat: hashbrown::HashSet<(Term, Option<Term>)> = Default::default();
     let mut cands: Vec<(Term, Term)> = vec![];
@@ -86,9 +84,7 @@ pub(super) fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], e
         let before = cands.len();
         let in_force: hashbrown::HashSet<&Term> = base.iter().map(|(l, _)| l).collect();
         cands.retain(|(l, _)| !in_force.contains(l));
-        if loud {
-            println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
-        }
+        println!("RULEMINER dropped {} candidates whose left side is already in force", before - cands.len());
     }
     // per left side, the smallest right side only, ties by `Term`'s order. Scoring every right side instead (each left side's rival
     // orientations) fixed add3's `sub` chains but raised M on cmp3d and sbo3 and made cmp3d's mine 4.5x slower (docs/tier-cycle/, "Why add3 did better with sbo3's library")
@@ -107,9 +103,7 @@ pub(super) fn candidates(laws: &Laws, no_dup_lhs: bool, base: &[(Term, Term)], e
         v.remove(0);
     });
     cands.dedup_by(|a, b| a.0 == b.0);
-    if loud {
-        println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
-    }
+    println!("RULEMINER {} oriented candidates (one per left side)", cands.len());
     (cands, rivals)
 }
 

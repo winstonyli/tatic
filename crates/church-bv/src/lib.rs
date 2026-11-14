@@ -9,9 +9,7 @@ use tatic_kernel::*;
 use std::sync::Arc;
 use job::{Job, Setup};
 
-mod belief;
 mod classes;
-mod ctx_scorer;
 mod corpus;
 mod driver;
 #[cfg(test)]
@@ -22,13 +20,10 @@ mod job;
 mod lemma_cache;
 mod rewrite;
 mod machine;
-mod wfold;
-mod wnat;
 mod miner;
 mod search;
 mod streams;
 mod task;
-mod uniform;
 mod work;
 #[allow(unused_imports)]
 use tatic_wasm::encoding::*;

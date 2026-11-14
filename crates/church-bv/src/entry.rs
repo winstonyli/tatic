@@ -5,15 +5,12 @@
 use std::process::ExitCode;
 
 /// The subcommands and what they run.
-const TABLE: [(&str, fn()); 8] = [
+const TABLE: [(&str, fn()); 5] = [
     ("sweep", crate::driver::run_sweep),
     ("worker", crate::driver::run_worker),
     ("loop-stream", crate::driver::run_loop_stream),
     ("proof-cost-split", crate::search::run_proof_cost_split),
     ("rule-set-kernel-check", crate::search::run_rule_set_kernel_check),
-    ("ctx-fit", crate::ctx_scorer::run_ctx_fit),
-    ("overlap-report", crate::ctx_scorer::run_overlap_report),
-    ("q1-report", crate::ctx_scorer::run_q1_report),
 ];
 
 fn lookup(name: &str) -> Option<fn()> {

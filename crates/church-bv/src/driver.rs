@@ -23,10 +23,8 @@
 //! Extras (docs/superpowers/specs/2026-10-17-law-generator-design.md, docs/tier-cycle/ "Count and slicing"): every mine
 //! with rule rounds also mines its own `EXTRAS_N` laws, the next the filter keeps from the stream sequence grown as deep
 //! as the held-out bands (`scope_extras`, fresh slices); off with ABLATE=gen; GEN_DRAW=d draws them from the sequence at
-//! salt + 1000 d instead. POOL=p with EXTRAS_SELECT=first|small|ctx hands each mine p x n laws and the miner keeps n: the first n, or the n stragglers with the fewest rewrite steps (then the smallest normal form; a shortfall is filled with the pool's other laws in order), or (`ctx`, with CTX_WEIGHTS=<weights file>, `RULEMINER_CTX_WEIGHTS`) the stragglers the context model scores highest; `first` with POOL>1 only serves as a control
-//! under that mine's base rules (`RULEMINER_EXTRAS_*`, `miner::kept_indices`). POOL>1 needs a selector. POOL_DUMP=1 (with
-//! `first`) also writes each mine's classified pool to LOOP_OUT/dump_<name>_pool.tsv and the served stragglers' normal forms to
-//! dump_<name>_served.txt (`RULEMINER_POOL_DUMP`, `miner::dump_pool`, `ctx_scorer::pool_tsv`); the mine is unchanged.
+//! salt + 1000 d instead. POOL=p with EXTRAS_SELECT=first|small hands each mine p x n laws and the miner keeps n: the first n, or the n stragglers with the fewest rewrite steps (then the smallest normal form; a shortfall is filled with the pool's other laws in order); `first` with POOL>1 only serves as a control
+//! under that mine's base rules (`RULEMINER_EXTRAS_*`, `miner::kept_indices`). POOL>1 needs a selector.
 //! The children share the lemma statements they check through LOOP_OUT/lemmas.bin (`LEMMA_CACHE`, `lemma_cache.rs`; deleted when
 //! the loop starts and ends; a sweep shares one SWEEP_OUT/lemmas_<lane>.bin across the loops of each of its SWEEP_LANES lanes
 //! instead); LEMMA_RECHECK=1 audits it. The driver computes each child's laws (its window of the stream sequence, built once
@@ -808,8 +806,8 @@ fn run_loop(setup: &Setup, cfg: &LoopCfg, lemmas: &Path, worker: &Worker) -> Sum
             let lawfile = env.last().unwrap().1.clone();
             let served = crate::search::read_named_laws(&lawfile).len();
             append(Path::new(&lawfile), &extra);
-            // the miner reads the pool from line `served` and keeps `plan.n` of it; the dump is a switch of the miner (`MinerConfig::pool_dump`)
-            env.extend(plan.child_env(served, &out.join(format!("dump_{name}"))));
+            // the miner reads the pool from line `served` and keeps `plan.n` of it
+            env.extend(plan.child_env(served));
         }
         let records = worker.run("search::rule_miner", &env, &log).unwrap_or_else(|| panic!("rule_miner failed (see {})", log.display()));
         // the chosen rules

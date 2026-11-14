@@ -11,7 +11,7 @@ fn no_subcommand_exits_2_and_lists_names() {
     let out = run(&[]);
     assert_eq!(out.status.code(), Some(2));
     let text = String::from_utf8_lossy(&out.stderr);
-    for name in ["sweep", "worker", "loop-stream", "proof-cost-split", "rule-set-kernel-check", "ctx-fit", "overlap-report", "q1-report"] {
+    for name in ["sweep", "worker", "loop-stream", "proof-cost-split", "rule-set-kernel-check"] {
         assert!(text.contains(name), "usage lacks {name}: {text}");
     }
 }

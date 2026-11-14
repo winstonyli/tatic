@@ -110,53 +110,21 @@ fn served_and_pool() -> (usize, String, String, String) {
     (served.len(), ROLLBACK_LAWS.to_string(), "and(x, y) = and(y, x)".to_string(), strag)
 }
 
+
 /// The names of the stragglers `laws_for` leaves a mine with (a whole mine is too slow to run per case).
 fn straggler_names(text: &str, extras: Option<ExtrasKeep>) -> Vec<String> {
-    straggler_names_dumping(text, extras, None)
-}
-
-/// `straggler_names` with the pool dump to `prefix` (`RULEMINER_POOL_DUMP`).
-fn straggler_names_dumping(text: &str, extras: Option<ExtrasKeep>, prefix: Option<String>) -> Vec<String> {
-    straggler_names_with(text, extras, prefix, None)
-}
-
-/// `straggler_names_dumping` with the context model's weights file (`RULEMINER_CTX_WEIGHTS`).
-fn straggler_names_with(text: &str, extras: Option<ExtrasKeep>, prefix: Option<String>, weights: Option<&str>) -> Vec<String> {
     let named = |s: &str| {
         let (a, b) = s.split_once(" = ").unwrap();
         (s.to_string(), parse_term(a), parse_term(b))
     };
     let laws: Vec<_> = text.lines().map(named).collect();
-    let mut env = vec![("RULEMINER_LAWFILE".to_string(), "unused".to_string()), ("RULEMINER_FAST".to_string(), "1".to_string()), ("RULEMINER_GUARD".to_string(), "0".to_string())];
-    env.extend(weights.map(|w| ("RULEMINER_CTX_WEIGHTS".to_string(), w.to_string())));
+    let env = vec![("RULEMINER_LAWFILE".to_string(), "unused".to_string()), ("RULEMINER_FAST".to_string(), "1".to_string()), ("RULEMINER_GUARD".to_string(), "0".to_string())];
     let setup = Setup::with_env(env);
     let job = &mut Job::new(setup.clone());
     let clock = Clock(std::cell::Cell::new(Instant::now()));
     let mut cfg = MinerConfig::new(&setup);
-    (cfg.extras, cfg.pool_dump) = (extras, prefix);
-    tatic_kernel::scoped(|| laws_for(job, laws, &cfg, &[], UNBOUNDED, &clock, false).stragglers.iter().map(|s| s.0.clone()).collect())
-}
-
-/// The pool dump of a `first` mine writes one line per pool law with its facts and the served stragglers' normal forms, and
-/// the mine reads the laws it would without it.
-#[test]
-fn the_pool_dump_writes_facts_and_changes_nothing() {
-    let (from, served, clean, strag) = served_and_pool();
-    let both = format!("{served}{clean}\n{strag}\n");
-    let ex = Some(ExtrasKeep { from, n: 1, by: Keep::First });
-    let prefix = std::env::temp_dir().join(format!("pool_dump_{}", std::process::id())).display().to_string();
-    let without = straggler_names(&both, ex);
-    let with = straggler_names_dumping(&both, ex, Some(prefix.clone()));
-    let (pool_file, served_file) = (format!("{prefix}_pool.tsv"), format!("{prefix}_served.txt"));
-    let (pool, forms) = (std::fs::read_to_string(&pool_file).unwrap(), std::fs::read_to_string(&served_file).unwrap());
-    std::fs::remove_file(&pool_file).ok();
-    std::fs::remove_file(&served_file).ok();
-    assert_eq!(with, without, "the dump changes no law the mine reads");
-    let pool = crate::ctx_scorer::read_pool(&pool);
-    assert_eq!(pool.len(), 2, "one line per pool law, not per kept law");
-    assert!(!pool[0].straggler && !pool[0].uncovered, "the clean law is no straggler");
-    assert!(pool[1].straggler && pool[1].steps >= 0 && pool[1].size > 0 && pool[1].fallbacks > 0);
-    assert_eq!(forms.lines().count(), straggler_names(&served, None).len(), "one normal form per served straggler");
+    cfg.extras = extras;
+    tatic_kernel::scoped(|| laws_for(job, laws, &cfg, UNBOUNDED, &clock, false).stragglers.iter().map(|s| s.0.clone()).collect())
 }
 
 /// `small` keeps the pool's straggler over its clean law that comes first; `first` keeps the clean law and is today's
@@ -173,220 +141,6 @@ fn the_pool_is_cut_by_the_stragglers_verdict() {
     assert_eq!(straggler_names(&both, ex(1, Keep::First)), base, "the first pool law is the clean one: no new straggler");
     assert_eq!(straggler_names(&both, ex(0, Keep::Small)), base, "keep 0 reads no extra");
     assert_eq!(straggler_names(&both, Some(ExtrasKeep { from: 1000, n: 1, by: Keep::Small })), straggler_names(&both, None), "from past the end is the whole file as served");
-}
-
-/// A one-column context model (`ctx33-v1` layout, 33 wide): score = `w` times column `col`.
-fn one_column_model(col: usize, w: i32) -> String {
-    format!("layout ctx33-v1\nwidth 33\nkeep {col}\nmean 0\nscale 1\nw {w}\n")
-}
-
-/// The all-zero model: every law scores 0.
-fn zero_model() -> String {
-    "layout ctx33-v1\nwidth 33\nkeep 0\nmean 0\nscale 1\nw 0\n".to_string()
-}
-
-/// `text` written to a fresh weights file (named by `tag` and this process); the path.
-fn weights_file(tag: &str, text: &str) -> String {
-    let path = std::env::temp_dir().join(format!("ctx_weights_{tag}_{}.txt", std::process::id()));
-    std::fs::write(&path, text).unwrap();
-    path.display().to_string()
-}
-
-/// The stragglers `laws_for` leaves under `EXTRAS_BY=ctx` with the model `model`, then the weights file removed.
-fn ctx_names(text: &str, extras: ExtrasKeep, tag: &str, model: &str) -> Vec<String> {
-    let path = weights_file(tag, model);
-    let names = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| straggler_names_with(text, Some(extras), None, Some(&path))));
-    std::fs::remove_file(&path).ok();
-    names.unwrap_or_else(|e| std::panic::resume_unwind(e))
-}
-
-/// The pool of `ROLLBACK_LAWS` after its first two laws (the served ones): per pool law its name, whether it is a straggler
-/// and its `runtime_rows` (what the context model scores).
-fn rollback_pool() -> (usize, Vec<String>, Vec<bool>, Vec<Vec<f32>>) {
-    let named: Vec<(String, Term, Term)> = ROLLBACK_LAWS
-        .lines()
-        .map(|s| {
-            let (a, b) = s.split_once(" = ").unwrap();
-            (s.to_string(), parse_term(a), parse_term(b))
-        })
-        .collect();
-    let from = 2;
-    let job = &mut Job::new(Setup::with_env(vec![("RULEMINER_FAST".to_string(), "1".to_string())]));
-    let rows = tatic_kernel::scoped(|| {
-        let outcomes = classify(job, &named, UNBOUNDED, true, false);
-        let (pool, served) = pool_laws(&named, &outcomes, from);
-        (pool.iter().map(|p| p.straggler).collect::<Vec<_>>(), crate::ctx_scorer::runtime_rows(&pool, &served))
-    });
-    (from, named[from..].iter().map(|n| n.0.clone()).collect(), rows.0, rows.1)
-}
-
-#[test]
-fn keep_parses_ctx_and_names_the_variable_on_error() {
-    assert_eq!(Keep::parse("ctx"), Ok(Keep::Ctx));
-    assert!(Keep::parse("bogus").unwrap_err().contains("ctx"), "the error lists the choices");
-}
-
-/// A zero model scores every law alike, so ranks fall back to the stream order and `ctx` keeps what `small` keeps when the
-/// pool holds one straggler.
-#[test]
-fn a_ctx_pool_with_a_zero_model_keeps_the_straggler_like_small() {
-    let (from, served, clean, strag) = served_and_pool();
-    let both = format!("{served}{clean}\n{strag}\n");
-    let ex = |by| ExtrasKeep { from, n: 1, by };
-    let by_ctx = ctx_names(&both, ex(Keep::Ctx), "zero", &zero_model());
-    assert_eq!(by_ctx, straggler_names(&both, Some(ex(Keep::Small))));
-    assert_eq!(by_ctx.last(), Some(&strag), "the pool's straggler is kept over the clean law before it");
-}
-
-#[test]
-#[should_panic(expected = "RULEMINER_CTX_WEIGHTS")]
-fn ctx_without_weights_names_the_variable() {
-    let (from, served, clean, strag) = served_and_pool();
-    straggler_names_with(&format!("{served}{clean}\n{strag}\n"), Some(ExtrasKeep { from, n: 1, by: Keep::Ctx }), None, None);
-}
-
-#[test]
-#[should_panic(expected = "RULEMINER_CTX_WEIGHTS")]
-fn ctx_refuses_a_missing_weights_file() {
-    let (from, served, clean, strag) = served_and_pool();
-    let gone = std::env::temp_dir().join(format!("ctx_weights_gone_{}.txt", std::process::id())).display().to_string();
-    straggler_names_with(&format!("{served}{clean}\n{strag}\n"), Some(ExtrasKeep { from, n: 1, by: Keep::Ctx }), None, Some(&gone));
-}
-
-#[test]
-#[should_panic(expected = "layout")]
-fn ctx_refuses_weights_of_another_layout() {
-    let (from, served, clean, strag) = served_and_pool();
-    ctx_names(&format!("{served}{clean}\n{strag}\n"), ExtrasKeep { from, n: 1, by: Keep::Ctx }, "layout", &zero_model().replace("ctx33-v1", "ctx35-v1"));
-}
-
-#[test]
-#[should_panic(expected = "width")]
-fn ctx_refuses_weights_of_another_width() {
-    let (from, served, clean, strag) = served_and_pool();
-    ctx_names(&format!("{served}{clean}\n{strag}\n"), ExtrasKeep { from, n: 1, by: Keep::Ctx }, "width", "layout ctx33-v1\nwidth 5\nkeep 0\nmean 0\nscale 1\nw 0\n");
-}
-
-#[test]
-fn ctx_with_n_zero_reads_no_extra() {
-    let (from, served, clean, strag) = served_and_pool();
-    let both = format!("{served}{clean}\n{strag}\n");
-    assert_eq!(ctx_names(&both, ExtrasKeep { from, n: 0, by: Keep::Ctx }, "n0", &zero_model()), straggler_names(&served, None));
-}
-
-/// The pool facts the ctx rank scores (`pool_laws` over `classify`) are the ones the dump wrote, which the model was fit on.
-#[test]
-fn ctx_pool_facts_equal_the_dump_rows() {
-    let (from, text) = (2, ROLLBACK_LAWS);
-    let prefix = std::env::temp_dir().join(format!("ctx_parity_{}", std::process::id())).display().to_string();
-    straggler_names_dumping(text, Some(ExtrasKeep { from, n: 1, by: Keep::First }), Some(prefix.clone()));
-    let (pool_file, served_file) = (format!("{prefix}_pool.tsv"), format!("{prefix}_served.txt"));
-    let (tsv, forms) = (std::fs::read_to_string(&pool_file).unwrap(), std::fs::read_to_string(&served_file).unwrap());
-    std::fs::remove_file(&pool_file).ok();
-    std::fs::remove_file(&served_file).ok();
-    let named: Vec<(String, Term, Term)> = text
-        .lines()
-        .map(|s| {
-            let (a, b) = s.split_once(" = ").unwrap();
-            (s.to_string(), parse_term(a), parse_term(b))
-        })
-        .collect();
-    let job = &mut Job::new(Setup::with_env(vec![("RULEMINER_FAST".to_string(), "1".to_string())]));
-    let (dumped, live) = tatic_kernel::scoped(|| {
-        let dumped = crate::ctx_scorer::read_pool(&tsv);
-        let dumped_served: Vec<(Term, Term)> = forms.lines().map(|l| l.split_once(" = ").map(|(a, b)| (parse_term(a), parse_term(b))).unwrap()).collect();
-        let outcomes = classify(job, &named, UNBOUNDED, true, false);
-        let (pool, served) = pool_laws(&named, &outcomes, from);
-        let facts = |p: &[crate::ctx_scorer::PoolLaw]| p.iter().map(|l| (l.straggler, l.steps, l.size, l.fallbacks)).collect::<Vec<_>>();
-        ((facts(&dumped), crate::ctx_scorer::runtime_rows(&dumped, &dumped_served)), (facts(&pool), crate::ctx_scorer::runtime_rows(&pool, &served)))
-    });
-    assert!(live.0.iter().any(|f| f.0), "the fixture's pool has stragglers");
-    assert_eq!(live, dumped);
-}
-
-/// `ctx` keeps the pool straggler the model scores highest, not the one with the fewest steps: a one-column model of either
-/// sign keeps the straggler with that column's extreme value, and the two signs keep different laws.
-#[test]
-fn ctx_follows_the_model_not_the_steps() {
-    let (from, names, straggler, rows) = rollback_pool();
-    assert!(straggler.iter().filter(|&&s| s).count() >= 3, "the fixture's pool needs several stragglers to order");
-    let ex = ExtrasKeep { from, n: 1, by: Keep::Ctx };
-    let text = ROLLBACK_LAWS;
-    let pick = |col: usize, up: bool| {
-        let ss: Vec<usize> = (0..names.len()).filter(|&i| straggler[i]).collect();
-        // first of the extreme: equal scores keep the stream order
-        ss.iter().copied().fold(ss[0], |best, i| if (up && rows[i][col] > rows[best][col]) || (!up && rows[i][col] < rows[best][col]) { i } else { best })
-    };
-    let col = (1..crate::ctx_scorer::PER_LAW).find(|&c| pick(c, true) != pick(c, false)).expect("some per-law column separates the pool's stragglers");
-    let (up, down) = (ctx_names(text, ex, "up", &one_column_model(col, 1)), ctx_names(text, ex, "down", &one_column_model(col, -1)));
-    assert_eq!(up.last(), Some(&names[pick(col, true)]), "a positive weight keeps the highest column value (from offset {from})");
-    assert_eq!(down.last(), Some(&names[pick(col, false)]), "a negative weight keeps the lowest");
-}
-
-#[test]
-fn ctx_reports_how_many_kept_differ_from_small() {
-    assert_eq!(kept_differ(&[0, 1, 4, 6], &[0, 1, 5, 6], 2), 1);
-    assert_eq!(kept_differ(&[0, 1, 4, 6], &[0, 1, 4, 6], 2), 0);
-    assert_eq!(kept_differ(&[0, 1], &[0, 1], 5), 0, "no pool laws kept");
-}
-
-/// What a quiet `cover` of the stream mine's laws (`ROLLBACK_LAWS`) under `setup` does: how many rules it chose and, per law
-/// (as plain values, the kernel scope lets no terms out), whether it is a straggler under the base (by `classify` and by
-/// `still_stragglers` with nothing chosen) and with the chosen rules.
-struct QuietCover {
-    chosen: usize,
-    by_classify: Vec<bool>,
-    none: Vec<bool>,
-    with: Vec<bool>,
-}
-
-fn quiet_cover(setup: &Arc<Setup>) -> QuietCover {
-    let laws: Vec<(String, Term, Term)> = ROLLBACK_LAWS
-        .lines()
-        .map(|s| {
-            let (a, b) = s.split_once(" = ").unwrap();
-            (s.to_string(), parse_term(a), parse_term(b))
-        })
-        .collect();
-    let job = &mut Job::new(setup.clone());
-    let clock = Clock(std::cell::Cell::new(Instant::now()));
-    let (chosen, by_classify, none, with) = tatic_kernel::scoped(|| {
-        let cfg = MinerConfig::new(setup);
-        let l = laws_of(job, laws.clone(), 0, true, UNBOUNDED, &clock, false);
-        let chosen = cover(job, &l, &cfg, &[], &clock, &[], true).0;
-        let by_classify: Vec<bool> = classify(job, &laws, UNBOUNDED, true, false).iter().map(|o| matches!(o, Outcome::Straggler(..))).collect();
-        let (none, with) = (still_stragglers(job, &[], &[], &laws, UNBOUNDED, true), still_stragglers(job, &[], &chosen, &laws, UNBOUNDED, true));
-        (chosen.len(), by_classify, none, with)
-    });
-    QuietCover { chosen, by_classify, none, with }
-}
-
-fn fast_env(file: &std::path::Path) -> Vec<(String, String)> {
-    vec![("RULEMINER_LAWFILE".to_string(), "unused".to_string()), ("RULEMINER_FAST".to_string(), "1".to_string()), ("CTX_TEST_RESULTS".to_string(), file.display().to_string())]
-}
-
-/// With nothing chosen the pool's stragglers are the base's; a rule the quiet cover chose closes at least one of them.
-#[test]
-fn a_chosen_rule_flips_a_straggler_to_covered() {
-    let setup = Setup::with_env(fast_env(std::path::Path::new("unused")));
-    let QuietCover { chosen, by_classify, none, with } = quiet_cover(&setup);
-    assert!(chosen > 0, "the stream mine's laws leave a rule to choose");
-    assert_eq!(none, by_classify, "no chosen rules is the base classification");
-    let (a, b) = (none.iter().filter(|s| **s).count(), with.iter().filter(|s| **s).count());
-    assert!(a > 0 && b < a, "the chosen rules close a straggler: {a} -> {b}");
-    assert!(with.iter().zip(&none).all(|(w, n)| !w || *n), "a clean law stays clean");
-}
-
-/// A quiet cover leaves no `chosen` record in the setup's result file.
-#[test]
-fn a_quiet_cover_records_no_chosen_rule() {
-    let file = std::env::temp_dir().join(format!("quiet_cover_{}.tsv", std::process::id()));
-    let setup = Setup::for_task(fast_env(&file), std::fs::File::create(&file).unwrap());
-    let chosen = quiet_cover(&setup).chosen;
-    let recorded = std::fs::read_to_string(&file).unwrap();
-    std::fs::remove_file(&file).ok();
-    assert!(chosen > 0);
-    assert!(!recorded.contains("chosen"), "a quiet cover records nothing: {recorded:?}");
 }
 
 /// `by=first` is today's mine rule for rule: a file with a pool and `KEEP` of the first law chooses what the file without the
@@ -515,8 +269,8 @@ fn plan(vars: &[(&str, &str)]) -> Result<ExtrasPlan, String> {
     ExtrasPlan::from_vars(&Setup::with_env(vars.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()), 319)
 }
 
-/// `POOL` and `EXTRAS_SELECT`: unset is today's draw (319 laws a mine); `first`, `small` and `ctx` pick the miner's selection
-/// (`ctx` also needs its weights); anything else, a pool of more than one without a selector, or a pool of 0 is an error
+/// `POOL` and `EXTRAS_SELECT`: unset is today's draw (319 laws a mine); `first` and `small` pick the miner's selection;
+/// anything else, a pool of more than one without a selector, or a pool of 0 is an error
 /// naming the variables.
 #[test]
 fn the_extras_plan_parses_and_needs_a_selector_for_a_pool() {
@@ -525,45 +279,22 @@ fn the_extras_plan_parses_and_needs_a_selector_for_a_pool() {
     let p = plan(&[("EXTRAS_N", "5"), ("POOL", "4"), ("EXTRAS_SELECT", "first")]).unwrap();
     assert_eq!((p.n, p.pool, p.by, p.per_mine()), (5, 4, Some(Keep::First), 20));
     assert_eq!(plan(&[("EXTRAS_SELECT", "small")]).unwrap().by, Some(Keep::Small));
-    assert_eq!(plan(&[("POOL", "4"), ("EXTRAS_SELECT", "ctx"), ("CTX_WEIGHTS", "w.txt")]).unwrap().by, Some(Keep::Ctx));
     assert!(plan(&[("EXTRAS_SELECT", "bogus")]).unwrap_err().contains("EXTRAS_SELECT"));
     assert!(plan(&[("POOL", "4")]).unwrap_err().contains("EXTRAS_SELECT"));
     assert!(plan(&[("POOL", "0")]).unwrap_err().contains("POOL"));
 }
 
-/// `CTX_WEIGHTS` goes with `EXTRAS_SELECT=ctx` and with nothing else: each without the other names the variable.
-#[test]
-fn ctx_weights_need_ctx_and_ctx_needs_weights() {
-    assert_eq!(plan(&[("EXTRAS_SELECT", "ctx"), ("CTX_WEIGHTS", "w.txt")]).unwrap().ctx_weights.as_deref(), Some("w.txt"));
-    assert_eq!(plan(&[("EXTRAS_SELECT", "small")]).unwrap().ctx_weights, None);
-    assert!(plan(&[("EXTRAS_SELECT", "ctx")]).unwrap_err().contains("CTX_WEIGHTS"));
-    assert!(plan(&[("EXTRAS_SELECT", "small"), ("CTX_WEIGHTS", "w.txt")]).unwrap_err().contains("CTX_WEIGHTS"));
-    assert!(plan(&[("CTX_WEIGHTS", "w.txt")]).unwrap_err().contains("CTX_WEIGHTS"));
-}
-
-/// `POOL_DUMP` dumps the pool of a `first` mine only; without a selector it is ignored.
-#[test]
-fn a_pool_dump_needs_a_first_pool() {
-    assert!(plan(&[("EXTRAS_SELECT", "first"), ("POOL_DUMP", "1")]).unwrap().pool_dump);
-    assert!(plan(&[("EXTRAS_SELECT", "small"), ("POOL_DUMP", "1")]).unwrap_err().contains("POOL_DUMP"));
-    assert!(plan(&[("POOL_DUMP", "1")]).unwrap().child_env(0, std::path::Path::new("d")).is_empty());
-}
-
-/// What `child_env` writes, `MinerConfig::new` reads back as the same extras, weights and dump (the driver and the miner
-/// agree on the three `RULEMINER_EXTRAS_*` variables, `RULEMINER_CTX_WEIGHTS` and `RULEMINER_POOL_DUMP`).
+/// What `child_env` writes, `MinerConfig::new` reads back as the same extras (the driver and the miner
+/// agree on the three `RULEMINER_EXTRAS_*` variables).
 #[test]
 fn the_extras_plan_round_trips_through_the_miner_config() {
-    for (select, weights, dump) in [("first", None, true), ("small", None, false), ("ctx", Some("w.txt"), false)] {
-        let mut vars = vec![("EXTRAS_N", "7"), ("POOL", "3"), ("EXTRAS_SELECT", select)];
-        vars.extend(weights.map(|w| ("CTX_WEIGHTS", w)));
-        vars.extend(dump.then_some(("POOL_DUMP", "1")));
+    for select in ["first", "small"] {
+        let vars = vec![("EXTRAS_N", "7"), ("POOL", "3"), ("EXTRAS_SELECT", select)];
         let p = plan(&vars).unwrap();
-        let mut env = p.child_env(11, std::path::Path::new("out/dump_a"));
+        let mut env = p.child_env(11);
         env.push(("RULEMINER_LAWFILE".to_string(), "unused".to_string()));
         let c = MinerConfig::new(&Setup::with_env(env));
         let k = c.extras.expect("set");
         assert_eq!((k.from, k.n, Some(k.by)), (11, 7, p.by), "{select}");
-        assert_eq!(c.ctx_weights.as_deref(), weights, "{select}");
-        assert_eq!(c.pool_dump.as_deref(), dump.then_some("out/dump_a"), "{select}");
     }
 }
