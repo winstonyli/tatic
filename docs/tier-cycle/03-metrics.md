@@ -15,7 +15,7 @@ How the results are measured (code: `crates/church-bv/src/driver.rs` and its mod
   bands and loops.
 - **Free share** of a band: the share of its laws proved with no whole-term machine proof. Under the table alone (no mined
   rules) it is the table's share; mining's gain, in points, is the difference, and it is the frontier's measure.
-- **Work counts** (`crates/church-bv/src/work.rs`): `interp` and `match_pat` nodes, `join_walk` calls and `Term::op` builds, summed
+- **Work counts** (`crates/church-bv/src/work.rs`): `match_pat` nodes, `join_walk` calls and `Term::op` builds (an `interp` count, zero once only the tests evaluated terms that way, was dropped 2026-11-14), summed
   per arm. They repeat within a few ppm, so they price a change where job CPU varies by 5-11% ("Work counts as the gate's
   cost").
 - **Loop seconds** (`secs`): each loop's own time, summed in the tables; sweeps run in two lanes, so the sum exceeds wall.

@@ -387,21 +387,17 @@ impl Term {
     /// The value on the width-`n` operands `vals`, in plain integers (a cheap screen for false laws).
     #[cfg(test)]
     pub fn interp(&self, n: usize, vals: &[u128]) -> u128 {
-        let mut nodes = 0;
-        let v = self.interp_in(low_bits(n), vals, &mut nodes);
-        crate::work::count_n(crate::work::Site::Interp, nodes);
-        v
+        self.interp_in(low_bits(n), vals)
     }
-    /// `interp` under `mask`, adding the nodes it evaluates to `nodes`.
+    /// `interp` under `mask`.
     #[cfg(test)]
-    fn interp_in(&self, mask: u128, vals: &[u128], nodes: &mut u64) -> u128 {
-        *nodes += 1;
+    fn interp_in(&self, mask: u128, vals: &[u128]) -> u128 {
         match *self.node() {
             Node::V(i) => vals[i],
             Node::Zero => 0,
             Node::Ones => mask,
             Node::Op(o, a, b) => {
-                let (x, y) = (a.interp_in(mask, vals, nodes), b.interp_in(mask, vals, nodes));
+                let (x, y) = (a.interp_in(mask, vals), b.interp_in(mask, vals));
                 (OP_INFO[o].words.w128)(x, y, mask)
             }
         }

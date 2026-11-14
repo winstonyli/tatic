@@ -44,7 +44,7 @@ table() { # <A|B> <exe>: the table alone's held-out check (no mined rules), the 
   rm -rf "$d"; mkdir -p "$d"; : > "$d/no_rules.txt"
   [ "$(held "$2" "$d/no_rules.txt" "$d" none)" = x ] && echo 1 > "$d/failed" || echo 0 > "$d/failed"
 }
-work() { # <dirs...>: their WORK lines summed per counter, `interp=<n> walk=<n> match=<n> op=<n>`; empty if none
+work() { # <dirs...>: their WORK lines summed per counter, `walk=<n> match=<n> op=<n>`; empty if none
   grep -rh '^WORK ' "$@" 2>/dev/null | awk '{for (i = 2; i <= NF; i++) {split($i, kv, "="); if (!(kv[1] in t)) o[++n] = kv[1]; t[kv[1]] += kv[2]}} END {for (i = 1; i <= n; i++) printf "%s%s=%.0f", (i > 1 ? " " : ""), o[i], t[o[i]]}'
 }
 # an arm's M and job CPU: <arm dir>

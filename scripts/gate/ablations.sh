@@ -62,11 +62,17 @@ risen() { cols "$1" | awk '$3 > $2 || $5 > $4 {print $1; exit}'; }
 # <gate lines>: the salts whose line parses, sorted, comma-separated: what a verdict read. A gate run to its end must
 # have one for every salt it was asked for (a missing line would leave its salt out of the verdict unseen)
 salts() { cols "$1" | awk '{print $1}' | sort -n | paste -sd,; }
-# per salt line, one row per counter: salt name A B
-wcols() { sed -nE 's/^salt ([0-9]+): .*; work A (.*) B (.*)$/\1|\2|\3/p' "$@" | awk -F'|' '{na = split($2, x, " "); split($3, y, " "); for (i = 1; i <= na; i++) {split(x[i], p, "="); split(y[i], q, "="); print $1, p[1], p[2], q[2]}}'; }
+# per salt line, one row per counter, paired by name: salt name A B. A counter on one side only reads as 0 on the other
+# when it is 0 where it is printed (an arm built before a counter was dropped, as `interp` on 2026-11-14), and as `x`
+# otherwise, which `parsed` refuses
+wcols() { sed -nE 's/^salt ([0-9]+): .*; work A (.*) B (.*)$/\1|\2|\3/p' "$@" | awk -F'|' '{
+    split("", a); split("", b); k = 0
+    na = split($2, x, " "); for (i = 1; i <= na; i++) {split(x[i], p, "="); a[p[1]] = p[2]; o[++k] = p[1]}
+    nb = split($3, y, " "); for (i = 1; i <= nb; i++) {split(y[i], q, "="); b[q[1]] = q[2]; if (!(q[1] in a)) o[++k] = q[1]}
+    for (i = 1; i <= k; i++) {c = o[i]; va = (c in a) ? a[c] : (b[c] == "0" ? 0 : "x"); vb = (c in b) ? b[c] : (a[c] == "0" ? 0 : "x"); print $1, c, va, vb}}'; }
 # each counter's tolerance: max(its A/A spread, 1%); the spreads are a few ppm (docs/tier-cycle/, "Work counts as the
 # gate's cost")
-tols="interp=0.01 walk=0.01 match=0.01 op=0.01"
+tols="walk=0.01 match=0.01 op=0.01"
 # columns of "salt N: M A a B b; held A a B b; jobcpu A a B b": salt mA mB hA hB cA cB
 cols() { sed -nE 's/^salt ([0-9]+): M A ([0-9]+) B ([0-9]+); held A ([0-9x]+) B ([0-9x]+); jobcpu A ([0-9.]+) B ([0-9.]+).*/\1 \2 \3 \4 \5 \6 \7/p' "$@"; }
 # every salt line parses, in cols and in wcols with an A and a B count per counter: a line either drops would leave its

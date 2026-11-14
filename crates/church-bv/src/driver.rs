@@ -618,7 +618,7 @@ fn worker_runs_tasks() {
     for i in [1, 2, 4, 7, 8, 9] {
         let log = text(i);
         let lines: Vec<&str> = log.lines().filter(|l| !l.starts_with("ECHO ") && !l.starts_with("ENV ")).collect();
-        let work = if i == 1 { "WORK interp=0 walk=0 match=0 op=1" } else { "WORK interp=0 walk=0 match=0 op=0" };
+        let work = if i == 1 { "WORK walk=0 match=0 op=1" } else { "WORK walk=0 match=0 op=0" };
         assert_eq!(lines, [work], "{i}.log holds its task's lines and one WORK line, with only its own counts: {log}");
     }
     drop(w);

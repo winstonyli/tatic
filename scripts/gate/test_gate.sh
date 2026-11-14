@@ -23,7 +23,7 @@ mkarm() { # <dir> <M> <held> <jobcpu> <from>: a finished arm
   local l; mkdir -p "$1"
   for l in 1 2 3; do mkdir -p "$1/cold_streams_streams_${l}_none"; echo "rule $l" > "$1/cold_streams_streams_${l}_none/rules.txt"; done
   printf 'x\tx\tx\t%s\n' "$2" > "$1/cold_streams.tsv"; echo "$3" > "$1/held.txt"; printf '%s\n' "1 11 1000 900 100" "none 11 1000 800 200" > "$1/held_bands.txt"; echo "wall=1s jobcpu=$4" > "$1/result.txt"
-  echo "WORK interp=7 walk=1 match=1 op=1" > "$1/out.txt"; echo 0 > "$1/failed"; echo "$5" > "$1/from"
+  echo "WORK walk=1 match=1 op=1" > "$1/out.txt"; echo 0 > "$1/failed"; echo "$5" > "$1/from"
 }
 mkarm "$T/cache/$(key "$T/A.exe")/s1" 100 500 10 "arm A"; mkarm "$T/cache/$(key "$T/B.exe")/s1" 100 500 11 "arm B"
 # what B's cached arm read (job.rs `Setup::var`'s ENV lines, one with CRLF): a name from the environment, an unset one,
@@ -33,7 +33,7 @@ gate() { # <run> <B as passed> <salts...>: the gate's output, with the environme
   mkdir -p "$T/$1"
   (cd "$T/root" && RUN_DIR=$(cygpath -w "$T/$1") bash scripts/gate/streams_ab.sh "$(cygpath -w "$T/A.exe")" "$2" "${@:3}" < /dev/null 2>/dev/null)
 }
-B=$(cygpath -w "$T/B.exe"); w="interp=7 walk=1 match=1 op=1"
+B=$(cygpath -w "$T/B.exe"); w="walk=1 match=1 op=1"
 out=$(ARM_CACHE=$(cygpath -w "$T/cache") gate hit "$B" 1)
 ok "cache hit: the salt line" "$(echo "$out" | grep '^salt 1:')" "salt 1: M A 100 B 100; held A 500 B 500; jobcpu A 10 B 11; work A $w B $w"
 ok "cache hit: both arms reused" "$(echo "$out" | grep -c 'reused from arm')" 2
@@ -56,7 +56,7 @@ ok "an arm with no band lines" "$(ARM_CACHE=$(cygpath -w "$T/cache") gate noband
 mkarm "$T/cache/$(key "$T/A.exe")/s1" 100 500 10 "arm A"
 # a failed band check fails the arm: a runs.exe whose sweep succeeds (M, a WORK line), then F.exe (every check prints
 # CHECKED: the arm passes) against G.exe (the table alone's check at band 15 prints none)
-printf '#!/bin/bash\nd=$(cygpath -u "$2"); printf "x\\tx\\tx\\t5\\n" > "$d/cold_streams.tsv"; echo "WORK interp=1 walk=1 match=1 op=1"; echo "wall=1s jobcpu=1"\n' > "$T/root/tools/runs/target/release/runs.exe"
+printf '#!/bin/bash\nd=$(cygpath -u "$2"); printf "x\\tx\\tx\\t5\\n" > "$d/cold_streams.tsv"; echo "WORK walk=1 match=1 op=1"; echo "wall=1s jobcpu=1"\n' > "$T/root/tools/runs/target/release/runs.exe"
 sed 's/^echo "CHECKED/[ -s "$(cygpath -u "$CHECK_RULES")" ] || [ "$b" != 15 ] \&\& echo "CHECKED/' "$T/F.exe" > "$T/G.exe"
 for x in F G; do for l in 1 2 3; do mkdir -p "$T/ok$x/s1_B/cold_streams_streams_${l}_none"; echo "rule $l" > "$T/ok$x/s1_B/cold_streams_streams_${l}_none/rules.txt"; done; gate ok$x "$(cygpath -w "$T/$x.exe")" 1 > "$T/ok$x.out"; done
 ok "every band checked: the arm passes" "$(cat "$T/okF/s1_B/failed")" 0
@@ -167,8 +167,8 @@ cat > "$T/fake/streams_ab.sh" <<'EOF'
 # all at once
 shift 2
 hang() { ping -n 299 127.0.0.1 > /dev/null; l 9 100 500; } # a gate not stopped adds salt 9 to the verdict
-w() { echo "work A interp=$1 walk=100 match=50 op=$3 B interp=$2 walk=$4 match=50 op=$5"; }
-l() { echo "salt $1: M A 100 B $2; held A 500 B $3; jobcpu A 10 B 11; work A interp=10 walk=10 match=10 op=10 B interp=10 walk=10 match=10 op=10"; }
+w() { echo "work A walk=100 match=$1 op=$3 B walk=$4 match=$2 op=$5"; }
+l() { echo "salt $1: M A 100 B $2; held A 500 B $3; jobcpu A 10 B 11; work A walk=10 match=10 op=10 B walk=10 match=10 op=10"; }
 case $VARIANT in
   rise) l 1 100 500; l 2 101 500; hang ;;
   held) l 1 100 501; hang ;;
@@ -187,7 +187,9 @@ case $VARIANT in
        esac
        work="; $(w 1000 $ib $oa $wb $oa)"
        [ $VARIANT = nowork ] && work=""
-       [ $VARIANT = badwork ] && [ $s = 7 ] && work="; work A interp=1000 walk=100 match=50 op=10 B interp=1000 walk=100 match=50"
+       [ $VARIANT = badwork ] && [ $s = 7 ] && work="; work A walk=100 match=1000 op=10 B walk=100 match=1000"
+       [ $VARIANT = dropped ] && work="; work A interp=0 walk=100 match=1000 op=10 B walk=100 match=1000 op=10"
+       [ $VARIANT = droppedbad ] && [ $s = 2 ] && work="; work A interp=5 walk=100 match=1000 op=10 B walk=100 match=1000 op=10"
        echo "salt $s: M A 176 B $mb; $held; jobcpu A 430.0 B 431.0$work"
      done) # one write, so the driver reads none of them or all
      n=0; [ $VARIANT = failed ] && n=1
@@ -199,13 +201,14 @@ driver() { # <variant> <mode args...>: the driver's VERDICT and DRIVER lines, jo
   (cd "$repo" && VARIANT=$1 POLL_S=1 USERPROFILE=$(cygpath -w "$T/home") LOCALAPPDATA=$(cygpath -w "$T/lad") FIXTURE=$(cygpath -w "$T/fake") \
     RUN_DIR=$(cygpath -w "$out") bash scripts/gate/ablations.sh "$T/A.exe" "${@:2}" < /dev/null 2>&1) | grep -E '^(VERDICT|DRIVER)' | paste -sd'|' | sed 's/|/ | /g'
 }
-free="M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +0.00% walk +0.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10"
+free="M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work walk +0.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10"
 ok "driver: free" "$(driver free ablate x)" "VERDICT x free: $free"
 ok "driver: zero counts are free" "$(driver zero ablate x)" "VERDICT x free: $free"
-ok "driver: costs goes on" "$(driver costs ablate x)" "VERDICT x costs: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +3.00% walk +0.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10 | DRIVER done: no switch left"
-ok "driver: mixed" "$(driver mixed ablate x)" "VERDICT x mixed: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +3.00% walk -20.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10"
+ok "driver: a counter one arm no longer prints reads as 0 where the other prints 0" "$(driver dropped ablate x)" "VERDICT x free: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work interp +0.00% walk +0.00% match +0.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10"
+ok "driver: costs goes on" "$(driver costs ablate x)" "VERDICT x costs: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work walk +0.00% match +3.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10 | DRIVER done: no switch left"
+ok "driver: mixed" "$(driver mixed ablate x)" "VERDICT x mixed: M A 1760 B 1760; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%); work walk -20.00% match +3.00% op +0.00%, salts 1,2,3,4,5,6,7,8,9,10"
 ok "driver: pays" "$(driver pays ablate x)" "VERDICT x pays (rise on salt 3): M A 1760 B 1761; held A 9000 B 9000; jobcpu A 4300 B 4310 (+0.2%), salts 1,2,3,4,5,6,7,8,9,10 | DRIVER done: no switch left"
-for v in nowork badline badwork failed missing; do ok "driver: $v is an error" "$(driver $v ablate x)" "VERDICT x error"; done
+for v in nowork badline badwork droppedbad failed missing; do ok "driver: $v is an error" "$(driver $v ablate x)" "VERDICT x error"; done
 ok "driver: check" "$(driver check check "$T/A.exe" x)" "VERDICT x check identical"
 ok "driver: stops at an M rise" "$(driver rise ablate x)" "VERDICT x pays (rise on salt 2): M A 200 B 201; held A 1000 B 1000; jobcpu A 20 B 22 (+10.0%), salts 1,2 | DRIVER done: no switch left"
 ok "driver: stops at a held-out rise" "$(driver held ablate x)" "VERDICT x pays (rise on salt 1): M A 100 B 100; held A 500 B 501; jobcpu A 10 B 11 (+10.0%), salts 1 | DRIVER done: no switch left"
