@@ -533,7 +533,7 @@ fn what_cps_cannot_take_is_not_covered() {
 
 #[test]
 fn a_term_over_the_budget_is_not_covered() {
-    let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 12));
+    let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 13));
     assert!(crate::jit::compile::tree_size(&s, h) > MAX_GATE_TREE);
     assert!(matches!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::NotCovered(_)));
     let mut s = TermStore::new();
