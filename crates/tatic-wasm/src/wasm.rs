@@ -1,7 +1,7 @@
 //! The wasm table: the `i64` rows the lowering emits and the machine runs (`ops.rs` builds them).
 use super::*;
 use machine::{Class, Table};
-use ops::{circuit_row, const_row, local_get_row, local_set_row, Dom};
+use ops::{circuit_row, const_row, i32_const_row, local_get_row, local_set_row, unary_row, Dom};
 
 /// The wasm rows: `const`, `local.get`, `local.set`, the word rows `add` `sub` `mul` `mod` (`mod` partial: `Dom::NONZERO_SECOND`), and the bit rows `lt` `le` `eq` `lt_u` (`lt_u` has no
 /// source operator; it serves the `lt`-for-`lt_u` control only). Built once per process: every reader (the lowering,
@@ -20,6 +20,12 @@ pub fn table() -> &'static Table {
         circuit_row!("le", Class::Bit, le_s, "i64.le_s"),
         circuit_row!("eq", Class::Bit, eq_bit, "i64.eq"),
         circuit_row!("lt_u", Class::Bit, lt_u, "i64.lt_u"),
+        circuit_row!("shl", Class::Word, shl, "i64.shl"),
+        circuit_row!("shr_u", Class::Word, shr_u, "i64.shr_u"),
+        circuit_row!("or", Class::Word, or_bv, "i64.or"),
+        unary_row!("wrap", wrap, "i32.wrap_i64"),
+        unary_row!("extend", extend, "i64.extend_i32_u"),
+        i32_const_row(),
     ]))
 }
 
@@ -37,9 +43,10 @@ mod tests {
         let t = table();
         let m = Machine { n, fw: 2, table: t };
         let v = bv_ty(n);
-        assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "mod", "lt", "le", "eq", "lt_u"]);
-        let cases: [(&str, i64); 12] = [
+        assert_eq!(t.names(), ["const", "local.get", "local.set", "add", "sub", "mul", "mod", "lt", "le", "eq", "lt_u", "shl", "shr_u", "or", "wrap", "extend", "i32.const"]);
+        let cases: [(&str, i64); 18] = [
             ("const", 3), ("local.get", 0), ("local.get", 1), ("local.set", 1), ("add", 0), ("sub", 0), ("mul", 0), ("mod", 0), ("lt", 0), ("le", 0), ("eq", 0), ("lt_u", 0),
+            ("shl", 0), ("shr_u", 0), ("or", 0), ("wrap", 0), ("extend", 0), ("i32.const", 7),
         ];
         for (name, operand) in cases {
             let row = t.row(name).unwrap_or_else(|| panic!("no row {name}"));
@@ -48,6 +55,7 @@ mod tests {
                 Class::Set => m.setter_ty(),
                 Class::Word => arrow(v.clone(), arrow(v.clone(), v.clone())),
                 Class::Bit => arrow(v.clone(), arrow(v.clone(), bv_ty(1))),
+                Class::Unary => arrow(v.clone(), v.clone()),
             };
             let dom = infer(&Ctx::new(), &constant_n(row.dom.circuit, n)).unwrap_or_else(|e| panic!("{name} domain: {e}"));
             assert!(def_eq(&dom, &arrow(v.clone(), arrow(v.clone(), bv_ty(1)))), "{name}: domain has the wrong type");

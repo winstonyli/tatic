@@ -332,3 +332,32 @@ fn an_unquantified_fuel_breaks_the_proof() {
     let cl = Clauses { quantify_fuel: false, ..FIXED };
     sum_loop_against(&cl).expect_err("the proof is of the statement for every fuel");
 }
+
+/// `\a. a` through `extend` then `wrap`, built as `cps` builds a site: `k(wrap(extend a))`, behind a `choose` when `guarded`.
+fn unary_source<'m>(w: &'m Machine<'static>, guarded: bool) -> Box<SrcFn<'m>> {
+    Box::new(move |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| {
+        let un = |c: &mut Cx, name: &str, x: Expr| app((w.table.row(name).unwrap().meaning)(c, w, 0), x);
+        let inner = un(c, "extend", c.at(e.params[0]));
+        let out = un(c, "wrap", inner);
+        let kk = k(c, out);
+        if guarded { e.choose(c, lit(1, 1), kk, c.at(e.z)) } else { kk }
+    })
+}
+fn unary_plain<'m>(w: &'m Machine<'static>) -> Box<SrcFn<'m>> {
+    unary_source(w, false)
+}
+fn unary_guarded<'m>(w: &'m Machine<'static>) -> Box<SrcFn<'m>> {
+    unary_source(w, true)
+}
+
+/// A unary row's site is unguarded: `[get 0, extend, wrap]` is proved against a source answering `k(wrap(extend x))`,
+/// and refused against the same source behind a `choose` (the machine returns where the source branches).
+#[test]
+fn a_unary_site_adds_no_branch() {
+    let code = [get(0), row("extend"), row("wrap")];
+    for n in [8, 64] {
+        run_with(n, 1, &code, &unary_plain).unwrap_or_else(|e| panic!("n={n}: {e}"));
+    }
+    let err = run_with(8, 1, &code, &unary_guarded).expect_err("a guard the machine does not have");
+    assert_eq!(err, "body: the machine returns but the source branches");
+}

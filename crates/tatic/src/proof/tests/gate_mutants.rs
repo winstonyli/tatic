@@ -314,7 +314,7 @@ fn census_subject(i: usize) -> Option<(TermStore, Hash, CompiledFragment)> {
     })
 }
 
-/// For each Word and Bit row `r` of the wasm table: `r` replaced by another row of its class in a covered term that
+/// For each Word and Bit row `r` of the wasm table that has a source operator (not `shl`, `shr_u`, `or`), plus `lt_u`: `r` replaced by another row of its class in a covered term that
 /// holds it is `Rejected`, forged too. The carriers are pinned census terms (checked here to hold `r` and be `Accepted`),
 /// not "the first covered term that holds `r`": that rule picks `redundant_arithmetic_recursion` for `add`, whose
 /// `x + 0` swapped to `x - 0` is the same function, which the gate neither accepts nor refuses within minutes (PARKED.md,
@@ -324,7 +324,16 @@ fn census_subject(i: usize) -> Option<(TermStore, Hash, CompiledFragment)> {
 #[test]
 fn every_row_has_an_operator_swap_mutant() {
     let t = tatic_wasm::wasm::table();
-    let rows: Vec<&str> = t.names().into_iter().filter(|n| matches!(t.row(n).unwrap().class, Class::Word | Class::Bit)).collect();
+    // `shl`, `shr_u` and `or` have no `PrimOp`, so no census term holds them and `carrier` cannot build a mutant; the swap
+    // target is the next row among the carried ones, so each swap pair stays what it was before they joined the table
+    let uncarried = ["shl", "shr_u", "or"];
+    for r in uncarried {
+        assert_eq!(t.row(r).map(|row| row.class), Some(Class::Word), "{r} is a Word row");
+        assert!(crate::lang::term::PrimOp::ALL.iter().all(|p| p.name() != r), "{r} has a PrimOp now: give it a carrier");
+    }
+    let rows: Vec<&str> =
+        t.names().into_iter().filter(|n| matches!(t.row(n).unwrap().class, Class::Word | Class::Bit) && !uncarried.contains(n)).collect();
+    assert_eq!(rows, ["add", "sub", "mul", "mod", "lt", "le", "eq", "lt_u"], "no row built before is skipped");
     let next = |r: &str| {
         let class = t.row(r).unwrap().class;
         let same: Vec<&str> = rows.iter().copied().filter(|n| t.row(n).unwrap().class == class).collect();

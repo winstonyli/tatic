@@ -36,6 +36,17 @@ pub fn const_row() -> Row {
     }
 }
 
+/// The `i32.const` row: operand `v` is an `i32` constant, the word is its low 32 bits as an unsigned number (the width
+/// of `i32.wrap_i64`'s result; `-1` is `0xffff_ffff`), constant in the frame, and it prints `i32.const {v}`.
+pub fn i32_const_row() -> Row {
+    Row {
+        name: "i32.const",
+        line: |v| format!("i32.const {v}"),
+        meaning: |c, m: &Machine, v| m.handing(c, &|_, _| lit(m.n, (v as u32 as u128) & low_bits(m.n))),
+        ..const_row()
+    }
+}
+
 /// The `local.get` row: operand `i` is the frame slot, the meaning is the frame's projection at `i` (it fails at or
 /// past the frame's width), and it prints `local.get $p{i}`.
 pub fn local_get_row() -> Row {
@@ -77,3 +88,18 @@ macro_rules! circuit_row {
     };
 }
 pub(crate) use circuit_row;
+
+/// A 1-to-1 row (`Class::Unary`) whose meaning is the closed circuit `$build : V -> V` at the machine's width and whose line is the
+/// fixed `$line`. A unary site has no domain: it is unguarded, so the row's `dom` is `Dom::TOTAL` and never read.
+macro_rules! unary_row {
+    ($name:literal, $build:expr, $line:literal) => {
+        machine::Row {
+            name: $name,
+            class: machine::Class::Unary,
+            meaning: |_c, m: &machine::Machine, _| constant_n($build, m.n),
+            dom: $crate::ops::Dom::TOTAL,
+            line: |_| $line.to_string(),
+        }
+    };
+}
+pub(crate) use unary_row;

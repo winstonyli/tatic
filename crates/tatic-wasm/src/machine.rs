@@ -63,6 +63,8 @@ pub enum Class {
     Bit,
     /// Pops one word and writes it to a parameter slot of the frame (operand: the slot); pushes nothing.
     Set,
+    /// Pops one word and pushes one word, unguarded (no domain, no operand): `wrap`, `extend`.
+    Unary,
 }
 
 impl Class {
@@ -70,14 +72,14 @@ impl Class {
     pub fn pops(self) -> usize {
         match self {
             Class::Const => 0,
-            Class::Set => 1,
+            Class::Set | Class::Unary => 1,
             Class::Word | Class::Bit => 2,
         }
     }
     /// What the row leaves on the stack, if anything.
     pub fn push(self) -> Option<K> {
         match self {
-            Class::Const | Class::Word => Some(K::W),
+            Class::Const | Class::Word | Class::Unary => Some(K::W),
             Class::Bit => Some(K::B),
             Class::Set => None,
         }

@@ -285,6 +285,47 @@ pub fn bits_circuit(n: usize, outs: BitsFn) -> Expr {
     lam(bv_ty(n), lam(bv_ty(n), lam(sort(1), lam(karrow(n), app2(var(3), var(1), inner)))))
 }
 
+/// `bits_circuit` for one operand: `\a. \C k. a C (\a_i.. k out_0 .. out_(n-1))`, of type `V -> V`.
+pub fn bits_circuit1(n: usize, outs: &dyn Fn(&[Expr]) -> Vec<Expr>) -> Expr {
+    let d = 3 + n; // depth at the innermost body: a C k a0..
+    let v = |pos: usize| var((d - 1 - pos) as u32);
+    let a: Vec<Expr> = (0..n).map(|i| v(3 + i)).collect();
+    let mut body = apps(v(2), outs(&a));
+    for _ in 0..n {
+        body = lam(bool0(), body);
+    }
+    lam(bv_ty(n), lam(sort(1), lam(karrow(n), app2(var(2), var(1), body))))
+}
+
+/// A barrel shifter: `stages` conditional shifts by `2^s`, stage `s` taken when bit `s` of the amount `b` is set. `src(cur, i, d)`
+/// is bit `i` of the shifted word, given the current bits (`f()` past the end).
+fn barrel(n: usize, a: &[Expr], b: &[Expr], src: &dyn Fn(&[Expr], usize, usize) -> Expr) -> Vec<Expr> {
+    let mut cur = a.to_vec();
+    for (s, &amt) in b.iter().enumerate().take(n.trailing_zeros() as usize) {
+        cur = (0..n).map(|i| division::mux(amt, src(&cur, i, 1 << s), cur[i])).collect();
+    }
+    cur
+}
+
+/// `a << (b mod n)` for a power-of-two `n` (wasm's shift count, the low `log2 n` bits of `b`), as a `V -> V -> V` circuit.
+pub fn shl(n: usize) -> Expr {
+    assert!(n.is_power_of_two(), "a shift is taken modulo the width: {n}");
+    bits_circuit(n, &move |a, b| barrel(n, a, b, &|cur, i, d| if i >= d { cur[i - d] } else { f() }))
+}
+/// Logical `a >> (b mod n)`, likewise.
+pub fn shr_u(n: usize) -> Expr {
+    assert!(n.is_power_of_two(), "a shift is taken modulo the width: {n}");
+    bits_circuit(n, &move |a, b| barrel(n, a, b, &|cur, i, d| if i + d < n { cur[i + d] } else { f() }))
+}
+/// `i32.wrap_i64` on an n-bit word: the low `min(32, n)` bits, the rest 0.
+pub fn wrap(n: usize) -> Expr {
+    bits_circuit1(n, &move |a| (0..n).map(|i| if i < n.min(32) { a[i] } else { f() }).collect())
+}
+/// `i64.extend_i32_u`: the identity (a word holding an `i32` has its high bits clear).
+pub fn extend(n: usize) -> Expr {
+    bits_circuit1(n, &|a| a.to_vec())
+}
+
 pub fn add_rows(a: &[Expr], b: &[Expr]) -> Vec<Expr> {
     let mut carry = f();
     let mut sums = vec![];

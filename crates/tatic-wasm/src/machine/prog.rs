@@ -29,8 +29,17 @@ enum Ctor {
 
 /// The one list the constructor order is read from (`ctor_ty`, `interp`, `seq_step`, the count). Only `Word` takes the
 /// row's domain circuit after its operator (`ctor_ty`).
-fn ctor_list() -> [Ctor; 7] {
-    [Ctor::Leaf(Class::Const), Ctor::Leaf(Class::Word), Ctor::Leaf(Class::Bit), Ctor::If, Ctor::Call, Ctor::Leaf(Class::Set), Ctor::Br]
+fn ctor_list() -> [Ctor; 8] {
+    [
+        Ctor::Leaf(Class::Const),
+        Ctor::Leaf(Class::Word),
+        Ctor::Leaf(Class::Bit),
+        Ctor::Leaf(Class::Unary),
+        Ctor::If,
+        Ctor::Call,
+        Ctor::Leaf(Class::Set),
+        Ctor::Br,
+    ]
 }
 
 fn ctor_idx(k: Ctor) -> usize {
@@ -166,6 +175,7 @@ impl Machine<'_> {
                 Ctor::Leaf(Class::Const) => arrow(self.operand_ty(), arrow(fa(va), fa(a))),
                 Ctor::Leaf(Class::Word) => arrow(arrow(v, arrow(v, v)), arrow(arrow(v, arrow(v, v1)), arrow(fa(va), fa(vva)))),
                 Ctor::Leaf(Class::Bit) => arrow(arrow(v, arrow(v, v1)), arrow(fa(v1a), fa(vva))),
+                Ctor::Leaf(Class::Unary) => arrow(arrow(v, v), arrow(fa(va), fa(va))),
                 Ctor::If => arrow(fa(a), arrow(fa(a), fa(v1a))),
                 Ctor::Leaf(Class::Set) => arrow(self.setter_ty(), arrow(fa(a), fa(va))),
                 Ctor::Br => arrow(fa(va), fa(a)),
@@ -361,6 +371,13 @@ impl Machine<'_> {
         };
         let bin = binop(c, v, true);
         let cmp = binop(c, v1, false);
+        // a 1-to-1 row pops `x` and pushes `op x`, with no domain and no guard
+        let un = shape(c, &[arrow(v, v)], &|a| prod(v, a), &|a| prod(v, a), &|c, a, ops, rest, fr, st, mu| {
+            w.split(c, r, v, a, st, |c, x, s| {
+                let val = app(c.at(ops[0]), c.at(x));
+                app3(c.at(rest), c.at(fr), mkpair(c.at(a), val, c.at(s)), c.at(mu))
+            })
+        });
         let if_ = c.lam(sort(2), |c, a| {
             let ga = w.g(c, r, c.at(a));
             c.lam(ga, |c, th| {
@@ -424,6 +441,7 @@ impl Machine<'_> {
             (Ctor::Leaf(Class::Const), konst),
             (Ctor::Leaf(Class::Word), bin),
             (Ctor::Leaf(Class::Bit), cmp),
+            (Ctor::Leaf(Class::Unary), un),
             (Ctor::If, if_),
             (Ctor::Call, call),
             (Ctor::Leaf(Class::Set), set),

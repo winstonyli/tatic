@@ -171,3 +171,47 @@ fn agree_catches_a_domain_circuit_that_is_not_holds() {
     let t = with_mod_dom(Dom { circuit: dom_true, ..Dom::NONZERO_SECOND });
     agree(&t, 8, &|| Box::new([(5u64, 0u64)].into_iter()));
 }
+
+/// The closure word's rows at n = 64 on the edges, against `u64`: the shifts shift by the amount's low 6 bits, `or` is
+/// `|`, `wrap` keeps the low 32 bits, `extend` is the identity (the rows have no source operator, so no wasmtime
+/// check), and `i32.const` pushes its operand as an unsigned 32-bit word. Each equality is paired with its value + 1.
+#[test]
+fn closure_word_rows_agree_with_u64_at_n64() {
+    use tatic_kernel::{app, app3, lam, var};
+    use tatic_wasm::encoding::bv_ty;
+    let t = tatic_wasm::wasm::table();
+    let n = 64;
+    let edges: [u64; 10] = [0, 1, 31, 32, 63, 64, 100, (1 << 31) - 1, 1 << 32, u64::MAX];
+    let l = |v: u64| lit(n, v as u128);
+    let same = |got: tatic_kernel::Expr, want: u64, what: &str| {
+        assert!(def_eq(&got, &l(want)), "{what}: not {want:#x}");
+        assert!(!def_eq(&got, &l(want.wrapping_add(1))), "{what}: also {:#x}", want.wrapping_add(1));
+    };
+    for (name, f) in [
+        ("shl", (|a: u64, b: u64| a.wrapping_shl(b as u32 % 64)) as fn(u64, u64) -> u64),
+        ("shr_u", |a, b| a.wrapping_shr(b as u32 % 64)),
+        ("or", |a, b| a | b),
+    ] {
+        let term = circuit(t, t.row(name).expect("a closure word row"), n);
+        for &a in &edges {
+            for &b in &edges {
+                same(app2(term.clone(), l(a), l(b)), f(a, b), &format!("{name} {a:#x} {b:#x}"));
+            }
+        }
+    }
+    let wrap = circuit(t, t.row("wrap").expect("wrap row"), n);
+    let extend = circuit(t, t.row("extend").expect("extend row"), n);
+    for &a in &edges {
+        same(app(wrap.clone(), l(a)), a & 0xffff_ffff, &format!("wrap {a:#x}"));
+        if a < 1 << 32 {
+            same(app(extend.clone(), l(a)), a, &format!("extend {a:#x}"));
+        }
+    }
+    let row = t.row("i32.const").expect("i32.const row");
+    let m = Machine { n, fw: 0, table: t };
+    for (operand, want) in [(7i64, 7u64), (-1, 0xffff_ffff)] {
+        let op = (row.meaning)(&mut Cx::default(), &m, operand);
+        same(app3(op, m.frame(&[]), bv_ty(n), lam(bv_ty(n), var(0))), want, &format!("i32.const {operand}"));
+        assert_eq!((row.line)(operand), format!("i32.const {operand}"));
+    }
+}
