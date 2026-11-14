@@ -1,0 +1,102 @@
+diff --git a/crates/tatic-wasm/src/encoding/tests.rs b/crates/tatic-wasm/src/encoding/tests.rs
+index 423e64b..be4b46a 100644
+--- a/crates/tatic-wasm/src/encoding/tests.rs
++++ b/crates/tatic-wasm/src/encoding/tests.rs
+@@ -504,3 +504,97 @@ pub fn rem_s_computes_on_literals_n64_edges_and_random() {
+         }
+     })
+ }
++
++// ---- q2 literal probe (throwaway)
++mod q2 {
++    use super::*;
++    const N: usize = 64;
++    fn amt_bits(b: &[Expr]) -> Vec<Expr> { b[..6].to_vec() }
++    fn shift(left: bool) -> Expr {
++        bits_circuit(N, &move |a, b| {
++            let amt = amt_bits(b);
++            let mut cur: Vec<Expr> = a.to_vec();
++            for s in 0..6 {
++                let d = 1usize << s;
++                let nxt: Vec<Expr> = (0..N).map(|i| {
++                    let src = if left { if i >= d { cur[i - d] } else { f() } } else if i + d < N { cur[i + d] } else { f() };
++                    division::mux(amt[s], src, cur[i])
++                }).collect();
++                cur = nxt;
++            }
++            cur
++        })
++    }
++    fn or_c() -> Expr { bits_circuit(N, &|a, b| (0..N).map(|i| or(a[i], b[i])).collect()) }
++    fn ident() -> Expr { bits_circuit(N, &|a, _| a.to_vec()) }
++    fn wrap_c() -> Expr { bits_circuit(N, &|a, _| (0..N).map(|i| if i < 32 { a[i] } else { f() }).collect()) }
++    fn bin(op: &Expr, a: Expr, b: Expr) -> Expr { app2(op.clone(), a, b) }
++    fn un(op: &Expr, a: Expr) -> Expr { app2(op.clone(), a, lit(N, 0)) }
++    fn timed_eq(name: &str, a: &Expr, b: &Expr) -> bool {
++        let t0 = Instant::now();
++        let r = def_eq(a, b);
++        println!("  {name}: def_eq={r} in {:?}", t0.elapsed());
++        r
++    }
++    #[test]
++    fn q2_literal_probe() {
++        let (shl, shr, orc, ext, wrp) = (shift(true), shift(false), or_c(), ident(), wrap_c());
++        println!("profile debug_assertions={}", cfg!(debug_assertions));
++        // reference sanity
++        let mut x = 0x9E37_79B9_7F4A_7C15u64;
++        let mut rnd = || { x ^= x << 13; x ^= x >> 7; x ^= x << 17; x };
++        let amts = [0u64, 31, 32, 63, 64, 100];
++        let mut pairs: Vec<(u64, u64)> = amts.iter().map(|&k| (rnd(), k)).collect();
++        while pairs.len() < 20 { pairs.push((rnd(), rnd())); }
++        let mut ok = 0;
++        for &(a, b) in &pairs {
++            let l = |v: u64| lit(N, v as u128);
++            assert!(def_eq(&bin(&shl, l(a), l(b)), &l(a.wrapping_shl((b % 64) as u32))), "shl {a:#x} {b}");
++            assert!(def_eq(&bin(&shr, l(a), l(b)), &l(a.wrapping_shr((b % 64) as u32))), "shr {a:#x} {b}");
++            assert!(def_eq(&bin(&orc, l(a), l(b)), &l(a | b)), "or");
++            assert!(def_eq(&un(&ext, l(a)), &l(a)), "extend");
++            assert!(def_eq(&un(&wrp, l(a)), &l(a & 0xFFFF_FFFF)), "wrap");
++            ok += 1;
++        }
++        println!("reference sanity: {ok} pairs x 5 ops all OK");
++        let pack = |e: u64, idx: u64| bin(&orc, bin(&shl, un(&ext, lit(N, e as u128)), lit(N, 32)), lit(N, idx as u128));
++        for idx in [0u64, 1, 2, 5, 255, (1 << 31) - 1] {
++            println!("idx={idx}");
++            let p = pack(0, idx);
++            let a1 = timed_eq("packing == lit(idx)", &p, &lit(N, idx as u128));
++            let a2 = !timed_eq("packing != lit(idx+1) [neg]", &p, &lit(N, idx as u128 + 1));
++            let w = un(&wrp, p.clone());
++            let a3 = timed_eq("wrap(packing) == lit(idx)", &w, &lit(N, idx as u128));
++            let s = bin(&shr, p.clone(), lit(N, 32));
++            let a4 = timed_eq("wrap(shr_u(packing,32)) == lit(0)", &un(&wrp, s), &lit(N, 0));
++            println!("  assertions: {a1} {a2} {a3} {a4}");
++            let (n0, s0) = term_sizes(&p);
++            let t0 = Instant::now();
++            let nf = normalize(&p);
++            let dt = t0.elapsed();
++            let (n1, s1) = term_sizes(&nf);
++            let (nl, sl) = term_sizes(&lit(N, idx as u128));
++            println!("  term_sizes packing before={:?} after normalize={:?} (normalize {:?}) lit={:?}; nf==lit syntactic: {}", (n0, s0), (n1, s1), dt, (nl, sl), nf == lit(N, idx as u128));
++            for e in [0u64, 7] {
++                let g = pack(e, idx);
++                let want = (e as u128) << 32 | idx as u128;
++                let b1 = timed_eq(&format!("general e={e} == lit"), &g, &lit(N, want));
++                println!("  general e={e}: {b1}");
++            }
++        }
++        // open continuation
++        let k = mk(Node::Free(0));
++        let idx = 5u64;
++        let p = pack(0, idx);
++        let t0 = Instant::now();
++        let r = def_eq(&app(k.clone(), p.clone()), &app(k.clone(), lit(N, idx as u128)));
++        println!("open k (Free 0): def_eq(k packing, k lit) = {r} in {:?}", t0.elapsed());
++        let r2 = def_eq(&app(k.clone(), p.clone()), &app(k.clone(), lit(N, idx as u128 + 1)));
++        println!("open k neg control (k packing vs k lit+1) = {r2}");
++        let kv = var(0);
++        let r3 = def_eq(&lam(bv_ty(N), app(kv.clone(), shift_free(&p))), &lam(bv_ty(N), app(var(0), shift_free(&lit(N, idx as u128)))));
++        println!("open under lambda (Var k) = {r3}");
++    }
++    // closed terms have no loose vars; under one extra binder they are unchanged
++    fn shift_free(e: &Expr) -> Expr { e.clone() }
++}

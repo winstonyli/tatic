@@ -246,7 +246,10 @@ A finding is cited by section or paragraph title, never by line (its lines drift
 - **Fold total-row guards** — what: drop the guard `choose(dom x y, .., z)` at Word sites whose domain is constant
   true (every row but `mod`), on both sides. Why parked: by decision (2026-11-13: every Word guard through the
   probe, the constant factor accepted, check up to 4x at `doubling(12)`). Trigger: the gate's check time on
-  Word-heavy programs matters (a budget or a JIT-latency target it misses). Evidence:
+  Word-heavy programs matters (a budget or a JIT-latency target it misses), or the source reading wants a closed
+  closure value as a plain literal instead of the built packing (the kernel converts the packing to the literal, but
+  the walk needs the guards' branches on both sides: `docs/superpowers/specs/2026-11-13-closures-through-the-gate-design.md`,
+  D1, run `2026-11-13-q2-literal-probe`). Evidence:
   `docs/superpowers/spikes/2026-11-13-fold-and-step-at-1-spike.patch`; `docs/tier-cycle/`, "Word-row guards through
   the probe: a spike (2026-11-13)" and "The gate's branch step made linear (2026-11-13)"; the cost table in
   `docs/tier-cycle/`, "The partial row and gcd through the gate (2026-11-13)", verified 2026-11-13. Status: parked.
