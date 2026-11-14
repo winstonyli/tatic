@@ -185,8 +185,8 @@ most 14.9 ms, `doubling(12)` 176.1 ms.
 **The verdict column.** `proof/tests/baseline.rs#VERDICTS` holds the gate's verdict kind for every census and held-out
 row, measured on the form `try_install` proves. Goal 1's five targets and both held-out terms are `Accepted`; no row is
 `Rejected`; the rest (closures, `Div`/`Mod`, curried dispatch, modules with callees, the oversized term) are
-`NotCovered` and keep going to `kernel_verify`. `verdicts_match` also fails if a fragment holding a `Raw` line or a
-pointer-reached environment is anything but `NotCovered` (Goal 5).
+`NotCovered` and keep going to `kernel_verify`. `verdicts_match` also fails if a fragment holding a `Raw` line is
+anything but `NotCovered` (Goal 5). (It also named a pointer-reached environment; that was dropped when closures came through the gate, and such records are `Accepted` now.)
 
 **Guard: none added.** The items deleted by S0 to S2c (`loop`, `strip_loop`, `gate_with`, `in_fragment`, `upd`, the memory
 rows) are code symbols, so the compiler fails on any use; the docs grep (`in_fragment`, `loop $L`, `countdown`, `Store`,

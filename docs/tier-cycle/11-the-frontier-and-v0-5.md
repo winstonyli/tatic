@@ -57,7 +57,7 @@ M per band is the column times 30 times that count over 1000, 2307, 6414, 7569 a
 - **What a change must move.** Mining's gain falls from 16 points at band 11 to 8 at band 17 but stays well above the
   spread between loops (salt 6: 3-4 points at 15 and 17), so the gain at the largest bands is the frontier's measure;
   no band nears 50% (decision D2 of the plan: no threshold).
-- **The baseline since 2026-10-26** is ab6f4a7 (the three-variable pool, no lookahead, and the every-input fallback;
+- **The baseline from 2026-10-26** was ab6f4a7 (the three-variable pool, no lookahead, and the every-input fallback;
   "Kept: the every-input fallback" below), arm B of `2026-10-26-everyinput-ab`: M 1562, held-out M 21905, and per band
   (the table's columns unchanged):
 
@@ -68,7 +68,7 @@ M per band is the column times 30 times that count over 1000, 2307, 6414, 7569 a
   | 15 | .787 | 15.2 | 213.2 |
   | 17 | .718 | 11.6 | 281.5 |
 
-  New levers gate against its exe, `2026-10-26-everyinput-exes\E.exe` (the numbers above, which 23b89fa repeats, are
+  New levers gated against its exe, `2026-10-26-everyinput-exes\E.exe` (later baselines: "Landed: fresh slices of n = 319" and the "Landed 2026-10-30" paragraph below) (the numbers above, which 23b89fa repeats, are
   `2026-10-26-pool3-exes\H.exe`'s; 411aacf's are `2026-10-26-keep-exes\K.exe`). The three exes' arms for salts 1-10
   are in the untimed gates' `ARM_CACHE`, so arm A reruns nothing until `streams_ab.sh` or `runs.exe` changes (they are
   part of the cache key).
@@ -237,14 +237,14 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   check them do not, here; untested: the lookahead off with the two-variable pool, where it was added ("The cold loss
   is a greedy path loss").
 - **Kept: the pool over three variables, `lt` too, and no lookahead (6078bfd, 411aacf; run `2026-10-26-keep-ab`, 38 min
-  untimed, JOBS=3).** `POOL_VARS = 3` (`Pool` in `miner.rs`); `lt` patterns over three as well (the index's working
+  untimed, JOBS=3).** `POOL_VARS = 3` (`Pool` in `miner/candidates.rs`); `lt` patterns over three as well (the index's working
   set is about 105 MB: peak working set per process 334-356 MB in lookoff-ab's rival arm, 441-452 here); a round takes
   its rival when the rival gains more and proves, else its winner. Against HEAD 23b89fa: M 1718 to 1665 (-3.1%),
   held-out M 25675 to 23992 (-6.6%, lower on every salt), free share .926/.796/.768/.708; work counts (interp) 0.76x;
   job CPU 6719 to 5206 s under 40-68% other load. Every mine's results equal lookoff-ab's rival arm, so `lt` over
   three variables chose no new rule on these salts; it stays because it removes a special case.
 - **At the loops' width, every-input proofs prove every `shr1` rule the oracle admitted (run `2026-10-26-blast-spike-run`,
-  81 s; spike, `blast.patch` in `2026-10-26-blast-spike`, reverted).** The loops prove at width 4 (`miner.rs`, `laws`),
+  81 s; spike, `blast.patch` in `2026-10-26-blast-spike`, reverted).** The loops prove at width 4 (`miner/laws.rs`, `laws`),
   so the oracle's exhaustive check decides a rule there; the spike turns it into a kernel proof: per output position, a
   case split over all k x 4 input bits whose leaves the kernel checks by evaluation (`lemma_n`, a Bool claim, since the
   split's motive is Type1 and a vector equality is Type2), joined by `cong_n` (`k_var_law_to`), any operator alike.
@@ -255,7 +255,7 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
   candidates of 400 proposed`, filter 0.0 s), so as `Prover`'s fallback it would cost about 0.4 s per `shr1` winner
   over three variables. It proves at width 4 only: the loops' width, not the JIT's.
 - **Kept: the every-input fallback (ab6f4a7; run `2026-10-26-everyinput-ab`, 32 min untimed, JOBS=3, arm A from
-  `ARM_CACHE`).** `prove_rule` (`rewrite.rs`) tries its routes, then, for a rule of at most `EVERY_INPUT_BITS` = 12
+  `ARM_CACHE`).** `prove_rule` (`rewrite/rules.rs`) tries its routes, then, for a rule of at most `EVERY_INPUT_BITS` = 12
   input bits (three variables at width 4), the spike's every-input proof (`every_input_law`). Against 411aacf: M 1665
   to 1562 (-6.2%), held-out M 23992 to 21905 (-8.7%, lower on every salt; the oracle's was -8.2% on the older baseline,
   "Even free `shr1` rules cut M by only 6%"), free share .942/.820/.787/.718 (1.0 to 2.4 points above 411aacf per band); work
@@ -277,7 +277,7 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     candidates (up to three variables) are checked on every input (`ValueMemo::exhaustive`), cross-side candidates
     over three or four variables only on the screen. One false winner in about 4700 proofs costs one rollback. False rules are cheap to refuse: `rule_admission_refuses_wrong_rules` (465 false rules, at most four
     variables at widths 3 and 4) takes 0.18 s with the fallback and 0.00 s without (`EVERY_INPUT_BITS` 0), about
-    0.4 ms each. The other callers of `prove_rule` (`rewrite.rs` `LawKind::Rule`, `search.rs`'s benches and tests)
+    0.4 ms each. The other callers of `prove_rule` (`rewrite/join.rs` `LawKind::Rule`, `search.rs`'s benches and tests)
     prove rules known to hold.
 
   - *What a rollback costs (2026-10-31, from logs already on disk, no code; `docs/runs/2026-10-31/scripts/rollback_cost.awk`).*
@@ -547,7 +547,7 @@ leaves to a machine proof were recovered by rerunning the gate's held-out check 
     (`stack_sample.ps1`, no debugger) put all 40 inside `embeds`' code (38 named `embeds`, 2 its inlined `Term::node`)
     and all 40 under `rewrite` called from a mine's
     `Scorer::score_laws` (frames in `docs/runs/2026-10-28/rows/2026-10-28-hang-j0.txt` and `-hang-j100n688.txt`).
-    `embeds` (`crates/church-bv/src/rewrite.rs`) is the cycle cut's homeomorphic-embedding test, run by `cut_at` against
+    `embeds` (`crates/church-bv/src/rewrite/rewriter.rs`) is the cycle cut's homeomorphic-embedding test, run by `cut_at` against
     the terms on the rewrite path (before the fix only those no larger than the term at hand), innermost first, both
     for the cut itself and for the memo's check of a cached result. It recursed
     both on "match at this node" and "skip a node of t", with no memo and no size check inside the recursion, so one

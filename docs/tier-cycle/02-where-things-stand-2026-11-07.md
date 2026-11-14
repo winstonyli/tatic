@@ -27,8 +27,8 @@
   widths"). Nothing consumes a uniform law yet (`PARKED.md`, "Search alongside execution, and laws uniform in the width").
 - **The JIT** (goal 1) compiles a fragment of higher-order terms once their compiled form is kernel-proved equal ("The JIT
   and the target machine"); the mined rules find no work in its programs ("Other ways to join the JIT and the loop").
-- **The workspace** has four crates since 2026-11-04: `tatic-kernel` (the trusted kernel, which cannot import `tatic`),
-  `church-bv` (the loop, the miner and the provers), `tatic` (the JIT) and `tatic-rng` (the seeded generator); `docs/TOUR.md` maps them.
+- **The workspace** has five crates (four since 2026-11-04; `tatic-wasm` added 2026-11-08): `tatic-kernel` (the trusted kernel, which cannot import `tatic`),
+  `church-bv` (the loop, the miner and the provers), `tatic` (the JIT), `tatic-rng` (the seeded generator) and `tatic-wasm` (the formal target machine, on the kernel alone, which `church-bv` and `tatic` both build on); `docs/TOUR.md` maps them.
 - **Counting work:** a retired-instruction count replaces timing where a verdict only needs "does less work"; with large
   OS pages it wanders, for reasons traced in "Why a retired-instruction count wanders".
 - **Raw rows**, run scripts and the patches of reverted switches are kept per day under `docs/runs/<date>/` (from

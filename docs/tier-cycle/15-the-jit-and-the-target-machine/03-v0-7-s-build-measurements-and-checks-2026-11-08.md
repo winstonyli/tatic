@@ -43,7 +43,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
 - **Fuel 1:** the wrapper costs nothing measurable, so the gate proves `[Loop(body)]` as printed; no fallback and no
   trusted "a `loop` with no `br` is its body" fact.
 - **Tree size:** the build doubles with the tree (linear) and the check grows faster (5.8x from d = 12 to 13), so the
-  gate alone passes the JIT path's 0.4 s at 512 nodes, far below the 16,384-node cap. `in_fragment` takes trees of at
+  gate alone passes the JIT path's 0.4 s at 512 nodes, far below the 16,384-node cap. `in_fragment` (since replaced by the gate's `module_cost` check against `MAX_GATE_TREE`, which returns `NotCovered`) took trees of at
   most 256 nodes (`MAX_GATE_TREE`, `doubling(7)`; 1024 since the build fix below, 2048 since the shift memo below, 8192 since the build's constants below); a larger straight-line term
   installs through the existing chain.
 - **`Mul`:** 25-34 ms with two parameters as operands, so `Mul` stays in the fragment unrestricted.
@@ -66,8 +66,8 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   one rep per tree): `doubling(7)` 17 + 26 ms, `doubling(8)` 34 + 53 ms, `doubling(9)` 66 + 184 ms, `doubling(10)`
   126 + 790 ms, `doubling(13)` 1,748 + 102,289 ms. The build is now linear and small; the check grows about 4x per
   doubling from d = 9 and is the whole cost above 512 nodes. By the same rule the bound is now 1024 nodes
-  (`doubling(9)`, 0.25 s even at 77% load; `doubling(10)` takes 0.92 s); the table test accepts `doubling(9)` and
-  `in_fragment_rejects_the_rest` refuses `doubling(10)`. The sweep barely gains: in a samply profile of a salt-1 sweep
+  (`doubling(9)`, 0.25 s even at 77% load; `doubling(10)` takes 0.92 s); the table test accepted `doubling(9)` and
+  `in_fragment_rejects_the_rest` (since deleted with `in_fragment`) refused `doubling(10)`. The sweep barely gains: in a samply profile of a salt-1 sweep
   on the build before the fix (run `2026-11-08-karrow-sweep-profile`, 199,220 busy samples) `karrow` is 0.62%
   inclusive, since the sweep mines at small widths, where the n^2 / 2 shifts are few. That share caps the gain, so no
   sweep A/B was run.
@@ -349,10 +349,10 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
   run `2026-11-08-v07-straight-line-refl-baseline-untimed`), against the gate's 12-34 ms for a term of that size. The
   bench row is deleted with the prover.
 
-**Fragment terms install on the gate's verdict alone.** `jit.rs#prove_install` sends a term in the fragment to `gate`
+**Fragment terms install on the gate's verdict alone.** `jit.rs#prove_install` sends a term the gate covers (`Accepted` or `Rejected`; `NotCovered` goes to `kernel_verify`) to `gate`
 and nothing else, and every other term to `kernel_verify`, which no longer tries `prove_pure_expr` (deleted, with its
 `setup`, `finish` and `LitScope::Arith`). A body with its `If` arms swapped is refused although the closure prover would
-accept the term (`jit/tests.rs#the_gates_verdict_is_final_for_fragment_terms`); all five Goal 1 terms install, and an
-operand `If`, outside the fragment, still installs through the chain. The workspace suite passed with 795 tests listed,
+accept the term (`jit/tests.rs#the_gates_verdict_is_final_for_covered_terms`); all five Goal 1 terms install, and an
+operand `If`, not covered by the gate, still installs through the chain. The workspace suite passed with 795 tests listed,
 782 before the plan plus 21 added and 8 removed (run `2026-11-08-v07-workspace`).
 

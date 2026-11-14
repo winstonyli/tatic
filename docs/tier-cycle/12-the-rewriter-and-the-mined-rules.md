@@ -28,7 +28,7 @@ one that cycles. Some ordered runs still used up the budget (sbo3 seeded: up to 
 stop it either.
 
 Kept: a tripwire. `rule_set_kernel_check` counts the laws that used up the rule budget (`CHECKED ..., N used up the rule budget`),
-and `scripts/loop_stream.sh` writes it as the sixth column of `m.tsv` and as `exhausted=` in its last line. cmp3d's own library: 23
+and the loop driver (`driver::loop_stream`; it replaced `scripts/loop_stream.sh`, 5d92f8d) writes it as the sixth column of `m.tsv` and as `exhausted=` in its last line. cmp3d's own library: 23
 of 300 laws; no library: 0.
 
 ### Per-side rule budget; rejecting cycling candidates is a negative result (2026-10-11)
@@ -206,8 +206,8 @@ orders. Serving the salt-1 pooled library (no mining, phases 1-3, total M) in it
 sbo3 43 and 38-52, cmp3d 63 and 63-70. A spread of up to 15 laws from order alone is as large as many differences in the tables
 above (and explains the pooled cells that moved with a reordered library in the foreign-straggler test).
 
-**Fix (kept):** `set_extra_rules` installs the run-time rules most specific first (larger left side first, ties by text), and every
-write to the rule table (`RULE_TABLE`) goes through it, so any order of the same rules serves identically (test `rule_order_does_not_change_rewriting`,
+**Fix (kept):** `Rules::new(...).mined()` installs the run-time rules most specific first (larger left side first, ties by text), and the
+job's rules are replaced only through `Job::with_rules` (14efd91; this paragraph's older names, `set_extra_rules` and `RULE_TABLE`, are gone), so any order of the same rules serves identically (test `rule_order_does_not_change_rewriting`,
 which fails without the sort). Ordering by text alone gave the same totals on this library; specificity was kept because a
 specific rule is usually an exception to a general one. Served in all six orders: cmp3d 63, add3 47, sbo3 45 every time. The miner
 scores candidates in the same order, so mining and serving still agree, and its memo argument holds (a rule that matches no traced
@@ -266,7 +266,7 @@ The most frequent (252 terms on phases 1-3) is between two pooled rules with the
 and then only the text tie-break picks. The switch was removed with nothing setting it (cleanup CU4e, 2026-10-27); read it with
 `git show b984ec2:tests/church_bv/rewrite.rs` (`print_rule_conflicts`, `rule_step`).
 
-**Learned preferences.** Lines `winner  OVER  loser` in a library (`rules.txt`; first a `RULE_PREFER=<file>` switch): where both
+**Learned preferences** (since deleted with the preference phase and the pooled libraries, b63d5ed; `RULE_PREFER` and `scripts/prefer_flips.sh` are gone). Lines `winner  OVER  loser` in a library (`rules.txt`; first a `RULE_PREFER=<file>` switch): where both
 rules would rewrite a term, the winner does, whatever the order. `scripts/prefer_flips.sh` learns them for a library: it collects the
 conflicts on phase 0, serves each flipped pair alone on phases 0-3, and keeps the flips that lower phase 0's M (about 20 min with 3
 workers). Total M over cmp3d, add3 and sbo3, train (phase 0) and test (phases 1-3):
@@ -318,7 +318,7 @@ with every part present, so a large rise means the library relies on that part, 
 
 ### Preferences and rival orientations in the miner (2026-10-11)
 Two greedy extensions of the miner, A/B'd with `driver::sweep` (`mines own cold pooled`) at salts 1 and 2:
-- **Preferences** (`RULEMINER_PREFS=1`; on during the A/B, now off by default and used only on pooled libraries, below): after
+- **Preferences** (`RULEMINER_PREFS=1`; on during the A/B, then off by default and used only on pooled libraries, below; since deleted with the preference phase, b63d5ed, 093ffc1): after
   the rounds, collect the conflicts on the scored laws and flip the pair with the largest gain, rescoring after each flip, until
   no flip gains; the flips are written into `rules.txt` as `winner  OVER  loser` lines, which serving and later mines read.
 - **Rivals** (a switch during the A/B, now always on): after a round's winner is chosen, score the other right sides of its left
@@ -343,7 +343,7 @@ Rivals replace 3-4 winners per add3 mine and one per sbo3 mine, all `sub`/`add` 
 and salt 1's cold cmp3d from 163 to 181. Pooling drops two hand-picked add3 orientations that conflict with sbo3's
 (`driver::sweep`); the rivals change add3's orientations, so the drop list no longer matches them.
 
-**Preferences learned on the pooled library (kept).** The pooled stage now keeps every library's rules (no hand-picked drop
+**Preferences learned on the pooled library (kept; since deleted with the pooled libraries and the preference phase, b63d5ed, 093ffc1).** The pooled stage now keeps every library's rules (no hand-picked drop
 list) and has each family learn preferences on it: a mine on the family's phase-0 stream (its ref mine's settings) with no rule
 rounds, only the preference phase, on the pooled library; that family's pooled loops start from the result
 (`pooled_<family>/rules.txt`). It takes 12-68 s per family and learns 0-5 preferences. Pooled loops, total M on phases 1-3,
@@ -359,7 +359,7 @@ from the libraries mined with rivals:
 The learned preferences win back most of salt 2's loss, but salt 2's add3 stays 10 above the baseline. The top preference at
 salt 2 (+7000 on add3's phase 0) lets add3's own `sub(xor(x, -1), y) -> sub(-1, add(x, y))` beat `sub(x, sub(y, z)) ->
 add(sub(x, y), z)` (in all three libraries) on terms both match, against the specific-first order.
-Over own, cold and pooled loops and both salts, the kept setup (rivals; preferences only on pooled libraries) totals 1289 against
+Over own, cold and pooled loops and both salts, the kept setup (rivals; preferences only on pooled libraries, since deleted, b63d5ed; rivals remain) totals 1289 against
 the baseline's 1302: own and pooled gain, and salt 1's cold loops lose 25 (447 to 472).
 
 **The cold loss is a greedy path loss, not the orientation.** Most of it is cmp3d phase 3 (56 to 69), whose second batch goes
@@ -518,7 +518,7 @@ Aim: move the promoted rules from "learned once" to "learned in the run" (learne
   mine of family F starts from iteration k's pooled library for F (`pooled_<F>/rules.txt`: the three libraries with F's learned
   preferences and drops) and mines its phase-0 stream on top of it.
 
-**Mechanism (kept):** `MINES_WARM=<sweep dir>` seeds each ref mine with `<dir>/pooled_<fam>/rules.txt` through `LoopCfg.warm`,
+**Mechanism (kept; since removed with the families, 093ffc1: `MINES_WARM` and the stage names `mines own`, `pooled`, `pooled:mix3` are gone, and the warm seed is now `WARM_RULES=<file>`):** `MINES_WARM=<sweep dir>` seeds each ref mine with `<dir>/pooled_<fam>/rules.txt` through `LoopCfg.warm`,
 as the pooled loops are seeded; a family with no pooled library (mix3) mines cold. Iteration 0 is a HEAD sweep (`mines pooled`);
 iteration k+1 runs `mines own` with `MINES_WARM` on iteration k, then the existing pooled stage on its libraries. Iteration 1's own
 loops against iteration 0's pooled loops isolate what the ref mine adds on phase 0: both serve phases 1-3 from F's pooled base and

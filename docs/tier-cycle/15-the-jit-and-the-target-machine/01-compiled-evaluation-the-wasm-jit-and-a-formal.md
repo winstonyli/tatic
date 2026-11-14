@@ -609,7 +609,7 @@ paragraph.
 
 **An invariant across an `if` (probe 2026-10-17, `docs/runs/2026-10-12/patches/if_invariant_probe.patch`; its pieces
 are kept since, in `crates/tatic-wasm/src/` from 2026-11-08: `good_lt` in `encoding/good.rs`, the lowering and
-`lowering_and_lt_witnesses_check` in `encoding/tests.rs`, `choose` in `wasm.rs` and `if_inv` in `wasm/laws.rs`,
+`lowering_and_lt_witnesses_check` in `encoding/tests.rs`, `choose` (now in `machine.rs`) and `if_inv` (in `wasm/laws.rs`; deleted with it on 2026-11-11, 68901e8),
 next-but-one paragraph).**
 Derivable, with no kernel change, and cheap. Three pieces, all checked:
 - **A Sort0 split from the Sort1 witness.** `GoodBool0 a = Pi P:(Bool0 -> Sort0). P true -> P false -> P a` is a
@@ -645,7 +645,7 @@ Check times, machine at 32% CPU from other jobs, Defender real-time protection o
 
 Concrete: `choose (lt_u 0 1) x y` is `x`, `choose (lt_u 1 0) x y` is `y` and not `x`, by conversion at n=4 and 64.
 
-**Wasm programs as kernel data, kept (2026-10-17; now `crates/tatic-wasm/src/wasm.rs`, test `wasm_programs_as_kernel_data` in `wasm/laws.rs`).**
+**Wasm programs as kernel data, kept (2026-10-17; superseded 2026-11-11: `wasm/laws.rs`, the test `wasm_programs_as_kernel_data`, the loop constructor, fuel, Store/Load and `upd` were deleted in 68901e8; `Prog` and `Ins` are now in `crates/tatic-wasm/src/machine.rs`, and `wasm.rs` is only the row table; see the 2026-11-10 spikes on tail self-calls and on the heap on the frame).**
 The instruction-list encoding, rebuilt a third time and now in the tree. A program is a Church-encoded instruction tree
 typed by its start and end stacks, `Prog S T = Pi F:(Sort2 -> Sort2). F T -> push -> bin -> cmp -> dup -> if -> loop
 -> store -> load -> F S`, each constructor taking the rest of the program, so `p1 ++ p2` puts `p2` at `p1`'s nil. Its
@@ -691,7 +691,7 @@ corpus it is neutral: `runs time --pcs` (`proof_cost_split`, cmp3d, 24 alternati
 the patch) gives job CPU median 2.070 / 2.016 s and best 1.531 / 1.516 s, the memo winning 15 of 24 pairs (median pair
 -0.03 s). The machine was contended (other load 31-85% per run, the quiet gate off; a gated attempt found no quiet minute
 in 95 min), Defender real-time protection off. Kept: the test `countdown_invariant_is_not_exponential` (n=24, under
-2 s) took 19.6 s without it and fails; `wasm_scaling` runs to n=64 again (countdown invariant 0.86 / 1.53 / 3.62 /
-8.57 ms at n = 4 / 16 / 32 / 64).
+2 s) took 19.6 s without it and fails; `wasm_scaling` ran to n=64 again (countdown invariant 0.86 / 1.53 / 3.62 /
+8.57 ms at n = 4 / 16 / 32 / 64). Since then: the countdown, that test and its `wasm_scaling` row were deleted in 39cd5e2 (2026-11-11); the memo guard stays in the kernel, tested in `crates/tatic-kernel/src/tests/memo.rs`.
 
 

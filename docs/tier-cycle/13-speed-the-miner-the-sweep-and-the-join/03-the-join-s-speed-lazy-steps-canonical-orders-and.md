@@ -29,8 +29,8 @@ falls from 331-386 s to 99 s on salt 1's cold sweep, every rule file unchanged.
   62 against 58); the other two (`-cold-l2-repeat`) and two 1-lane sweeps (`-cold-repeat`) agree. A loop takes no
   history from its lane (`-loop-history`: its cmp3d loops give the same rules at 1 lane, 3 lanes and with
   `LEMMA_RECHECK=1`), and the differing loop's laws files are identical: its first mine chose differently from the same
-  input. Lanes share only CPU time with each other, so the miner is sensitive to timing under load. Where is open
-  (`PARKED.md`, "The miner's choices depend on timing"); the mine's join counts also differ by about 70 searches between
+  input. Lanes share only CPU time with each other, so the miner is sensitive to timing under load. Resolved:
+  see "The timing one-off is the join memo's inexactness" below (fixed in 8528735); the mine's join counts also differ by about 70 searches between
   runs with equal rules, the same number moving between searches and memo hits, consistent with per-thread memos.
 
 *The timing one-off is the join memo's inexactness (2026-10-18; runs in `docs/runs/2026-10-18/README.md`).* The two
@@ -90,7 +90,7 @@ made for steps never expanded (the last layer's terms are reached but never sear
   almost all lookups of nodes that exist, which a lock-free read serves.
 Levers this measures: a lock-free table read (below); a size bound before matching (a rule `from -> to` grows a term by
 at least `size(to) - size(from)` when every variable occurs on the right at least as often as on the left, so a match at a
-position whose term is already too large for the cap could be skipped unmatched; parked in `PARKED.md`); and building a
+position whose term is already too large for the cap could be skipped unmatched; since built, 8de04c1 and 2de4854); and building a
 step's term only when it is expanded, up to 63% of `place`.
 Built (branch `lazy-view`, 22d9867, not on `main`): exact but slower (run `2026-10-18-lview-ab`, salts 1-4 against
 `bv_riv`, others' load 40-53%, RTP off): rules and M equal in all 12 loops, job CPU 2963 against 3211 s (+8%, higher in
@@ -104,7 +104,7 @@ costs back 7.3%. The loss is the seen tables' equality: 18.3% (`Reach::head` 13.
 `is_step` and `is_subst`'s 3.1%. The recursive `head` builds an operator-and-two-reaches result at every node of both
 sides, where `is_step` steps one pointer down a made term. With an equality as cheap as `is_step`, the visit and pop would
 take about 47 k samples fewer than `main`'s, roughly a tenth of the join, an estimate from the two profiles, untested
-(PARKED.md, "Build a join step's term only when it is expanded").
+(PARKED.md, "Cheaper join searches", item (a); decided against).
 Tested and refuted: with the full `sh` compared first and the equality a loop down both paths (`lazy-view` 984bde2;
 runs `2026-10-18-lview2-ab`, exact in all 12 loops, and back-to-back profiles `-lv2prof` / `-mainprof2`), the join still
 took 441 k samples against 403 k. `At::same` is 15.0%: its check against a made term (`At::is`) alone is 5.2%, above

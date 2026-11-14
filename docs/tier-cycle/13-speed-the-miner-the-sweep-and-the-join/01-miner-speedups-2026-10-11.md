@@ -121,10 +121,15 @@ permutative rules, candidate sort, `shuffled`'s hash), which the mined rules ass
 makes canonical keys. Parked:
 - Typed lemma keys: `shared_lemma` and `Machine::key` (a `Debug` string) still key the lemma caches by formatted text. A typed key
   is the structural fix; it matters only outside counting mode (proofs of chosen rules, serving).
-- The miner writing its chosen rules, preferences and drops to an output file, so the driver no longer parses its log.
-- A structural operand order in place of `show_cmp`: rejected, since it would change every mined library.
-- Cached `show()` text on terms: not needed while `show_cmp` does not allocate.
-- `machine.rs` orders candidate terms by `show().len()` as a size proxy.
+- The miner writing its chosen rules, preferences and drops to an output file, so the driver no longer parses its log
+  (now in `PARKED.md`, "The miner's chosen rules in an output file").
+- A structural operand order in place of `show_cmp`: rejected, since it would change every mined library. Superseded:
+  `show_cmp` no longer exists (see the note below).
+- Cached `show()` text on terms: not needed while `show_cmp` does not allocate. Moot: `show_cmp` is gone (see the note below).
+- `machine.rs` ordering candidate terms by `show().len()` as a size proxy: no longer in the code.
+
+Since 2026-10-30 `show_cmp` is deleted and `Term`'s `Ord` is the text order (`docs/tier-cycle/` ("Ord landed")); the test
+`show_cmp_is_the_text_order` went with it.
 
 **Where the time goes after it (samply, 2026-10-12).** Profiled cmp3d's ref loop (`driver::loop_stream`, 2 threads, salt 1;
 `RULEMINER_FAST` was in fact not set, see the correction under "Where the time goes after proof plans"; 320 s under the profiler, load 46%, RTP off; 384k samples over the loop's processes). Text work is gone from

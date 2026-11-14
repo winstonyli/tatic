@@ -605,7 +605,7 @@ L and so n; this arm doubles f (the variable `GEN_F`, 488307b) to separate the t
   and cold 2200 against 546; ref mines' wall 546 s against 216. The load was 60% against 26%, so job CPU (3.3x) is the
   fairer ratio.
 - So removing the twins is near neutral, and the halved n cost 1-3% of M (warm 3.3%, cold 1.0%) at a third of the CPU.
-  `GEN_F`'s default stays 0.16 for now (`PARKED.md`, "The generator's n after the wider filter").
+  `GEN_F`'s default stayed 0.16 then (parked); `GEN_F` and its entry went with the 2026-10-28 extras landing (66a9810), see `PARKED.md`, "The extras: count, draw, source and slicing".
 
 *How much choosing the extras can gain: redrawn generator lists (2026-10-22; runs `2026-10-22-gen-draw1` to `3`,
 `gen_warm.sh` with `ARMS=on_on GEN_DRAW=1..3`, exe at 6d9e004, salts 1-10; draw 0 is `gen-warm-fix`'s on_on).*
@@ -871,7 +871,7 @@ budget to `JOIN_VISIT` at cap 11 (`JOIN_VISIT_AT`), doubling per node of cap and
 - **The 6 left** need, by eye, a xor of a term with a part of itself as arithmetic: `xor(x, and(y, x)) = x - and(x, y)`,
   `xor(x, and(sub(-1, x), z)) = x + and(sub(-1, x), z)` (disjoint), `xor(y, or(x, y)) = x - and(x, y)`. All are linear
   MBA identities; none is in any library.
-- **Why the miner misses them.** Its candidates come from subterms that use add or sub (`miner.rs`, `candidates`), so
+- **Why the miner misses them.** Its candidates come from subterms that use add or sub (`miner/candidates.rs`, `candidates`), so
   pure-bitwise rules are never proposed. The bridges could be proposed in principle; that they never are, because no
   straggler has the subterm, is a guess, not checked.
 

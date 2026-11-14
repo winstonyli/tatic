@@ -1,5 +1,7 @@
 ### A learned scorer over the extras: no curve shift (2026-10-31; v0.6 stage 1)
 
+Removed 2026-10-31 in 8d9ceaf, with `SCORER`, `select_extras` and `RULEMINER_TRANSFER`; the paths and names below describe the code as it was (recover: `git show 8d9ceaf^:tests/church_bv/scorer.rs`; PARKED.md, "Learned proposer, stage 2").
+
 Question (`docs/superpowers/specs/2026-10-31-learned-proposer-design.md`): does ordering each mine's extras by a model
 trained on the kernel's own verdicts move the frontier past a random draw at the same mining CPU? The scorer is a
 logistic regression on 26 counts of a law's two sides (`tests/church_bv/scorer.rs`); `POOL=4` cuts 4n kept laws per mine
@@ -29,7 +31,7 @@ and keeps the best n by score; the label is miner credit (a straggler a chosen r
 - **Reading (inference).** The labels reward laws that are easy to cover by a rule the mine picks (greedy credit,
   in-sample), and those are the large laws (size feature weight): the scorer prefers them, the mines get more work
   (walk/match/op 1.8x at n 319) and more rules but do not transfer to the held-out bands. What would confirm: refit on a
-  held-out-transfer label (w2) and rerun g4-g6 (about 40 min). Not done.
+  held-out-transfer label (w2) and rerun g4-g6 (about 40 min). Not done here; done below (w2, g10-g12).
 - **Null scope.** "No gain from a linear model on these count features with this label", not "no signal".
 - **Size-blind refit (2026-10-31; runs `v06-g7` to `g9`).** The reading above predicts that removing the size features
   helps. Refit with columns 1-4 (sizes, depth) and 10-17 (operator totals, a size proxy) zeroed (`DROP` in `fit_scorer`):

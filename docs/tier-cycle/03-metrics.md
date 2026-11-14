@@ -1,6 +1,6 @@
 ## Metrics
 
-How the results are measured (code: `crates/church-bv/src/driver.rs` and its module doc; the gate's lines: `scripts/streams_ab.sh`).
+How the results are measured (code: `crates/church-bv/src/driver.rs` and its module doc; the gate's lines: `scripts/gate/streams_ab.sh`).
 - **Serving and mining.** A loop's law stream is cut into batches. Each batch is served (every law checked) under the
   rules in force *before* it is mined, so its M is what the stream costs as rules arrive.
 - **M** (per batch, lower is better): the laws the rules did not settle by rewriting alone, i.e. those that needed a

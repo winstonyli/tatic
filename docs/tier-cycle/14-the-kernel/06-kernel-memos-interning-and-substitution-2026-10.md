@@ -27,13 +27,13 @@ pointers); removing or narrowing it lost badly ("Hash-consing cost", above). Ope
 3. Pre-reserve `nodes`, `inst`, `uses` when the table switches on: `reserve_rehash` was 5-9%. One line per map.
 4. The closed-term normal-form cache above (measured below: about 1%; dropped).
 5. A separate, non-interning normalizer for closed Bool terms: largest change, adds to the trusted base; last.
-Minor: `arg_sets` still used SipHash then (`Vec<usize>` keys); it is an `IdMap` now (`crates/tatic-kernel/src/spaces.rs`).
+Minor: `arg_sets` still used SipHash then (`Vec<usize>` keys); it and `args_id` were later deleted (f0e6b09).
 
 **One builder memo, and each step once per leaf (2026-10-13).** `constant` and `table_app` now share one helper, `gen_memo`
-(`encoding.rs`): a thread's values by key for the current interning generation, emptied when the generation changes, with the
+(`crates/tatic-wasm/src/encoding/gates.rs`): a thread's values by key for the current interning generation, emptied when the generation changes, with the
 kernel's multiply-rotate hasher (`Fx`). Moving the two onto it changed nothing measurable: 8.02-8.34 s against 8.05-8.41 s
 CPU over 4 alternating pairs of `proof_cost_split` (cmp3d own, against 4da7e02).
-- Left off it on purpose: `CLOSED`/`shared_lemma` (rewrite.rs) and `TREE_LAWS`/`TREE_ENCS` (machine.rs) live for the whole
+- Left off it on purpose: `CLOSED`/`shared_lemma` (`crates/church-bv/src/rewrite/plan.rs`) and `TREE_LAWS`/`TREE_ENCS` (machine.rs; `TREE_LAWS` has since gone) live for the whole
   thread. The generation changes mid-run (the table switches on after `WARM_UP` calls, and every outermost `InternScope`, one
   per scoring worker and per `prove` call in the miner, starts a new one), and
   `CLOSED` binds each key to a lemma parameter in `PARAMS`; emptying it per generation would rebind lemmas and could change
@@ -657,7 +657,7 @@ The first two rows are the leaves of case trees: at each split, `g motive on_tru
 eliminating a bit, and `refl` at a leaf. Checking a leaf `refl(a)` against the motive at that leaf's bits reduces both
 sides: the motive `(\b. body) bit` on the expected side, and on the inferred side `a`, a gate term written as
 Church-encoded lambdas applied to bits. A first reading charged them to `bit_lemma`, which has the same shape, but a
-count of builder calls in the same run (temporary prints, reverted) found `bit_lemma` called 0 times and `lemma_n` (`crates/church-bv/src/encoding.rs`) 392 times:
+count of builder calls in the same run (temporary prints, reverted) found `bit_lemma` called 0 times and `lemma_n` (`crates/tatic-wasm/src/encoding/tables.rs`) 392 times:
 
 | Case bits `k` | 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 9 |
 |---|---|---|---|---|---|---|---|---|---|

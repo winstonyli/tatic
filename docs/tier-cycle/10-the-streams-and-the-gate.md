@@ -20,7 +20,7 @@ and rules run only on unknown nodes. `ABLATE=classes` switches it off, `eq_class
 
 *The gate on the streams and its A/A baseline (2026-10-23; plan docs/superpowers/plans/2026-10-23-class-table-phase-2.md;
 runs `2026-10-23-held-regen`, `-cold-streams`, `-stream-sequence-mem`, `-streams-gate-check`, `-streams-aa-1-2-3`,
-`-streams-aa-3-4`, `-streams-aa-5-6`, `-streams-aa-7-8`, `-streams-aa-9-10-2`).* The gate is now `scripts/streams_ab.sh`:
+`-streams-aa-3-4`, `-streams-aa-5-6`, `-streams-aa-7-8`, `-streams-aa-9-10-2`).* The gate is now `scripts/gate/streams_ab.sh`:
 per salt and arm, one `cold:streams` sweep (three loops from no rules on phases 1-3 of the stream sequence, extras from
 phase 0), then held-out M: each loop's rules run on `held_11.txt` and `held_13.txt` (1000 open laws each, from a salt no
 sweep reaches; 64 of band 11's 19769 and 47 of band 13's 37996 laws were served by salt 1's loops and dropped; exact matches against salt 1 only, so other
@@ -110,9 +110,9 @@ table may make redundant, one at a time on the streams gate (B = A's exe with `A
   as A. Overhead (`2026-10-24-ablated-overhead`, salt 1, `ABLATE=comm`, the build before against the build with it,
   untimed): M 183 in both, interp and walk equal, match +2.8 ppm and op +5 ppm, inside the A/A's few ppm; 15
   `ABLATED comm` lines, none from the old build.
-- **The driver's stop could miss** (found by `scripts/test_gate.sh`, 2026-10-24): `taskkill /T` stops children first,
+- **The driver's stop could miss** (found by `scripts/gate/test_gate.sh`, 2026-10-24): `taskkill /T` stops children first,
   and in about 1 stop in 4 the gate's script went on to its next command after its child was stopped and before its
-  own stop. `scripts/ablations.sh` now lists the tree first and stops parents first: 24 of 24 stops held. No real
+  own stop. `scripts/gate/ablations.sh` now lists the tree first and stops parents first: 24 of 24 stops held. No real
   verdict was affected: a gate that ran on only added salts after the deciding rise.
 
 *Work counts as the gate's cost (2026-10-24; plan docs/superpowers/plans/2026-10-23-work-counts.md, Task 4; runs

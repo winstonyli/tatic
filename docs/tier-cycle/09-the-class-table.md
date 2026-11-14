@@ -17,10 +17,10 @@ Options, by end state:
 | b. smallest term per truth table | pure-bitwise laws only | fixed | no bridges; a subset of c's table |
 | c. learned table: enumerate terms over k ≤ 3 atoms, group by values at several widths (`pool_conjectures`), the smallest member of each class is its representative, rewrite each node bottom-up to it | what a and b cover, within the enumerated sizes, and every mined rule inside that range | classes and representatives learned; evaluation and the order fixed | classes past the enumeration, unless children reduce into range; small-width collisions fail their proofs and are dropped |
 | d. learned structure on c: integer relations among the class values mod 2^n, a basis of smallest terms as coordinates | a without coding it, past c's sizes | learned | speculative; needs a solver mod 2^n; carry cap |
-| e. complete the mined rules (critical pairs, `rewrite::critical_pairs`) | what the rules' overlaps imply | learned | in-sample: cmp3d's floor 72 to 30, add3's and sbo3's unmoved ("Completion on the floor"); blind where the miner is |
+| e. complete the mined rules (critical pairs; a probe, not in the tree) | what the rules' overlaps imply | learned | in-sample: cmp3d's floor 72 to 30, add3's and sbo3's unmoved ("Completion on the floor"); blind where the miner is |
 | f. the GPU model as a learned signature or proposer | proposals only | learned | not canonical alone; a later layer on c |
 
-Not decided; leaning c, with d as its additive extension, for the goal of a kernel that improves itself; a stays the fallback if
+Decided 2026-10-22/23: c, built as `classes.rs` (spec and plan done). The survey's then-view: leaning c, with d as its additive extension, for the goal of a kernel that improves itself; a stays the fallback if
 c's range is too small. ANF (bitwise only, `or` grows to three monomials) is out: a covers it and more.
 Polynomials mod 2^n and the nonlinear MBA tools are out: no bitwise operators, or no canonical form and no proofs. The
 cheapest test of c is in the next paragraph.
@@ -164,7 +164,7 @@ refuted; the kernel-path check (a full proof of each proved claim whose sample i
   `belief_counts`, `cells_at`, the grouped folds, `logistic_fit`, AUC and the paired bootstrap, each with a unit test.
   Under the new enumerator some bool8 and plus4 merges that contain `shr1` are wrong, so the 2026-10-22 line "bitwise
   merges were never wrong, under any key" holds only for claims without `shr1` (kind "bitwise" now excludes `shr1`). A
-  rerun on a different label (unprovable as the negative class) is parked in `PARKED.md`, "Belief layer stage 2".
+  rerun on a different label (unprovable as the negative class) was decided against 2026-11-01 (f1) in `PARKED.md`, "Belief layer stage 2".
 - **The unproved ones are provable (spike, 2026-11-01).** All 2693 unproved screen-pass claims (2652 with `shr1`, 41 `lt`
   without) hold on every width-6 input (3 variables, 262144 inputs), and `prove_rule` (the every-input route, kernel
   checked at width 4) proves all 2693, about 0.3 s each (runs `2026-11-01-belief-shr1-spike-3` for claims 1-1350 and
@@ -316,8 +316,7 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
 - **Cost: job CPU +29% (508 s to 655 s), wall 71 s to 96 s, the largest `peakproc` 577 MB to 684 MB (+107 MB).** Each
   B process builds the table once (15 builds, 1.6-1.7 s, 24 s of the 147 s added; the 5 in A are the sweep's own, for the
   twin filter). The rest is phase 1's normalizing and proofs, and different rules and laws mined; this run does not
-  separate them. This was past the plan's 25% stop; with `rep` memoized (below) it is under it (`PARKED.md`, "Phase 1's
-  CPU cost").
+  separate them. This was past the plan's 25% stop; with `rep` memoized (below) it is under it (its bullet below, "`rep` memoized").
 - **Where the added CPU goes** (run `2026-10-23-phase1-prof`, samply over salt 1's whole sweep, both arms, 83f698b plus
   `docs/runs/2026-10-23/patches/phase1_prof.patch`, script `phase1_prof.sh`, CPU 5% at launch; frames in
   `docs/runs/2026-10-23/rows/2026-10-23-phase1-prof.txt`; busy samples, not weighted by CPU). Both arms reproduce the

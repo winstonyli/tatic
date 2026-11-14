@@ -1,5 +1,5 @@
 ### Lemmas as kernel parameters (2026-10-10)
-`shared_lemma` (rewrite.rs) checks each closed lemma's proof once and binds its statement as a parameter in a
+`shared_lemma` (`crates/church-bv/src/rewrite/plan.rs`) checks each closed lemma's proof once and binds its statement as a parameter in a
 `Postulates` scope of its own; the rewriter then uses the parameter (a `Free`) instead of the proof, and `ck` checks with
 `check_open` against the parameters bound so far. One hook covers every closed lemma the proofs reuse: the mined rules, the built-in
 add lemmas (assoc, identity, not, comm), `shrmask`, the GoodBv witness lemmas (`good_add`, `good_sub`, `good_shl1`, `good_shr1`) and
@@ -10,7 +10,7 @@ closes the scopes innermost first, `(\r_0. .. ((\r_m. body) P_m) ..) P_0`, givin
 (`a_law_over_lemma_parameters_discharges_to_a_closed_proof`, including a nested rule). M is unchanged.
 
 This is the only path: the `LEMMA_PARAMS` switch that kept inlined proofs as the default was removed, and every check in the miner and
-the tests goes through `holds`/`ck` (encoding.rs), which check against the parameters bound so far. The "off" columns below were
+the tests goes through `holds`/`ck` (`Job` in `crates/church-bv/src/job.rs`, and `crates/tatic-wasm/src/encoding/good.rs`), which check against the parameters bound so far. The "off" columns below were
 measured before the removal and are kept as the record of what inlining cost. The salt-1 cold and own-seeded loops (18 cells,
 `scripts/experiments/cross_run.sh` with `CHECK_FAST=0`, so every served law is built and kernel-checked against the parameters) give
 the same per-batch M and rule counts as the earlier count-only runs in every cell.

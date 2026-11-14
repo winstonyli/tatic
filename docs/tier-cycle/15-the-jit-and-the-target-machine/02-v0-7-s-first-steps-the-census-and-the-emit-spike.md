@@ -1,7 +1,7 @@
 ### v0.7's first steps: the census and the emit spike (2026-11-08)
 
 The questions: how much of the corpus could an emitted-code proof cover with church-bv's wasm machine
-(then in church-bv; now `crates/tatic-wasm/src/wasm.rs#Ins`), and can the kernel check an `If (a < b)` program against its source at n = 64?
+(then in church-bv; now `crates/tatic-wasm/src/machine.rs#Ins`), and can the kernel check an `If (a < b)` program against its source at n = 64?
 
 **Today's install gate proves the model, not the code.** `kernel_verify` (`crates/tatic/src/jit.rs#try_install`) accepts
 `prove_pure_expr` (`crates/tatic/src/proof.rs#prove_pure_expr`) for a straight-line term: `refl(denote) : Id(Int, denote,

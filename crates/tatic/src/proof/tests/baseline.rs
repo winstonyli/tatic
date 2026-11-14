@@ -263,7 +263,7 @@ pub(super) enum Kind {
 
 /// The verdict on the form `try_install` proves: the specialised term and fragment if there is one, else the term and
 /// its own fragment; a term with no fragment never reaches `prove_install` and is `NotCovered`. Also whether the
-/// fragment holds a `Raw` line or a pointer-reached environment.
+/// fragment holds a `Raw` line.
 fn measure_verdict(s: &TermStore, h: Hash) -> (Kind, bool) {
     use crate::proof::gate::{gate, Verdict};
     let Some(c) = compile::compile_specialised(s, h) else { return (Kind::NotCovered, false) };

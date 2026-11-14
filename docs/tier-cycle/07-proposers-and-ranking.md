@@ -66,7 +66,7 @@ Salts 2 and 3 (stream vs band only, same setup), held-out M none / stream / band
 44 and 101 / 35 / 38. Mining from the band is never better than mining from the stream, and is usually within a few laws; salt 1's
 cmp3d gap (27 vs 42) is the largest of the three.
 
-**Transfer score.** `scripts/transfer_score.sh` (header documents it) mines rules from a law file and prints
+**Transfer score.** `scripts/transfer_score.sh` (since deleted in 00a21d9; recover it with `git show 00a21d9^:scripts/transfer_score.sh`) mines rules from a law file and prints
 `TRANSFER ... M_before M_after gain` on a held-out window of the target family: the batch-level reward a proposer needs. Check: the
 salt-1 sbo3 stream file gives 94 -> 19 (gain 75), matching the table above. It costs one mine per batch (about 1-5 min FAST), so it
 grades batches, not single proposals. Since 2026-10-11 it mines on serving's 200-step budget (it had kept the miner's old 40) with
@@ -95,7 +95,7 @@ least one user, so all gain was attributed. Not yet used to train anything.
 
 ### Ranking candidates, or mining on more laws (2026-10-17)
 
-*Oracle headroom for a ranker (probe, reverted, 2026-10-17).* The proposer's target is ranking (top of this note), so first:
+*Oracle headroom for a ranker (probe, reverted, 2026-10-17).* The proposer's target is ranking (05-experiments.md, "The proposer model's target: ranking"), so first:
 how much could any reordering of a round's candidates gain? Each mine of a cold loop (batch r) gets the laws of the batch served
 next (r + 1). On the main path, a round's alternatives are the rival, the winner and the next k - 1 proved candidates by gain
 (scoring goes down to the k-th best gain). Each is finished greedily, and the one whose finished set leaves the fewest laws of

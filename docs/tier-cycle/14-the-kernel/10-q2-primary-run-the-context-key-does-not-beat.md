@@ -7,7 +7,7 @@ over draws 3 and 4 of |`small` redraw - `small` draw 0|, T = max(76, S); PASS if
 Gates `q2-p-c160`, `q2-p-c80` (0 of 6 arms failed each); redraws `q2-p-d{3,4}-{c,r}{160,80}` (`q2-p-d4-c80` lost one arm to the
 8 GB watchdog at 8.8 GB against a 5.5 GB peak elsewhere; the rerun `-rerun` peaked at 5.4 GB and is the one used).
 
-- **Verdict: FAIL at both n** (`scripts/q2_verdict.sh`). n = 160: `small` 4690, walk 489.5 M; ctx 4789, walk 471.5 M; S 57, T 76,
+- **Verdict: FAIL at both n** (`scripts/study/q2_verdict.sh`). n = 160: `small` 4690, walk 489.5 M; ctx 4789, walk 471.5 M; S 57, T 76,
   D +99 (worse), R 0.963. n = 80: `small` 5356, walk 213.4 M; ctx 5306, walk 188.4 M; S 163, T 163, D -50 (inside the noise), R 0.883.
   The n = 160 `small` arm reproduces held 4690 and walk 489.5 M of the recorded run; its match (2.72 G) and op (0.98 G) counts differ
   from the recorded 3.12 G / 1.60 G, taken to be the build profile (ledger ruling), not a change to `small`.

@@ -1,5 +1,7 @@
 ### Selecting the extras by straggler verdict: better per n, not per CPU (2026-10-31; v0.6, second try)
 
+Note: `EXTRAS_SELECT` now accepts only `first`, `small` and `ctx` (`crates/church-bv/src/miner/config.rs`); `straggler` and `cheap` were removed with the stage 1 code (8d9ceaf).
+
 Question (`docs/superpowers/specs/2026-10-31-context-aware-selector-design.md`): does filling each mine's n extra slots with
 laws the mine's own base rules mark as stragglers (the first n of a 4n pool, `EXTRAS_SELECT=straggler`, selection inside
 `rule_miner` via `RULEMINER_EXTRAS_*`) move the frontier past a random draw at the same mining CPU? Only stragglers can earn
