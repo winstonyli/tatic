@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Closures through the gate Implementation Plan
@@ -21,7 +21,7 @@ status: draft
 
 The spec was corrected inline for three things recon found: D1's `choose` chain, D2's unguarded Unary sites with no `PrimOp`, and D7's precheck. "Calls this plan made" (at the end) lists what the plan settled.
 
-The hand-over's three Decide groups (row shape, direct calls into Pointer records, the T0 split) are taken here as recommended. A different pick changes T0, T1 and T2 as noted there.
+The user picked, on 2026-11-13: general rows (x1), refuse direct calls into Pointer records (y1), the T0 split into `machine/prog.rs` (z1), the dynamic sets held on `Ctxt` and passed down (a1), subagent-driven execution with T0 first (b1, c1).
 
 ## Global Constraints
 
@@ -128,7 +128,7 @@ The hand-over's three Decide groups (row shape, direct calls into Pointer record
 - Modify: `crates/tatic-wasm/src/machine.rs`.
   - Add `Ins::CallIndirect(usize)` and its `shape` arm.
   - `shape_check` admits `EnvAccess::Pointer` and refuses `Params(k)` with `k > 0`.
-  - `shape_check` also refuses an `Ins::Call(j)` whose callee `j` is `Pointer`, with "a direct call into a record reached through an environment pointer" (decision y2).
+  - `shape_check` also refuses an `Ins::Call(j)` whose callee `j` is `Pointer`, with "a direct call into a record reached through an environment pointer" (decision y1).
   - Add `pub fn dynamic_set`, `pub fn dynamic_sets`, `pub fn callees` (moved here from `statement.rs`) and `pub fn dispatch_chain`.
 - Modify: `crates/tatic-wasm/src/machine/prog.rs`.
   - Add `Ctor::CallIndirect` to `ctor_list`, which becomes `[Ctor; 9]`. Add its `ctor_ty`, its cons, its meaning and its `seq_step` arm.
@@ -379,7 +379,7 @@ How to write each mutant:
   - `PARKED.md`:
     - Delete "Bit rows (...)" and "`call_indirect` and the table".
     - Restate the row counts of the scratch-local and heap entries against the new verdicts.
-    - Add "direct calls into Pointer records" (decision y2), with the trigger "a census row that calls a bare-value combinator directly".
+    - Add "direct calls into Pointer records" (decision y1), with the trigger "a census row that calls a bare-value combinator directly".
   - `docs/TOUR.md`: add to the glossary and to flow steps 3 and 6 the closure word, the dynamic call (`Ins::CallIndirect`, `dynamic_set`, `dispatch_chain`, `SEnv::call_dyn`), the `Unary` class and `machine/prog.rs`.
   - Set the front matter of the spec and this plan to `status: done`.
 - [ ] **Step 4:** Run every repo guard: `cite_check`, `tour_check`, `front_matter_check`, `layout_check`, `size_check`, `test_placement_check`, `script_header_check`, `stack_literal_check` and `doc_index_check`. Expected: ok.
@@ -407,7 +407,7 @@ How to write each mutant:
 - **The reading refuses closures unless `Reading.fast`,** set from a new `CompiledFragment.curried` (the registry's dispatch choice) and "every position before the entry has a record". A curried module with no bare value has no extra slots but still emits `Raw` dispatch, so a slot count alone would give it `Rejected(Shape)`. Folding it into the reading covers closure values and calls with no separate refusal step.
 - **`pairing` compares widened callee sets** (source: static heads plus each closure call's dynamic set; code: widened `callees`). Equal sets make `call_dyn`'s lookups total, so a source closure call with no counterpart cannot panic. One closure call where the source makes two, on an empty set, is left to the walk (`Rejected(Walk)`).
 - **`call_cycle` runs between `shape_check` and `pairing`,** since it reads only code.
-- **Decision y2 keeps a refusal.** The lowering does emit direct calls into `Pointer` records with the environment pushed first (`lower_wat.rs`, the known-call arm), so `Call` would pop one word too few. Generalising `Call` to drop the environment word was weighed: it needs the arity table to carry `(arity, env)` through `shape`, `seq_step`, `Ctxt.arities` and `check_code`, and changes `Call`'s meaning for every statement.
+- **Decision y1 keeps a refusal.** The lowering does emit direct calls into `Pointer` records with the environment pushed first (`lower_wat.rs`, the known-call arm), so `Call` would pop one word too few. Generalising `Call` to drop the environment word was weighed: it needs the arity table to carry `(arity, env)` through `shape`, `seq_step`, `Ctxt.arities` and `check_code`, and changes `Call`'s meaning for every statement.
 - **Shift rows are width-generic** (`log2 n` stages), and tests of the halves run at n = 64.
 
 ## Review log
@@ -418,7 +418,7 @@ How to write each mutant:
   - The dynamic set was computed in two places.
   - Adding a `Vec` would break `MeaningEnv`'s `Copy`.
   - T0 would break the visibility of private methods.
-  - Decision y had no representation; it is now y2, refuse.
+  - Decision y had no representation; it is now y1, refuse.
   - `arg_ranges` used the wrong arity for nested calls.
   - The head-once test could not live in gate.rs, whose items are private; it moved to the sim mirror.
   - The T2 controls did not assert `hc`.
@@ -437,7 +437,7 @@ How to write each mutant:
   - `proof_open` and `closed` have no `Ctxt`; `dynamic_sets(module)` serves them. `MeaningEnv` and `SEnv` gain lifetimes; `G::bm` and `G::bs` gain a parameter.
   - `source_fn`'s extra `bool` and the separate refusal folded into `Reading.fast`.
   - `SEnv::callee` extracted so `call_dyn` binds `kont` once; `dispatch_chain` shrank to a fold.
-  - The spec did not mention the pairing change or y2; it is updated.
+  - The spec did not mention the pairing change or the refusal (y1); it is updated.
   - Smaller: the pap test must shift `pos` and sources; the z-controls name a fuel; `edit_call_site`'s callers; a row-presence check in `parse`.
   - The fewer-concepts reviewer re-judged the fused rows and recommends them for this step; the plan keeps the general rows as the recommended option (see the hand-over's Decide group).
 - **Round 3** had two fresh Sonnet reviewers: code-grounded feasibility, and consistency with the spec. They found:

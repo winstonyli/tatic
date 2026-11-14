@@ -1,5 +1,5 @@
 ---
-status: draft
+status: active
 ---
 
 # Closures through the gate: the closure word and `call_indirect`
@@ -170,7 +170,7 @@ and the modelled ones come from one place.
 first and then `$p{i}` by its arity (`print.rs#print_func`), and `local.get` prints `$p{i}` by name, so the frame's
 slots and the printed names agree by construction; no modelled instruction reads `$env` (`local.get $env` and memory
 reads stay `Raw`). A direct `call` into a `Pointer` record (the lowering pushes the environment first) is refused by the
-shape check (decision y2, parked with a trigger in `PARKED.md`; plan, "Calls this plan made"); none of the 8 rows has one.
+shape check (decision y1, parked with a trigger in `PARKED.md`; plan, "Calls this plan made"); none of the 8 rows has one.
 
 ### D6. Cost
 
