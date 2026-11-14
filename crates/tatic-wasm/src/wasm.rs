@@ -30,7 +30,7 @@ mod tests {
 
     /// Every row of `table()` at n = 8, frame width 2: a `Word` row's meaning infers `V -> V -> V`, a `Bit` row's
     /// `V -> V -> Bv_1`, a `Const` row's (`const` at operand 3, `local.get` at operands 0 and 1) `Fr -> Pi R:Sort0. (V -> R) -> R` (`Machine::operand_ty`);
-/// every row's domain circuit infers `V -> V -> Bv_1`.
+    /// every row's domain circuit infers `V -> V -> Bv_1`.
     #[test]
     fn wasm_rows_are_closed_and_typed() {
         let n = 8;

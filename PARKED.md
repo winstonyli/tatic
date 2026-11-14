@@ -244,7 +244,7 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   divides. Evidence: `jit/lower_wat.rs#emit_wrapping_div`, `lang/eval.rs#apply_prim` (`Div` keeps its own zero
   check), verified 2026-11-13. Status: parked.
 - **Fold total-row guards** — what: drop the guard `choose(dom x y, .., z)` at Word sites whose domain is constant
-  true (every row but `mod`), on both sides. Why parked: by decision (option 1, d1: every Word guard through the
+  true (every row but `mod`), on both sides. Why parked: by decision (2026-11-13: every Word guard through the
   probe, the constant factor accepted, check up to 4x at `doubling(12)`). Trigger: the gate's check time on
   Word-heavy programs matters (a budget or a JIT-latency target it misses). Evidence:
   `docs/superpowers/spikes/2026-11-13-fold-and-step-at-1-spike.patch`; `docs/tier-cycle/`, "Word-row guards through

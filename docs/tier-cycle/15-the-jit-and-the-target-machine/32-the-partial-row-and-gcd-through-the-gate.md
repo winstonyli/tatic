@@ -8,11 +8,11 @@ costs the spike measured hold on the build? Branch `partial-row`, plan
 - **Verdicts.** `gcd` and `gcd_with_two_base_cases` go from `NotCovered` to `Accepted`; no other row of
   `proof/tests/baseline.rs#VERDICTS` moves (run `2026-11-13-t4-verdicts` diffed exactly those two rows). Also accepted:
   `\a b. if a % b == 0 then a else b`, a module whose callee holds `%`, and a `%` in a proved loop
-  (`proof/tests/loop_form.rs#shipped`). The mutants `factorial: mul -> mod` and `gcd: mod -> add` are rejected at the
+  (`proof/tests/loop_form.rs#the_shipped_loops_install_in_loop_form`). The mutants `factorial: mul -> mod` and `gcd: mod -> add` are rejected at the
   walk ("branch conditions differ").
 - **The guard's controls** (`machine/sim/tests.rs`): a source whose guard differs from the table's (always taken, or with
   `k(op x y)` in place of `z` as its else) is refused by the walk, and outside the domain both sides answer `z` (`out_of_domain_answers_z`; it failed with the
-  source's guard dropped).
+  source side's else set to `k(op x y)`).
 - **Cost against the spike.** `p1_probe` (the spike patch's probe, run once and removed; run `2026-11-13-t6-p1`)
   reproduces the spec's "Cost" table (its section 7) exactly, check/build work: `capturing_closure_loop` 9288/7275,
   `straight_line` 29241/4530, `held_out_b` 31449/7568, `doubling(6)` 26170/19762, `doubling(12)` 1346914/1074514,
@@ -36,7 +36,8 @@ costs the spike measured hold on the build? Branch `partial-row`, plan
   overflows `encoding::lit`'s `u128` shift at n = 256 in a debug build (its doc says to run it with `--release`, where
   it passes, 1 segment switch: `t8-wasm-stack-release`), and `measure_gate_costs` and `measure_stack_2mb` build
   `doubling(13)`, which is over `MAX_GATE_TREE` since v0.8 (`proof/tests/gate.rs#a_term_over_the_budget_is_not_covered`
-  pins it as `NotCovered`).
+  pins it as `NotCovered`). Since `aa9e1b8` the two measure tests stop at `doubling(12)` and pass (run
+  `2026-11-13-m1-measure-tests`).
 
 What it leaves: `Div` has no row (its `MIN / -1` wrap), total-row guards are not folded, and Bit sites carry no guard;
 each is a `PARKED.md` entry.

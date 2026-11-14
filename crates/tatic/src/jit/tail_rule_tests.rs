@@ -4,7 +4,6 @@
 use tatic_wasm::machine::{out_stack, well_formed, Entry, EnvAccess, Ins, K};
 use tatic_wasm::print::{print_body, print_func};
 
-
 fn konst(v: i64) -> Ins {
     Ins::Row { name: "const", operand: v }
 }
