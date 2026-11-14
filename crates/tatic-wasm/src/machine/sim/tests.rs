@@ -562,3 +562,12 @@ fn a_dynamic_cycle_is_found() {
     b.code = vec![get(0)];
     assert_eq!(call_cycle(&[Some(&a), Some(&b)]), None, "a self-edge and an edge to 1 are no cycle");
 }
+
+/// `prove` refuses a cyclic module itself, in a release build too, for a caller that skipped the gate's `call_cycle`.
+#[test]
+fn prove_refuses_a_dynamic_cycle() {
+    let reach = vec![get(0), konst(32), row("shr_u"), konst(1), get(0), row("wrap"), Ins::CallIndirect(1)];
+    let recs = vec![rec(1, EnvAccess::Pointer, reach.clone(), Param(0)), rec(1, EnvAccess::Pointer, reach, Param(0))];
+    let err = on_module(64, &recs, |w, module| prove(w, module, 0).map(|_| ())).expect_err("a cycle is refused");
+    assert!(err.contains("cycle"), "{err}");
+}

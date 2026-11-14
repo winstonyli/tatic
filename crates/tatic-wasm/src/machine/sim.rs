@@ -188,10 +188,9 @@ fn proof_open(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr,
 
 /// The closed proof of entry `k`'s law, `Pi N gn R z, law_k`: the probe applied to the real `choose`, every callee's
 /// law discharged by that callee's own closed proof (at the module's frame width). The module's calls, static and
-/// dynamic alike, form no cycle: `call_cycle` has refused one before any statement or proof is built.
+/// dynamic alike, form no cycle: `prove` has refused one.
 fn closed(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr, String> {
     let records = records_of(module);
-    debug_assert!(call_cycle(&records).is_none(), "the module's calls form a cycle; call_cycle must refuse it first");
     let open = app(proof_open(w, module, k)?, choose_fn());
     let e = module[k].as_ref().expect("proof_open found the entry");
     let cs = callees(k, &e.entry.code, &dynamic_sets(&records));
@@ -213,8 +212,11 @@ fn closed(w: Machine, module: &[Option<ModEntry>], k: usize) -> Result<Expr, Str
 
 /// The proof of the statement `statement::statement(m, module, entry)`: `Pi N gn R z, law_entry`, the probe applied to
 /// the real `choose`. `Err` names where the machine and the source part ways, or why the body is out of the walk's
-/// reach; the kernel decides whether an `Ok` proof holds.
+/// reach, or that the module's calls form a cycle; the kernel decides whether an `Ok` proof holds.
 pub fn prove(m: &Machine, module: &[Option<ModEntry>], entry: usize) -> Result<Expr, String> {
+    if let Some(p) = call_cycle(&records_of(module)) {
+        return Err(format!("the module's calls form a cycle through position {p}"));
+    }
     let w = widen(m, module);
     closed(w, module, entry)
 }
