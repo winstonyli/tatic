@@ -11,7 +11,7 @@ use crate::jit::compile::{compile_specialised, CompiledFragment};
 use crate::lang::term::{Hash, TermStore};
 use crate::proof::gate::{build, gate, Layer, Verdict};
 use crate::support::samples::{capturing_closure_loop, factorial, fib, source, straight_line};
-use crate::testing::ins_mutate::{count_call_sites, edit_call_site, mutate, with_entry};
+use crate::testing::ins_mutate::{arities, count_call_sites, edit_call_site, mutate, with_entry};
 use Layer::{Shape, Walk};
 
 type Build = Box<dyn Fn(&mut TermStore) -> Hash>;
@@ -157,12 +157,13 @@ pub(super) type SiteEdit<'a> = &'a dyn Fn(&mut Vec<Ins>, usize, &[std::ops::Rang
 
 /// Each site of `Call(0)` in the subject's body edited by `edit` (where it applies) is `Rejected` at `layer`; returns
 /// how many sites it applied to.
-fn at_each_site(name: &str, what: &str, subject: Subject, arity: usize, layer: Layer, edit: SiteEdit) -> usize {
-    let code = code_of(subject);
+fn at_each_site(name: &str, what: &str, subject: Subject, layer: Layer, edit: SiteEdit) -> usize {
+    let (_, _, frag) = subject();
+    let (code, arities) = (frag.entry().code.clone(), arities(&frag));
     let mut applied = 0;
     for site in 0..count_call_sites(&code, 0) {
         let changed = std::cell::Cell::new(false);
-        let mutated = edit_call_site(&code, site, 0, arity, tatic_wasm::wasm::table(), &|b, i, args| changed.set(edit(b, i, args)));
+        let mutated = edit_call_site(&code, site, 0, &arities, tatic_wasm::wasm::table(), &|b, i, args| changed.set(edit(b, i, args)));
         if changed.get() {
             assert_ne!(mutated, code, "{name}: '{what}' at site {site} did not change the body");
             check(&format!("{name}: {what} (site {site})"), subject, mutated, layer);
@@ -218,7 +219,7 @@ fn self_call_site_mutants_are_rejected() {
     for (name, b, arity) in &terms {
         let subject = || call_formed(b);
         let mut run = |what: &'static str, layer: Layer, edit: SiteEdit| {
-            *applied.entry(what).or_default() += at_each_site(name, what, &subject, *arity, layer, edit);
+            *applied.entry(what).or_default() += at_each_site(name, what, &subject, layer, edit);
         };
         // slot 1 is past a one-parameter function's frame: a shape rejection; on two parameters it is another slot
         run("an argument's local.get index changed", if *arity == 1 { Shape } else { Walk }, &arg_local_get_changed);
@@ -295,12 +296,12 @@ fn no_loop_spike_controls_are_rejected() {
                 b[at] = konst(operand + by);
                 true
             };
-            assert!(at_each_site(name, &format!("a call constant off by {by}"), &subject, *arity, Walk, &off) >= 1, "{name}: no call constant to move");
+            assert!(at_each_site(name, &format!("a call constant off by {by}"), &subject, Walk, &off) >= 1, "{name}: no call constant to move");
         }
         let layer = if *arity == 1 { Shape } else { Walk };
-        assert!(at_each_site(name, "a wrong local.get in a call argument", &subject, *arity, layer, &arg_local_get_changed) >= 1);
+        assert!(at_each_site(name, "a wrong local.get in a call argument", &subject, layer, &arg_local_get_changed) >= 1);
         let dropped = if *arity == 2 { Shape } else { Walk };
-        assert!(at_each_site(name, "the call dropped", &subject, *arity, dropped, &call_dropped) >= 1);
+        assert!(at_each_site(name, "the call dropped", &subject, dropped, &call_dropped) >= 1);
     }
 }
 

@@ -45,6 +45,7 @@ fn frag(h: Hash, arity: usize, code: Vec<Ins>) -> CompiledFragment {
         module: vec![Item::Func { pos: 0, entry: Entry { arity, env: EnvAccess::Params(0), code }, source: Some(h) }],
         needs_hp_reset: false,
         entry_pos: 0,
+        curried: false,
     }
 }
 

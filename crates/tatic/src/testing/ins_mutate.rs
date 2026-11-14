@@ -49,9 +49,10 @@ pub(crate) fn with_entry(
 }
 
 /// The instruction ranges of the `arity` arguments a call at the end of `before` takes, in argument order: each range
-/// is the shortest suffix that leaves one more word on the stack than it found (`Call(j)` pops `arity` words, a row its
-/// class's pops, and every instruction here pushes one).
-fn arg_ranges(before: &[Ins], arity: usize, table: &tatic_wasm::machine::Table) -> Vec<std::ops::Range<usize>> {
+/// is the shortest suffix that leaves one more word on the stack than it found (`Call(j)` pops `arities[j]` words,
+/// `CallIndirect(a)` the index, `a` arguments and the environment word, a row its class's pops, and every instruction
+/// here pushes one).
+pub(crate) fn arg_ranges(before: &[Ins], arity: usize, arities: &[usize], table: &tatic_wasm::machine::Table) -> Vec<std::ops::Range<usize>> {
     let mut out = vec![];
     let mut end = before.len();
     for _ in 0..arity {
@@ -60,7 +61,8 @@ fn arg_ranges(before: &[Ins], arity: usize, table: &tatic_wasm::machine::Table) 
             start -= 1;
             let pops = match &before[start] {
                 Ins::Row { name, .. } => table.row(name).expect("a table row").class.pops(),
-                Ins::Call(_) => arity,
+                Ins::Call(j) => arities[*j],
+                Ins::CallIndirect(a) => a + 2,
                 other => panic!("{other:?} inside a call's argument"),
             };
             need += pops as i64 - 1;
@@ -70,6 +72,11 @@ fn arg_ranges(before: &[Ins], arity: usize, table: &tatic_wasm::machine::Table) 
     }
     out.reverse();
     out
+}
+
+/// Each module position's arity, by its record (a partial-application wrapper has none and is never `Call`ed: 0).
+pub(crate) fn arities(frag: &crate::jit::compile::CompiledFragment) -> Vec<usize> {
+    frag.records().iter().map(|r| r.map_or(0, |e| e.arity)).collect()
 }
 
 /// How many `Call(pos)` instructions `code` holds, nested ones included.
@@ -84,12 +91,12 @@ pub(crate) fn count_call_sites(code: &[Ins], pos: usize) -> usize {
 }
 
 /// `code` with its `site`-th `Call(pos)` (pre-order, into `If` arms) edited by `edit`, which is handed the block holding
-/// the call, the call's index in it and the ranges of its `arity` arguments before it, and changes the block in place.
+/// the call, the call's index in it and the ranges of its `arities[pos]` arguments before it, and changes the block in place.
 pub(crate) fn edit_call_site(
     code: &[Ins],
     site: usize,
     pos: usize,
-    arity: usize,
+    arities: &[usize],
     table: &tatic_wasm::machine::Table,
     edit: &dyn Fn(&mut Vec<Ins>, usize, &[std::ops::Range<usize>]),
 ) -> Vec<Ins> {
@@ -98,7 +105,7 @@ pub(crate) fn edit_call_site(
         seen: &mut usize,
         site: usize,
         pos: usize,
-        arity: usize,
+        arities: &[usize],
         table: &tatic_wasm::machine::Table,
         edit: &dyn Fn(&mut Vec<Ins>, usize, &[std::ops::Range<usize>]),
     ) -> Vec<Ins> {
@@ -107,7 +114,7 @@ pub(crate) fn edit_call_site(
             match ins {
                 Ins::Call(p) if *p == pos => {
                     if *seen == site {
-                        let args = arg_ranges(&block[..i], arity, table);
+                        let args = arg_ranges(&block[..i], arities[pos], arities, table);
                         edit(&mut out, i, &args);
                         *seen += 1;
                         return out;
@@ -115,13 +122,13 @@ pub(crate) fn edit_call_site(
                     *seen += 1;
                 }
                 Ins::If(t, e) => {
-                    let t = go(t, seen, site, pos, arity, table, edit);
-                    out[i] = Ins::If(t, go(e, seen, site, pos, arity, table, edit));
+                    let t = go(t, seen, site, pos, arities, table, edit);
+                    out[i] = Ins::If(t, go(e, seen, site, pos, arities, table, edit));
                 }
                 _ => {}
             }
         }
         out
     }
-    go(code, &mut 0, site, pos, arity, table, edit)
+    go(code, &mut 0, site, pos, arities, table, edit)
 }

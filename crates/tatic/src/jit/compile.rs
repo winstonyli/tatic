@@ -68,6 +68,9 @@ pub struct CompiledFragment {
     pub needs_hp_reset: bool,
     /// The entry function `$f`'s module position: the combinator count.
     pub entry_pos: usize,
+    /// Whether the module dispatches closure calls through the curried stage chains (`ir::Dispatch::Curried`, the
+    /// registry's `needs_generic_dispatch`) rather than one `call_indirect` per arity.
+    pub curried: bool,
 }
 
 impl CompiledFragment {

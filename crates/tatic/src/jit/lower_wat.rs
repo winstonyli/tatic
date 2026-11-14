@@ -196,7 +196,7 @@
 
 use hashbrown::{HashMap, HashSet};
 
-use tatic_wasm::machine::{Class, EnvAccess, Entry, Ins};
+use tatic_wasm::machine::{visit_ins, Class, EnvAccess, Entry, Ins};
 use tatic_wasm::print::map_tail_calls;
 
 use crate::jit::compile::{CompiledFragment, Item};
@@ -232,9 +232,8 @@ pub(crate) fn lower(m: &Module) -> CompiledFragment {
     }
 
     let direct = direct_only(m, &bare);
-    let mut lw = Lowering { m, stage0, direct, call_indirect_arities: Vec::new() };
-    // `$f` is lowered first (the type lines below depend on what lowering
-    // records) but printed last.
+    let mut lw = Lowering { m, stage0, direct };
+    // `$f` is lowered first (the module position order) but printed last.
     let entry = lw.function(n, &m.entry, EnvAccess::Params(0));
     let mut combinators = Vec::new();
     for (idx, c) in m.combinators.iter().enumerate() {
@@ -256,7 +255,16 @@ pub(crate) fn lower(m: &Module) -> CompiledFragment {
 
     let mut w = String::new();
     w.push_str("(module\n");
-    let mut used_arities = lw.call_indirect_arities.clone();
+    let mut used_arities = Vec::new();
+    for item in combinators.iter().chain([&entry]) {
+        if let Item::Func { entry, .. } = item {
+            visit_ins(&entry.code, &mut |i| {
+                if let Ins::CallIndirect(a) = i {
+                    used_arities.push(*a);
+                }
+            });
+        }
+    }
     used_arities.sort_unstable();
     used_arities.dedup();
     for k in &used_arities {
@@ -308,7 +316,7 @@ pub(crate) fn lower(m: &Module) -> CompiledFragment {
     module.push(entry);
     module.push(Item::Text("  (export \"f\" (func $f))\n)\n".to_string()));
 
-    CompiledFragment { arity: m.entry.arity, module, needs_hp_reset: needs_alloc, entry_pos: n }
+    CompiledFragment { arity: m.entry.arity, module, needs_hp_reset: needs_alloc, entry_pos: n, curried }
 }
 
 /// A combinator's own arity. A wrapper takes whatever its root still needs.
@@ -389,9 +397,6 @@ struct Lowering<'m> {
     /// The combinators that take their captures as parameters
     /// (`direct_only`).
     direct: HashSet<usize>,
-    /// Every arity used at a `call_indirect` site, for the module's `(type
-    /// ...)` declarations.
-    call_indirect_arities: Vec<usize>,
 }
 
 /// The function currently being lowered.
@@ -482,16 +487,15 @@ impl Lowering<'_> {
                     // `CallKnown` it is two pure calls, and the only side
                     // effect is bump-allocator growth.
                     self.node(cx, callee, w);
-                    raw(w, "i64.const 32");
-                    raw(w, "i64.shr_u");
-                    raw(w, "i32.wrap_i64");
+                    w.push(konst(32));
+                    w.push(row("shr_u"));
+                    w.push(row("wrap"));
                     for a in args {
                         self.node(cx, a, w);
                     }
                     self.node(cx, callee, w);
-                    raw(w, "i32.wrap_i64");
-                    self.call_indirect_arities.push(args.len());
-                    raw(w, &format!("call_indirect (type $ty{})", args.len()));
+                    w.push(row("wrap"));
+                    w.push(Ins::CallIndirect(args.len()));
                 }
                 Dispatch::Curried => {
                     self.node(cx, callee, w);
@@ -500,21 +504,22 @@ impl Lowering<'_> {
             },
             Node::MakeClosure { f, env } => {
                 push_closure_env(cx, env, w);
-                raw(w, "i64.extend_i32_u");
-                raw(w, "i64.const 32");
-                raw(w, "i64.shl");
-                raw(w, &format!("i64.const {}", self.table_value(*f)));
-                raw(w, "i64.or");
+                self.pack(*f, w);
             }
             Node::MakePap { wrapper, root_env, args } => {
                 self.pap_env(cx, root_env, args, w);
-                raw(w, "i64.extend_i32_u");
-                raw(w, "i64.const 32");
-                raw(w, "i64.shl");
-                raw(w, &format!("i64.const {}", self.table_value(*wrapper)));
-                raw(w, "i64.or");
+                self.pack(*wrapper, w);
             }
         }
+    }
+
+    /// Packs the environment pointer on the stack and combinator `f`'s table value into the closure word: `env << 32 | table_value`.
+    fn pack(&self, f: usize, w: &mut Vec<Ins>) {
+        w.push(row("extend"));
+        w.push(konst(32));
+        w.push(row("shl"));
+        w.push(konst(self.table_value(f) as i64));
+        w.push(row("or"));
     }
 
     /// Builds a partial-application wrapper's environment: slot `0` is the
@@ -526,7 +531,7 @@ impl Lowering<'_> {
     /// regression once came from exactly this.
     fn pap_env(&mut self, cx: &FnCx, root_env: &[Read], args: &[Node], w: &mut Vec<Ins>) {
         push_closure_env(cx, root_env, w);
-        raw(w, "i64.extend_i32_u");
+        w.push(row("extend"));
         for a in args {
             self.node(cx, a, w);
         }
@@ -554,18 +559,17 @@ impl Lowering<'_> {
     fn dynamic_apply(&mut self, cx: &FnCx, args: &[Node], w: &mut Vec<Ins>) {
         for a in args {
             raw(w, "local.tee $papenv");
-            raw(w, "i64.const 32");
-            raw(w, "i64.shr_u");
-            raw(w, "i32.wrap_i64");
+            w.push(konst(32));
+            w.push(row("shr_u"));
+            w.push(row("wrap"));
             raw(w, "local.get $papenv");
             self.node(cx, a, w);
             raw(w, "local.set $papenv"); // this argument's value
-            raw(w, "i32.wrap_i64"); // the raw copy below it becomes the table index
+            w.push(row("wrap")); // the raw copy below it becomes the table index
             raw(w, "local.set $envtmp");
             raw(w, "local.get $papenv");
             raw(w, "local.get $envtmp");
-            self.call_indirect_arities.push(1);
-            raw(w, "call_indirect (type $ty1)");
+            w.push(Ins::CallIndirect(1));
         }
     }
 }
@@ -585,7 +589,7 @@ fn read(cx: &FnCx, r: Read, w: &mut Vec<Ins>) {
 /// order, or `i32.const 0` (no allocation at all) for an empty environment.
 fn push_closure_env(cx: &FnCx, env: &[Read], w: &mut Vec<Ins>) {
     if env.is_empty() {
-        raw(w, "i32.const 0");
+        w.push(Ins::Row { name: "i32.const", operand: 0 });
         return;
     }
     raw(w, &format!("i32.const {}", env.len() * WORD_BYTES));
@@ -620,6 +624,11 @@ fn konst(v: i64) -> Ins {
 fn row_of(op: PrimOp, class: Class, what: &str) -> Ins {
     let row = op.row().filter(|r| r.class == class).expect(what);
     Ins::Row { name: row.name, operand: 0 }
+}
+
+/// The table row `name`, operand 0.
+fn row(name: &'static str) -> Ins {
+    Ins::Row { name, operand: 0 }
 }
 
 /// A line the machine does not model (`Ins::Raw`), printed as given.

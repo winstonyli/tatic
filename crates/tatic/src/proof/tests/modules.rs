@@ -5,7 +5,7 @@ use super::*;
 use crate::jit::JitEngine;
 use crate::proof::gate::{gate, Verdict};
 use crate::support::samples::{source, tail_recursive_loop_with_pap_producing_root_self_call_arg, twice_inc_5};
-use crate::testing::ins_mutate::{count_call_sites, edit_call_site, mutate};
+use crate::testing::ins_mutate::{arities, count_call_sites, edit_call_site, mutate};
 use crate::testing::test_corpus as tc;
 use super::gate_mutants::{arg_instruction_added, arg_instruction_dropped, args_swapped, check_frag, get, konst, rejected_by, SiteEdit};
 use crate::jit::compile::{CompiledFragment, Item};
@@ -175,9 +175,8 @@ fn call_sites(frag: &CompiledFragment) -> (Vec<(usize, usize, usize)>, Vec<usize
 
 /// The module with the `site`-th `Call(callee)` of the record at `caller` edited by `edit`; `None` where it does not apply.
 fn edit_site(frag: &CompiledFragment, (caller, callee, site): (usize, usize, usize), edit: SiteEdit) -> Option<CompiledFragment> {
-    let arity = frag.records()[callee].unwrap().arity;
     let changed = std::cell::Cell::new(false);
-    let code = edit_call_site(&frag.records()[caller].unwrap().code, site, callee, arity, tatic_wasm::wasm::table(), &|b, i, args| changed.set(edit(b, i, args)));
+    let code = edit_call_site(&frag.records()[caller].unwrap().code, site, callee, &arities(frag), tatic_wasm::wasm::table(), &|b, i, args| changed.set(edit(b, i, args)));
     changed.get().then(|| with_record(dup(frag), caller, |e| Entry { code, ..e }))
 }
 

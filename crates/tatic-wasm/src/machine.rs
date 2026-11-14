@@ -270,7 +270,7 @@ fn shape(table: &Table, code: &[Ins], mut st: Vec<K>, arities: &[Option<usize>])
 }
 
 /// Calls `f` on every instruction of `code`, in order, recursing into the arms of an `If` after the `If` itself.
-pub(super) fn visit_ins(code: &[Ins], f: &mut dyn FnMut(&Ins)) {
+pub fn visit_ins(code: &[Ins], f: &mut dyn FnMut(&Ins)) {
     for i in code {
         f(i);
         if let Ins::If(t, e) = i {

@@ -764,3 +764,80 @@ fn fragment_bodies_contain_no_raw() {
         assert!(no_raw(&frag.entry().code), "{:?}", frag.entry());
     }
 }
+
+/// Every row of `code` at any depth, as `(name, operand)`.
+fn rows(code: &[tatic_wasm::machine::Ins]) -> Vec<(&'static str, i64)> {
+    use tatic_wasm::machine::{visit_ins, Ins};
+    let mut out = vec![];
+    visit_ins(code, &mut |i| {
+        if let Ins::Row { name, operand } = i {
+            out.push((*name, *operand));
+        }
+    });
+    out
+}
+
+/// How many `CallIndirect(a)` with this `a` `code` holds at any depth.
+fn call_indirects(code: &[tatic_wasm::machine::Ins], a: usize) -> usize {
+    use tatic_wasm::machine::{visit_ins, Ins};
+    let mut n = 0;
+    visit_ins(code, &mut |i| n += usize::from(*i == Ins::CallIndirect(a)));
+    n
+}
+
+/// The closure word is rows and the call through it is `CallIndirect`: no record of these fragments holds a `Raw`, and the
+/// `$tyK` lines the printer shows are derived from the `CallIndirect` arities.
+#[test]
+fn closure_lines_are_rows() {
+    use tatic_wasm::machine::Ins;
+    let mut s = TermStore::new();
+    let h = crate::support::samples::non_tail_closure_carrying_recursion(&mut s);
+    let frag = try_compile(&s, h).expect("compiles");
+    assert!(!frag.curried);
+    let records = frag.records();
+    for r in records.iter().flatten() {
+        assert!(no_raw(&r.code), "{r:?}");
+    }
+    let entry = rows(&frag.entry().code);
+    for row in [("i32.const", 0), ("extend", 0), ("shl", 0), ("or", 0)] {
+        assert!(entry.contains(&row), "entry lacks {row:?}: {entry:?}");
+    }
+    let c0 = records[0].expect("$c0 is the recursive function");
+    let c0_rows = rows(&c0.code);
+    for row in [("shr_u", 0), ("wrap", 0)] {
+        assert!(c0_rows.contains(&row), "$c0 lacks {row:?}: {c0_rows:?}");
+    }
+    assert_eq!(call_indirects(&c0.code, 1), 1);
+    assert!(frag.wat().contains("call_indirect (type $ty1)") && frag.wat().contains("(type $ty1 (func (param i32) (param i64) (result i64)))"));
+
+    let h = twice(&mut s);
+    let twice_frag = try_compile(&s, h).expect("compiles");
+    assert_eq!(call_indirects(&twice_frag.entry().code, 1), 2);
+
+    // the arguments of a `CallIndirect` are found whole, a nested `call` among them: the callee operand, lowered at the
+    // last argument position, holds the over-application's saturated call
+    let h = crate::support::samples::tail_recursive_loop_with_if_between_closures_self_call_arg(&mut s);
+    let frag = try_compile(&s, h).expect("compiles");
+    let arities = crate::testing::ins_mutate::arities(&frag);
+    fn find(block: &[Ins]) -> Option<(&[Ins], usize)> {
+        for (i, ins) in block.iter().enumerate() {
+            match ins {
+                Ins::CallIndirect(_) => return Some((block, i)),
+                Ins::If(t, e) => {
+                    if let Some(f) = find(t).or_else(|| find(e)) {
+                        return Some(f);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    let (block, at) = frag.records().iter().flatten().find_map(|r| find(&r.code)).expect("a CallIndirect");
+    let Ins::CallIndirect(a) = block[at] else { unreachable!() };
+    let ranges = crate::testing::ins_mutate::arg_ranges(&block[..at], a + 2, &arities, tatic_wasm::wasm::table());
+    assert_eq!(ranges.len(), a + 2);
+    let last = ranges.last().unwrap();
+    assert!(matches!(block[last.clone()], [_, _, Ins::Call(_), _]), "{:?}", &block[last.clone()]);
+    assert_eq!((ranges[0].start, last.end), (0, at));
+}
