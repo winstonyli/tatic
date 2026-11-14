@@ -157,9 +157,13 @@ fn guard_vacuous<'m>(w: &'m Machine<'static>) -> Box<SrcFn<'m>> {
 #[test]
 fn prove_refuses_a_wrong_guard() {
     let (_, arity, code, _) = rem();
-    for (name, mk) in [("condition 1", guard_always as for<'a> fn(&'a Machine<'static>) -> Box<SrcFn<'a>>), ("else k(op x y)", guard_vacuous)] {
+    let cases = [
+        ("condition 1", guard_always as for<'a> fn(&'a Machine<'static>) -> Box<SrcFn<'a>>, "body: the branch conditions differ"),
+        ("else k(op x y)", guard_vacuous, "body/else: the machine is stuck but the source returns"),
+    ];
+    for (name, mk, want) in cases {
         let err = run_with(8, arity, &code, &mk).expect_err(name);
-        println!("{name}: {err}");
+        assert_eq!(err.to_string(), want, "{name}");
     }
 }
 

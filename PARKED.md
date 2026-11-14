@@ -251,7 +251,7 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   the probe: a spike (2026-11-13)" and "The gate's branch step made linear (2026-11-13)"; the cost table in
   `docs/tier-cycle/`, "The partial row and gcd through the gate (2026-11-13)", verified 2026-11-13. Status: parked.
 - **Guard Bit sites** — what: carry the row's domain at Bit (comparison) sites as at Word sites. Why parked: every Bit
-  row is total today, so the guard would always be taken. Trigger: the first partial Bit row. Evidence:
+  row is total today, so the guard would always be taken. Trigger: the first partial Bit row (`tatic-wasm/src/wasm.rs#wasm_rows_are_closed_and_typed` fails on one). Evidence:
   `tatic-wasm/src/machine.rs#interp` (its `binop` guards only Word rows), verified 2026-11-13. Status: parked.
 - **Bit rows (`wrap`, `extend`, `shl`, `or`; terms 25 and 28)** — why parked: outside v0.8's goals (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`). Trigger:
   v0.8 tagged. Evidence: the census, `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code

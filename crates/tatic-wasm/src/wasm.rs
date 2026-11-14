@@ -51,6 +51,11 @@ mod tests {
             };
             let dom = infer(&Ctx::new(), &constant_n(row.dom.circuit, n)).unwrap_or_else(|e| panic!("{name} domain: {e}"));
             assert!(def_eq(&dom, &arrow(v.clone(), arrow(v.clone(), bv_ty(1)))), "{name}: domain has the wrong type");
+            // Only Word sites are guarded (`ops::Dom`), so a partial row of any other class would run unguarded.
+            if row.class != Class::Word {
+                let total = constant_n(row.dom.circuit, n);
+                assert!(def_eq(&total, &constant_n(dom_true, n)), "{name}: a {:?} row must be total", row.class);
+            }
             let term = (row.meaning)(&mut Cx::default(), &m, operand);
             let got = infer(&Ctx::new(), &term).unwrap_or_else(|e| panic!("{name}: {e}"));
             assert!(def_eq(&got, &want), "{name} ({}) has the wrong type", (row.line)(operand));
