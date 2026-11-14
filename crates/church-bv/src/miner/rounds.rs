@@ -515,11 +515,8 @@ impl<'a> Rounds<'a> {
         println!("RULEMINER join: {} searches reaching {} terms, {} met, {} memo hits, {:.1}s searching ({:.1}s in failed searches)", j.searches, j.reached, j.met, j.hits, j.nanos as f64 / 1e9, j.failed_nanos as f64 / 1e9);
         println!("RULEMINER join store: {} joins served, {:.1}s querying", j.stored, j.store_nanos as f64 / 1e9);
         println!("RULEMINER {} of {} stragglers covered by the chosen rules", covered.iter().take(stragglers.len()).filter(|c| **c).count(), stragglers.len());
-        for (st, c) in stragglers.iter().zip(covered) {
-            println!("RULEMINER label: {} {}", *c as u8, st.0);
-            if !c {
-                println!("RULEMINER uncovered: {}", st.0);
-            }
+        for (st, _) in stragglers.iter().zip(covered).filter(|(_, c)| !**c) {
+            println!("RULEMINER uncovered: {}", st.0);
         }
     }
 }
