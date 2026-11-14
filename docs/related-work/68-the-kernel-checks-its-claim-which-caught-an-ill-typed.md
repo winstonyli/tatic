@@ -34,7 +34,7 @@ since a pushed `Const` shifts nothing. Its `push` is also the place to
 infer each global's type to a `Sort`, once, which would have caught this
 at the push.
 
-**Cost.** A/B of fa6458d vs 8d24f07 (`scripts/quiet_ab`, clean pairs
+**Cost.** A/B of fa6458d vs 8d24f07 (`scripts/quiet_ab` (deleted in 98104e7), clean pairs
 only, Defender RTP off, 2026-09-26/27). `fib(16)`'s instance proof, 5
 pairs: check best 133.6 → 147.3 ms (+10%), median 144.0 → 164.9 ms
 (+14%); build unchanged. Proof benches (`target/ab/proofs2`, 6 base and 5

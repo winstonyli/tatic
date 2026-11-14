@@ -264,14 +264,14 @@ Options, research and probes: `docs/decisions/2026-10-17-monotone-join.md`.
   in `PARKED.md`.
 - **The interner's per-thread cache: the join's time was building terms, and a cache in front of the shared table cuts
   the mine's CPU by a third.** A samply profile of salt 6's cmp3d mine (run `2026-10-17-join-prof2`,
-  `scripts/join_prof.sh`, the throwaway test in `patches/join_prof.patch`; `join-prof`, the run before it, passed its
+  `docs/runs/2026-10-17/scripts/join_prof.sh`, the throwaway test in `patches/join_prof.patch`; `join-prof`, the run before it, passed its
   test name wrongly and profiled nothing) put 58% of the busy samples under `Term::op` (43% in its own frame, 11% in
   the shard mutexes' contention), 37% of them through `join_steps` rebuilding a neighbour's spine and 21% through
   `subst_pat`; `match_pat`'s own frame was 8%. A count (`patches/op_cache.patch`, its `OPPROBE` line) found 167M
   `Term::op` calls in that mine, 97% from the join and 99% finding an existing node: about 16 per term the join reached
   (10.1M). `Term::op` now first tries a per-thread slot array (`OP_CACHE`, 2^16 slots by bits 44..60 of the hash, a hit
   when the slot's node is the one asked for), then the shared table, and keeps the result in the slot. Nodes are never freed, so a cached node is the term's one node and
-  outputs cannot change. Timed by `scripts/op_cache.sh` (run `2026-10-17-op-cache`, `runs time`, 5 arms alternated, 3
+  outputs cannot change. Timed by `docs/runs/2026-10-17/scripts/op_cache.sh` (run `2026-10-17-op-cache`, `runs time`, 5 arms alternated, 3
   clean rounds, CPU 9%, RTP off), job CPU median of salt 6's cmp3d stage:
 
   | slots | job CPU s | wall s | join searching s |
@@ -287,7 +287,7 @@ Options, research and probes: `docs/decisions/2026-10-17-monotone-join.md`.
   times (run side by side, so only rough) sum to 77 s against 86 of wall, mines 30 s against 35. Early cuts of failed
   searches are still open, now on about 60% of the old search time.
 - **Kernel cost of a joined proof against the machine proof it replaces** (run `2026-10-17-join-proof-cost`,
-  `scripts/join_cost.sh`: `proof_cost_split` on every served cmp3d batch of `2026-10-17-join-sticky`'s loops, salts
+  `docs/runs/2026-10-17/scripts/join_cost.sh`: `proof_cost_split` on every served cmp3d batch of `2026-10-17-join-sticky`'s loops, salts
   1-5, 135 batches, under each loop's final rules, with the join on and with `ABLATE=join`, the faster of 2 alternated
   runs per batch; CPU 10% at launch, RTP off). With the join on, 3375 laws are joined and 13 need a machine proof;
   with it off, 3388 need one. Per joined law: build 7.7 ms against 21.5 ms for the machine proof, check 0.49 against
@@ -359,7 +359,7 @@ Loop seconds split by run (salts 1-10 + 11-20); the salts 1-10 of the padding-on
 to another pool term with one leaf written as a term of equal value, so stripping the padding (each node over two
 leaves whose width-4 value equals a leaf becomes that leaf) gives a law between two pool terms. The twin-free filter
 compares text up to renaming, so it cannot see through the padding. Stripped and keyed as the filter keys laws
-(`scripts/pad_strip.py`, over the padding arms' extras), per 10 salts:
+(`docs/runs/2026-10-17/scripts/pad_strip.py`, over the padding arms' extras), per 10 salts:
 
 | family | extras | twin of a served law | of which the loop's own later batches | strips to `a = a` | other |
 |---|---|---|---|---|---|
@@ -372,8 +372,8 @@ batch of a phase 1-3 loop of the family, the set the filter guards; the rest of 
 and other loops' batches. The mined rules carry no padding: no rule of the padding, plain or stream arms has a same-leaf
 (`sub(x, x)`) or identity (`add(x, 0)`, `and(x, -1)`) subterm.
 
-The causal test (run `2026-10-17-gen-twin`, `scripts/gen_twin.sh` with the throwaway `patches/extra_file.patch`,
-`MINE_SOURCE=file` reading extras from files written by `scripts/pad_files.py`; salts 1-10, sequential, CPU 26% at start,
+The causal test (run `2026-10-17-gen-twin`, `docs/runs/2026-10-17/scripts/gen_twin.sh` with the throwaway `patches/extra_file.patch`,
+`MINE_SOURCE=file` reading extras from files written by `docs/runs/2026-10-17/scripts/pad_files.py`; salts 1-10, sequential, CPU 26% at start,
 RTP off):
 
 | arm | mined-batch M | cmp3d | add3 | sbo3 | per salt | rules | loop seconds |
@@ -395,7 +395,7 @@ RTP off):
 *One filter for every source: with twins removed alike, the padding laws lose to the stream and the wider grammar
 wins (2026-10-17).* The strip above has two gaps: it normalizes the extras but not the served laws (which hold padding
 nodes too: 5164 lines of the padding arms' served files have a same-leaf or identity node), and it only maps nodes equal
-to a leaf. `scripts/twin_wide.py` normalizes every node over two leaves (`lt` aside) to its width-4 value class's
+to a leaf. `docs/runs/2026-10-17/scripts/twin_wide.py` normalizes every node over two leaves (`lt` aside) to its width-4 value class's
 representative (a leaf if one is in the class, else the shortest, then least, two-leaf term), on both sides, and keys
 the result as the filter does. Twins of a phase 1-3 served law, per 10 salts (cmp3d, add3, sbo3 summed: 17700 extras per
 arm):
@@ -409,7 +409,7 @@ arm):
 
 So the stream's own unseen laws, filtered twin-free as text, are half served laws behind equal-valued two-leaf nodes,
 more than any generator's. The causal test replays each source with its class twins dropped (run
-`2026-10-17-gen-wide`, `gen_twin.sh` with `ARMS` over the files of `scripts/wide_files.py`, build `bv_padfile.exe` as in
+`2026-10-17-gen-wide`, `gen_twin.sh` with `ARMS` over the files of `docs/runs/2026-10-17/scripts/wide_files.py`, build `bv_padfile.exe` as in
 the note above; salts 1-10, sequential, CPU 13% at start, RTP off):
 
 | arm | mined-batch M | cmp3d | add3 | sbo3 | rules | loop seconds |

@@ -60,7 +60,7 @@ a met join is kept under rules added off its path).
   `RewriteMemo::absorb` is gone, and `LOOP_THREADS` sets the loops' scoring workers; the check is
   `docs/runs/2026-10-18/scripts/threads_check.sh`. Rules differ from the old miner's in 4 of 30 loops (5-1, 6-3, 7-3,
   10-3), so older cold rows are not reproduced byte for byte. The before/after record (run
-  `2026-10-18-pcand-salts-record`, `scripts/salts_ab.sh`, the old miner at dc2102c against 2de4854, so the memo per
+  `2026-10-18-pcand-salts-record`, `docs/runs/2026-10-18/scripts/salts_ab.sh`, the old miner at dc2102c against 2de4854, so the memo per
   candidate, the size bound and the tags together; salts 1-10, the arms' order alternated per salt, others' load 27-29%,
   RTP off): M 749 in both and equal in every loop; wall 1130 against 954 s (-16%), job CPU 7942 against 6289 s (-21%).
   Rules differ in 4 of 30 loops again, but not the same four (1-2, 5-1, 6-3, 7-3): the old miner's rules move from run to
@@ -69,7 +69,7 @@ a met join is kept under rules added off its path).
 
 *Profile of the lazy join (2026-10-18, run `2026-10-18-lazy-prof`).* samply over salt 1's cold:cmp3d loops at 1 lane
 (e654360 with debug info; CPU 7% at start, RTP off; frames in `docs/runs/2026-10-18/rows/2026-10-18-lazy-prof.txt`,
-named by `scripts/prof_named.py`). Of 358357 busy samples (about 4.4 cores over the 82 s run):
+named by `docs/runs/2026-10-18/scripts/prof_named.py`). Of 358357 busy samples (about 4.4 cores over the 82 s run):
 - `join_search` 82.7% inclusive; the miner's memo tests `Trace::touched_by` 6.1% and `RewriteMemo::filtered` 5.3%;
 - `Term::op` 28% inclusive, nearly all from `place` (21.8%, making a new step's term): the shared table's mutex 8.5% self
   (lock, unlock, spin; no other caller) and node compares 10.7% (7.0% probing the table, 3.7% checking the thread's cache
@@ -441,7 +441,7 @@ visit bound); salt 5 7568 against 912. The skip meets more within the bound, and
 the different rules it mines, with their 61% more searches. Reverted (the commit after 5be9ad2): it costs 51% more CPU
 for a worse M. Why more met searches mine worse rules is not known (unmeasured); once it is, the skip is worth retrying.
 
-*How far a change to the join's answers moves the mined rules (2026-10-20, `scripts/first_diff.sh` on the gate runs,
+*How far a change to the join's answers moves the mined rules (2026-10-20, `docs/runs/2026-10-20/scripts/first_diff.sh` on the gate runs,
 and run `2026-10-20-visit-probe`).* The miner picks rules greedily by laws fixed and size saved, and a rule's score
 counts the joins it allows, so any change to which searches meet changes the scores: the first rule of salt 1 loop 1
 fixes 146 laws without the inner-first skip and 155 with it, and the picks part at rule 5. In both gates every loop's
@@ -734,19 +734,19 @@ cell and cache pointers so a mismatch needs no node load (part of the 10.3% of n
 finaliser, not two; about 2%).
 
 *The size bound and the interner's tags, built (2026-10-18, run `2026-10-18-sbound-tag-ab`, script
-`scripts/arms_ab.sh`).* `JoinEq::min_size` (8de04c1; test `join_min_size_is_a_lower_bound`) skips a rule unmatched in
+`docs/runs/2026-10-18/scripts/arms_ab.sh`).* `JoinEq::min_size` (8de04c1; test `join_min_size_is_a_lower_bound`) skips a rule unmatched in
 `join_walk` when its bound is over the cap; the interner's cache slots and cells hold node addresses tagged with 16 bits
 of the hash (2de4854), so a lookup passes over other nodes without loading them. Salt 1 cold:cmp3d at 1 lane, in the
 order base, bound, both, both, bound, base (CPU 30% at start and 79% when sampled mid-run: other sessions, so contended;
 RTP off): every sweep gives the same files; wall 198, 200 and 198 s per arm (two sweeps each), so no change; the
 miners' summed join seconds 699, 670 and 639 s, so 4% less with the bound and 9% with both, against the profile's
 estimate of 10-15% for the bound alone. That contention hid the gain: on a quieter machine (run
-`2026-10-18-sbound-tag-quiet`, `runs time` through `scripts/quiet_ab.sh`, arms alternated, 2 rounds each, others' load
+`2026-10-18-sbound-tag-quiet`, `runs time` through `docs/runs/2026-10-18/scripts/quiet_ab.sh`, arms alternated, 2 rounds each, others' load
 16-23%, so no round was clean by its 20% limit) the same arms took wall 86.4/89.6, 78.9/77.7 and 78.7/76.8 s and job
 CPU 366/379, 326/322 and 325/317 s, all files the same: the bound cuts 11% of wall and 13% of CPU, the tags about 1%
 more.
 
-*Where the sweep's wall goes (2026-10-18, profile `2026-10-18-pcand-prof`, `scripts/prof_timeline.py`).* Counting the
+*Where the sweep's wall goes (2026-10-18, profile `2026-10-18-pcand-prof`, `docs/runs/2026-10-18/scripts/prof_timeline.py`).* Counting the
 threads busy in each millisecond of the 97 s profiled sweep (a sample is busy when its CPU delta is at least half the
 interval): 4.1% of the wall has no thread busy, 26.8% one, 6.8% two, 5.5% three, 6.6% four, 11.7% five, 35.7% six and
 2.8% more. In the one-thread stretches the miner's main thread does 20.5 s of work and a lone scoring worker 5.2 s (a
@@ -757,7 +757,7 @@ its seeded memo, among them; not split further). Both run while the scoring work
 of serial work, so up to about 11 s of this sweep's wall); make `touched_by` cheaper (an index from rule to trace terms,
 the same result); and evaluating the chosen set in parallel, which would split its seeded memo, and the memo's join
 entries are inexact (the timing one-off above), so it could change results: not exact as it stands.
-The first two are built (run `2026-10-18-aff-index-ab`, `scripts/salts_ab.sh`, 2de4854's exe against this one, salts
+The first two are built (run `2026-10-18-aff-index-ab`, `docs/runs/2026-10-18/scripts/salts_ab.sh`, 2de4854's exe against this one, salts
 1-4, others' load 29-51%, RTP off): `TraceIndex` (test `trace_index_agrees_with_touched_by`) holds every law's trace
 items once each, with the laws they are in, grouped by shape, so a candidate matches a term shared by many laws' traces
 once; and the candidates' `affected` is computed on the scoring threads. Rules byte-equal and M equal in all 12 loops

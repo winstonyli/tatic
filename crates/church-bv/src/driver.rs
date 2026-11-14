@@ -1,4 +1,4 @@
-//! The mine-and-serve loop and the sweeps over it (formerly `scripts/loop_stream.sh` and local sweep scripts). Serving
+//! The mine-and-serve loop and the sweeps over it (formerly `scripts/loop_stream.sh` (deleted in 5d92f8d) and local sweep scripts). Serving
 //! (`search::rule_set_kernel_check`) and mining (`search::rule_miner`) run as tasks of one worker process of this exe (`worker`,
 //! `Worker`): each task gets its own `Setup` (environment, results, caches), a `Job` per rewriting thread and its own log,
 //! while the pure memos carry over (`task.rs`, `job::hidden_state_is_classified`). Shell drivers spent much of a loop in Git Bash forks (docs/tier-cycle/, "Loop overhead").

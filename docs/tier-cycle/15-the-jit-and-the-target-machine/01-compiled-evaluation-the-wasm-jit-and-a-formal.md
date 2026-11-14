@@ -84,7 +84,7 @@ instruction count. If the mined rules never fire on the JIT's programs, A's cycl
 
 *Result (2026-10-17, probe reverted; `docs/runs/2026-10-12/patches/option_a_probe.patch`): nearly nothing to run on.*
 The 24 distinct add/sub-only rules in the 11 mined and hand rule files (of 203 rule lines; the rest use `lt`, `xor` or
-shifts, which `term.rs` lacks) were matched against every node of `crates/tatic/tests/rule_match_census.rs`'s 19 builders (the
+shifts, which `term.rs` lacks) were matched against every node of `crates/tatic/tests/rule_match_census.rs` (deleted in 757cf7b)'s 19 builders (the
 benchmark terms, so `test_corpus` less its two `(150)` loop variants and three IR fixtures, plus
 `redundant_arithmetic_recursion`): 286 nodes, 32 of them add or sub, 4 an add or sub over another. Two rules fire, both
 on one node, `add(sub(v2, v1), v0)` in `over_application_if_between_closures`, and both only reorder it: 0 instructions
@@ -137,7 +137,7 @@ inlining" for this corpus: it does not, so a workload with depth has to be writt
 specialiser inlines only known closures, and a count of trees does not measure what a larger program would give.
 
 **Laws uniform in the width: two of them check on the unchanged kernel, and one reaches `Bv_n` (spike, 2026-11-01;
-`crates/church-bv/src/uniform/width.rs`).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md`
+`crates/church-bv/src/uniform/width.rs` (deleted in aed1363)).** The route is option 3 of `docs/superpowers/specs/2026-10-02-search-execution-blend-design-part2.md`
 §53: bits as streams, a bit-serial adder whose carry is a fold, and induction on the position. The kernel has no cumulativity,
 so one Church `Nat` cannot index the inputs and also count the fold (the state would mention its own type); the spike uses
 two, `Nat_k` for the streams' index and `Nat_(k+1)` for the count, with the state `Sigma(Nat_k, Bool0)` (position numeral,
@@ -164,7 +164,7 @@ for all n. (The 70 ms at n = 8, 3.4 s at 32 and 32.6 s at 64 quoted for per-widt
 a different construction; `add_zero_proof` is far cheaper, so those numbers are no baseline for this.) So "the kernel lacks an
 induction principle" in the parked goal-D entry is too strong for `add`.
 
-*The same route carries the bitwise and `lt` laws (`crates/church-bv/src/uniform/bitwise.rs`, 2026-11-01).* Four bitwise laws
+*The same route carries the bitwise and `lt` laws (`crates/church-bv/src/uniform/bitwise.rs` (deleted in aed1363), 2026-11-01).* Four bitwise laws
 (`xor x x = 0`, `and` commutes, absorption, De Morgan; the last two nest operators) and `lt x x = 0`, `lt x 0 = 0` are proved
 uniformly in the position and bridged to the statements of `encoding::bitwise` and `encoding::lt_u`, accepted at n = 4, 8, 16,
 24 and 32 (default tests check n = 1 to 3), and wrong statements are rejected (well-typed and false, by the reviewer's mutation
@@ -173,7 +173,7 @@ second real induction (the borrow chain, circuit of `ripple_carry(sub=true)`). T
 laws, so the baseline is a per-bit case split written in the same file: it checks at 2.0 to 3.2 ms at n = 32 against 3.6 to
 4.4 ms for the uniform route, and builds in 8 to 25 ms against 39 to 77 ms (reviewer's run, shared machine). Again no speed win.
 
-*`mul` is only partly reachable (`crates/church-bv/src/uniform/mul.rs`, 2026-11-01; over Church numerals, see "The level wall is Church's" below).* A single fold over the multiplier's positions
+*`mul` is only partly reachable (`crates/church-bv/src/uniform/mul.rs` (deleted in aed1363), 2026-11-01; over Church numerals, see "The level wall is Church's" below).* A single fold over the multiplier's positions
 is ill-typed: the stream adder raises the index level (`Bits(k) -> Bits(k+1)`) and nothing lowers it (kernel messages "lambda
 domain mismatch: (Pi Type2. ...) vs (Pi Type1. ...)", and "inferred Type3, expected Type1" for a `Nat_k -> Nat_(k+1)` map, both
 pinned by a test). So the shift-and-add loop is unrolled in the meta-language, one level per multiplier bit: the law is
@@ -230,7 +230,7 @@ three times grew as 3^j (14.6 s to build at n = 4) and hit the 8 GB cap at n = 5
 **`tree_encoding`'s reachability guard never added a proof, and is deleted (2026-11-07; runs `2026-11-07-p1-inv-count-2`, `2026-11-07-p1-reach-ab-3` and `2026-11-07-q1-guard-deleted`).** Its second `moore_encoding` attempt, over the reachable carry states, proved laws conditional on a reachability invariant (added in 76d4f18). Refinement stops at a stable partition, so `try_encoding` cannot fail on Moore classes, and whether two start states share a class depends only on the states they reach. So the attempt over all states finds whatever the restricted one does. The argument is read from the code, not proved. Evidence for it: in the lib tests the restricted attempt never ran (325 passed, 47 ignored not run; the branch was reached 3 times, each with every state reachable). Forced directly on enumerated pairs with an unreachable state (width 4, two operator levels, at most 400 pairs per class, about 84 million untried), the two attempts agreed on all 103418: both found 94975, both missed 8443. `lt x 0 = lt y 0` and `lt (x+y) x = lt (x+y) y`, which do have unreachable states, pass the first attempt. The check is at `git show cdbf3b3:crates/church-bv/src/machine_reach_tests.rs`. If a law ever needed the invariant, the search would return no encoding rather than a wrong proof.
 
 **The level wall is Church's, not the kernel's: a W-built index folds into its own streams (spike, 2026-11-07;
-`crates/church-bv/src/wnat.rs`; runs `2026-11-07-o1-wnat` and `-2`).** The "single fold is ill-typed" result above holds for
+`crates/church-bv/src/wnat.rs` (deleted in aed1363); runs `2026-11-07-o1-wnat` and `-2`).** The "single fold is ill-typed" result above holds for
 Church numerals only. A Church `Nat_k` folds only into `Sort k`, and the stream adder raises its output one level, so a stream
 accumulator is a missing fixed point: a step would need `Bits(a+1) = Bits(a)`. `WRec`'s motive has no such cap. The index is
 `N := W(Tag, fst)` with `Tag := Sigma X:Sort1. Sigma m:Maybe X. GoodMaybe m`: a bare Church tag gives a step no way to use its
@@ -260,7 +260,7 @@ general induction. `GoodMaybe`'s motive sits in `Sort1` and sees `m` but not its
 tag's `m`. That covers every statement that reads a tree through its tag, which is all a stream function can do; it is why `ind` in
 `wnat.rs` takes the statement in reduced form. A hand proof writes that form itself; `wfold.rs` builds it from the machine.
 
-**One generator proves stream laws at all widths, and the `Sort3` limit was never there (spike, 2026-11-07; `crates/church-bv/src/wfold.rs`; runs `2026-11-07-q2-fold-5` and `2026-11-07-q2-fold-final-2`).** A stream law here is a pair of terms with no `shr1` or `mul`, and `lt` only at the root of both sides or neither. `encode` reads two terms through `Machine` and `moore_encoding`, as `tree_proof` does at one width, and `proof` builds the theorem with no per-law code: one goodness induction per carry, the per-side case lemmas, one induction on the phi agreement, then the output. The statement is `Pi x.. good x.. i. l i = r i` over `wnat.rs`'s own `add`, `shl` and a `sub` built from `carry`; a root `lt` is its borrow stream (its value at `i` compares the low `i` bits), and the width-`n` result is its value at `n`.
+**One generator proves stream laws at all widths, and the `Sort3` limit was never there (spike, 2026-11-07; `crates/church-bv/src/wfold.rs` (deleted in aed1363); runs `2026-11-07-q2-fold-5` and `2026-11-07-q2-fold-final-2`).** A stream law here is a pair of terms with no `shr1` or `mul`, and `lt` only at the root of both sides or neither. `encode` reads two terms through `Machine` and `moore_encoding`, as `tree_proof` does at one width, and `proof` builds the theorem with no per-law code: one goodness induction per carry, the per-side case lemmas, one induction on the phi agreement, then the output. The statement is `Pi x.. good x.. i. l i = r i` over `wnat.rs`'s own `add`, `shl` and a `sub` built from `carry`; a root `lt` is its borrow stream (its value at `i` compares the low `i` bits), and the width-`n` result is its value at `n`.
 
 The expected limit came from putting goodness in the fold's state: `Sigma(c, GoodBool c)` sits in `Sort2`, and a tag splits only into `Sort1`. Nothing needs that state. A carry's goodness is its own induction with `P` bound by `ind`'s telescope, so what crosses the tag is `P c`, in `Sort1`, and the phi agreement is a `Sigma` of `Id`s, also in `Sort1`. `GoodMaybe` stays as it was. What the W index does contribute is the nesting: `add (add x y) z` is one level, because an adder's output is a stream of the same type. Whether the Church index could carry this proof is untested. It could not state nested `add`s at one level, so it would need a statement about one machine's tuple of carries (inference).
 

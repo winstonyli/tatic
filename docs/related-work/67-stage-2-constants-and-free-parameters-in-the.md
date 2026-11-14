@@ -82,7 +82,7 @@ load-bearing in both entry points.
 **Measured.** Stage 2 claims no speedup: it adds one `max` per
 `Rc::new`, one parameter per typing frame, and the O(1) doors. Base is
 331a7bd (unpublished) (stage 1 with mimalloc), head is 8a13e5e; both built once and run
-interleaved with `scripts/quiet_ab/` (§66), Defender real-time
+interleaved with `scripts/quiet_ab/` (deleted in 98104e7) (§66), Defender real-time
 protection off throughout.
 
 `fib16_instance_proof_cost`, 10 clean pairs of 12 rounds, other

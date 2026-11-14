@@ -133,7 +133,7 @@ width 4 or on the screen.)
   numbers hold for that distribution only. Differences were measured at width 8; the proofs are generic.
 
 *The belief layer's calibration milestone stops at its first gate (2026-11-01; runs `2026-11-01-belief-dump-all-2`, 5 min,
-at commit 72c992d (clean tree), and its pilot `2026-11-01-belief-pilot-plus64-b`; code `crates/church-bv/src/belief.rs`, no patch;
+at commit 72c992d (clean tree), and its pilot `2026-11-01-belief-pilot-plus64-b`; code `crates/church-bv/src/belief.rs` (deleted in aed1363), no patch;
 report text in the dump run's `report.log`; a first dump, `2026-11-01-belief-dump-all`, gave the same totals and gate
 result before a review moved `shr1` claims out of the bitwise kind; spec `docs/superpowers/specs/2026-10-31-belief-layer-design.md`).* The dump re-draws
 the claims with `Classes::build` (20000 merges per key, the four keys of 2026-10-22; its enumerator differs, so the mix
@@ -271,7 +271,7 @@ counted false there, and the rest go to `add_tree_law`, or to `bitwise_law_k` wi
 *The class table as a module: the learned key, held-out proofs and a build's memory (2026-10-23; runs
 `2026-10-23-class-key`, `-class-held`, `-class-commit`; scripts `class_key.sh`, `class_held.sh`, `class_commit.sh` in
 `docs/runs/2026-10-23/scripts/`, the last on d5ea1aa plus `patches/class_commit.patch`; held-out laws in
-`docs/runs/2026-10-23/fixtures/held`).* Plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`, Tasks 1-4:
+`docs/runs/2026-10-23/fixtures/held` (deleted in 093ffc1)).* Plan `docs/superpowers/plans/2026-10-23-class-table-normal-form.md`, Tasks 1-4:
 `crates/church-bv/src/classes.rs` builds the table once per process from a key baked into the test binary
 (`crates/church-bv/data/class_key.txt`), with parse-first representatives and a verdict (bitwise, or a carry encoding over
 `shr1` atoms) for each replacement it makes.
@@ -471,7 +471,7 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   add3 pool's 856 at budget 20000. So the narrow arithmetic set pairs as well as the hand pool without it, while a set of
   five operators is broad enough that grown terms grow apart, as with all seven: what pairs is a small operator set,
   not a hand-written pool.
-- **Two operators pair best; `lt` and breadth hurt** (run `2026-10-23-open-laws-sweep`, `scripts/opset_sweep.sh`: every
+- **Two operators pair best; `lt` and breadth hurt** (run `2026-10-23-open-laws-sweep`, `docs/runs/2026-10-23/scripts/opset_sweep.sh`: every
   set of 2-4 of the seven bit-vector operators, with and without `lt`, 182 sets, budget 20000, two growths, 300 laws
   per bucket; open laws exclude the 485 of 15782 sampled that width 8 refutes). Means by set size: two operators about
   1410 open laws over 93 functions (1094 seeds), three 902 over 103, four 365 over 62; `lt` lowers each (863/621/291
@@ -482,14 +482,14 @@ replacements and closes the pair if they meet (`ABLATE=classes` turns it off).
   give none. Across all sets 11555 of 15297 classified are unknown+unknown. The function counts here are of the sampled
   laws only (300 per bucket), so they cap near the sample: counted over every law (next bullet, budget 20000 each), add,shr1 has 1011
   functions, add,and 1550 and add,or 1564.
-- **Rotating over every operator pair beats the best pair** (run `2026-10-23-open-laws-mix`, `scripts/mix_streams.sh`,
+- **Rotating over every operator pair beats the best pair** (run `2026-10-23-open-laws-mix`, `docs/runs/2026-10-23/scripts/mix_streams.sh`,
   every law checked rather than sampled, two growths). The 21 pairs of the seven operators as separate table-seeded
   streams at budget 20000 each: 8847 distinct functions over 28927 open laws, against 8966 summed over the streams, so
   they overlap by about 1%. add,shr1 alone at the same total budget (420000): 2348 functions over 61196 open laws, about
   26 laws per function against 3.3. So each pair finds functions of its own, and one pair's larger budget mostly
   restates the same functions. Pairs vary: add with and/or about 1550 each; and,or and shl1,shr1 none; and,xor and
   or,xor 7 and 17.
-- **Triples match pairs per grown term** (run `2026-10-23-open-laws-triples`, `scripts/set_sizes.sh`, same probe). The
+- **Triples match pairs per grown term** (run `2026-10-23-open-laws-triples`, `docs/runs/2026-10-23/scripts/set_sizes.sh`, same probe). The
   35 triples at the pairs' total budget (12000 each, 420000 in all): 8962 distinct functions against the pairs' 8847.
   At 20000 each (700000): 16547 functions over 32262 open laws, every triple some (18 to 1181). Pairs and triples
   together at 20000 each: 22292, against 25394 for the two summed, so a triple stream mostly adds functions the pairs

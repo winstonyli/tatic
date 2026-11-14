@@ -200,7 +200,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     (27%), the inst memo (24%) and the shift memo (19%); its top functions, `Space::push` (15%) and `shift_get` (14%),
     are also among the top 1 MB misses above.
   - *Against the misses.* cachegrind of a repeat check (`REPS=2` less `REPS=1`, run `2026-11-09-c1-cg-reps`,
-    `scripts/cg.sh`) at d = 13: 3.37 M read misses at 1 MB and 0.81 M at 16 MB, against 3.89 M and 1.56 M for a first
+    `docs/runs/2026-11-09/scripts/cg.sh`) at d = 13: 3.37 M read misses at 1 MB and 0.81 M at 16 MB, against 3.89 M and 1.56 M for a first
     check, which also copies and rehashes as its arrays grow. At about 10 ns for an L2 miss that hits L3 and 100 ns
     for one that goes to memory, these come to about 107 ms, 55% of the 195 (inference: nominal latencies, no
     overlap); with the kernel's 18 ms, about 64%. The rest is not attributed; write misses (2.7 M at 16 MB per repeat
@@ -212,7 +212,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     and a repeat check (`scoped` keeps capacity) take about the same time: medians 490.8 and 487.2 ms at d = 13, 112.2
     and 114.2 at d = 11, from 10 processes of 3 checks (untimed, other load 17%); first minus the mean of the repeats,
     paired, +4.7 ± 5.0 ms (standard error) at d = 13 and -0.8 ± 2.0 at d = 11 (run `2026-11-09-c2-reps-b`,
-    `scripts/reps.sh` with `N=10`). So presizing the region would gain at most about 3% at d = 13 (95% interval
+    `docs/runs/2026-11-09/scripts/reps.sh` with `N=10`). So presizing the region would gain at most about 3% at d = 13 (95% interval
     -6.6 to +16 ms), too little to justify it without a timed A/B: `PARKED.md`, item (i).
 - **The survey's last two options, spiked (2026-11-09):** at 14fb70a, checked by cachegrind (the check's misses, c = 1
   less c = 0) and work, each spike reviewed and one cachegrind config reproduced by a second agent.
@@ -238,7 +238,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     assertion that `instantiate_n` never re-enters.
 - **After the per-call memo, the inst gate and the write misses (2026-11-09):** at f0e6b09, by cachegrind's instruction
   count (`I refs`) and misses for the check, one debug-info build with a knob choosing the gate
-  (`patches/f2-inst-gate-spike.patch`, `scripts/f2_cg.sh`; runs `2026-11-09-f2-gate-cg2`, `2026-11-09-f2-gate-s0`).
+  (`patches/f2-inst-gate-spike.patch`, `docs/runs/2026-11-09/scripts/f2_cg.sh`; runs `2026-11-09-f2-gate-cg2`, `2026-11-09-f2-gate-s0`).
   - *Which nodes get an `inst` entry.* The shipped gate (shared and height > 2) against the same gate with height > 0,
     1 or 3: work equal to within 3 units of 3129184 at d = 13, instructions within 0.09% (5341.0 M; 5345.5 M at
     height > 0), misses equal to within 0.01%. With no height cutoff, `Var` leaves get entries too: work falls 1.6%
@@ -247,7 +247,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     at d = 11. So under the per-call memo the shared test still pays, and the height cutoff only has to keep out
     `Var` leaves: shared nodes of height 1-3 almost never reach the memo with a used argument. The old cutoff was
     chosen on church-bv's `proof_cost_split`, and there it still pays: retired instructions (ICOUNT.md, large pages
-    compiled off, 3 rotated batches of 4 on CPU 4; `scripts/g1_pcs.sh`, run `2026-11-09-g1-pcs-counts2`) with height
+    compiled off, 3 rotated batches of 4 on CPU 4; `docs/runs/2026-11-09/scripts/g1_pcs.sh`, run `2026-11-09-g1-pcs-counts2`) with height
     > 0 against height > 2 were higher in every batch pair, by 0.72%, 0.62% and 0.23% of the median (about 39.85 G),
     and 0.18% best against best, while each arm's batches wandered up to 0.24% among themselves. So the height field
     stays: dropping it costs 0.2-0.7% of a proof workload's instructions, and 0.09% on the gate too.
@@ -288,16 +288,16 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     `stack::has_check_room()` holds, and church-bv's entry thread has a 256 MB stack (`CHECK_STACK`); a thread with
     less room takes the segment as before. church-bv's worker task threads and lanes were on default stacks and still
     took it; since 2026-11-09 they have the check stack too (their tests assert the room). A salt-1 sweep's commit,
-    ae6f369's `entry.rs` and `driver.rs` against 6f1cb06, two sweeps each (`scripts/stack_commit.sh`, run
+    ae6f369's `entry.rs` and `driver.rs` against 6f1cb06, two sweeps each (`docs/runs/2026-11-09/scripts/stack_commit.sh`, run
     `2026-11-09-q1-stack-commit`, 48-57% other load): the job's peak falls from 4537 and 4538 MB to 4490 and 4502 MB
     (-36 to -47 MB, about 1%), and the largest process's peak is 3336 MB in all four, so the segments were not at its
     peak. The 150 MB of the 2026-10-23 worker is not reproduced: that sweep (`cold:cmp3d`, 446-490 MB) no longer
     exists, and today's processes are seven times larger. Job CPU 168-171 s against 175-177 s, under that load no
     verdict; faults not remeasured. Page faults per
-    repeat check, f159775 against cbcc4c1 (`scripts/faults.ps1`, run `2026-11-09-m1-faults`; the process's count at
+    repeat check, f159775 against cbcc4c1 (`docs/runs/2026-11-09/scripts/faults.ps1`, run `2026-11-09-m1-faults`; the process's count at
     `GATE_REPS=3` less `GATE_REPS=1`, halved; 3 runs each, equal to within 6 faults): 15104 to 0 at d = 13 and 3802 to
     -2 at d = 11; the first check also faults less (20398 to 17054 and 6589 to 5730 for the whole process). Timed
-    (run `2026-11-09-q2-m1-timed-1`, `scripts/ab.sh` under the CPU lease, total load 14%, n = 12 pairs): the repeat
+    (run `2026-11-09-q2-m1-timed-1`, `docs/runs/2026-11-09/scripts/ab.sh` under the CPU lease, total load 14%, n = 12 pairs): the repeat
     check at d = 13 is 29.4 +- 5.7 ms faster (438 to 410 ms median, 6.7%); the first check at d = 13 (-1.7 +- 7.2 ms
     of 432) and both checks at d = 11 (repeat +0.3 +- 8.9 ms of 107, first -12.5 +- 24.2) show no difference. An
     earlier untimed pair at 70% load could not see it (run `2026-11-09-m1-ab-untimed`: d = 13 rep 3 B - A
@@ -324,7 +324,7 @@ run `2026-11-08-v07-gate-measure_gate_costs`; tatic's test profile is optimized 
     Retired instructions of church-bv's `proof-cost-split`, both changes together (large pages off, CPU 4, 3 rotated
     batches of 4; paired batch medians, 9f65018 against both): 40.025 G to 39.496 G, 39.896 G to 39.469 G, 39.892 G to
     39.475 G (-1.32%, -1.07%, -1.05%; within-batch (median - best) / best 0.0001-0.0013); not split between the two.
-    A timed pair of the gate check (`scripts/ab.sh`, run `2026-11-09-n3-ab-timed2`, 9f65018 against f159775, 10 paired
+    A timed pair of the gate check (`docs/runs/2026-11-09/scripts/ab.sh`, run `2026-11-09-n3-ab-timed2`, 9f65018 against f159775, 10 paired
     rounds) cannot see a saving this size: d = 11 B - A +1.9 +- 3.6 ms of 107, d = 13 -20.7 +- 26.8 ms of 517. The
     count verdict stands as "less work", with no time claim.
   - *Whether the whnf memo pays* (at 9f65018; `patches/l1-whnf-counters-spike.patch`, run

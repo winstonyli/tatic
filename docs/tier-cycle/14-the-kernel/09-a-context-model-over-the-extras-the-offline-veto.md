@@ -4,8 +4,8 @@ Question (`docs/superpowers/specs/2026-11-01-context-aware-scorer-design.md`, st
 `docs/superpowers/plans/2026-11-01-context-aware-scorer.md`): does a model that sees a law in the context of its mine (35
 columns: the 26 per-law counts, three percentiles of steps, size and fallbacks among the pool's stragglers, four likenesses to
 the served stragglers' normal forms, two marginal-coverage columns after a served-only cover) rank the credited laws of a mine
-better than the per-law model and the `small` key? Offline only, nothing reaches the kernel (`crates/church-bv/src/ctx_scorer.rs`,
-`scripts/study/ctx_dump.sh`).
+better than the per-law model and the `small` key? Offline only, nothing reaches the kernel (`crates/church-bv/src/ctx_scorer.rs` (deleted in aed1363),
+`scripts/study/ctx_dump.sh` (deleted in aed1363)).
 
 - **Stage 1 reproduced** (`ctx_scorer::reproduce_stage1` on the cached labels of `2026-10-31-v06-labels`): fit on salts 4-9, test
   salt 10: AUC test 0.6913, train 0.7109, size-only 0.5282 (recorded 0.691 / 0.711 / 0.528); 13,398 laws, 3,282 credited, 42 mines.

@@ -57,7 +57,7 @@ Serving includes its launch, and the remainder is mostly the mines' launches. Ev
 PowerShell, `cmd /c exit` takes 12 ms, the test exe's `--list` 14 ms, and a one-law serve 0.24 s (building the law list). Run
 directly, MSYS's `true.exe` takes 17 ms, but `bash -c true` takes 0.3-0.7 s and each further command bash runs adds 0.15-0.35 s
 (about 1 s inside Claude Code's shell). A loop forked about 30 times: 5 exe launches, plus a `$(...)`, a pipe stage or a
-`grep`/`sed`/`awk`/`wc`/`date` for every parsed line. `scripts/loop_stream.sh` and the local `cross_run.sh` now parse with bash
+`grep`/`sed`/`awk`/`wc`/`date` for every parsed line. `scripts/loop_stream.sh` (deleted in 5d92f8d) and the local `cross_run.sh` now parse with bash
 builtins (`[[ =~ ]]`, `read` loops, `mapfile`, `$EPOCHSECONDS`). On a seeded sbo3 loop (2 threads, pinned to two cores, ABAB, 12%
 load, RTP off) that took 26.2-35.4 s down to 12.9-15.1 s, with identical m.tsv and rules. The cross-run sbo3 own loops went from
 19-21 s to 12-14 s with identical rows. Running a whole loop in one process would save only the 0.24 s law-list setup per launch,
@@ -68,7 +68,7 @@ so it needs no shell and no refactoring of the env-read configs. The script's un
 dropped. Same seeded sbo3 loop, three alternating rounds (pinned to two cores, 19-49% load from other work): Rust driver 9.4-12.2 s,
 trimmed bash script 10.8-23.4 s, and the five exe calls launched straight from PowerShell 9.2-10.3 s. Outputs were identical. On a
 quiet machine the driver saves about 1.4 s a loop and sits within 0.2 s of the direct-launch floor. Under load, bash's fork cost
-grows and the gap widens. Confirmed with `scripts/quiet_ab` (5 clean pairs, other load 16-17%, RTP off, 12 cores): wall 10-12 s
+grows and the gap widens. Confirmed with `scripts/quiet_ab` (deleted in 98104e7) (5 clean pairs, other load 16-17%, RTP off, 12 cores): wall 10-12 s
 against 11-13 s (best 10 vs 11, at 1 s resolution), CPU including children 7.77-8.73 s against 9.53-9.67 s. `pin.ps1` used to count only
 the launched process's CPU, which for a driver whose children do the work would have shown up as other processes' load. It now
 counts the children through a job object. Speed claims in this file should come from runs like this, now `runs time` (`tools/runs`, which replaced `quiet_ab`), not ad hoc ABAB. The sweeps (formerly local `transfer_mines.sh`, `cross_run.sh` and per-experiment wrappers) are now
@@ -97,7 +97,7 @@ loop is unchanged. Test: `growing_rewrite_chains_are_cut`. With only the repeat 
 with the growth cut it is proved with 196 steps left. Embedding is a heuristic: a chain that grows through an embedding copy and
 would later shrink is cut early. No loop got worse.
 
-**Miner budget = serving budget (2026-10-11).** `scripts/loop_stream.sh` had mined with `RULEMINER_STEPS=40` since the first loop
+**Miner budget = serving budget (2026-10-11).** `scripts/loop_stream.sh` (deleted in 5d92f8d) had mined with `RULEMINER_STEPS=40` since the first loop
 scripts, while serving uses 200. With both cuts, mining at 200 gives the identical four ref libraries and identical M on every own and
 cold loop. No chain gets near 40 steps any more, so the two budgets no longer disagree. The override is gone, so the miner's default
 of 200 applies.
@@ -321,7 +321,7 @@ profiler, 102k samples, 39 mine and 66 serving processes (serving with `CHECK_FA
 
 **A lemma file shared by a whole sweep (probe, reverted; built after the law files, see "One lemma file per sweep").** A temporary `LEMMA_SWEEP=<file>` in `run_loop` (no deletes; one
 file for every loop) at 84072cd; the `own` and `pooled` stages with and without it, side by side on the same libraries (CPU
-30% at launch, RTP off; `docs/runs/2026-10-12/rows/lsp_*`, `scripts/lemma_sweep_probe.sh`): rows identical; the loops' mines
+30% at launch, RTP off; `docs/runs/2026-10-12/rows/lsp_*`, `docs/runs/2026-10-12/scripts/lemma_sweep_probe.sh`): rows identical; the loops' mines
 hit 252 of their 1002 lemmas (without it: 0, so within a loop the second mine uses none of the first's lemmas); wall 85
 against 95 s, `own` 31 against 40 s, `pooled` 20 against 19 s; the file ends at 316 KB. One pair, so the 10 s is a rough
 size. Smaller than removing the law-pool rebuild (35% of the samples above).
@@ -339,7 +339,7 @@ less (`own` 20/10 against 32/17 s, `pooled` 8/7 against 15/14 s).
 start and end); `loop_stream` keeps one per loop. The trust argument is unchanged: the driver and all its children are one
 exe, so every statement in the file was checked by this build, and the loops run one after another, so there is still one
 writer at a time. Pair sweep against ed00b7a, same load (CPU 15% at launch, RTP off), `SWEEP="mines own pooled"`
-(`docs/runs/2026-10-12/rows/slp_*`, `scripts/sl_pair.sh`): rows, preferences and all 27 rule and unit files identical on both
+(`docs/runs/2026-10-12/rows/slp_*`, `docs/runs/2026-10-12/scripts/sl_pair.sh`): rows, preferences and all 27 rule and unit files identical on both
 salts; wall 63 against 76 s (salt 1) and 58 against 64 s (salt 2), 9-17% less (`own` 11/10 against 20/11 s summed over its
 rows; `pooled` loops now each take under a second). About 12 s of each sweep's wall is the driver's two machine-state checks.
 `MACHINE_STATE=0` now skips them in a sweep as well as in `loop_stream` (`machine_state` reads it).
@@ -367,7 +367,7 @@ under the profiler, 82.6k samples. Processes are split by stage by their start t
 `rule_miner`'s candidate index uses `SigMemo::new(n, 2)`. `pool3_conjectures` became `pool3_sequence`, which keeps the
 shuffled sequence of laws that use all three variables, keyed also by the salt. Each window is then taken by reference,
 cloning only the laws it takes. Pair sweep against 99475ac, same load (CPU 40% at launch from other sessions, RTP off,
-`MACHINE_STATE=0`), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/spp_*`, `scripts/sp_pair.sh`): rows, preferences
+`MACHINE_STATE=0`), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/spp_*`, `docs/runs/2026-10-12/scripts/sp_pair.sh`): rows, preferences
 and all 27 rule and unit files identical on both salts. Wall 82 against 91 s (salt 1) and 64 against 85 s (salt 2); the
 in-test times were 67 against 83 s and 55 against 80 s. Summed over their rows, `own` took 15/6 against 22/18 s and `pooled`
 2/3 against 12/14 s. The two fixes were measured together, and the heavier load makes these walls longer than the earlier pairs'.
@@ -398,19 +398,19 @@ choice, its pending proof and its `RULEMINER chosen` line. A round is settled on
 in order. When a proof fails, the miner prints `RULEMINER rolled back to round N`, drops the `picks` cache entries of that
 round and every later one, and resumes from the failed round's state with the winner marked unprovable. That reproduces what
 proving in turn would have chosen. Lookahead rounds and the last round settle every open round first. `RULEMINER lazy proofs:
-P proved, F failed` closes each fast mine. Rollback check (`scripts/spec_rollback.sh`: add3 ref mine offered three false,
+P proved, F failed` closes each fast mine. Rollback check (`docs/runs/2026-10-12/scripts/spec_rollback.sh`: add3 ref mine offered three false,
 attractive rules through `RULEMINER_EXTRA`): it rolls back at round 0, and its chosen rules equal 514b7a2's. Since 2026-10-27
 the test `miner::a_false_winner_rolls_the_rounds_back` is the rollback check (in process, one false rule; `RULEMINER_EXTRA` is
 gone, cleanup CU4a). Pair sweep against
 514b7a2, same load (CPU 22% at launch, RTP off, `MACHINE_STATE=0`), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/bpp_*`,
-`scripts/bp_pair.sh`): rows, preferences and all 27 rule and unit files identical on both salts; no proof failed. Wall 42 against
+`docs/runs/2026-10-12/scripts/bp_pair.sh`): rows, preferences and all 27 rule and unit files identical on both salts; no proof failed. Wall 42 against
 46 s (salt 1) and 31 against 37 s (salt 2); cmp3d's mine 12 against 17 s and 7 against 11 s.
 
 **One queue for the scoring workers (2026-10-13).** `pick`'s workers used to get a fixed stride of each chunk, so a chunk
 ended when the slowest worker's share did. They now take candidates one at a time from one shared queue. The chunks keep
 their bound order and every chunk is scored in full before the next is chosen, so the choice still does not depend on
 which worker scored what. Pair sweep against 5c4618f, same load (CPU 61% at launch from other sessions, RTP off,
-`MACHINE_STATE=0`), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/qp_*`, `scripts/q_pair.sh`): rows, preferences
+`MACHINE_STATE=0`), `SWEEP="mines own pooled"` (`docs/runs/2026-10-12/rows/qp_*`, `docs/runs/2026-10-12/scripts/q_pair.sh`): rows, preferences
 and all 27 rule and unit files identical on both salts. Wall 62 against 67 s (salt 1) and 48 against 52 s (salt 2); cmp3d's
 mine 16 against 20 s and 10 against 12 s. The heavier load makes these walls longer than the previous pair's.
 
@@ -434,10 +434,10 @@ now take the sweep's default of 6 scoring threads (`driver::sweep`; they had 2).
 speculatively too: each pick's winner is taken as provable and proved on a thread of its own. Once the paths are played, the
 lookahead waits for every proof they assumed (`assumed`). If one failed, it prints `RULEMINER lookahead played again`, drops
 the picks that offered the failed rule and every finished value, and plays the paths again; the failed rule is then known
-unprovable and never picked. Rollback check (`scripts/spec_rollback.sh`, now with four more false rules that win only on
+unprovable and never picked. Rollback check (`docs/runs/2026-10-12/scripts/spec_rollback.sh`, now with four more false rules that win only on
 greedy paths): one main-path rollback at round 0 and one lookahead replay, and the chosen rules equal 8f348b9's. Pair sweep
 against 8f348b9, same load (CPU 13% at launch, RTP off, `MACHINE_STATE=0`), `SWEEP="mines own pooled"`
-(`docs/runs/2026-10-12/rows/lap_*`, `scripts/la_pair.sh`): rows, preferences and all 27 rule and unit files identical on
+(`docs/runs/2026-10-12/rows/lap_*`, `docs/runs/2026-10-12/scripts/la_pair.sh`): rows, preferences and all 27 rule and unit files identical on
 both salts; no proof failed. Wall 35 against 37 s (salt 1) and 25 against 28 s (salt 2).
 - The mines' scoring rounds (summed `round over` times): cmp3d 4.5 against 5.6 s and 2.7 against 3.2 s; add3 0.2 against
   1.2 s and sbo3 0.1 against 0.7 s on salt 1, where the in-turn lookahead proofs had sat.
@@ -447,7 +447,7 @@ both salts; no proof failed. Wall 35 against 37 s (salt 1) and 25 against 28 s (
   refuted in the next section.
 
 **Why six threads gave little (2026-10-13).** Neither guess above holds.
-- Not shared cores. Running the same two builds one at a time (`scripts/la_seq.sh`, rows `las_*`; CPU 8% at launch, RTP off)
+- Not shared cores. Running the same two builds one at a time (`docs/runs/2026-10-12/scripts/la_seq.sh`, rows `las_*`; CPU 8% at launch, RTP off)
   gave identical outputs again. Walls were 31 against 34 s (salt 1) and 20 against 24 s (salt 2). cmp3d's summed rounds took
   4.4 against 5.0 s and 2.5 against 2.8 s, still only about 1.12× faster.
 - Not lost memo reuse. A samply profile of cmp3d's mine alone at a045cfb (`SWEEP=mines:cmp3d`, salt 1, CPU 4% at launch, RTP
@@ -464,8 +464,8 @@ both salts; no proof failed. Wall 35 against 37 s (salt 1) and 25 against 28 s (
 
 **Three rounds kept open (2026-10-13).** The main path now settles a round only once three newer rounds are open
 (`settle(&mut open, 3)`), so each winner's proof has three rounds of scoring to hide in. The rollback check
-(`scripts/spec_rollback.sh`) still gives one rollback at round 0 and one lookahead replay, and the chosen rules equal
-e9a8be1's. Sequential pair against e9a8be1 (`scripts/o3_seq.sh`, rows `o3s_*`; CPU 8% at launch, RTP off): rows,
+(`docs/runs/2026-10-12/scripts/spec_rollback.sh`) still gives one rollback at round 0 and one lookahead replay, and the chosen rules equal
+e9a8be1's. Sequential pair against e9a8be1 (`docs/runs/2026-10-12/scripts/o3_seq.sh`, rows `o3s_*`; CPU 8% at launch, RTP off): rows,
 preferences and all 27 rule and unit files identical on both salts; no proof failed. cmp3d's summed rounds took 3.0 against
 4.3 s and 1.8 against 2.6 s, about 1.43× faster. Wall 29 against 32 s (salt 1) and 21 against 21 s (salt 2).
 
@@ -496,7 +496,7 @@ preferences and all 27 rule and unit files identical on both salts; no proof fai
 
 **Winner verdicts kept across the sweep (negative, reverted, 2026-10-13).** A prototype (reverted, no patch kept) keyed each
 winner's verdict by the rule alone. `prove_any` looked up `rule_proved_<l>_<r>_<n>_<k>` in the sweep's lemma file and took a hit
-as provable; a built proof recorded its statement under that key. In the sequential pair against 84242e0 (`scripts/vc_seq.sh`,
+as provable; a built proof recorded its statement under that key. In the sequential pair against 84242e0 (`docs/runs/2026-10-12/scripts/vc_seq.sh`,
 rows `vcs_*`; CPU 23% at launch, RTP off), rows, preferences and all 27 rule and unit files were identical on both salts. But
 nothing got faster. Wall was 44 against 42 s (salt 1) and 22 against 30 s (salt 2). Summed `own` mine time was 14.6 against
 12.0 s and 3.3 against 3.6 s; `pooled` was 3.3 against 2.7 s and 3.3 against 3.6 s. The reason is where the wait sits. Almost
@@ -544,7 +544,7 @@ kernel: a node's branch types are `P` applied to literals, which beta-reduce to 
 - `proof_cost_split` (cmp3d, the 37-rule own library from "Case trees at nv = 9", 300 laws), five alternating runs with an
   `OLDMOTIVE=1` switch in the prototype (removed). The rule proofs' build, which includes their case-lemma checks, won every
   pair: 8.3-10.9 s (best 8.27) against 11.2-14.4 s (best 11.25), about 1.36x. Node counts and occurrences were identical.
-- Sequential pair against 50ba04f (`scripts/mot_seq.sh`, rows `mos_*`; the head side is the prototype with
+- Sequential pair against 50ba04f (`docs/runs/2026-10-12/scripts/mot_seq.sh`, rows `mos_*`; the head side is the prototype with
   `OLDMOTIVE=1`, which runs HEAD's motives; CPU 22% at launch, RTP off): rows, preferences and all 27 rule and unit files
   identical on both salts. Wall 25 against 31 s (salt 1) and 23 against 24 s (salt 2); summed `own` mine time 4.9 against
   8.1 s and 2.9 against 3.2 s.
@@ -555,7 +555,7 @@ gave the leaf `refl(bit(v))`, with `v` the value computed outside the kernel, ho
 - Computing `v` with the kernel's `normalize` was slower: `normalize` alone took about 3.2 s over about 36k leaves.
 - Computing `v` in plain Booleans (`Bools` through the side machine, F lemmas only), `proof_cost_split` (cmp3d, the 37-rule
   own library, 300 laws): wall won 7 of 10 alternating pairs, best 7.23 against 8.48 s, medians about 8.8 against 9.5 s, CPU
-  about 22% from other sessions. Process CPU time over 6 alternating pairs (`scripts/cpu_ab.ps1`) was mixed, best 9.41 against
+  about 22% from other sessions. Process CPU time over 6 alternating pairs (`scripts/cpu_ab.ps1` (untracked, lost)) was mixed, best 9.41 against
   9.52 s. The kernel still normalizes both `a` and `b` against the literal, so the leaf's work barely changes. Not kept.
 
 **Decision diagrams deleted (2026-10-13).** After "Case trees at nv = 9" the diagram path (`lemma_dd`, `DdGates`, `Dd`, `Sig`,
@@ -566,12 +566,12 @@ above (`lt(sub(x, y), add(sub(x, add(shl1(x, 0), y)), add(z, u)))`, the same wit
 diagrams 18.9-31.2 s per law, case trees 18.0-29.0 s. No gain at nv = 11 either, so the path is deleted; every case lemma is
 now a `lemma_n` case tree. Also gone: the `Gates::table` method (only the diagram used it) and the diagram test (74 tests
 remain). `CARRY_CAP` (10) still bounds the trees at 2^(k + 10) leaves.
-- Sequential pair against 5f65267 (`scripts/nodd_seq.sh`, rows `nds_*`; CPU 40% at launch from other sessions, RTP off):
+- Sequential pair against 5f65267 (`docs/runs/2026-10-12/scripts/nodd_seq.sh`, rows `nds_*`; CPU 40% at launch from other sessions, RTP off):
   rows, preferences and all 27 rule and unit files identical on both salts, as expected, since no lemma reached nv = 10.
   Wall 29 against 31 s (salt 1) and 34 against 29 s (salt 2): no change beyond noise.
 - The mul laws, where the carry cap matters (`mul_conjecture_miner`, `MULMINER_MAX=7`, all 91 laws, `CARRY_CAP` 10; their
   widest machines have 9 carries, so unguarded lemmas at nv = 11), one run at a time, 5f65267 against 0cb4e6c
-  (`scripts/cap_ab.sh`, order old head head old; CPU 41% at launch from other sessions, RTP off): both prove 90 laws, none
+  (`docs/runs/2026-10-12/scripts/cap_ab.sh`, order old head head old; CPU 41% at launch from other sessions, RTP off): both prove 90 laws, none
   over the cap, and leave `(1*1)x = 1(1x)` unproved. Totals 43.3 and 42.7 s with diagrams against 45.7 and 38.5 s without;
   the widest law, `7(x-y) = 7x - 7y` (carries 5 and 9), took 7.1 and 9.2 s against 13.4 and 8.0 s. Within noise, so the cap
   stays at 10.
@@ -596,9 +596,9 @@ and thread, as `constant` does for the gates; the key is the table's rows, so `t
 a miss. Terms are unchanged (hash-consing already made a rebuilt lambda the same node). Check:
 `table_bodies_are_shared_per_truth_table`.
 - `proof_cost_split` (cmp3d, 37-rule own library, 300 laws), process CPU time over 6 alternating pairs with a temporary
-  `NOTABMEMO` switch (removed; `scripts/cpu_ab.ps1`, CPU 20% at launch, RTP off): the memo won all 6, 8.61-9.64 s (best 8.61)
+  `NOTABMEMO` switch (removed; `scripts/cpu_ab.ps1` (untracked, lost), CPU 20% at launch, RTP off): the memo won all 6, 8.61-9.64 s (best 8.61)
   against 9.53-10.70 s (best 9.53), about 10%; rule-proof build 6.3-7.2 s against 7.2-8.0 s.
-- Sequential pair against 51cd960 (`scripts/tab_seq.sh`, rows `tbs_*`; the head side is the prototype with `NOTABMEMO=1`;
+- Sequential pair against 51cd960 (`docs/runs/2026-10-12/scripts/tab_seq.sh`, rows `tbs_*`; the head side is the prototype with `NOTABMEMO=1`;
   CPU 17% at launch, RTP off): rows, preferences and all 27 rule and unit files identical on both salts. Wall 31 against 30 s
   (salt 1) and 32 against 30 s (salt 2): the sweeps' proof work is too small a share for 10% of it to show.
 

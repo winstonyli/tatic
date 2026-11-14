@@ -65,7 +65,7 @@ countdown at n=64 took 155-194 ms, and rule transfer at n=64 took 51.8 s. The n=
 `cpu_ab.ps1` reads `cmp3d_own_rules.txt` next to itself, and that file had never been committed. Salt 1's
 `own_cmp3d_3_cmp3d/rules.txt` from the `cts_*` sweep was used for this run. That is 37 rules with no `winner  OVER
 loser` preference lines, and every 2026-10-13 sweep (`sls`, `uss`, `sms`, `whs`, `cts`) wrote the same file. It is
-now committed as `docs/runs/2026-10-12/scripts/cmp3d_own_rules.txt`. The older file that earlier rows used also
+then committed as `docs/runs/2026-10-12/scripts/cmp3d_own_rules.txt` (deleted again in b63d5ed with the rule files). The older file that earlier rows used also
 carried preference lines (the 2026-10-14 width probes above dropped them with `grep -v OVER`). `check_laws` reads
 those preferences, so absolute times before this row may not match runs on the committed file. A/B pairs within
 one run are unaffected.
@@ -333,7 +333,7 @@ and per-node loose-variable bitsets (see "What is still superlinear").
 
 *The rise, priced by a profile diff.* Two samply profiles on c19808a (profiles not kept) recorded the same law check
 repeated in fresh scopes: 120 checks at n=8 and 10 at n=64, each after one warm-up check. Each run printed wall-clock
-marks around its repeated checks; `scripts/prof_diff.py` keeps only the samples between the marks and divides each
+marks around its repeated checks; `docs/runs/2026-10-12/scripts/prof_diff.py` keeps only the samples between the marks and divides each
 function's self time by the new table entries (154,275 and 1,185,460 per check). Busy time per entry was 240 ns at n=8
 and 491 ns at n=64. The rise of 251 ns:
 
@@ -406,7 +406,7 @@ bulk-freed arena of `Rc` nodes, because 16% of a scope's nodes outlive it. The s
    it, which mimalloc does). With it set, mimalloc reserved 1 GiB of large pages at start (`MIMALLOC_VERBOSE=1`). Fewer TLB
    misses on the same random accesses, presumably (no counters measured it). A probe (reverted, no patch kept) timed rule 33's law in fresh scopes, three
    alternating pairs. At n=64 large pages won 3 of 3, median 483-489 → 433-436 ms (-10%, about 42 ns per entry). At
-   n=8: no change (medians 32-36 ms). On `proof_cost_split` (`scripts/cpu_ab.ps1`, 6 pairs) they won 6 of 6: CPU 3.02-3.20
+   n=8: no change (medians 32-36 ms). On `proof_cost_split` (`scripts/cpu_ab.ps1` (untracked, lost), 6 pairs) they won 6 of 6: CPU 3.02-3.20
    → 2.69-2.75 s (-12%), build 1.80-1.92 → 1.56-1.62 s, check 256-283 → 227-240 ms. Defender RTP off, load 2-8%.
    **Adopted (2026-10-14).** `.cargo/config.toml` compiles mimalloc's defaults in: large pages and a 64 MiB
    `arena_reserve`. `mi_option_set` from `main` would be too late for large pages, because mimalloc enables the
@@ -416,7 +416,7 @@ bulk-freed arena of `Rc` nodes, because 16% of a scope's nodes outlive it. The s
    `host::mimalloc_defaults_to_large_pages` (`machine::` before 2026-11-07) fails if the define stops reaching mimalloc (checked by building
    without the config). Every timing's machine-state line now ends `lockpriv=… pages=large|normal`. **Every timing in
    this file before this entry is on normal pages; later ones are on large pages unless they say otherwise.**
-   - *The reservation's size* (`scripts/cpu_arms.ps1`, `proof_cost_split`, 6 rotating rounds, load 7-18%, RTP off).
+   - *The reservation's size* (`scripts/cpu_arms.ps1` (untracked, lost), `proof_cost_split`, 6 rotating rounds, load 7-18%, RTP off).
 
      | Arm | CPU (s) | Peak private (MB) |
      |---|---|---|

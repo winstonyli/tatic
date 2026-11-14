@@ -44,9 +44,9 @@ CPU over 4 alternating pairs of `proof_cost_split` (cmp3d own, against 4da7e02).
   step and its m phi values of the carries are built once instead of once per lemma (m + 1 F lemmas plus P). The `core`
   proof keeps the direct path (symbolic bits, built once per position).
 - `proof_cost_split` (cmp3d own, 300 laws), CPU time over 16 alternating pairs with a temporary `NOSTEPMEMO` switch (removed;
-  `scripts/cpu_ab.ps1`; CPU 17-35% from other sessions, RTP off): the memo won 13 of 16 (2 of 4, 5 of 6, 6 of 6 per round);
+  `scripts/cpu_ab.ps1` (untracked, lost); CPU 17-35% from other sessions, RTP off): the memo won 13 of 16 (2 of 4, 5 of 6, 6 of 6 per round);
   summed 161.1 against 180.4 s, about 11%; rule-proof build 6.6-8.3 s against 8.5-10.1 s in the last round.
-- Sequential pair against 4da7e02 (`scripts/step_seq.sh`, rows `sts_*`; covers the helper and the step memo; RTP off): rows,
+- Sequential pair against 4da7e02 (`docs/runs/2026-10-12/scripts/step_seq.sh`, rows `sts_*`; covers the helper and the step memo; RTP off): rows,
   preferences and all 27 rule and unit files identical on both salts. Wall 29 against 28 s (salt 1), 27 against 28 s (salt 2).
 
 **A closed-term normal-form cache would save about 1% (negative, 2026-10-13).** A temporary probe at 464e24f (reverted, no
@@ -70,16 +70,16 @@ unit tests wrap theirs). `hc::args_id` uses a canonical argument's own address, 
 interns only the others; before, it cloned every argument and probed the node table for it on each substitution. Check:
 `args_id_is_the_same_for_a_canonical_argument_and_its_twin` (the id of a canonical node and of a twin built outside the
 table agree). The kernel's results are unchanged: the id is the same either way.
-- `proof_cost_split` (cmp3d own, 300 laws), CPU time, `scripts/cpu_ab.ps1` in its two-build mode, HEAD 01018d6 against the
+- `proof_cost_split` (cmp3d own, 300 laws), CPU time, `scripts/cpu_ab.ps1` (untracked, lost) in its two-build mode, HEAD 01018d6 against the
   change, RTP off. Other sessions' builds made the load swing (13-57%), and one round at 100% was dropped. Over the four
   other rounds (24 pairs) the change won 17, with 1 tie: summed 252.0 against 280.4 s, best 7.58 against 8.44 s, about 10%
   either way. In the quietest round it won 5 of 6, 8.03-11.11 s against 9.09-15.28 s.
-- Sequential pair against 01018d6 (`scripts/aid_seq.sh`, rows `ais_*`): rows, preferences and all 27 rule and unit files
+- Sequential pair against 01018d6 (`docs/runs/2026-10-12/scripts/aid_seq.sh`, rows `ais_*`): rows, preferences and all 27 rule and unit files
   identical on both salts. Wall 46/46 s against 39/30 s, with 57% load from other sessions' builds at the end; the
   sweeps' proof share is too small for a 10% gain on it to show, and the walls are not evidence either way.
 
 **Where the time goes after the memos (samply, 2026-10-13).** Run on be98b3e, `proof_cost_split` (cmp3d own, 300 laws), built
-with debug info, analysed by `scripts/prof_cases.py` with its directory pointed at the new profile (profile not kept; 9227
+with debug info, analysed by `docs/runs/2026-10-12/scripts/prof_cases.py` with its directory pointed at the new profile (profile not kept; 9227
 busy samples; CPU 21% at launch). Against the 0cb4e6c profile ("Where the case lemmas' time goes"):
 - Case lemmas (`shared_lemma`): 41.6% of busy samples (was 52%). Inside them, the kernel check `ck` is now 81% (was 63%) and
   building (`lemma_n`) 17% (was 36%): the builder memos removed most of the build side.
@@ -128,7 +128,7 @@ the table probes are the bulk.
   - Round 2: new won 7 pairs, 106.6 against 112.5 s.
   - Together: won 17 of 24, about 5% less CPU. The best single runs don't confirm it: 9.61 against 9.41 s in round 1,
     and 7.03 against 8.17 s in round 2.
-- Sequential pair (`scripts/bsp_seq.sh`, rows `bss_*`): rows, preferences, pooled rules and units, and the 26 rule and
+- Sequential pair (`docs/runs/2026-10-12/scripts/bsp_seq.sh`, rows `bss_*`): rows, preferences, pooled rules and units, and the 26 rule and
   unit files are identical on both salts. Only `own.tsv`'s elapsed-seconds column differs. Wall 36/21 s against 32/24 s.
 
 **The builder side is about 8% (samply, 2026-10-13).** Run on af20655, `proof_cost_split` as above (profile not kept; 7206
@@ -187,7 +187,7 @@ scope's end. Run on aba7d83, `proof_cost_split` cmp3d own. The counts were ident
   Beyond height 2 a node's rebuild costs more than its probe and insert.
 - The final build against 8cd8dfa, 12 alternating pairs: won 11, summed CPU 76.9 against 86.6 s (11% less), best 5.70
   against 6.28 s. CPU load was 5-27%; Defender RTP was off.
-- Sequential pair (`scripts/low_seq.sh`, rows `lws_*`): every file is identical on both salts (rows, preferences,
+- Sequential pair (`docs/runs/2026-10-12/scripts/low_seq.sh`, rows `lws_*`): every file is identical on both salts (rows, preferences,
   pooled rules and units, the rule and unit files), apart from the elapsed-seconds column of `pooled_prefs.tsv`.
 
 **After the skip; the same cutoff for `uses` and `shifts` does not pay (negative, 2026-10-13).** Probe as before
@@ -229,7 +229,7 @@ height cutoffs in place of `hc::low` and the scattered shape checks. Counters on
 
 **Leaves skip the infer and shift memos (negative, 2026-10-13).** The cheapest test of that ceiling: a temporary knob
 (`LEAFSKIP`, reverted, no patch kept) skipping the memo for leaf keys in `infer_rc`, `shift_child` and `shift_memo_child`,
-12 alternating pairs each on `proof_cost_split` cmp3d own (`scripts/cpu_ab.ps1` with a value), Defender RTP off:
+12 alternating pairs each on `proof_cost_split` cmp3d own (`scripts/cpu_ab.ps1` (untracked, lost) with a value), Defender RTP off:
 
 | Memo skipped for leaves | New won | Summed CPU, new against old | Best, new against old | CPU load |
 |---|---|---|---|---|
@@ -241,7 +241,7 @@ All three are within noise: a leaf's memo hit costs about what inferring or re-i
 node id with an immediate leaf value and per-table height cutoffs is not worth building for speed (parked).
 
 **Where the node table's time goes (samply, 2026-10-13).** Profile of `proof_cost_split` cmp3d own at 1f4db8b (profile not
-kept; `scripts/prof_callers.py`), 5870 busy samples:
+kept; `docs/runs/2026-10-12/scripts/prof_callers.py`), 5870 busy samples:
 - `hc::intern` is 34% of busy samples. Its callers: `inst_rec` 22%, the builders' `app`/`app2`/`app3` 7%, `shift_child`
   and `shift_memo_child` 3%, the rest under 2%.
 - Inside it, the probe itself (the `intern_as` closure's own samples) is 18%, `RawTable::insert` 7% and growth
@@ -279,7 +279,7 @@ price of the few hits that matter (negative).
 - Against 6cd8948, two rounds of 12 alternating pairs of `proof_cost_split` cmp3d own: won 8 (80.0 against 82.0 s, load
   9-23%) and 12 (67.7 against 73.2 s, load 11-15%). Together won 20 of 24, summed CPU 147.7 against 155.2 s (5% less);
   best 4.81 against 5.11 s. Defender RTP was off.
-- Sequential pair (`scripts/pset_seq.sh`, rows `pss_*`): every file is identical on both salts (rows, preferences,
+- Sequential pair (`docs/runs/2026-10-12/scripts/pset_seq.sh`, rows `pss_*`): every file is identical on both salts (rows, preferences,
   mines, the 26 rule and unit files), apart from the elapsed-seconds columns. The sweeps took 22 and 19 s wall on both
   builds, too short for the difference to show.
 
@@ -293,13 +293,13 @@ count.
 - Against 9fab09a, 24 alternating pairs of `proof_cost_split` cmp3d own: won 16, summed CPU 138.8 against 141.0 s (2%
   less), best 4.97 against 5.05 s; load 7-12%, Defender RTP off. Small, but the entries are smaller and the code no
   simpler or more complex, so it stays.
-- Sequential pair (`scripts/slim_seq.sh`, rows `sls_*`): every file identical on both salts, apart from the
+- Sequential pair (`docs/runs/2026-10-12/scripts/slim_seq.sh`, rows `sls_*`): every file identical on both salts, apart from the
   elapsed-seconds columns.
 - `ShiftMemo` (the builders' local shift memo) still keeps source and result pairs; it is outside the table and its
   scope.
 
 **Profile after the two table changes (samply, 2026-10-13).** Same run as "Where the node table's time goes", at 849bf22
-(profile not kept; `scripts/prof_callers.py`): 5221 busy samples against 5870, load 4%.
+(profile not kept; `docs/runs/2026-10-12/scripts/prof_callers.py`): 5221 busy samples against 5870, load 4%.
 
 | | 1f4db8b | 849bf22 | 0fdd223 (after the `uses` slot) |
 |---|---|---|---|
@@ -310,7 +310,7 @@ count.
 | freeing the table at the scope's end | 5.9% | 6.3% | 6.7% |
 | `hc::uses` | | | 2.1% |
 
-The 0fdd223 column (`scripts/prof_callers.py` and `scripts/prof_self.py`) has 6372 busy samples at 28% machine load,
+The 0fdd223 column (`docs/runs/2026-10-12/scripts/prof_callers.py` and `docs/runs/2026-10-12/scripts/prof_self.py`) has 6372 busy samples at 28% machine load,
 so compare its shares, not its counts. The `uses` walk is down to 2.1%, and the two table probes are now 26% of busy
 samples on their own (node table 17.4%, `inst` 9.0%). The next largest self times are `drop_glue` 5.7%, `intern`'s
 own body 5.3%, `height_at_most` 2.8% (the instantiation memo's small-node test), `args_id` 2.7% and `key_of` 2.3%.

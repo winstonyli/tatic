@@ -28,7 +28,7 @@ one that cycles. Some ordered runs still used up the budget (sbo3 seeded: up to 
 stop it either.
 
 Kept: a tripwire. `rule_set_kernel_check` counts the laws that used up the rule budget (`CHECKED ..., N used up the rule budget`),
-and the loop driver (`driver::loop_stream`; it replaced `scripts/loop_stream.sh`, 5d92f8d) writes it as the sixth column of `m.tsv` and as `exhausted=` in its last line. cmp3d's own library: 23
+and the loop driver (`driver::loop_stream`; it replaced `scripts/loop_stream.sh` (deleted in 5d92f8d), 5d92f8d) writes it as the sixth column of `m.tsv` and as `exhausted=` in its last line. cmp3d's own library: 23
 of 300 laws; no library: 0.
 
 ### Per-side rule budget; rejecting cycling candidates is a negative result (2026-10-11)

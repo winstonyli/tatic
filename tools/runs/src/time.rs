@@ -1,5 +1,5 @@
 //! `runs time`: alternating timing of two or more arms in rounds, each run measured by `runs::job`. Before each round
-//! it waits for a quiet machine, and it counts only rounds no one else loaded: `scripts/quiet_ab`'s rules, which it
+//! it waits for a quiet machine, and it counts only rounds no one else loaded: the rules of `scripts/quiet_ab` (deleted in 98104e7), which it
 //! replaced.
 
 use crate::{append, job, state};
