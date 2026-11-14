@@ -37,9 +37,18 @@ NotCovered rows: a census".
 - **A closure-call count on an empty set is unobservable in the closed module.** The sixth mutant's statement is
   `def_eq` to the positive one (asserted in `a_twice_with_one_closure_call_is_rejected`; the first version of that test
   asserted a `forged_rejected` that does not hold, and the Task 5 review found why): on an empty dynamic set every
-  closure call answers `z` on both sides, so one call or two give the same statement. No hole follows, because the walk is
-  lockstep and refuses the mismatch, which is the layer that decides, but the kernel alone would not. The pairing check
-  cannot see it either: equal callee sets on an empty set say nothing about how many times the head is called.
+  closure call answers `z` on both sides, so one call or two give the same statement. No hole follows because the
+  behaviour is the same: the code traps at each such call too. The walk refuses this mutant, but no layer needs to. The
+  same holds for anything that feeds or follows an empty-set call: `twice` with the inner call's argument `get 1` read
+  as `get 0` is `Accepted` (`an_argument_into_an_empty_set_is_unobserved`, found by the final review).
+- **A closure call at another arity was a false accept, now `NotCovered`.** The final review found
+  `\x. (\f. f 1 2) (\y. if 0 < y then (\z. z) else (\z. z + 1))` `Accepted` under `Fast` dispatch: the code's
+  `call_indirect (type $ty2)` reaches a 1-ary closure and traps, the term answers 2, and the reading answered `z` on
+  both sides because the arity-2 set is empty. The `z` for a set with no record of the call's arity matches the code
+  only through wasm's type trap, never the term. The gate now reads closures only when every closure call and every
+  `Pointer` record in the module has one arity (`a_closure_call_at_another_arity_is_not_covered`, on a fragment forced
+  to `Fast`); the 8 rows are all 1-ary and stay `Accepted`. The general fix is parked (`PARKED.md`, "Closures of more
+  than one arity in one module").
 - **The reading refuses what it cannot yet model**, each pinned by a test in `proof/tests/gate.rs`: a closure call
   beside a table slot with no record (`a_closure_call_beside_a_pap_slot_is_not_covered`), curried dispatch
   (`a_curried_closure_call_is_not_covered`; the test prints "curried census fragments: 6, of which call a closure: 6" and asserts each of those 6 is `NotCovered`), and a

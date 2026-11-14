@@ -473,3 +473,14 @@ fn a_twice_with_one_closure_call_is_rejected() {
         })
     });
 }
+
+/// What the empty set leaves unobserved, pinned: `twice`'s inner closure call's argument (`get 1`, at 8) read as
+/// `get 0` is `Accepted`, because on the empty set the inner call answers `z` whatever it is given, on both sides. So
+/// `twice`'s `Accepted` says only that each closure call traps.
+#[test]
+fn an_argument_into_an_empty_set_is_unobserved() {
+    let entry = compiled(&twice).2.entry().code.clone();
+    let mutant = with_entry(compiled(&twice).2, |e| Entry { code: splice_at(&entry, 8, &[get(1)], &[get(0)]), ..e });
+    let (s, h, _) = compiled(&twice);
+    big(move || assert_eq!(gate(tatic_wasm::wasm::table(), &s, h, &mutant), Verdict::Accepted));
+}

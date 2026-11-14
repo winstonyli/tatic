@@ -86,7 +86,7 @@ is printed `(param $p0 i64) ..` with no `$env`, so its type is not `$ty_a` and w
 `EnvAccess`, which decides its printed type, is part of the trusted dispatch semantics. Both sides dispatch on
 the index word through the same chain, `(i == p1) (call p1) ((i == p2) (call p2) .. z)`, where `call p` is the
 side's existing static call: `SEnv::call` on the source side, and on the machine side the `call` constructor's meaning
-at the literal `p` (`Ctxt::table` applied to `p`). Each test `(i == p)` is a `choose` on the `eq` row (the probe `ch`
+at the literal `p` (`Ctxt::table` applied to `p`). Each test `(i == p)` is a `choose` on the encoding's `eq_bit(n)`, the term the `eq` row means (the probe `ch`
 in the proof), not `Ctxt::table`'s `eq_bv` pick: the walk branches only on `ch`, and `eq_bv` at a run-time index is
 stuck. On the source side `i` is the `wrap` row's meaning applied to the
 head's word, on the machine side the popped index (itself `wrap` of the word). An index outside the set answers `z`
@@ -109,9 +109,11 @@ the dynamic set of each closure call it makes, against the code's static targets
 head is a static `CombinatorCall` on the source side and a `call $cK` in the code. Equal sets make every arm of the
 source's dispatch find its callee, so a closure call present on one side only is `Rejected(Pairing)` on a non-empty
 set, not a panic; on an empty set the walk rejects it (corrected at plan time, round 2). On an empty dynamic set every
-closure call answers `z` on both sides, so a mutant that changes the closure-call count there is unobservable in the
-closed module (its statement is `def_eq` to the positive one, asserted in
-`proof/tests/gate_mutants.rs#a_twice_with_one_closure_call_is_rejected`) and only the walk refuses it; `twice`,
+closure call answers `z` on both sides, and the code traps there, so whatever feeds or follows such a call is
+unobservable in the closed module: a mutant that changes the closure-call count has a statement `def_eq` to the
+positive one (`proof/tests/gate_mutants.rs#a_twice_with_one_closure_call_is_rejected`; the walk refuses it, but no
+layer needs to, since the behaviour is the same), and one that changes the call's argument is `Accepted`
+(`proof/tests/gate_mutants.rs#an_argument_into_an_empty_set_is_unobserved`, corrected at the final review); `twice`,
 `iterate` and `iterate_creating_a_closure_over_g` are such empty-set rows (no record reached through `$env`), so their
 `Accepted` says only that each closure call traps on both sides.
 
@@ -142,6 +144,12 @@ What an `Accepted` verdict claims, then: the code agrees, for every fuel and eve
 with each closed lambda as its table word and each application of a word as the table entry at its low half. The
 registry's lambda-to-position map is trusted exactly as it already is for callees (`pairing`); the `elem` line is
 printed from the same positions and the `$tyK` lines from the same instructions (D4).
+
+The reading answers `z` for a call into a set with no record of the call's arity, which matches the code only because
+wasm traps on a `call_indirect` type mismatch; the term does not trap. So the claim holds only where no closure call
+can reach a closure of another arity: the gate reads closures only when every closure call and every `Pointer`
+record in the module has one arity, and leaves any other module `NotCovered` (found by the final review, decision e1;
+`PARKED.md`, "Closures of more than one arity in one module").
 
 ### D2. The closure word's rows
 
