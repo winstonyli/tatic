@@ -253,17 +253,19 @@ A finding is cited by section or paragraph title, never by line (its lines drift
 - **Guard Bit sites** — what: carry the row's domain at Bit (comparison) sites as at Word sites. Why parked: every Bit
   row is total today, so the guard would always be taken. Trigger: the first partial Bit row (`tatic-wasm/src/wasm.rs#wasm_rows_are_closed_and_typed` fails on one). Evidence:
   `tatic-wasm/src/machine.rs#interp` (its `binop` guards only Word rows), verified 2026-11-13. Status: parked.
-- **Bit rows (`wrap`, `extend`, `shl`, `or`; terms 25 and 28)** — why parked: outside v0.8's goals (`docs/superpowers/specs/2026-11-10-v08-recursion-once-design.md`). Trigger:
-  v0.8 tagged. Evidence: the census, `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code
-  stands", verified 2026-11-11. Status: parked.
+- **Bit rows (`wrap`, `extend`, `shl`, `or`, `shr_u`: the closure word's split)** — why parked: every row that needs
+  them also needs the source reading to take closure values, and all but 2 need `call_indirect` too
+  (`docs/tier-cycle/`, "What blocks the NotCovered rows: a census"); alone they install nothing. Trigger: work on the
+  closure convention starts (they are its first step). Evidence: that census, run `2026-11-13-p5-notcovered-census`,
+  verified 2026-11-13. Status: parked.
 - **The heap relation on the frame (after v0.8)** — what: `Mem` becomes `V x Heap` and the `Store`/`Load` rows
   return; the machine's types, call row and interpreters stay as v0.8 leaves them, and the generator binds the memory's
   parts separately. Why parked: no v0.8 target allocates. Trigger: the first gate target that allocates or reads a
-  record (the 7 closure-record terms, term 37). Evidence: `docs/tier-cycle/`, "The heap on the frame, behind one memory
+  record (the 6 heap rows of `docs/tier-cycle/`, "What blocks the NotCovered rows: a census"). Evidence: `docs/tier-cycle/`, "The heap on the frame, behind one memory
   argument: a spike" and "A caller's cell across a call to another function: a spike"; what is shown and open is in
   `docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Open: a heap relation for callees", verified 2026-11-11.
   Status: parked.
-- **`call_indirect` and the table** — why parked: the 11 table-call terms also need the closure convention
+- **`call_indirect` and the table** — why parked: the 12 table-call rows without the heap (`docs/tier-cycle/`, "What blocks the NotCovered rows: a census") also need the closure convention
   (`docs/decisions/2026-11-10-v08-shape-and-any-backend.md`, "Where the code stands"). Trigger: the heap relation
   built (entry above), or a table-only closure target picked. Evidence: same section, verified 2026-11-11. Status:
   parked.

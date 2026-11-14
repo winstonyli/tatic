@@ -1,0 +1,61 @@
+# The NotCovered census probe (doc 15, "What blocks the NotCovered rows: a census"); apply to 3ba6a15 and run p5_census --ignored.
+diff --git a/crates/tatic/src/proof/tests/baseline.rs b/crates/tatic/src/proof/tests/baseline.rs
+index 7435586..aedda74 100644
+--- a/crates/tatic/src/proof/tests/baseline.rs
++++ b/crates/tatic/src/proof/tests/baseline.rs
+@@ -367,3 +367,55 @@ fn verdicts_match() {
+         assert_eq!(VERDICTS.iter().find(|(n, _)| n == name).unwrap().1, Kind::Accepted, "held-out row {name}");
+     }
+ }
++
++fn p5_raws(code: &[tatic_wasm::machine::Ins], out: &mut std::collections::BTreeSet<String>) {
++    use tatic_wasm::machine::Ins;
++    for i in code {
++        match i {
++            Ins::Raw(r) => {
++                out.insert(r.split_whitespace().take(2).collect::<Vec<_>>().join(" "));
++            }
++            Ins::If(t, e) => {
++                p5_raws(t, out);
++                p5_raws(e, out);
++            }
++            _ => {}
++        }
++    }
++}
++
++/// The NotCovered census (doc 15, "What blocks the NotCovered rows: a census"): per census row, whether it has a
++/// fragment, its records, pointer-env records, the distinct `Raw` lines (first two words) and the gate's verdict.
++#[test]
++#[ignore]
++fn p5_census() {
++    use crate::proof::gate::{gate, Verdict};
++    for (name, s, h) in census() {
++        let line = std::thread::Builder::new()
++            .stack_size(tatic_kernel::CHECK_STACK)
++            .spawn(move || {
++                let Some(c) = compile::compile_specialised(&s, h) else { return "NOFRAG".to_string() };
++                let mut raws = std::collections::BTreeSet::new();
++                let recs = c.frag.records();
++                let mut ptr = 0;
++                for e in recs.iter().flatten() {
++                    p5_raws(&e.code, &mut raws);
++                    ptr += (e.env == tatic_wasm::machine::EnvAccess::Pointer) as usize;
++                }
++                let v = match &c.specialised {
++                    Some((s2, h2)) => gate(tatic_wasm::wasm::table(), s2, *h2, &c.frag),
++                    None => gate(tatic_wasm::wasm::table(), &s, h, &c.frag),
++                };
++                let v = match v {
++                    Verdict::Accepted => "Accepted".to_string(),
++                    Verdict::Rejected(..) => "Rejected".to_string(),
++                    Verdict::NotCovered(m) => format!("NotCovered: {m}"),
++                };
++                format!("spec={} recs={} ptr_env={ptr} raws={:?} | {v}", c.specialised.is_some(), recs.len(), raws)
++            })
++            .unwrap()
++            .join()
++            .unwrap();
++        println!("P5\t{name}\t{line}");
++    }
++}
