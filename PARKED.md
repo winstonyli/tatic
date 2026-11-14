@@ -282,6 +282,10 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   over every `Pointer` record, over- and under-application included), so such a module is `Rejected` instead. Trigger:
   a census row whose closures or closure calls differ in arity. Evidence: `proof/tests/gate.rs`,
   `a_closure_call_at_another_arity_is_not_covered`, verified 2026-11-14. Status: parked.
+- **Curried dispatch whenever closures may differ in arity** (decision g1, 2026-11-14) — the JIT keeps `Fast` dispatch
+  with its arity trap (`jit/ir.rs#Dispatch`): the gate's one-arity guard and the fallback prover keep such a fragment
+  from installing (`prove_install` false on the guard's probe term), so the change would buy no soundness and would
+  move goldens and baseline rows. Status: decided against.
 - **A call budget that bounds gate time** - what: `proof/gate.rs#cost` is tree nodes plus `CALL_WEIGHT` (228) per
   call site, fitted only on `rec f n = if n <= 0 then 0 else f (n - 1) + .. + f (n - 1)` (a tiny tree). A term
   with 16 self-calls and a 1920-node straight-line tail costs 7590, under `MAX_GATE_TREE` (8192), and took about
