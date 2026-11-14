@@ -10,6 +10,7 @@ use crate::proof::gate::{build, gate, Layer, Verdict, CALL_WEIGHT, MAX_GATE_TREE
 use crate::support::samples::{
     a_capturing_closure_call, a_pap_capturing, capturing_closure_loop, factorial, fib, inc, partial_application_loop,
     redundant_arithmetic_recursion, source, straight_line,
+    non_tail_closure_carrying_recursion, tail_recursive_loop_with_if_between_closures_self_call_arg,
     tail_recursive_loop_with_pap_producing_root_self_call_arg, twice, twice_inc_5,
 };
 use crate::testing::ins_mutate::with_entry;
@@ -516,8 +517,8 @@ fn covered_code_with_raw_or_ill_formed_is_rejected_and_not_installed() {
 #[test]
 fn what_cps_cannot_take_is_not_covered() {
     let cases: Vec<(&str, Box<dyn Fn(&mut TermStore) -> Hash>)> = vec![
-        ("twice (higher-order)", Box::new(twice)),
-        ("f applied to 1", Box::new(|s: &mut TermStore| source(s, r"\f. f 1"))),
+        ("a capturing closure", Box::new(|s: &mut TermStore| source(s, r"\x g. g (\y. x + y)"))),
+        ("a partial application", Box::new(|s: &mut TermStore| source(s, r"\x. (\a b. a + b) x"))),
         ("an If in an operand", Box::new(|s: &mut TermStore| source(s, r"\a b. 1 + (if a < b then a else b)"))),
         (
             "an If in a condition",
@@ -529,13 +530,8 @@ fn what_cps_cannot_take_is_not_covered() {
     for (name, b) in cases {
         let mut s = TermStore::new();
         let h = b(&mut s);
-        let (s, h, frag) = match crate::jit::compile::compile_specialised(&s, h) {
-            Some(c) => match c.specialised {
-                Some((s2, h2)) => (s2, h2, Some(c.frag)),
-                None => (s, h, Some(c.frag)),
-            },
-            None => (s, h, None),
-        };
+        // the term's own fragment: a partial application or a capture the specialiser would reduce away still counts
+        let frag = crate::jit::compile::try_compile(&s, h);
         // a term that does not compile has no fragment to gate: it goes to the chain on its own
         if let Some(frag) = frag {
             let v = gate(tatic_wasm::wasm::table(), &s, h, &frag);
@@ -564,7 +560,7 @@ fn a_term_over_the_budget_is_not_covered() {
         let src = format!("rec f n = if n <= 0 then 0 else {}", vec!["f (n - 1)"; k].join(" + "));
         let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
         let tree = crate::jit::compile::tree_size(&s, h);
-        let sites = crate::proof::gate::call_sites(&s, h);
+        let sites = crate::proof::gate::call_sites(&s, h, &|_| 0);
         if tree <= MAX_GATE_TREE && tree + CALL_WEIGHT * sites > MAX_GATE_TREE {
             assert!(matches!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::NotCovered(_)), "k={k}");
             found = true;
@@ -611,7 +607,7 @@ fn time_call_family() {
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn(move || {
                 let (s, h, frag) = compiled(&move |s: &mut TermStore| source(s, &src));
-                let (tree, sites) = (crate::jit::compile::tree_size(&s, h), crate::proof::gate::call_sites(&s, h));
+                let (tree, sites) = (crate::jit::compile::tree_size(&s, h), crate::proof::gate::call_sites(&s, h, &|_| 0));
                 let covered = tree + crate::proof::gate::CALL_WEIGHT * sites <= MAX_GATE_TREE;
                 (tree, sites, covered.then(|| time_gate(&s, h, &frag, 1)))
             })
@@ -627,4 +623,154 @@ fn time_call_family() {
         println!("{k} {tree} {b:.1} {c:.1}");
         k *= 2;
     }
+}
+
+/// `src`'s own (unspecialised) fragment, as `try_compile` makes it: the closures stay in it.
+fn uncompiled(src: &str) -> (TermStore, Hash, CompiledFragment) {
+    let mut s = TermStore::new();
+    let h = source(&mut s, src);
+    let frag = crate::jit::compile::try_compile(&s, h).expect("compiles");
+    (s, h, frag)
+}
+
+/// `frag` with `edit` applied to the code of every record at any depth, an `If`'s arms included.
+fn rewrite_code(frag: CompiledFragment, edit: &dyn Fn(&mut Vec<Ins>)) -> CompiledFragment {
+    use crate::jit::compile::Item;
+    fn go(code: &mut Vec<Ins>, edit: &dyn Fn(&mut Vec<Ins>)) {
+        for i in code.iter_mut() {
+            if let Ins::If(t, e) = i {
+                go(t, edit);
+                go(e, edit);
+            }
+        }
+        edit(code);
+    }
+    let mut frag = frag;
+    for item in &mut frag.module {
+        if let Item::Func { entry, .. } = item {
+            go(&mut entry.code, edit);
+        }
+    }
+    frag
+}
+
+/// A verdict on `frag` on the checker's stack, with the fragment printed in the failure message.
+fn gate_big(s: TermStore, h: Hash, frag: CompiledFragment) -> Verdict {
+    big(move || gate(tatic_wasm::wasm::table(), &s, h, &frag))
+}
+
+#[test]
+fn a_closure_call_beside_a_pap_slot_is_not_covered() {
+    use crate::jit::compile::Item;
+    let (s0, h0, f0) = compiled(&twice);
+    assert_eq!(gate_big(s0, h0, f0), Verdict::Accepted, "twice, before the slot");
+    let (s, h, mut frag) = compiled(&twice);
+    frag.module.insert(0, Item::Text("(; a partial-application wrapper ;)".into()));
+    frag.entry_pos += 1;
+    for item in &mut frag.module[1..] {
+        if let Item::Func { pos, .. } = item {
+            *pos += 1;
+        }
+    }
+    let v = gate_big(s, h, frag);
+    assert!(matches!(&v, Verdict::NotCovered(m) if m.contains("outside what the source reading takes")), "{v:?}");
+}
+
+/// `twice` read as a curried module is `NotCovered` (the reading takes positions, a curried module packs stage
+/// indices), and so is every census row whose fragment is curried and calls a closure, never `Rejected`.
+#[test]
+fn a_curried_closure_call_is_not_covered() {
+    let (s, h, frag) = compiled(&twice);
+    assert!(!frag.curried);
+    let curried = CompiledFragment { curried: true, ..frag };
+    let v = gate_big(s, h, curried);
+    assert!(matches!(&v, Verdict::NotCovered(_)), "{v:?}");
+    let (mut curried_rows, mut reading) = (0, 0);
+    for (name, s, h) in super::baseline::census() {
+        let Some(c) = crate::jit::compile::compile_specialised(&s, h) else { continue };
+        if !c.frag.curried {
+            continue;
+        }
+        curried_rows += 1;
+        let mut calls = false;
+        for r in c.frag.records().iter().flatten() {
+            tatic_wasm::machine::visit_ins(&r.code, &mut |i| calls |= matches!(i, Ins::CallIndirect(_)));
+        }
+        let (s2, h2) = match c.specialised {
+            Some((s2, h2)) => (s2, h2),
+            None => (s, h),
+        };
+        let v = gate_big(s2, h2, c.frag);
+        assert!(!matches!(v, Verdict::Rejected(..)), "{name}: {v:?}");
+        if calls {
+            reading += 1;
+            assert!(matches!(v, Verdict::NotCovered(_)), "{name}: a curried closure call is {v:?}");
+        }
+    }
+    println!("curried census fragments: {curried_rows}, of which call a closure: {reading}");
+    assert!(curried_rows > 0, "no census fragment is curried: `curried == true` is not exercised by a real fragment");
+}
+
+/// `call_cycle` runs before `pairing`: a closure that calls closures of its own arity reaches itself through the set.
+#[test]
+fn a_closure_cycle_is_not_covered() {
+    let (s, h, frag) = uncompiled(r"\x. (\f. f 5) (\y. (\g. g 1) (\z. z + 1))");
+    let records = frag.records();
+    let cycle = tatic_wasm::machine::statement::call_cycle(&records);
+    let shown = format!("{:?}", frag.module);
+    assert!(cycle.is_some(), "the fragment has no cycle: {shown}");
+    let v = gate_big(s, h, frag);
+    assert!(matches!(&v, Verdict::NotCovered(m) if m.contains("cycle")), "{v:?} for {shown}");
+}
+
+/// A source closure call whose code lost its `call_indirect` pairs no more: its position left the code's callees.
+#[test]
+fn a_dropped_closure_call_is_rejected_by_pairing() {
+    let (s, h, frag) = compiled(&non_tail_closure_carrying_recursion);
+    let tail = [
+        Ins::Row { name: "local.get", operand: 1 },
+        Ins::Row { name: "wrap", operand: 0 },
+        Ins::CallIndirect(1),
+    ];
+    let shown = format!("{:?}", frag.module);
+    let hit = std::cell::Cell::new(false);
+    let bad = rewrite_code(frag, &|code| {
+        if let Some(i) = code.windows(3).position(|w| w == tail) {
+            code.splice(i..i + 3, [Ins::Row { name: "add", operand: 0 }]);
+            hit.set(true);
+        }
+    });
+    assert!(hit.get(), "no `get $p1; wrap; call_indirect 1` in {shown}");
+    let v = gate_big(s, h, bad);
+    assert!(matches!(&v, Verdict::Rejected(Layer::Pairing, _)), "{v:?} for {shown}");
+}
+
+/// A `Pointer` record of arity 1 whose body makes an arity-1 closure call: its own position is in the source side's
+/// set and `callees` drops it from the code side's, so `pairing` removes it from both.
+#[test]
+fn a_pointer_record_calling_its_own_arity_pairs() {
+    let (s, h, frag) = uncompiled(r"\x. (\f. f (\z. z + 1)) (\y. y 1)");
+    let shown = format!("{:?}", frag.module);
+    let own = frag.records().iter().flatten().any(|r| r.env == tatic_wasm::machine::EnvAccess::Pointer && r.arity == 1 && r.code.contains(&Ins::CallIndirect(1)));
+    assert!(own, "no Pointer record of arity 1 calls arity 1 in {shown}");
+    let v = gate_big(s, h, frag);
+    assert_eq!(v, Verdict::Accepted, "for {shown}");
+}
+
+/// The closure call's cost: `max(1, width)` for the call and the sites of its arguments, its head counted twice when
+/// the call is an over-application.
+#[test]
+fn a_closure_call_costs_its_width_and_its_head_twice() {
+    use crate::proof::gate::call_sites;
+    let mut s = TermStore::new();
+    let h = source(&mut s, r"\f. f 1");
+    assert_eq!(call_sites(&s, h, &|_| 3), 3);
+    assert_eq!(call_sites(&s, h, &|_| 0), 1, "max(1, 0)");
+    // rec f n = if n <= 0 then n else f ((\a b. if 0 < a then (\c. c) else (\c. c)) n n (n - 1))
+    // the entry is `f`'s self-call (1 site) around an over-application: the head `\a b. ..` takes 2 of 3 arguments, the
+    // extra argument `n - 1` is one closure call. At width 1:
+    //   self-call 1 + [ 2 * (1 + 0 + 0) (head args `n`, `n`: no sites) + max(1, 1) + 0 (extra `n - 1`: none) ] = 1 + 3
+    let mut s = TermStore::new();
+    let h = tail_recursive_loop_with_if_between_closures_self_call_arg(&mut s);
+    assert_eq!(call_sites(&s, h, &|_| 1), 4);
 }

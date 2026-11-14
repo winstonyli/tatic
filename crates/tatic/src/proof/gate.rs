@@ -10,11 +10,11 @@
 use std::collections::BTreeSet;
 
 use hashbrown::{HashMap, HashSet};
-use tatic_kernel::{app2, scoped, Expr};
+use tatic_kernel::{app, app2, scoped, Expr};
 use tatic_wasm::encoding::{holds, lit, low_bits, At, Cx};
 use tatic_wasm::machine::sim::prove;
-use tatic_wasm::machine::statement::{statement, ModEntry, SEnv, SrcFn};
-use tatic_wasm::machine::{callees, shape_check, Class, Machine, Table};
+use tatic_wasm::machine::statement::{call_cycle, statement, ModEntry, SEnv, SrcFn};
+use tatic_wasm::machine::{callees, dynamic_set, dynamic_sets, shape_check, visit_ins, Class, Ins, Machine, Table};
 
 use crate::jit::compile::{tree_size, CompiledFragment};
 use crate::jit::shape::{classify, free_vars, peel, Shape};
@@ -63,31 +63,37 @@ impl tatic_kernel::Escape for Verdict {
 
 /// The source in a form `parse` has already checked: parameters by position, literals, word rows, `If`s on a
 /// comparison in tail position, and calls (an operand anywhere; their arguments are evaluated left to right): to the
-/// function itself (`None`) or to a closed callee at its module position.
+/// function itself (`None`) or to a closed callee at its module position. A closed closure value is the `Prim`s that
+/// pack its word (`env 0 << 32 | position`); `Apply` is a closure call, the head's word dispatched over the module's
+/// dynamic set for the arguments' count (`SEnv::call_dyn`).
 enum Src {
     Param(usize),
     Lit(u128),
     Prim(&'static str, Box<Src>, Box<Src>),
     If(&'static str, Box<Src>, Box<Src>, Box<Src>, Box<Src>),
     Call(Option<usize>, Vec<Src>),
+    Apply(Box<Src>, Vec<Src>),
 }
 
 /// What `parse` reads a function body against: the table, the store, the function's parameter count and self-reference,
-/// and the registry (a closed callee's term to its module position).
+/// the registry (a closed callee's term to its module position), and whether closure values and calls are read
+/// (`build`'s `fast`: positions are the closure words' table values, and the table has the rows that pack and unpack one).
 struct Reading<'a> {
     table: &'a Table,
     store: &'a TermStore,
     arity: usize,
     self_idx: Option<u32>,
     pos_of: &'a dyn Fn(Hash) -> Option<usize>,
+    fast: bool,
 }
 
 /// `h` as a `Src`: only a tail position admits an `If`. `None` outside what `cps` reads.
 fn parse(rd: &Reading, h: Hash, tail: bool) -> Option<Src> {
     let (arity, store) = (rd.arity, rd.store);
     let sub = |h, tail| parse(rd, h, tail).map(Box::new);
+    let all = |hs: Vec<Hash>| -> Option<Vec<Src>> { hs.into_iter().map(|a| parse(rd, a, false)).collect() };
     let args = |hs: Vec<Hash>, want: usize| -> Option<Vec<Src>> {
-        let args: Vec<Src> = hs.into_iter().map(|a| parse(rd, a, false)).collect::<Option<_>>()?;
+        let args = all(hs)?;
         (args.len() == want).then_some(args)
     };
     match classify(store, h, arity, rd.self_idx) {
@@ -104,11 +110,30 @@ fn parse(rd: &Reading, h: Hash, tail: bool) -> Option<Src> {
             Some(Src::Prim(p.name(), sub(a, false)?, sub(b, false)?))
         }
         Shape::SelfCall(hs) => Some(Src::Call(None, args(hs, arity)?)),
-        // a saturated call of a closed literal combinator the registry holds
-        Shape::CombinatorCall { root, arity: callee, args: hs } => {
+        // a call of a parameter: a closure call
+        Shape::VarCall { var, args: hs, .. } if rd.fast => {
+            ((var as usize) < arity).then_some(())?;
+            Some(Src::Apply(Box::new(Src::Param(arity - 1 - var as usize)), all(hs)?))
+        }
+        // a saturated call of a closed literal combinator the registry holds; past its arity, the result is called
+        Shape::CombinatorCall { root, arity: callee, args: mut hs } => {
             let (a, body, is_rec) = peel(store, root)?;
             free_vars(store, body, a, is_rec).is_empty().then_some(())?;
-            Some(Src::Call(Some((rd.pos_of)(root)?), args(hs, callee)?))
+            let pos = (rd.pos_of)(root)?;
+            let extra = hs.split_off(callee.min(hs.len()));
+            let call = Src::Call(Some(pos), args(hs, callee)?);
+            if extra.is_empty() {
+                return Some(call);
+            }
+            rd.fast.then_some(())?;
+            Some(Src::Apply(Box::new(call), all(extra)?))
+        }
+        // a closed closure value, packed as the lowering packs it: `i32.const 0; extend; shl 32; or position`
+        Shape::Combinator { is_rec: false } if rd.fast => {
+            let (a, body, is_rec) = peel(store, h)?;
+            (a > 0 && free_vars(store, body, a, is_rec).is_empty()).then_some(())?;
+            let env = Src::Prim("shl", Box::new(Src::Lit(0)), Box::new(Src::Lit(32)));
+            Some(Src::Prim("or", Box::new(env), Box::new(Src::Lit((rd.pos_of)(h)? as u128))))
         }
         _ => None,
     }
@@ -157,30 +182,56 @@ fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> 
             })
         }),
         Src::Call(to, args) => cps_args(w, e, c, args, vec![], &|c, xs| e.call(c, to.unwrap_or(e.own), xs, k)),
+        // the lowering's order: the head, its environment half (`shr_u` 32, guarded; the value is unused), the
+        // arguments, the head again, then the dispatch on its table index (`wrap`)
+        Src::Apply(head, args) => cps(w, e, c, head, &|c, x| {
+            let x = c.mark(x);
+            let y = c.mark(lit(e.n, 32));
+            let kk = cps_args(w, e, c, args, vec![], &|c, xs| cps(w, e, c, head, &|c, hw| e.call_dyn(c, app(row_term(w, "wrap"), hw), xs, k)));
+            let dom = tatic_wasm::encoding::constant_n(w.table.row("shr_u").expect("parse admits closures only with their rows").dom.circuit, w.n);
+            e.choose(c, app2(dom, c.at(x), c.at(y)), kk, c.at(e.z))
+        }),
     })
 }
 
 /// `h`'s arity and its source function for the statement (D4's seam), or `None` when `cps` cannot take the term. The
 /// closure is built from the term, the table and the registry (`pos_of`) alone, never from the `Ins` list, so a
 /// lowering bug cannot cancel itself.
-pub(crate) fn source_fn<'s>(table: &'s Table, store: &'s TermStore, h: Hash, pos_of: &dyn Fn(Hash) -> Option<usize>) -> Option<(usize, Box<SrcFn<'s>>)> {
+/// `fast` is `build`'s: whether the module's closure words are plain positions. Closures are read only then, and only
+/// when the table has the rows that pack and unpack a closure word.
+pub(crate) fn source_fn<'s>(
+    table: &'s Table,
+    store: &'s TermStore,
+    h: Hash,
+    pos_of: &dyn Fn(Hash) -> Option<usize>,
+    fast: bool,
+) -> Option<(usize, Box<SrcFn<'s>>)> {
     let (arity, body, is_rec) = peel(store, h)?;
-    let src = parse(&Reading { table, store, arity, self_idx: is_rec.then_some(arity as u32), pos_of }, body, true)?;
+    let fast = fast && ["shl", "shr_u", "or", "wrap"].iter().all(|r| table.row(r).is_some());
+    let src = parse(&Reading { table, store, arity, self_idx: is_rec.then_some(arity as u32), pos_of, fast }, body, true)?;
     let w = Machine { n: N, fw: 0, table };
     Some((arity, Box::new(move |c: &mut Cx, e: &SEnv, k: &dyn Fn(&mut Cx, Expr) -> Expr| cps(&w, e, c, &src, k))))
 }
 
-/// The self-call and combinator-call sites `classify` reads in `h`'s body (after the optional `Rec` and the `Abs`
-/// binders, the reading `source_fn` does), counted with multiplicity like the tree.
-pub(crate) fn call_sites(store: &TermStore, h: Hash) -> u64 {
-    fn walk(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>, memo: &mut HashMap<Hash, u64>) -> u64 {
+/// The call sites `classify` reads in `h`'s body (after the optional `Rec` and the `Abs` binders, the reading
+/// `source_fn` does), counted with multiplicity like the tree. A closure call weighs `max(1, width(its arguments'
+/// count))`: its dispatch is a chain over the dynamic set, as long as `width` says (`module_cost` passes the set's
+/// size). An over-application's head is lowered twice, so its call and its arguments count twice.
+pub(crate) fn call_sites(store: &TermStore, h: Hash, width: &dyn Fn(usize) -> u64) -> u64 {
+    fn walk(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>, width: &dyn Fn(usize) -> u64, memo: &mut HashMap<Hash, u64>) -> u64 {
         if let Some(n) = memo.get(&h) {
             return *n;
         }
         let n = tatic_kernel::grow(|| {
-            let mut all = |hs: &[Hash]| hs.iter().fold(0u64, |n, a| n.saturating_add(walk(store, *a, arity, self_idx, memo)));
+            let mut all = |hs: &[Hash]| hs.iter().fold(0u64, |n, a| n.saturating_add(walk(store, *a, arity, self_idx, width, memo)));
             match classify(store, h, arity, self_idx) {
                 Shape::SelfCall(args) => all(&args).saturating_add(1),
+                Shape::VarCall { args, .. } => all(&args).saturating_add(width(args.len()).max(1)),
+                Shape::CombinatorCall { arity: m, args, .. } if args.len() > m => {
+                    let (head, extra) = args.split_at(m);
+                    let head = all(head).saturating_add(1).saturating_mul(2);
+                    head.saturating_add(all(extra)).saturating_add(width(extra.len()).max(1))
+                }
                 Shape::CombinatorCall { args, .. } => all(&args).saturating_add(1),
                 Shape::If(c, t, e) => all(&[c, t, e]),
                 Shape::Prim(_, a, b) => all(&[a, b]),
@@ -191,22 +242,23 @@ pub(crate) fn call_sites(store: &TermStore, h: Hash) -> u64 {
         n
     }
     let Some((arity, body, is_rec)) = peel(store, h) else { return 0 };
-    walk(store, body, arity, is_rec.then_some(arity as u32), &mut HashMap::new())
+    walk(store, body, arity, is_rec.then_some(arity as u32), width, &mut HashMap::new())
 }
 
 /// A term's cost against `MAX_GATE_TREE`: its tree nodes plus `CALL_WEIGHT` per call site of `h` and of the registry's
 /// `callees`. Read from the source and the registry-derived module only, never from the emitted `Ins` list: padding the
 /// code with `Call`s must not move a term from `Rejected` to `NotCovered`.
-fn cost(store: &TermStore, h: Hash, callees: &[Hash]) -> u64 {
+fn cost(store: &TermStore, h: Hash, callees: &[Hash], width: &dyn Fn(usize) -> u64) -> u64 {
     let tree = tree_size(store, h);
     if tree > MAX_GATE_TREE {
         return tree;
     }
-    let sites: u64 = std::iter::once(&h).chain(callees).map(|t| call_sites(store, *t)).fold(0, u64::saturating_add);
+    let sites: u64 = std::iter::once(&h).chain(callees).map(|t| call_sites(store, *t, width)).fold(0, u64::saturating_add);
     tree.saturating_add(CALL_WEIGHT.saturating_mul(sites))
 }
 
-/// The closed callees' terms `h`'s body calls (`Shape::CombinatorCall` roots), each once.
+/// The closed callees' terms `h`'s body calls statically (`Shape::CombinatorCall` roots), each once. A closure call
+/// adds no target here: its targets are a dynamic set (`closure_call_arities`).
 fn callee_heads(store: &TermStore, h: Hash) -> HashSet<Hash> {
     fn walk(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>, seen: &mut HashSet<Hash>, out: &mut HashSet<Hash>) {
         if !seen.insert(h) {
@@ -214,7 +266,7 @@ fn callee_heads(store: &TermStore, h: Hash) -> HashSet<Hash> {
         }
         tatic_kernel::grow(|| {
             let kids = match classify(store, h, arity, self_idx) {
-                Shape::SelfCall(args) => args,
+                Shape::SelfCall(args) | Shape::VarCall { args, .. } => args,
                 Shape::CombinatorCall { root, args, .. } => {
                     out.insert(root);
                     args
@@ -236,15 +288,54 @@ fn callee_heads(store: &TermStore, h: Hash) -> HashSet<Hash> {
 /// `cost` of `h` with the call sites of the registry's callee terms in `frag` (the entry's own are `h`'s).
 pub(crate) fn module_cost(store: &TermStore, h: Hash, frag: &CompiledFragment) -> u64 {
     let callees: Vec<Hash> = frag.sources().into_iter().enumerate().filter(|(p, _)| *p != frag.entry_pos).filter_map(|(_, t)| t).collect();
-    cost(store, h, &callees)
+    // the set reads the records' `env` and `arity`, never their `Ins`, so padding the code still cannot move a verdict
+    let records = frag.records();
+    cost(store, h, &callees, &|a| dynamic_set(&records, a).len() as u64)
+}
+
+/// The argument counts of the closure calls in `h`'s body (a `VarCall`'s, an over-application's past its head's
+/// arity), each once, ascending: the arities whose dynamic sets the source calls into.
+fn closure_call_arities(store: &TermStore, h: Hash) -> Vec<usize> {
+    fn walk(store: &TermStore, h: Hash, arity: usize, self_idx: Option<u32>, seen: &mut HashSet<Hash>, out: &mut BTreeSet<usize>) {
+        if !seen.insert(h) {
+            return;
+        }
+        tatic_kernel::grow(|| {
+            let kids = match classify(store, h, arity, self_idx) {
+                Shape::SelfCall(args) => args,
+                Shape::VarCall { args, .. } => {
+                    out.insert(args.len());
+                    args
+                }
+                Shape::CombinatorCall { arity: m, args, .. } => {
+                    if args.len() > m {
+                        out.insert(args.len() - m);
+                    }
+                    args
+                }
+                Shape::If(c, t, e) => vec![c, t, e],
+                Shape::Prim(_, a, b) => vec![a, b],
+                _ => vec![],
+            };
+            kids.into_iter().for_each(|a| walk(store, a, arity, self_idx, seen, out));
+        })
+    }
+    let mut out = BTreeSet::new();
+    if let Some((arity, body, is_rec)) = peel(store, h) {
+        walk(store, body, arity, is_rec.then_some(arity as u32), &mut HashSet::new(), &mut out);
+    }
+    out.into_iter().collect()
 }
 
 /// The registry pairing (trusted): each record's source term peels to the record's arity, and the callees the source
-/// calls (its closed heads, by the registry's positions) are the positions the record's code calls other than its own.
-/// So a statement built from the sources is about the functions the code calls, and `SEnv::call` finds each callee.
+/// calls (its closed heads, by the registry's positions, and the dynamic set of each closure call's arity) are the
+/// positions the record's code calls (`callees`, which leaves out the record's own position, so the source side does too).
+/// So a statement built from the sources is about the functions the code calls, and `SEnv::call` and `SEnv::call_dyn`
+/// find each callee.
 fn pairing(store: &TermStore, frag: &CompiledFragment) -> Result<(), String> {
     let (sources, records) = (frag.sources(), frag.records());
     let pos_of = |x: Hash| sources.iter().position(|s| *s == Some(x));
+    let dynamic = dynamic_sets(&records);
     for (p, (src, rec)) in sources.iter().zip(&records).enumerate() {
         let (Some(h), Some(rec)) = (src, rec) else {
             if src.is_some() != rec.is_some() {
@@ -256,8 +347,10 @@ fn pairing(store: &TermStore, frag: &CompiledFragment) -> Result<(), String> {
         if arity != Some(rec.arity) {
             return Err(format!("position {p}: the record takes {} parameters, its source {arity:?}", rec.arity));
         }
-        let from_source: BTreeSet<usize> = callee_heads(store, *h).into_iter().map(|c| pos_of(c).unwrap_or(usize::MAX)).filter(|c| *c != p).collect();
-        let from_code: BTreeSet<usize> = callees(p, &rec.code, &[]).into_iter().collect();
+        let mut from_source: BTreeSet<usize> = callee_heads(store, *h).into_iter().map(|c| pos_of(c).unwrap_or(usize::MAX)).collect();
+        from_source.extend(closure_call_arities(store, *h).into_iter().flat_map(|a| dynamic_set(&records, a)));
+        from_source.remove(&p);
+        let from_code: BTreeSet<usize> = callees(p, &rec.code, &dynamic).into_iter().collect();
         if from_source != from_code {
             return Err(format!("position {p}: the source calls {from_source:?}, the code {from_code:?}"));
         }
@@ -275,12 +368,17 @@ pub(crate) fn build(table: &Table, store: &TermStore, h: Hash, frag: &CompiledFr
     if sources[frag.entry_pos] != Some(h) {
         return Err(Verdict::Rejected(Layer::Pairing, "the entry's source is not the term".into()));
     }
+    // a closure word is a plain position only in a Fast module whose every slot below the entry is a record (a
+    // partial-application wrapper is text); a `Raw` line anywhere leaves the term `NotCovered` here, not `Rejected(Shape)`
+    let mut raw = false;
+    records.iter().flatten().for_each(|r| visit_ins(&r.code, &mut |i| raw |= matches!(i, Ins::Raw(_))));
+    let fast = !frag.curried && records[..frag.entry_pos].iter().all(|r| r.is_some()) && !raw;
     let mut fns = Vec::with_capacity(records.len());
     for (p, rec) in records.iter().enumerate() {
         fns.push(match (rec, sources[p]) {
             (None, _) => None,
             (Some(_), None) => return Err(Verdict::NotCovered(format!("the record at position {p} has no source term"))),
-            (Some(_), Some(t)) => match source_fn(table, store, t, &pos_of) {
+            (Some(_), Some(t)) => match source_fn(table, store, t, &pos_of, fast) {
                 Some((_, f)) => Some(f),
                 None => return Err(Verdict::NotCovered(format!("position {p} is outside what the source reading takes"))),
             },
@@ -290,6 +388,9 @@ pub(crate) fn build(table: &Table, store: &TermStore, h: Hash, frag: &CompiledFr
         return Err(Verdict::NotCovered(format!("over the budget of {MAX_GATE_TREE}")));
     }
     shape_check(table, &records).map_err(|m| Verdict::Rejected(Layer::Shape, m))?;
+    if let Some(p) = call_cycle(&records) {
+        return Err(Verdict::NotCovered(format!("the module's calls form a cycle through position {p}")));
+    }
     pairing(store, frag).map_err(|m| Verdict::Rejected(Layer::Pairing, m))?;
     let module: Vec<Option<ModEntry>> = records.iter().zip(&fns).map(|(r, f)| Some(ModEntry { entry: (*r)?, src: &**(f.as_ref()?) })).collect();
     let w = Machine { n: N, fw: 0, table };
