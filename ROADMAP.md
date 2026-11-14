@@ -2,7 +2,7 @@
 
 The project's goals, then ordered milestones, each the question it answers (format: `~/.claude/VERSIONING.md`).
 `kind: experiment`: a tag marks a step and its message is the milestone sentence; tagging moves the line out of this
-file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) `v0.5.0` (2026-10-31), `v0.6.0` (2026-10-31) `v0.7.0` (2026-11-10), `v0.8.0` (2026-11-11) and `v0.9.0` (2026-11-12; `git tag -n99`). Deferred work is in
+file. Only the user tags. Tagged so far: `v0.1.0`, `v0.2.0` (2026-10-22), `v0.3.0` (2026-10-23), `v0.4.0` (2026-10-26) `v0.5.0` (2026-10-31), `v0.6.0` (2026-10-31) `v0.7.0` (2026-11-10), `v0.8.0` (2026-11-11), `v0.9.0` (2026-11-12) and `v0.10.0` (2026-11-14; `git tag -n99`). Deferred work is in
 `PARKED.md`. The cleanup break from v0.5 (`docs/superpowers/plans/2026-10-26-cleanup.md`) is done (2026-10-27).
 
 ## Goals
@@ -67,5 +67,17 @@ the same file, and the timed bench run `pfl-bench-b1` (closure loop warm 4.416 u
 25.6 to 27.2 us). Spec and plan: `docs/superpowers/specs/2026-11-12-proved-loop-form-design.md`,
 `docs/superpowers/plans/2026-11-12-proved-loop-form.md`; findings in `docs/tier-cycle/`, "The proved loop form:
 measurements".
+
+v0.10 (`git tag -n99 v0.10.0`; goal 1) closed with closures and partial operators installing from emitted code the
+kernel proved: closure values and `call_indirect` dispatch over the table, and `%` guarded by its domain, take the
+census from 17 to 27 rows `Accepted` with none `Rejected`. What showed it: `proof/tests/baseline.rs#VERDICTS` (27
+`Accepted`, 13 `NotCovered`), the closure-convention mutants in `proof/tests/gate_mutants.rs`,
+`a_closure_call_at_another_arity_is_not_covered` in `proof/tests/gate.rs`, and the suite run
+`2026-11-14-final-fix-suite` (exit 0). Three of the eight closure rows have an empty dynamic set, so their `Accepted`
+says only that each closure call traps on both sides. Along the way one instantiation memo cut the kernel's check work
+(counts, untimed). Specs and plans: `docs/superpowers/specs/2026-11-13-partial-row-and-gcd-design.md`,
+`docs/superpowers/specs/2026-11-13-closures-through-the-gate-design.md` and their plans; findings in `docs/tier-cycle/`,
+"The proved loop form: measurements" (the memo), "The partial row and gcd through the gate" and "Closures through the
+gate".
 
 No milestone is open. Candidates are in `PARKED.md`.
