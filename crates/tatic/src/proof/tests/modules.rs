@@ -5,7 +5,7 @@ use super::*;
 use crate::jit::JitEngine;
 use crate::proof::gate::{gate, Verdict};
 use crate::support::samples::{source, tail_recursive_loop_with_pap_producing_root_self_call_arg, twice_inc_5};
-use crate::testing::ins_mutate::{arities, count_call_sites, edit_call_site, mutate};
+use crate::testing::ins_mutate::{arities, count_call_sites, edit_call_site, mutate, with_record};
 use crate::testing::test_corpus as tc;
 use super::gate_mutants::{arg_instruction_added, arg_instruction_dropped, args_swapped, check_frag, get, konst, rejected_by, SiteEdit};
 use crate::jit::compile::{CompiledFragment, Item};
@@ -120,20 +120,6 @@ fn code_that_calls_another_position_than_its_source_is_rejected_by_the_pairing()
         gate(tatic_wasm::wasm::table(), &s, h, &frag)
     });
     assert!(matches!(v, Verdict::Rejected(Layer::Pairing, _)), "{v:?}");
-}
-
-/// The module with the record at `pos` (and nothing else) replaced by `f` of it.
-fn with_record(mut frag: CompiledFragment, pos: usize, f: impl FnOnce(Entry) -> Entry) -> CompiledFragment {
-    let mut f = Some(f);
-    for item in &mut frag.module {
-        if let Item::Func { pos: p, entry, .. } = item {
-            if *p == pos {
-                *entry = (f.take().expect("one record per position"))(entry.clone());
-            }
-        }
-    }
-    assert!(f.is_none(), "no record at position {pos}");
-    frag
 }
 
 fn src(text: &'static str) -> Build {

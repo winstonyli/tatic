@@ -132,3 +132,22 @@ pub(crate) fn edit_call_site(
     }
     go(code, &mut 0, site, pos, arities, table, edit)
 }
+
+/// The module with the record at `pos` (and nothing else) replaced by `f` of it.
+pub(crate) fn with_record(
+    mut frag: crate::jit::compile::CompiledFragment,
+    pos: usize,
+    f: impl FnOnce(tatic_wasm::machine::Entry) -> tatic_wasm::machine::Entry,
+) -> crate::jit::compile::CompiledFragment {
+    use crate::jit::compile::Item;
+    let mut f = Some(f);
+    for item in &mut frag.module {
+        if let Item::Func { pos: p, entry, .. } = item {
+            if *p == pos {
+                *entry = (f.take().expect("one record per position"))(entry.clone());
+            }
+        }
+    }
+    assert!(f.is_none(), "no record at position {pos}");
+    frag
+}

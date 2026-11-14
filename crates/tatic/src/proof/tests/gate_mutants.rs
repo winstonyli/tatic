@@ -10,8 +10,8 @@ use super::gate::{big, compiled, the_five};
 use crate::jit::compile::{compile_specialised, CompiledFragment};
 use crate::lang::term::{Hash, TermStore};
 use crate::proof::gate::{build, gate, Layer, Verdict};
-use crate::support::samples::{capturing_closure_loop, factorial, fib, source, straight_line};
-use crate::testing::ins_mutate::{arities, count_call_sites, edit_call_site, mutate, with_entry};
+use crate::support::samples::{capturing_closure_loop, factorial, fib, non_tail_closure_carrying_recursion, source, straight_line, twice};
+use crate::testing::ins_mutate::{arities, count_call_sites, edit_call_site, mutate, with_entry, with_record};
 use Layer::{Shape, Walk};
 
 type Build = Box<dyn Fn(&mut TermStore) -> Hash>;
@@ -401,3 +401,66 @@ fn factorials_proof_does_not_prove_fibs_statement() {
     });
 }
 
+/// `code` with `code[at..at + expect.len()]` (which must be `expect`) replaced by `with`.
+fn splice_at(code: &[Ins], at: usize, expect: &[Ins], with: &[Ins]) -> Vec<Ins> {
+    assert_eq!(&code[at..at + expect.len()], expect, "the edit's site moved: {code:?}");
+    [&code[..at], with, &code[at + expect.len()..]].concat()
+}
+
+/// `code`'s last top-level `If`, its else arm rewritten by `f`.
+fn in_else(code: &[Ins], f: impl FnOnce(&[Ins]) -> Vec<Ins>) -> Vec<Ins> {
+    let (head, last) = code.split_at(code.len() - 1);
+    let Ins::If(t, e) = &last[0] else { panic!("the last instruction is not an If: {code:?}") };
+    [head, &[Ins::If(t.clone(), f(e))]].concat()
+}
+
+fn i32_const0() -> Ins {
+    Ins::Row { name: "i32.const", operand: 0 }
+}
+
+/// Mutants of the closure convention on `non_tail_closure_carrying_recursion` (entry `$c2`, the recursion `$c0`, the
+/// closure `$c1`; the entry packs the closure word as `i32.const 0; extend; konst 32; shl; konst 1; or`).
+#[test]
+fn closure_convention_mutants_are_rejected_on_the_carrying_recursion() {
+    let subject = || compiled(&non_tail_closure_carrying_recursion);
+    let (_, _, frag) = subject();
+    let entry = frag.entry().code.clone();
+    assert_eq!(frag.entry_pos, 2);
+    let (pack, or, tail) = ([i32_const0(), row("extend"), konst(32), row("shl"), konst(1)], row("or"), 5);
+
+    // index off by one: the `konst 1` before `or` (entry position 5) becomes `konst 2`
+    assert_eq!(entry[tail + 1], or);
+    check("index off by one", &subject, splice_at(&entry, tail, &[konst(1)], &[konst(2)]), Walk);
+
+    // halves swapped: positions 1 and 5 exchanged (`konst 1` first as the environment half, `i32.const 0` the index)
+    assert_eq!(&entry[1..6], &pack);
+    let swapped = splice_at(&entry, 1, &pack, &[konst(1), row("extend"), konst(32), row("shl"), i32_const0()]);
+    check("halves swapped", &subject, swapped, Walk);
+
+    // closure body: `$c1`'s `konst 1` (position 1 of its code) becomes `konst 2`
+    let c1 = with_record(subject().2, 1, |e| Entry { code: splice_at(&e.code, 1, &[konst(1)], &[konst(2)]), ..e });
+    check_frag("closure body changed", &subject, c1, Walk);
+
+    // argument replaced: in `$c0`'s else arm the closure call's argument, position 9, `get 2` becomes `get 0`
+    let c0 = with_record(subject().2, 0, |e| Entry { code: in_else(&e.code, |a| splice_at(a, 9, &[get(2)], &[get(0)])), ..e });
+    check_frag("argument replaced", &subject, c0, Walk);
+
+    // closure call dropped: in `$c0`'s else arm positions 10..13, `get 1; wrap; call_indirect 1`, become `add`
+    let drop = [get(1), row("wrap"), Ins::CallIndirect(1)];
+    let c0 = with_record(subject().2, 0, |e| Entry { code: in_else(&e.code, |a| splice_at(a, 10, &drop, &[row("add")])), ..e });
+    check_frag("closure call dropped", &subject, c0, Layer::Pairing);
+}
+
+/// `twice` (`\f x. f (f x)`) with one of its two closure calls gone: the inner call's `get 0; wrap; call_indirect 1`
+/// (entry positions 9..12) becomes `add`, folding the inner call's environment half and argument into one word.
+#[test]
+fn a_twice_with_one_closure_call_is_rejected() {
+    let subject = || compiled(&twice);
+    let entry = subject().2.entry().code.clone();
+    let inner = [get(0), row("wrap"), Ins::CallIndirect(1)];
+    let mutant = with_entry(subject().2, |e| Entry { code: splice_at(&entry, 9, &inner, &[row("add")]), ..e });
+    let (s, h, _) = subject();
+    // no `forged_rejected`: the kernel accepts the positive proof against this mutant's (different) statement
+    // (T5 report, deviation 1), so the generator's refusal is the only layer here
+    big(move || rejected_by(gate(tatic_wasm::wasm::table(), &s, h, &mutant), Walk, "one closure call of two"));
+}
