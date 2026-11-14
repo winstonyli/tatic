@@ -199,7 +199,7 @@ fn time_gate(s: &TermStore, h: Hash, frag: &CompiledFragment, reps: usize) -> (f
     best
 }
 
-/// Section 8's measurements: `inc`, `doubling(d)` up the tree cap, and `Mul`. Prints
+/// Section 8's measurements: `inc`, `doubling(d)` up to the tree cap (`MAX_GATE_TREE`, d = 12), and `Mul`. Prints
 /// `name build_ms check_ms ok` lines; run through the wrapper.
 #[test]
 #[ignore]
@@ -207,7 +207,7 @@ fn measure_gate_costs() {
     let (s, h, frag) = compiled(&inc);
     let (b, k, ok) = time_gate(&s, h, &frag, 5);
     println!("inc {b:.2} {k:.2} {ok}");
-    for d in 1..=13u32 {
+    for d in 1..=12u32 {
         let r = std::thread::Builder::new()
             .stack_size(tatic_kernel::CHECK_STACK)
             .spawn(move || {
@@ -302,20 +302,20 @@ fn time_targets() {
     }
 }
 
-/// `doubling(13)` (the tree cap) on a default-size 2 MB thread. Alone, since an overflow aborts the exe.
+/// `doubling(12)` (the tree cap, `MAX_GATE_TREE`) on a default-size 2 MB thread. Alone, since an overflow aborts the exe.
 #[test]
 #[ignore]
 fn measure_stack_2mb() {
     let r = std::thread::Builder::new()
         .stack_size(2 << 20)
         .spawn(|| {
-            let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 13));
+            let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 12));
             time_gate(&s, h, &frag, 1)
         })
         .unwrap()
         .join()
         .unwrap();
-    println!("doubling_13 on 2 MB {:.2} {:.2} {}", r.0, r.1, r.2);
+    println!("doubling_12 on 2 MB {:.2} {:.2} {}", r.0, r.1, r.2);
 }
 
 /// One `doubling(GATE_D)`, built, and checked `GATE_REPS` times (default 1) when `GATE_CHECK=1`: the target of
@@ -533,7 +533,7 @@ fn what_cps_cannot_take_is_not_covered() {
 
 #[test]
 fn a_term_over_the_budget_is_not_covered() {
-    let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 13));
+    let (s, h, frag) = compiled(&|s: &mut TermStore| doubling(s, 12));
     assert!(crate::jit::compile::tree_size(&s, h) > MAX_GATE_TREE);
     assert!(matches!(gate(tatic_wasm::wasm::table(), &s, h, &frag), Verdict::NotCovered(_)));
     let mut s = TermStore::new();
