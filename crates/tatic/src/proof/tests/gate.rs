@@ -774,3 +774,34 @@ fn a_closure_call_costs_its_width_and_its_head_twice() {
     let h = tail_recursive_loop_with_if_between_closures_self_call_arg(&mut s);
     assert_eq!(call_sites(&s, h, &|_| 1), 4);
 }
+
+/// `src` compiled with `Dispatch::Fast` forced, whatever the registry picks: the shape the gate must guard against
+/// whether or not the compiler ever emits it.
+fn forced_fast(src: &str) -> (TermStore, Hash, CompiledFragment) {
+    let mut s = TermStore::new();
+    let h = source(&mut s, src);
+    let (mut m, sources) = crate::jit::compile::build(&s, h).expect("builds");
+    m.dispatch = crate::jit::ir::Dispatch::Fast;
+    let mut frag = crate::jit::lower_wat::lower(&m);
+    for item in &mut frag.module {
+        if let crate::jit::compile::Item::Func { pos, source, .. } = item {
+            *source = if *pos == m.combinators.len() { Some(h) } else { sources[*pos] };
+        }
+    }
+    (s, h, frag)
+}
+
+/// A closure called at another arity than the closure it reaches: under `Fast` the code's `call_indirect` traps on the
+/// type while the term answers, and both sides of the reading would answer `z` on the empty arity-2 set. The gate
+/// reads closures only when every closure call and every `Pointer` record has one arity, so this is `NotCovered`.
+#[test]
+fn a_closure_call_at_another_arity_is_not_covered() {
+    let (s, h, frag) = forced_fast(r"\x. (\f. f 1 2) (\y. if 0 < y then (\z. z) else (\z. z + 1))");
+    let shown = format!("{:?}", frag.module);
+    let records = frag.records();
+    assert!(!frag.curried, "{shown}");
+    assert!(records.iter().flatten().any(|r| r.code.contains(&Ins::CallIndirect(2))), "no call_indirect 2 in {shown}");
+    assert!(records.iter().flatten().any(|r| r.env == tatic_wasm::machine::EnvAccess::Pointer && r.arity == 1), "no 1-ary closure in {shown}");
+    let v = gate_big(s, h, frag);
+    assert!(matches!(&v, Verdict::NotCovered(_)), "{v:?} for {shown}");
+}

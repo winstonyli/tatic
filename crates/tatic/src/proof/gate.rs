@@ -14,7 +14,7 @@ use tatic_kernel::{app, app2, scoped, Expr};
 use tatic_wasm::encoding::{holds, lit, low_bits, At, Cx};
 use tatic_wasm::machine::sim::prove;
 use tatic_wasm::machine::statement::{call_cycle, statement, ModEntry, SEnv, SrcFn};
-use tatic_wasm::machine::{callees, dynamic_set, dynamic_sets, shape_check, visit_ins, Class, Ins, Machine, Table};
+use tatic_wasm::machine::{callees, dynamic_set, dynamic_sets, shape_check, visit_ins, Class, EnvAccess, Ins, Machine, Table};
 
 use crate::jit::compile::{tree_size, CompiledFragment};
 use crate::jit::shape::{classify, free_vars, peel, Shape};
@@ -77,7 +77,8 @@ enum Src {
 
 /// What `parse` reads a function body against: the table, the store, the function's parameter count and self-reference,
 /// the registry (a closed callee's term to its module position), and whether closure values and calls are read
-/// (`build`'s `fast`: positions are the closure words' table values, and the table has the rows that pack and unpack one).
+/// (`build`'s `fast`: positions are the closure words' table values, every closure call and closure has one arity, and the
+/// table has the rows that pack and unpack one).
 struct Reading<'a> {
     table: &'a Table,
     store: &'a TermStore,
@@ -197,7 +198,8 @@ fn cps(w: &Machine, e: &SEnv, c: &mut Cx, s: &Src, k: &dyn Fn(&mut Cx, Expr) -> 
 /// `h`'s arity and its source function for the statement (D4's seam), or `None` when `cps` cannot take the term. The
 /// closure is built from the term, the table and the registry (`pos_of`) alone, never from the `Ins` list, so a
 /// lowering bug cannot cancel itself.
-/// `fast` is `build`'s: whether the module's closure words are plain positions. Closures are read only then, and only
+/// `fast` is `build`'s: whether the module's closure words are plain positions and its closures and closure calls share
+/// one arity. Closures are read only then, and only
 /// when the table has the rows that pack and unpack a closure word.
 pub(crate) fn source_fn<'s>(
     table: &'s Table,
@@ -372,7 +374,11 @@ pub(crate) fn build(table: &Table, store: &TermStore, h: Hash, frag: &CompiledFr
     // partial-application wrapper is text); a `Raw` line anywhere leaves the term `NotCovered` here, not `Rejected(Shape)`
     let mut raw = false;
     records.iter().flatten().for_each(|r| visit_ins(&r.code, &mut |i| raw |= matches!(i, Ins::Raw(_))));
-    let fast = !frag.curried && records[..frag.entry_pos].iter().all(|r| r.is_some()) && !raw;
+    // and the dispatch is typed by arity, so a closure call reaching a closure of another arity traps in the code but
+    // answers in the term; with every closure call and every `Pointer` record at one arity no call can reach one
+    let mut arities: BTreeSet<usize> = records.iter().flatten().filter(|r| r.env == EnvAccess::Pointer).map(|r| r.arity).collect();
+    sources.iter().flatten().for_each(|t| arities.extend(closure_call_arities(store, *t)));
+    let fast = !frag.curried && records[..frag.entry_pos].iter().all(|r| r.is_some()) && !raw && arities.len() <= 1;
     let mut fns = Vec::with_capacity(records.len());
     for (p, rec) in records.iter().enumerate() {
         fns.push(match (rec, sources[p]) {

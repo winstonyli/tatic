@@ -273,6 +273,15 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   meaning for every statement; the gate refuses these modules today. Trigger: a census row that calls a bare-value
   combinator directly. Evidence: `crates/tatic/src/jit/lower_wat.rs` (the known-call arm), `docs/tier-cycle/`,
   "Closures through the gate (2026-11-14)", verified 2026-11-14. Status: parked.
+- **Closures of more than one arity in one module** (decision e1, 2026-11-14) — what: the gate reads closure values
+  and calls only when every closure call and every `Pointer` record in the module has one arity (`proof/gate.rs#build`,
+  folded into `fast`); any other module is `NotCovered`. Why parked: dispatch is typed by arity, so under `Fast` a
+  closure call that reaches a closure of another arity traps in the code while the term answers, and the reading,
+  which dispatches over the module's set of the call's arity, answered `z` on both sides and accepted it (final
+  review of the closures branch). The general fix reads the term's own application on the source side (dispatch
+  over every `Pointer` record, over- and under-application included), so such a module is `Rejected` instead. Trigger:
+  a census row whose closures or closure calls differ in arity. Evidence: `proof/tests/gate.rs`,
+  `a_closure_call_at_another_arity_is_not_covered`, verified 2026-11-14. Status: parked.
 - **A call budget that bounds gate time** - what: `proof/gate.rs#cost` is tree nodes plus `CALL_WEIGHT` (228) per
   call site, fitted only on `rec f n = if n <= 0 then 0 else f (n - 1) + .. + f (n - 1)` (a tiny tree). A term
   with 16 self-calls and a 1920-node straight-line tail costs 7590, under `MAX_GATE_TREE` (8192), and took about
