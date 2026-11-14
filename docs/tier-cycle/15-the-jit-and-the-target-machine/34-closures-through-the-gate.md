@@ -13,7 +13,7 @@ NotCovered rows: a census".
   `tail_recursive_loop_with_if_between_closures_self_call_arg` and `inconsistent_arity_saturating_instance`. Now 27 of
   the 40 rows are `Accepted` (19 before), 13 `NotCovered` (21), none `Rejected`. The census counted 9 rows
   covered by its steps 1 and 2 (the closure word, then `call_indirect` and the table); the ninth,
-  `oversized_source_with_a_shrinking_step`, is over the tree budget, so it stays `NotCovered`. The 13 that stay are the census's rows with scratch locals or the heap,
+  `oversized_source_with_a_shrinking_step`, is over the tree budget (its tree is 8196 against `MAX_GATE_TREE` 8192, `proof/tests/baseline.rs` `BASELINE`), so it stays `NotCovered`. The 13 that stay are the census's rows with scratch locals or the heap,
   `open_redex_probe` (no fragment) and `oversized_source_with_a_shrinking_step` (over the tree budget).
 - **The empty-set rows.** `twice`, `iterate` and `iterate_creating_a_closure_over_g` have an empty dynamic set for every
   arity (checked on their gated fragments: `dynamic_sets` is `[[], [], []]`, `[[], [], [], []]` and
@@ -42,7 +42,7 @@ NotCovered rows: a census".
   cannot see it either: equal callee sets on an empty set say nothing about how many times the head is called.
 - **The reading refuses what it cannot yet model**, each pinned by a test in `proof/tests/gate.rs`: a closure call
   beside a table slot with no record (`a_closure_call_beside_a_pap_slot_is_not_covered`), curried dispatch
-  (`a_curried_closure_call_is_not_covered`; 6 census fragments are curried, all call a closure, all `NotCovered`), and a
+  (`a_curried_closure_call_is_not_covered`; the test prints "curried census fragments: 6, of which call a closure: 6" and asserts each of those 6 is `NotCovered`), and a
   module whose calls, widened by the dynamic sets, form a cycle (`a_closure_cycle_is_not_covered`, a `NotCovered` from
   `call_cycle` before any statement is built). Decision y1: a direct call into a `Pointer` record stays refused (`PARKED.md`,
   "Direct calls into `Pointer` records").
@@ -80,10 +80,10 @@ NotCovered rows: a census".
     `CALL_WEIGHT` times its width (the head twice, and the dynamic set's size), which is the rise in the cost column
     (+228 per site, +456 for two).
   - **`CALL_WEIGHT` (228) was not refitted.** Work per cost unit, check plus build: `doubling(12)` 296 and `gcd` 287;
-    the new rows with a cost over 400 do 169 to 218 (`closure_typed_loop_carried_parameter_loop` 218,
+    the new rows with a cost over 400 do 26 to 218: the three empty-set rows are the low end, since their sites answer `z` (`twice` 26, `iterate_creating_a_closure_over_g` 29, `iterate` 40), and the rest do 169 to 218 (`closure_typed_loop_carried_parameter_loop` 218,
     `non_tail_closure_carrying_recursion` 215, `tail_recursive_loop_with_if_between_closures_self_call_arg` 181,
     `branching_non_tail_closure_carrying_recursion` 169). The rows under 100 are dominated by a fixed part, as the static
-    ones are (`straight_line`, cost 12, does 34 thousand), so their rate says nothing. So a closure call site is not
+    ones are (`straight_line`, cost 12, does 34 thousand), so their rate says nothing. So these rows are no
     dearer per unit of cost than the term at the cap, and the budget is not loosened by them. This compares whole-row
     rates, not one site against another: the rows mix both kinds of site, and a probe that isolates a closure site (a
     chain of `k` closure calls against `k` static calls, as section 32's `%` chains do) was not run. The counts are
