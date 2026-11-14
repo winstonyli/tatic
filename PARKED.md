@@ -281,7 +281,12 @@ A finding is cited by section or paragraph title, never by line (its lines drift
   review of the closures branch). A `Fast` module of mixed arity can never be `Accepted` (its code traps where the
   term answers), so the guard stays and its verdict stays `NotCovered`: reading it as `Rejected` was weighed and
   declined (decision n1, 2026-11-14: it moves goldens and buys no row). Only curried code can be `Accepted` at mixed
-  arity; that reading is the open v0.11 candidate (Decide m, 2026-11-14). Trigger: a curried reading lands, or a
+  arity; that reading is the open v0.11 candidate (Decide m, 2026-11-14). Any such reading's soundness at a live
+  mixed site (`f 1 2` over a one-argument `f`) rests on `well_typed` running before the gate (`jit.rs#try_install`
+  order; `prove_install` has no other non-test caller): a well-typed `f 1` returns a real closure word, while an
+  ill-typed one would call an `Int`, which traps past the table where the reading answers `z`. That type-safety
+  argument is fuzzed, not proved (`verify/typing.rs`, `a_well_typed_term_never_goes_wrong`); checked by reading,
+  2026-11-14 (p2). Trigger: a curried reading lands, or a
   census row whose `Fast` closures differ in arity. Evidence: `proof/tests/gate.rs`,
   `a_closure_call_at_another_arity_is_not_covered`, verified 2026-11-14. Status: parked (the curried reading);
   decided against (`Rejected` for `Fast`).
