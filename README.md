@@ -49,9 +49,8 @@ not needed to use the JIT.
 Licensed under the Apache License, Version 2.0 (see `LICENSE`; copyright 2026
 Winston Li).
 
-This project was developed with substantial AI assistance: over 90% of the
-commits (500 of 536 when this note was written) carry a `Co-Authored-By:
-Claude` trailer, and the design notes in `docs/related-work/README.md` were written the
+This project was developed with substantial AI assistance: nearly all
+commits carry a `Co-Authored-By: Claude` trailer, and the design notes in `docs/related-work/README.md` were written the
 same way. Treat the measurements and proofs as claims to re-run, not as
 audited results. The design specs and implementation plans behind the work are
 in `docs/superpowers/` (each starts with its `status:`); the experiment scripts
